@@ -1,0 +1,8 @@
+[package]
+name = "vault-export"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rpassword = "7.5.4"
+vault-core = { version = "0.1.0", path = "../vault-core" }

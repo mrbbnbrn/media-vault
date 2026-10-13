@@ -1,0 +1,57 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install pinned Rust toolchain (from rust-toolchain.toml)
+        run: rustup show active-toolchain || rustup toolchain install
+      - name: Unit and integration tests
+        run: cargo test --workspace --release --locked
+      - name: Lint
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Cross-check FORMAT.md with the independent Python decrypter
+        shell: bash
+        run: |
+          pip install cryptography argon2-cffi mnemonic
+          cargo build --release --locked -p vault-export
+          cargo build --release --locked -p vault-core --example make_demo_vault
+          ./target/release/examples/make_demo_vault demo "ci password" > phrase.txt
+          ./target/release/vault-export export demo out-rust --recovery < phrase.txt
+          python -I tools/reference_decrypt.py demo out-python --recovery < phrase.txt
+          diff -r out-rust out-python
+          echo "Rust export tool and Python reference decrypter agree."
+
+  windows-release:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - name: Build vault-export.exe
+        run: cargo build --release --locked -p vault-export
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p dist/MediaVault
+          cp target/release/vault-export.exe dist/MediaVault/
+          cp crates/vault-core/FORMAT.md dist/MediaVault/
+          cp tools/reference_decrypt.py dist/MediaVault/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MediaVault-windows
+          path: dist/MediaVault
