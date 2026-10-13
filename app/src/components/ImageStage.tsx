@@ -155,7 +155,10 @@ export function ImageStage(props: Props) {
   useEffect(() => {
     const el = boxRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => setSize({ w: el.clientWidth, h: el.clientHeight }));
+    const ro = new ResizeObserver(() => {
+      setSize({ w: el.clientWidth, h: el.clientHeight });
+      requestAnimationFrame(() => draw()); // again once layout has settled
+    });
     ro.observe(el);
     return () => ro.disconnect();
   }, []);

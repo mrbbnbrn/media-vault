@@ -27,6 +27,7 @@ import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu }
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
+  isPaused: () => boolean;
   next: () => void;
   prev: () => void;
   toggleMute: () => void;
@@ -43,6 +44,8 @@ export interface PlayerProps {
   masterVolume?: number;
   masterMuted?: boolean;
   compact?: boolean;
+  /** Media only, no controls (shaped multi-screen panels bring their own). */
+  bare?: boolean;
   /** Clean full screen: no UI unless `controlsOnMouse`. */
   clean?: boolean;
   controlsOnMouse?: boolean;
@@ -495,6 +498,7 @@ export function Player(props: PlayerProps) {
 
   useImperativeHandle(props.ref, () => ({
     setPaused: (p: boolean) => setPaused(p),
+    isPaused: () => paused,
     next: () => go('next'),
     prev: () => go('prev'),
     toggleMute: () => onSettings({ ...s, muted: !s.muted }),
@@ -715,7 +719,7 @@ export function Player(props: PlayerProps) {
         </div>
       )}
 
-      {props.compact ? (
+      {props.bare ? null : props.compact ? (
         <>
           <div className="p-badges">
             {props.title}
