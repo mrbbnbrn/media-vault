@@ -8,9 +8,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
-use crate::crypto::{self, KEY_LEN, Key, KdfParams, NONCE_LEN};
+use crate::crypto::{self, KEY_LEN, KdfParams, Key, NONCE_LEN};
 use crate::error::{Error, Result};
-use crate::stream::{DEFAULT_CHUNK_LOG2, ObjectId, ObjectKind, ObjectReader, ObjectWriter, WrittenObject};
+use crate::stream::{
+    DEFAULT_CHUNK_LOG2, ObjectId, ObjectKind, ObjectReader, ObjectWriter, WrittenObject,
+};
 
 pub const FORMAT_NAME: &str = "media-vault";
 pub const FORMAT_VERSION: u32 = 1;
@@ -81,11 +83,17 @@ pub struct Vault {
 }
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 fn now_millis() -> u128 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0)
 }
 
 fn slot_aad(kind: &str, vault_id: &str) -> Vec<u8> {
@@ -94,7 +102,8 @@ fn slot_aad(kind: &str, vault_id: &str) -> Vec<u8> {
 
 fn decode_fixed<const N: usize>(s: &str, what: &str) -> Result<[u8; N]> {
     let v = hex::decode(s).map_err(|_| Error::Corrupt(format!("vault.json: {what} is not hex")))?;
-    v.try_into().map_err(|_| Error::Corrupt(format!("vault.json: {what} has the wrong length")))
+    v.try_into()
+        .map_err(|_| Error::Corrupt(format!("vault.json: {what} has the wrong length")))
 }
 
 /// Write a file so that it is either fully replaced or untouched, even if
@@ -118,7 +127,11 @@ fn tmp_path(path: &Path) -> PathBuf {
 
 fn make_slot(kek: &Key, master: &Key, salt: &[u8], aad: &[u8]) -> KeySlot {
     let (nonce, wrapped) = crypto::wrap_key(kek, master, aad);
-    KeySlot { salt: hex::encode(salt), nonce: hex::encode(nonce), wrapped_key: hex::encode(wrapped) }
+    KeySlot {
+        salt: hex::encode(salt),
+        nonce: hex::encode(nonce),
+        wrapped_key: hex::encode(wrapped),
+    }
 }
 
 fn open_slot(kek: &Key, slot: &KeySlot, aad: &[u8]) -> Result<Option<Key>> {
@@ -136,13 +149,23 @@ fn new_recovery_slot(master: &Key, vault_id: &str) -> (KeySlot, RecoveryPhrase) 
     (slot, words)
 }
 
-fn new_password_slot(master: &Key, password: &str, kdf: &KdfParams, vault_id: &str) -> Result<KeySlot> {
+fn new_password_slot(
+    master: &Key,
+    password: &str,
+    kdf: &KdfParams,
+    vault_id: &str,
+) -> Result<KeySlot> {
     if password.is_empty() {
         return Err(Error::Invalid("password must not be empty".into()));
     }
     let salt = crypto::random_bytes::<16>();
     let kek = crypto::derive_password_key(password, &salt, kdf)?;
-    Ok(make_slot(&kek, master, &salt, &slot_aad("password", vault_id)))
+    Ok(make_slot(
+        &kek,
+        master,
+        &salt,
+        &slot_aad("password", vault_id),
+    ))
 }
 
 /// Read vault.json, falling back to vault.json.bak if the main copy is damaged.
@@ -183,7 +206,10 @@ impl Vault {
                 return Err(Error::AlreadyExists(root.to_path_buf()));
             }
             if fs::read_dir(root)?.next().is_some() {
-                return Err(Error::Invalid(format!("folder is not empty: {}", root.display())));
+                return Err(Error::Invalid(format!(
+                    "folder is not empty: {}",
+                    root.display()
+                )));
             }
         }
         fs::create_dir_all(root.join(MEDIA_DIR))?;
@@ -204,7 +230,13 @@ impl Vault {
             recovery_slot,
         };
         atomic_write(&root.join(FORMAT_DOC_FILE), FORMAT_DOC.as_bytes())?;
-        let mut vault = Vault { root: root.to_path_buf(), header, master, access: Access::ReadWrite, _lock: None };
+        let mut vault = Vault {
+            root: root.to_path_buf(),
+            header,
+            master,
+            access: Access::ReadWrite,
+            _lock: None,
+        };
         vault.write_header()?;
         vault.acquire_lock()?;
         let empty_db = crate::db::serialize(&crate::db::create_empty()?)?;
@@ -214,25 +246,46 @@ impl Vault {
 
     pub fn unlock(root: &Path, password: &str, access: Access) -> Result<Vault> {
         let header = read_header(root)?;
-        let salt = hex::decode(&header.password_slot.salt).map_err(|_| Error::Corrupt("vault.json: salt".into()))?;
+        let salt = hex::decode(&header.password_slot.salt)
+            .map_err(|_| Error::Corrupt("vault.json: salt".into()))?;
         let kek = crypto::derive_password_key(password, &salt, &header.kdf)?;
-        let master = open_slot(&kek, &header.password_slot, &slot_aad("password", &header.vault_id))?
-            .ok_or(Error::WrongKey)?;
+        let master = open_slot(
+            &kek,
+            &header.password_slot,
+            &slot_aad("password", &header.vault_id),
+        )?
+        .ok_or(Error::WrongKey)?;
         Self::finish_unlock(root, header, master, access)
     }
 
     pub fn unlock_with_recovery(root: &Path, phrase: &str, access: Access) -> Result<Vault> {
         let header = read_header(root)?;
         let entropy = crypto::words_to_entropy(phrase)?;
-        let salt = hex::decode(&header.recovery_slot.salt).map_err(|_| Error::Corrupt("vault.json: salt".into()))?;
+        let salt = hex::decode(&header.recovery_slot.salt)
+            .map_err(|_| Error::Corrupt("vault.json: salt".into()))?;
         let kek = crypto::derive_recovery_key(&entropy, &salt);
-        let master = open_slot(&kek, &header.recovery_slot, &slot_aad("recovery", &header.vault_id))?
-            .ok_or(Error::WrongKey)?;
+        let master = open_slot(
+            &kek,
+            &header.recovery_slot,
+            &slot_aad("recovery", &header.vault_id),
+        )?
+        .ok_or(Error::WrongKey)?;
         Self::finish_unlock(root, header, master, access)
     }
 
-    fn finish_unlock(root: &Path, header: VaultHeader, master: Key, access: Access) -> Result<Vault> {
-        let mut v = Vault { root: root.to_path_buf(), header, master, access, _lock: None };
+    fn finish_unlock(
+        root: &Path,
+        header: VaultHeader,
+        master: Key,
+        access: Access,
+    ) -> Result<Vault> {
+        let mut v = Vault {
+            root: root.to_path_buf(),
+            header,
+            master,
+            access,
+            _lock: None,
+        };
         if access == Access::ReadWrite {
             v.acquire_lock()?;
         }
@@ -240,15 +293,19 @@ impl Vault {
     }
 
     fn acquire_lock(&mut self) -> Result<()> {
-        let f = OpenOptions::new().create(true).truncate(false).write(true).open(self.root.join(LOCK_FILE))?;
+        let f = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(self.root.join(LOCK_FILE))?;
         match f.try_lock() {
             Ok(()) => {
                 self._lock = Some(f);
                 Ok(())
             }
-            Err(fs::TryLockError::WouldBlock) => {
-                Err(Error::Invalid("this vault is already open in another window".into()))
-            }
+            Err(fs::TryLockError::WouldBlock) => Err(Error::Invalid(
+                "this vault is already open in another window".into(),
+            )),
             Err(fs::TryLockError::Error(e)) => Err(Error::Io(e)),
         }
     }
@@ -278,8 +335,12 @@ impl Vault {
     /// Re-wrap the master key under a new password. Instant: no media is re-encrypted.
     pub fn change_password(&mut self, new_password: &str) -> Result<()> {
         self.require_write()?;
-        self.header.password_slot =
-            new_password_slot(&self.master, new_password, &self.header.kdf, &self.header.vault_id)?;
+        self.header.password_slot = new_password_slot(
+            &self.master,
+            new_password,
+            &self.header.kdf,
+            &self.header.vault_id,
+        )?;
         self.write_header()
     }
 
@@ -301,18 +362,30 @@ impl Vault {
             ObjectKind::Thumbnail => THUMB_DIR,
             ObjectKind::Database => return self.root.join(DB_FILE),
         };
-        self.root.join(dir).join(&hex[..2]).join(format!("{hex}.bin"))
+        self.root
+            .join(dir)
+            .join(&hex[..2])
+            .join(format!("{hex}.bin"))
     }
 
     /// Encrypt everything read from `source` into a new object.
     /// Returns its id, plaintext length and SHA-256.
-    pub fn add_object(&self, kind: ObjectKind, source: impl Read) -> Result<(ObjectId, WrittenObject)> {
+    pub fn add_object(
+        &self,
+        kind: ObjectKind,
+        source: impl Read,
+    ) -> Result<(ObjectId, WrittenObject)> {
         let id = ObjectId::random();
         let written = self.write_object_at(kind, id, source)?;
         Ok((id, written))
     }
 
-    fn write_object_at(&self, kind: ObjectKind, id: ObjectId, mut source: impl Read) -> Result<WrittenObject> {
+    fn write_object_at(
+        &self,
+        kind: ObjectKind,
+        id: ObjectId,
+        mut source: impl Read,
+    ) -> Result<WrittenObject> {
         self.require_write()?;
         let path = self.object_path(kind, &id);
         if let Some(parent) = path.parent() {
@@ -392,9 +465,10 @@ impl Vault {
                 let name = f?.file_name();
                 let name = name.to_string_lossy();
                 if let Some(stem) = name.strip_suffix(".bin")
-                    && let Ok(id) = ObjectId::from_hex(stem) {
-                        out.push(id);
-                    }
+                    && let Ok(id) = ObjectId::from_hex(stem)
+                {
+                    out.push(id);
+                }
             }
         }
         out.sort();
@@ -451,7 +525,8 @@ impl Vault {
         let f = File::open(path)?;
         let mut r = ObjectReader::open(f, &self.master, DB_OBJECT_ID, Some(ObjectKind::Database))?;
         let mut out = Zeroizing::new(Vec::new());
-        r.read_to_end(&mut out).map_err(|e| Error::Corrupt(e.to_string()))?;
+        r.read_to_end(&mut out)
+            .map_err(|e| Error::Corrupt(e.to_string()))?;
         Ok(out)
     }
 

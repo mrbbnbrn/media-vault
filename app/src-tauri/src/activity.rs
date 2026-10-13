@@ -50,7 +50,10 @@ pub struct Activity {
 
 impl Activity {
     pub fn new(now: Instant) -> Self {
-        Self { last_input: now, last_playing: None }
+        Self {
+            last_input: now,
+            last_playing: None,
+        }
     }
 
     pub fn input(&mut self, now: Instant) {
@@ -63,7 +66,8 @@ impl Activity {
 
     /// Is something playing right now (heartbeat seen recently)?
     pub fn is_playing(&self, now: Instant) -> bool {
-        self.last_playing.is_some_and(|t| now.saturating_duration_since(t) <= PLAYING_GRACE)
+        self.last_playing
+            .is_some_and(|t| now.saturating_duration_since(t) <= PLAYING_GRACE)
     }
 
     /// Should we lock because of inactivity? Checks idle and the safety net.
@@ -103,7 +107,10 @@ impl SleepDetector {
     }
 
     pub fn tick(&mut self, now: SystemTime) -> bool {
-        let jumped = now.duration_since(self.last_wall).map(|d| d > SLEEP_JUMP).unwrap_or(false);
+        let jumped = now
+            .duration_since(self.last_wall)
+            .map(|d| d > SLEEP_JUMP)
+            .unwrap_or(false);
         self.last_wall = now;
         jumped
     }
@@ -114,7 +121,11 @@ mod tests {
     use super::*;
 
     fn settings(idle: u32, safety: u32) -> LockSettings {
-        LockSettings { idle_minutes: idle, safety_net_minutes: safety, ..Default::default() }
+        LockSettings {
+            idle_minutes: idle,
+            safety_net_minutes: safety,
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -123,7 +134,10 @@ mod tests {
         let a = Activity::new(t0);
         let s = settings(15, 0);
         assert_eq!(a.check(t0 + Duration::from_secs(14 * 60), &s), None);
-        assert_eq!(a.check(t0 + Duration::from_secs(15 * 60), &s), Some(LockReason::Idle));
+        assert_eq!(
+            a.check(t0 + Duration::from_secs(15 * 60), &s),
+            Some(LockReason::Idle)
+        );
     }
 
     #[test]
@@ -148,7 +162,10 @@ mod tests {
         let stop = t0 + Duration::from_secs(60 * 60);
         a.playing(stop);
         assert_eq!(a.check(stop + Duration::from_secs(4 * 60), &s), None);
-        assert_eq!(a.check(stop + Duration::from_secs(5 * 60), &s), Some(LockReason::Idle));
+        assert_eq!(
+            a.check(stop + Duration::from_secs(5 * 60), &s),
+            Some(LockReason::Idle)
+        );
     }
 
     #[test]
@@ -164,7 +181,10 @@ mod tests {
     fn idle_never_means_never() {
         let t0 = Instant::now();
         let a = Activity::new(t0);
-        assert_eq!(a.check(t0 + Duration::from_secs(48 * 3600), &settings(0, 0)), None);
+        assert_eq!(
+            a.check(t0 + Duration::from_secs(48 * 3600), &settings(0, 0)),
+            None
+        );
     }
 
     #[test]

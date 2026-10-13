@@ -26,7 +26,12 @@ pub struct LockSettings {
 
 impl Default for LockSettings {
     fn default() -> Self {
-        Self { idle_minutes: 15, on_system_lock: true, on_minimize: false, safety_net_minutes: 0 }
+        Self {
+            idle_minutes: 15,
+            on_system_lock: true,
+            on_minimize: false,
+            safety_net_minutes: 0,
+        }
     }
 }
 
@@ -36,7 +41,6 @@ impl Default for LockSettings {
 pub struct KnownVault {
     pub path: String,
 }
-
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
@@ -73,19 +77,30 @@ impl AppConfig {
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();
-        self.vaults.retain(|v| !v.path.trim().is_empty() && seen.insert(v.path.to_lowercase()));
+        self.vaults
+            .retain(|v| !v.path.trim().is_empty() && seen.insert(v.path.to_lowercase()));
         self
     }
 
     pub fn add_vault(&mut self, path: &str) {
-        if !self.vaults.iter().any(|v| v.path.eq_ignore_ascii_case(path)) {
-            self.vaults.push(KnownVault { path: path.to_string() });
+        if !self
+            .vaults
+            .iter()
+            .any(|v| v.path.eq_ignore_ascii_case(path))
+        {
+            self.vaults.push(KnownVault {
+                path: path.to_string(),
+            });
         }
     }
 
     pub fn forget_vault(&mut self, path: &str) {
         self.vaults.retain(|v| !v.path.eq_ignore_ascii_case(path));
-        if self.last_vault.as_deref().is_some_and(|p| p.eq_ignore_ascii_case(path)) {
+        if self
+            .last_vault
+            .as_deref()
+            .is_some_and(|p| p.eq_ignore_ascii_case(path))
+        {
             self.last_vault = None;
         }
     }
@@ -98,12 +113,13 @@ pub fn is_hex_color(s: &str) -> bool {
 /// Where config.json lives.
 pub fn config_dir() -> PathBuf {
     if let Ok(exe) = std::env::current_exe()
-        && let Some(dir) = exe.parent() {
-            let portable = dir.join("data");
-            if fs::create_dir_all(&portable).is_ok() && is_writable(&portable) {
-                return portable;
-            }
+        && let Some(dir) = exe.parent()
+    {
+        let portable = dir.join("data");
+        if fs::create_dir_all(&portable).is_ok() && is_writable(&portable) {
+            return portable;
         }
+    }
     let base = std::env::var_os("APPDATA")
         .or_else(|| std::env::var_os("XDG_CONFIG_HOME"))
         .map(PathBuf::from)
@@ -126,9 +142,10 @@ pub fn load(dir: &Path) -> AppConfig {
     let bak = dir.join("config.json.bak");
     for p in [&main, &bak] {
         if let Ok(bytes) = fs::read(p)
-            && let Ok(cfg) = serde_json::from_slice::<AppConfig>(&bytes) {
-                return cfg.sanitized();
-            }
+            && let Ok(cfg) = serde_json::from_slice::<AppConfig>(&bytes)
+        {
+            return cfg.sanitized();
+        }
     }
     AppConfig::default()
 }
@@ -166,7 +183,10 @@ mod tests {
     #[test]
     fn save_load_round_trip_and_corrupt_file_falls_back() {
         let t = tempfile::tempdir().unwrap();
-        let mut c = AppConfig { accent: "#A78BFA".into(), ..Default::default() };
+        let mut c = AppConfig {
+            accent: "#A78BFA".into(),
+            ..Default::default()
+        };
         c.add_vault("D:\\Vaults\\Photos");
         c.add_vault("d:\\vaults\\photos"); // same path, different case
         save(t.path(), &c.clone().sanitized()).unwrap();
@@ -183,7 +203,9 @@ mod tests {
 
     #[test]
     fn unknown_or_missing_fields_are_tolerated() {
-        let c: AppConfig = serde_json::from_str(r#"{"accent":"nope","futureSetting":1,"lock":{"idleMinutes":5}}"#).unwrap();
+        let c: AppConfig =
+            serde_json::from_str(r#"{"accent":"nope","futureSetting":1,"lock":{"idleMinutes":5}}"#)
+                .unwrap();
         let c = c.sanitized();
         assert_eq!(c.accent, DEFAULT_ACCENT);
         assert_eq!(c.lock.idle_minutes, 5);

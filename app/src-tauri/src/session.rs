@@ -3,6 +3,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use vault_core::db::{self, Connection};
@@ -10,13 +13,19 @@ use vault_core::{Access, Error, KdfParams, Vault};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 
-/// An unlocked vault. Dropping it wipes the master key from memory.
+/// An unlocked vault. Shared (behind an `Arc`) between commands, the import
+/// worker and the media stream; dropping the last reference wipes the master
+/// key from memory.
 pub struct Session {
-    pub vault: Vault,
-    pub db: Connection,
+    vault: RwLock<Vault>,
+    db: Mutex<Connection>,
     /// Opened with the recovery key: the user must set a new password.
-    pub needs_new_password: bool,
+    needs_new_password: AtomicBool,
     pub restored_from_backup: Option<PathBuf>,
+    /// Set when the vault is locked; background work stops as soon as it sees it.
+    closed: AtomicBool,
+    dirty: AtomicBool,
+    last_change: Mutex<Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -48,14 +57,18 @@ pub fn friendly(e: Error) -> String {
         Error::NotAVault(p) => format!("{} is not a Media Vault folder.", p.display()),
         Error::AlreadyExists(p) => format!("There is already a vault in {}.", p.display()),
         Error::UnsupportedVersion(v) => {
-            format!("This vault was made by a newer version of Media Vault (format {v}). Please update the app.")
+            format!(
+                "This vault was made by a newer version of Media Vault (format {v}). Please update the app."
+            )
         }
         other => other.to_string(),
     }
 }
 
 pub fn folder_name(path: &Path) -> String {
-    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+    path.file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string())
 }
 
 fn dir_size(path: &Path) -> u64 {
@@ -83,12 +96,19 @@ pub fn describe(path: &str) -> VaultEntry {
     } else {
         ("ready", Some(dir_size(p)))
     };
-    VaultEntry { path: path.to_string(), name: folder_name(p), status: status.into(), size_bytes: size }
+    VaultEntry {
+        path: path.to_string(),
+        name: folder_name(p),
+        status: status.into(),
+        size_bytes: size,
+    }
 }
 
 pub fn check_password(pw: &str) -> Result<(), String> {
     if pw.chars().count() < MIN_PASSWORD_CHARS {
-        return Err(format!("Use at least {MIN_PASSWORD_CHARS} characters. A few unrelated words make a strong, memorable password."));
+        return Err(format!(
+            "Use at least {MIN_PASSWORD_CHARS} characters. A few unrelated words make a strong, memorable password."
+        ));
     }
     Ok(())
 }
@@ -96,30 +116,118 @@ pub fn check_password(pw: &str) -> Result<(), String> {
 fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, String> {
     let (bytes, backup) = vault.load_db().map_err(friendly)?;
     let db = db::deserialize(&bytes).map_err(friendly)?;
-    Ok(Session { vault, db, needs_new_password, restored_from_backup: backup })
+    Ok(Session {
+        vault: RwLock::new(vault),
+        db: Mutex::new(db),
+        needs_new_password: AtomicBool::new(needs_new_password),
+        restored_from_backup: backup,
+        closed: AtomicBool::new(false),
+        dirty: AtomicBool::new(false),
+        last_change: Mutex::new(Instant::now()),
+    })
 }
 
 impl Session {
+    pub fn vault(&self) -> RwLockReadGuard<'_, Vault> {
+        self.vault.read().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn vault_mut(&self) -> RwLockWriteGuard<'_, Vault> {
+        self.vault.write().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn db(&self) -> MutexGuard<'_, Connection> {
+        self.db.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn needs_new_password(&self) -> bool {
+        self.needs_new_password.load(Ordering::SeqCst)
+    }
+
+    pub fn set_needs_new_password(&self, v: bool) {
+        self.needs_new_password.store(v, Ordering::SeqCst)
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    pub fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst)
+    }
+
+    /// Record that the library changed; it is saved shortly afterwards.
+    pub fn mark_dirty(&self) {
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        self.dirty.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::SeqCst)
+    }
+
+    /// Encrypt and save the library database now.
+    pub fn save(&self) -> Result<(), String> {
+        self.dirty.store(false, Ordering::SeqCst);
+        let bytes = {
+            let db = self.db();
+            db::serialize(&db).map_err(friendly)?
+        };
+        self.vault().save_db(&bytes).map_err(|e| {
+            self.dirty.store(true, Ordering::SeqCst);
+            format!("Couldn't save the library: {}", friendly(e))
+        })
+    }
+
+    /// Save if there are changes older than `settle` (so a burst of edits is
+    /// written once).
+    pub fn save_if_settled(&self, settle: Duration) -> Result<(), String> {
+        let age = self
+            .last_change
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .elapsed();
+        if self.is_dirty() && age >= settle {
+            self.save()
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn info(&self) -> SessionInfo {
-        let count = |sql: &str| self.db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+        let db = self.db();
+        let count = |sql: &str| db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+        let root = self.vault().root().to_path_buf();
         SessionInfo {
-            path: self.vault.root().display().to_string(),
-            name: folder_name(self.vault.root()),
+            path: root.display().to_string(),
+            name: folder_name(&root),
             items: count("SELECT COUNT(*) FROM media"),
             folders: count("SELECT COUNT(*) FROM folders"),
-            needs_new_password: self.needs_new_password,
-            restored_from_backup: self.restored_from_backup.as_ref().map(|p| p.display().to_string()),
+            needs_new_password: self.needs_new_password(),
+            restored_from_backup: self
+                .restored_from_backup
+                .as_ref()
+                .map(|p| p.display().to_string()),
         }
     }
 }
 
 /// Create a vault in `parent/name`. Returns the open session and the 24 words.
-pub fn create(parent: &str, name: &str, password: &str, kdf: KdfParams) -> Result<(Session, Vec<String>), String> {
+pub fn create(
+    parent: &str,
+    name: &str,
+    password: &str,
+    kdf: KdfParams,
+) -> Result<(Session, Vec<String>), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Give the vault a name.".into());
     }
-    if name.chars().any(|c| r#"<>:"/\|?*"#.contains(c) || c.is_control()) || name.ends_with('.') {
+    if name
+        .chars()
+        .any(|c| r#"<>:"/\|?*"#.contains(c) || c.is_control())
+        || name.ends_with('.')
+    {
         return Err("A vault name can't contain < > : \" / \\ | ? * or end with a dot.".into());
     }
     check_password(password)?;
@@ -139,16 +247,19 @@ pub fn unlock(path: &str, password: &str) -> Result<Session, String> {
 }
 
 pub fn unlock_with_recovery(path: &str, phrase: &str) -> Result<Session, String> {
-    let vault = Vault::unlock_with_recovery(Path::new(path), phrase, Access::ReadWrite).map_err(friendly)?;
+    let vault = Vault::unlock_with_recovery(Path::new(path), phrase, Access::ReadWrite)
+        .map_err(friendly)?;
     open_session(vault, true)
 }
 
 /// Verify `current` against the vault on disk (slow on purpose, like unlocking).
 pub fn verify_password(path: &Path, current: &str) -> Result<(), String> {
-    Vault::unlock(path, current, Access::ReadOnly).map(|_| ()).map_err(|e| match e {
-        Error::WrongKey => "Your current password is not correct.".into(),
-        other => friendly(other),
-    })
+    Vault::unlock(path, current, Access::ReadOnly)
+        .map(|_| ())
+        .map_err(|e| match e {
+            Error::WrongKey => "Your current password is not correct.".into(),
+            other => friendly(other),
+        })
 }
 
 #[cfg(test)]
@@ -169,14 +280,17 @@ mod tests {
         let path = info.path.clone();
         drop(s); // lock
 
-        assert_eq!(unlock(&path, "wrong password").err().unwrap(), "That password doesn't match this vault.");
+        assert_eq!(
+            unlock(&path, "wrong password").err().unwrap(),
+            "That password doesn't match this vault."
+        );
         let s = unlock(&path, "long enough pw").unwrap();
         assert!(!s.info().needs_new_password);
         drop(s);
 
-        let mut s = unlock_with_recovery(&path, &words.join(" ")).unwrap();
+        let s = unlock_with_recovery(&path, &words.join(" ")).unwrap();
         assert!(s.info().needs_new_password);
-        s.vault.change_password("a brand new one").unwrap();
+        s.vault_mut().change_password("a brand new one").unwrap();
         drop(s);
         assert!(unlock(&path, "a brand new one").is_ok());
     }
@@ -187,7 +301,12 @@ mod tests {
         let parent = t.path().to_str().unwrap();
         assert!(create(parent, "", "long enough pw", KDF).is_err());
         assert!(create(parent, "a/b", "long enough pw", KDF).is_err());
-        assert!(create(parent, "ok", "short", KDF).err().unwrap().contains("at least 8"));
+        assert!(
+            create(parent, "ok", "short", KDF)
+                .err()
+                .unwrap()
+                .contains("at least 8")
+        );
         assert!(create(&format!("{parent}/missing"), "ok", "long enough pw", KDF).is_err());
     }
 
@@ -198,6 +317,7 @@ mod tests {
         let (s, _) = create(parent, "V", "long enough pw", KDF).unwrap();
         let p = s.info().path;
         drop(s);
+
         let d = describe(&p);
         assert_eq!(d.status, "ready");
         assert!(d.size_bytes.unwrap() > 0);
@@ -209,7 +329,8 @@ mod tests {
     fn verify_password_works() {
         let t = tempfile::tempdir().unwrap();
         let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
-        assert!(verify_password(s.vault.root(), "long enough pw").is_ok());
-        assert!(verify_password(s.vault.root(), "nope nope nope").is_err());
+        let root = s.vault().root().to_path_buf();
+        assert!(verify_password(&root, "long enough pw").is_ok());
+        assert!(verify_password(&root, "nope nope nope").is_err());
     }
 }

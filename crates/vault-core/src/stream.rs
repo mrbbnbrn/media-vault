@@ -68,7 +68,9 @@ impl ObjectId {
     }
     pub fn from_hex(s: &str) -> Result<Self> {
         let v = hex::decode(s).map_err(|_| Error::Invalid(format!("bad object id {s:?}")))?;
-        let arr: [u8; 16] = v.try_into().map_err(|_| Error::Invalid(format!("bad object id {s:?}")))?;
+        let arr: [u8; 16] = v
+            .try_into()
+            .map_err(|_| Error::Invalid(format!("bad object id {s:?}")))?;
         Ok(Self(arr))
     }
 }
@@ -91,7 +93,16 @@ fn chunk_nonce(prefix: &[u8; PREFIX_LEN], index: u64, last: bool) -> io::Result<
 }
 
 fn fixed_head(kind: ObjectKind, chunk_log2: u8) -> [u8; 8] {
-    [MAGIC[0], MAGIC[1], MAGIC[2], MAGIC[3], OBJECT_VERSION, kind as u8, chunk_log2, 0]
+    [
+        MAGIC[0],
+        MAGIC[1],
+        MAGIC[2],
+        MAGIC[3],
+        OBJECT_VERSION,
+        kind as u8,
+        chunk_log2,
+        0,
+    ]
 }
 
 fn chunk_aad(fixed: &[u8; 8], prefix: &[u8; PREFIX_LEN], id: &ObjectId) -> Vec<u8> {
@@ -126,7 +137,10 @@ pub struct ObjectWriter<W: Write + Seek> {
 impl<W: Write + Seek> ObjectWriter<W> {
     pub fn new(mut inner: W, id: ObjectId, kind: ObjectKind, chunk_log2: u8) -> io::Result<Self> {
         if !(12..=24).contains(&chunk_log2) {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "chunk size must be 4 KiB..16 MiB"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "chunk size must be 4 KiB..16 MiB",
+            ));
         }
         inner.seek(SeekFrom::Start(0))?;
         inner.write_all(&[0u8; HEADER_LEN as usize])?; // placeholder, filled in by finish()
@@ -176,7 +190,10 @@ impl<W: Write + Seek> ObjectWriter<W> {
         self.inner.write_all(&header)?;
         self.inner.flush()?;
         let digest = std::mem::take(&mut self.hasher).finalize();
-        let out = WrittenObject { plaintext_len: self.total, sha256_hex: hex::encode(digest) };
+        let out = WrittenObject {
+            plaintext_len: self.total,
+            sha256_hex: hex::encode(digest),
+        };
         Ok((self.inner, out))
     }
 }
@@ -211,7 +228,11 @@ impl ObjectHeader {
         1u64 << self.chunk_log2
     }
     pub fn chunk_count(&self) -> u64 {
-        if self.plaintext_len == 0 { 1 } else { self.plaintext_len.div_ceil(self.chunk_size()) }
+        if self.plaintext_len == 0 {
+            1
+        } else {
+            self.plaintext_len.div_ceil(self.chunk_size())
+        }
     }
     /// The exact size the encrypted file must have.
     pub fn expected_file_len(&self) -> u64 {
@@ -232,7 +253,12 @@ pub struct ObjectReader<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ObjectReader<R> {
-    pub fn open(mut inner: R, master: &Key, id: ObjectId, expected_kind: Option<ObjectKind>) -> Result<Self> {
+    pub fn open(
+        mut inner: R,
+        master: &Key,
+        id: ObjectId,
+        expected_kind: Option<ObjectKind>,
+    ) -> Result<Self> {
         let mut h = [0u8; HEADER_LEN as usize];
         inner.seek(SeekFrom::Start(0))?;
         inner.read_exact(&mut h).map_err(|e| match e.kind() {
@@ -245,11 +271,15 @@ impl<R: Read + Seek> ObjectReader<R> {
         if h[4] != OBJECT_VERSION {
             return Err(Error::UnsupportedVersion(h[4] as u32));
         }
-        let kind = ObjectKind::from_u8(h[5]).ok_or_else(|| Error::Corrupt(format!("object {id}: unknown kind")))?;
+        let kind = ObjectKind::from_u8(h[5])
+            .ok_or_else(|| Error::Corrupt(format!("object {id}: unknown kind")))?;
         if let Some(k) = expected_kind
-            && k != kind {
-                return Err(Error::Corrupt(format!("object {id} is a {kind:?}, expected {k:?}")));
-            }
+            && k != kind
+        {
+            return Err(Error::Corrupt(format!(
+                "object {id} is a {kind:?}, expected {k:?}"
+            )));
+        }
         let chunk_log2 = h[6];
         if !(12..=24).contains(&chunk_log2) {
             return Err(Error::Corrupt(format!("object {id}: bad chunk size")));
@@ -263,7 +293,11 @@ impl<R: Read + Seek> ObjectReader<R> {
         let fixed: [u8; 8] = h[..8].try_into().unwrap();
         Ok(Self {
             inner,
-            header: ObjectHeader { kind, chunk_log2, plaintext_len },
+            header: ObjectHeader {
+                kind,
+                chunk_log2,
+                plaintext_len,
+            },
             data_key,
             aad: chunk_aad(&fixed, &prefix, &id),
             prefix,
@@ -291,12 +325,20 @@ impl<R: Read + Seek> ObjectReader<R> {
         let cs = self.header.chunk_size();
         let n = self.header.chunk_count();
         if index >= n {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "chunk out of range"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "chunk out of range",
+            ));
         }
         let last = index == n - 1;
-        let plain = if last { self.header.plaintext_len - index * cs } else { cs };
+        let plain = if last {
+            self.header.plaintext_len - index * cs
+        } else {
+            cs
+        };
         let mut ct = vec![0u8; (plain + TAG_LEN as u64) as usize];
-        self.inner.seek(SeekFrom::Start(HEADER_LEN + index * (cs + TAG_LEN as u64)))?;
+        self.inner
+            .seek(SeekFrom::Start(HEADER_LEN + index * (cs + TAG_LEN as u64)))?;
         self.inner.read_exact(&mut ct).map_err(|e| {
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 io::Error::new(io::ErrorKind::InvalidData, "encrypted file is truncated")
@@ -306,7 +348,10 @@ impl<R: Read + Seek> ObjectReader<R> {
         })?;
         let nonce = chunk_nonce(&self.prefix, index, last)?;
         let pt = crypto::open(&self.data_key, &nonce, &self.aad, &ct).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, format!("chunk {index} is damaged or was tampered with"))
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("chunk {index} is damaged or was tampered with"),
+            )
         })?;
         self.cached = Some((index, Zeroizing::new(pt)));
         Ok(())
@@ -318,11 +363,14 @@ impl<R: Read + Seek> ObjectReader<R> {
         let actual = self.inner.seek(SeekFrom::End(0))?;
         let expected = self.header.expected_file_len();
         if actual != expected {
-            return Err(Error::Corrupt(format!("file is {actual} bytes, expected {expected}")));
+            return Err(Error::Corrupt(format!(
+                "file is {actual} bytes, expected {expected}"
+            )));
         }
         for i in 0..self.header.chunk_count() {
             self.cached = None;
-            self.load_chunk(i).map_err(|e| Error::Corrupt(e.to_string()))?;
+            self.load_chunk(i)
+                .map_err(|e| Error::Corrupt(e.to_string()))?;
         }
         self.cached = None;
         Ok(())
@@ -363,10 +411,12 @@ impl<R: Read + Seek> Seek for ObjectReader<R> {
             SeekFrom::Current(d) => self.pos as i128 + d as i128,
         };
         if new < 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
         }
         self.pos = new as u64;
         Ok(self.pos)
     }
 }
-

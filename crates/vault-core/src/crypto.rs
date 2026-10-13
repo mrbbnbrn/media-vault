@@ -34,25 +34,51 @@ fn cipher(key: &[u8; KEY_LEN]) -> Aes256Gcm {
 /// AES-256-GCM encrypt. Output is ciphertext followed by the 16-byte tag.
 pub fn seal(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], aad: &[u8], plaintext: &[u8]) -> Vec<u8> {
     cipher(key)
-        .encrypt(&Nonce::from(*nonce), Payload { msg: plaintext, aad })
+        .encrypt(
+            &Nonce::from(*nonce),
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .expect("AES-GCM encryption cannot fail for these sizes")
 }
 
 /// AES-256-GCM decrypt and authenticate. Fails if anything was changed.
-pub fn open(key: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], aad: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>> {
+pub fn open(
+    key: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    aad: &[u8],
+    ciphertext: &[u8],
+) -> Option<Vec<u8>> {
     cipher(key)
-        .decrypt(&Nonce::from(*nonce), Payload { msg: ciphertext, aad })
+        .decrypt(
+            &Nonce::from(*nonce),
+            Payload {
+                msg: ciphertext,
+                aad,
+            },
+        )
         .ok()
 }
 
 /// Encrypt one key under another ("key wrapping").
-pub fn wrap_key(kek: &[u8; KEY_LEN], key: &[u8; KEY_LEN], aad: &[u8]) -> ([u8; NONCE_LEN], [u8; KEY_LEN + TAG_LEN]) {
+pub fn wrap_key(
+    kek: &[u8; KEY_LEN],
+    key: &[u8; KEY_LEN],
+    aad: &[u8],
+) -> ([u8; NONCE_LEN], [u8; KEY_LEN + TAG_LEN]) {
     let nonce = random_bytes::<NONCE_LEN>();
     let ct = seal(kek, &nonce, aad, key);
     (nonce, ct.try_into().expect("48 bytes"))
 }
 
-pub fn unwrap_key(kek: &[u8; KEY_LEN], nonce: &[u8; NONCE_LEN], wrapped: &[u8], aad: &[u8]) -> Option<Key> {
+pub fn unwrap_key(
+    kek: &[u8; KEY_LEN],
+    nonce: &[u8; NONCE_LEN],
+    wrapped: &[u8],
+    aad: &[u8],
+) -> Option<Key> {
     let pt = Zeroizing::new(open(kek, nonce, aad, wrapped)?);
     let arr: [u8; KEY_LEN] = pt.as_slice().try_into().ok()?;
     Some(Zeroizing::new(arr))
@@ -126,12 +152,17 @@ pub fn words_to_entropy(phrase: &str) -> Result<Key> {
     let cleaned: Vec<String> = phrase
         .split_whitespace()
         .filter_map(|w| {
-            let w = w.trim_matches(|c: char| !c.is_ascii_alphabetic()).to_ascii_lowercase();
+            let w = w
+                .trim_matches(|c: char| !c.is_ascii_alphabetic())
+                .to_ascii_lowercase();
             (!w.is_empty()).then_some(w)
         })
         .collect();
     if cleaned.len() != 24 {
-        return Err(Error::BadRecoveryPhrase(format!("expected 24 words, got {}", cleaned.len())));
+        return Err(Error::BadRecoveryPhrase(format!(
+            "expected 24 words, got {}",
+            cleaned.len()
+        )));
     }
     let m = bip39::Mnemonic::parse_normalized(&cleaned.join(" "))
         .map_err(|e| Error::BadRecoveryPhrase(e.to_string()))?;

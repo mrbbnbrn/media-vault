@@ -54,15 +54,21 @@ pub fn list_items(conn: &Connection, only: Option<&[i64]>) -> Result<Vec<ExportI
 }
 
 const WINDOWS_RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1",
-    "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
 ];
 
 /// Make a name safe to use as a Windows file or folder name.
 pub fn safe_name(name: &str) -> String {
     let mut s: String = name
         .chars()
-        .map(|c| if c.is_control() || r#"<>:"/\|?*"#.contains(c) { '_' } else { c })
+        .map(|c| {
+            if c.is_control() || r#"<>:"/\|?*"#.contains(c) {
+                '_'
+            } else {
+                c
+            }
+        })
         .collect();
     while s.ends_with('.') || s.ends_with(' ') {
         s.pop();
@@ -87,7 +93,11 @@ fn unique_path(dir: &Path, name: &str, taken: &mut HashSet<PathBuf>) -> PathBuf 
     };
     let mut n = 1;
     loop {
-        let candidate = if n == 1 { name.to_string() } else { format!("{stem} ({n}){ext}") };
+        let candidate = if n == 1 {
+            name.to_string()
+        } else {
+            format!("{stem} ({n}){ext}")
+        };
         let p = dir.join(&candidate);
         let key = PathBuf::from(p.to_string_lossy().to_lowercase());
         if !taken.contains(&key) && !p.exists() {
@@ -116,7 +126,9 @@ pub fn export_items(
         let result = (|| -> Result<u64> {
             let mut dir = out_dir.to_path_buf();
             if let Some(fid) = item.folder_id {
-                let parts = folders.get(&fid).ok_or_else(|| Error::Corrupt(format!("folder {fid} missing")))?;
+                let parts = folders
+                    .get(&fid)
+                    .ok_or_else(|| Error::Corrupt(format!("folder {fid} missing")))?;
                 for p in parts {
                     dir.push(safe_name(p));
                 }
@@ -125,7 +137,10 @@ pub fn export_items(
             let target = unique_path(&dir, &safe_name(&item.original_name), &mut taken);
             let id = ObjectId::from_hex(&item.object_id)?;
             let mut reader = vault.open_object(ObjectKind::Media, &id)?;
-            let mut out = OpenOptions::new().write(true).create_new(true).open(&target)?;
+            let mut out = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
             match io::copy(&mut reader, &mut out) {
                 Ok(n) => {
                     out.sync_all()?;
@@ -143,7 +158,9 @@ pub fn export_items(
                 report.exported += 1;
                 report.bytes += n;
             }
-            Err(e) => report.failed.push((item.original_name.clone(), e.to_string())),
+            Err(e) => report
+                .failed
+                .push((item.original_name.clone(), e.to_string())),
         }
         progress(i + 1, items.len(), &item.original_name);
     }

@@ -9,7 +9,7 @@ use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
 
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -90,7 +90,8 @@ pub fn create_empty() -> Result<Connection> {
     let conn = Connection::open_in_memory()?;
     configure(&conn)?;
     conn.execute_batch(SCHEMA_V1)?;
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    conn.pragma_update(None, "user_version", 1)?;
+    migrate(&conn)?;
     Ok(conn)
 }
 
@@ -113,22 +114,54 @@ pub fn deserialize(bytes: &[u8]) -> Result<Connection> {
     if v > SCHEMA_VERSION {
         return Err(Error::UnsupportedVersion(v as u32));
     }
+    migrate(&conn)?;
     Ok(conn)
+}
+
+fn has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let names = stmt
+        .query_map([], |r| r.get::<_, String>(1))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(names.iter().any(|n| n == col))
+}
+
+/// Bring an older library up to the current schema. Each step only adds
+/// things, so older data is never lost.
+fn migrate(conn: &Connection) -> Result<()> {
+    let v: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if v < 2 {
+        // v2: folder cover pictures and per-file slideshow weights.
+        if !has_column(conn, "folders", "cover_media_id")? {
+            conn.execute_batch("ALTER TABLE folders ADD COLUMN cover_media_id INTEGER REFERENCES media(id) ON DELETE SET NULL;")?;
+        }
+        if !has_column(conn, "media", "weight")? {
+            conn.execute_batch(
+                "ALTER TABLE media ADD COLUMN weight REAL NOT NULL DEFAULT 1 CHECK (weight >= 0);",
+            )?;
+        }
+        conn.pragma_update(None, "user_version", 2)?;
+    }
+    Ok(())
 }
 
 /// Folder id -> list of folder names from the top down.
 pub fn folder_paths(conn: &Connection) -> Result<HashMap<i64, Vec<String>>> {
     let mut stmt = conn.prepare("SELECT id, parent_id, name FROM folders")?;
-    let rows: Vec<(i64, Option<i64>, String)> =
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<rusqlite::Result<_>>()?;
-    let by_id: HashMap<i64, (Option<i64>, String)> = rows.into_iter().map(|(i, p, n)| (i, (p, n))).collect();
+    let rows: Vec<(i64, Option<i64>, String)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let by_id: HashMap<i64, (Option<i64>, String)> =
+        rows.into_iter().map(|(i, p, n)| (i, (p, n))).collect();
     let mut out = HashMap::new();
     for &id in by_id.keys() {
         let mut path = Vec::new();
         let mut cur = Some(id);
         let mut guard = 0;
         while let Some(c) = cur {
-            let (parent, name) = by_id.get(&c).ok_or_else(|| Error::Corrupt(format!("folder {c} missing")))?;
+            let (parent, name) = by_id
+                .get(&c)
+                .ok_or_else(|| Error::Corrupt(format!("folder {c} missing")))?;
             path.push(name.clone());
             cur = *parent;
             guard += 1;
@@ -145,7 +178,11 @@ pub fn folder_paths(conn: &Connection) -> Result<HashMap<i64, Vec<String>>> {
 /// Media ids that carry *all* of `tags`, counting tags put on the item itself
 /// and tags inherited from any folder above it. Case-insensitive.
 pub fn search_by_tags(conn: &Connection, tags: &[&str]) -> Result<Vec<i64>> {
-    let mut tags: Vec<String> = tags.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect();
+    let mut tags: Vec<String> = tags
+        .iter()
+        .map(|t| t.trim().to_lowercase())
+        .filter(|t| !t.is_empty())
+        .collect();
     tags.sort();
     tags.dedup();
     if tags.is_empty() {
@@ -173,6 +210,8 @@ pub fn search_by_tags(conn: &Connection, tags: &[&str]) -> Result<Vec<i64>> {
     let mut stmt = conn.prepare(&sql)?;
     let mut args: Vec<rusqlite::types::Value> = tags.iter().map(|t| t.clone().into()).collect();
     args.push((tags.len() as i64).into());
-    let ids = stmt.query_map(params_from_iter(args), |r| r.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    let ids = stmt
+        .query_map(params_from_iter(args), |r| r.get(0))?
+        .collect::<rusqlite::Result<Vec<i64>>>()?;
     Ok(ids)
 }

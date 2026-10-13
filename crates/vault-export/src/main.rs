@@ -74,7 +74,11 @@ fn unlock(root: &Path, recovery: bool) -> Result<Vault, Box<dyn std::error::Erro
             let line = line?;
             words.push_str(&line);
             words.push(' ');
-            if words.split_whitespace().filter(|w| w.chars().any(|c| c.is_ascii_alphabetic())).count() >= 24
+            if words
+                .split_whitespace()
+                .filter(|w| w.chars().any(|c| c.is_ascii_alphabetic()))
+                .count()
+                >= 24
                 || line.trim().is_empty()
             {
                 break;
@@ -92,7 +96,10 @@ fn unlock(root: &Path, recovery: bool) -> Result<Vault, Box<dyn std::error::Erro
 fn load_conn(v: &Vault) -> Result<db::Connection, Box<dyn std::error::Error>> {
     let (bytes, backup) = v.load_db()?;
     if let Some(b) = backup {
-        eprintln!("Note: the main database was damaged; using backup {}", b.display());
+        eprintln!(
+            "Note: the main database was damaged; using backup {}",
+            b.display()
+        );
     }
     Ok(db::deserialize(&bytes)?)
 }
@@ -146,16 +153,30 @@ fn verify(root: PathBuf, recovery: bool) -> R {
 
 fn run_export(root: PathBuf, out: PathBuf, recovery: bool) -> R {
     if out.exists() && std::fs::read_dir(&out)?.next().is_some() {
-        eprintln!("Note: {} is not empty; existing files are never overwritten.", out.display());
+        eprintln!(
+            "Note: {} is not empty; existing files are never overwritten.",
+            out.display()
+        );
     }
     let v = unlock(&root, recovery)?;
     let conn = load_conn(&v)?;
     let items = export::list_items(&conn, None)?;
     let total: u64 = items.iter().map(|i| i.size).sum();
-    eprintln!("Exporting {} files ({:.1} GB) to {}", items.len(), total as f64 / 1e9, out.display());
-    let report = export::export_items(&v, &conn, &items, &out, |d, t, _| progress(d, t, "Exporting"))?;
+    eprintln!(
+        "Exporting {} files ({:.1} GB) to {}",
+        items.len(),
+        total as f64 / 1e9,
+        out.display()
+    );
+    let report = export::export_items(&v, &conn, &items, &out, |d, t, _| {
+        progress(d, t, "Exporting")
+    })?;
     eprintln!();
-    println!("Exported {} files ({:.1} GB).", report.exported, report.bytes as f64 / 1e9);
+    println!(
+        "Exported {} files ({:.1} GB).",
+        report.exported,
+        report.bytes as f64 / 1e9
+    );
     if report.failed.is_empty() {
         Ok(ExitCode::SUCCESS)
     } else {

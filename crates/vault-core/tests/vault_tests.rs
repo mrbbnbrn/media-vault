@@ -13,7 +13,9 @@ fn new_vault(dir: &Path) -> (Vault, String) {
 }
 
 fn pseudo_random(len: usize, seed: u64) -> Vec<u8> {
-    let mut x = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+    let mut x = seed
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
     (0..len)
         .map(|_| {
             x ^= x << 13;
@@ -35,7 +37,10 @@ fn create_then_unlock_with_password() {
     drop(v);
 
     let v = Vault::unlock(&t.path().join("v"), PW, Access::ReadWrite).unwrap();
-    assert_eq!(&v.read_object(ObjectKind::Media, &id).unwrap()[..], b"hello");
+    assert_eq!(
+        &v.read_object(ObjectKind::Media, &id).unwrap()[..],
+        b"hello"
+    );
     assert!(t.path().join("v/FORMAT.md").is_file());
 }
 
@@ -43,7 +48,9 @@ fn create_then_unlock_with_password() {
 fn wrong_password_is_rejected() {
     let t = tempfile::tempdir().unwrap();
     drop(new_vault(t.path()));
-    let err = Vault::unlock(&t.path().join("v"), "wrong", Access::ReadOnly).err().unwrap();
+    let err = Vault::unlock(&t.path().join("v"), "wrong", Access::ReadOnly)
+        .err()
+        .unwrap();
     assert!(matches!(err, Error::WrongKey), "{err}");
 }
 
@@ -58,9 +65,17 @@ fn recovery_phrase_unlocks_and_tolerates_formatting() {
     let messy: String = phrase
         .split(' ')
         .enumerate()
-        .map(|(i, w)| format!("{}. {}{}", i + 1, w.to_uppercase(), if i % 6 == 5 { "\n" } else { "  " }))
+        .map(|(i, w)| {
+            format!(
+                "{}. {}{}",
+                i + 1,
+                w.to_uppercase(),
+                if i % 6 == 5 { "\n" } else { "  " }
+            )
+        })
         .collect();
-    let mut v = Vault::unlock_with_recovery(&t.path().join("v"), &messy, Access::ReadWrite).unwrap();
+    let mut v =
+        Vault::unlock_with_recovery(&t.path().join("v"), &messy, Access::ReadWrite).unwrap();
     assert_eq!(&v.read_object(ObjectKind::Media, &id).unwrap()[..], b"data");
 
     // Typical flow after recovery: set a new password.
@@ -76,11 +91,15 @@ fn wrong_or_malformed_recovery_phrase_is_rejected() {
     drop(new_vault(t.path()));
     let other = crypto::entropy_to_words(&crypto::random_bytes::<32>());
     assert!(matches!(
-        Vault::unlock_with_recovery(&t.path().join("v"), &other, Access::ReadOnly).err().unwrap(),
+        Vault::unlock_with_recovery(&t.path().join("v"), &other, Access::ReadOnly)
+            .err()
+            .unwrap(),
         Error::WrongKey
     ));
     assert!(matches!(
-        Vault::unlock_with_recovery(&t.path().join("v"), "abandon abandon", Access::ReadOnly).err().unwrap(),
+        Vault::unlock_with_recovery(&t.path().join("v"), "abandon abandon", Access::ReadOnly)
+            .err()
+            .unwrap(),
         Error::BadRecoveryPhrase(_)
     ));
 }
@@ -116,7 +135,9 @@ fn refuses_to_create_over_existing_data() {
     let t = tempfile::tempdir().unwrap();
     drop(new_vault(t.path()));
     assert!(matches!(
-        Vault::create(&t.path().join("v"), PW, KdfParams::TEST_ONLY).err().unwrap(),
+        Vault::create(&t.path().join("v"), PW, KdfParams::TEST_ONLY)
+            .err()
+            .unwrap(),
         Error::AlreadyExists(_)
     ));
     let busy = t.path().join("busy");
@@ -149,7 +170,11 @@ fn round_trips_all_sizes_around_chunk_boundaries() {
         let data = pseudo_random(len, len as u64);
         let (id, w) = v.add_object(ObjectKind::Media, &data[..]).unwrap();
         assert_eq!(w.plaintext_len, len as u64);
-        assert_eq!(&v.read_object(ObjectKind::Media, &id).unwrap()[..], &data[..], "len {len}");
+        assert_eq!(
+            &v.read_object(ObjectKind::Media, &id).unwrap()[..],
+            &data[..],
+            "len {len}"
+        );
         v.verify_object(ObjectKind::Media, &id).unwrap();
     }
 }
@@ -159,7 +184,10 @@ fn sha256_is_of_the_original_file() {
     let t = tempfile::tempdir().unwrap();
     let (v, _) = new_vault(t.path());
     let (_, w) = v.add_object(ObjectKind::Media, &b"abc"[..]).unwrap();
-    assert_eq!(w.sha256_hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert_eq!(
+        w.sha256_hex,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+    );
 }
 
 #[test]
@@ -169,7 +197,16 @@ fn random_access_seeking_matches_original() {
     let data = pseudo_random(5 * (1 << 20) + 777, 42);
     let (id, _) = v.add_object(ObjectKind::Media, &data[..]).unwrap();
     let mut r = v.open_object(ObjectKind::Media, &id).unwrap();
-    let positions = [0u64, 1, 1048575, 1048576, 3_000_000, 5 * 1048576, data.len() as u64 - 10, 12345];
+    let positions = [
+        0u64,
+        1,
+        1048575,
+        1048576,
+        3_000_000,
+        5 * 1048576,
+        data.len() as u64 - 10,
+        12345,
+    ];
     for &p in &positions {
         r.seek(SeekFrom::Start(p)).unwrap();
         let mut buf = vec![0u8; 70_000];
@@ -211,7 +248,20 @@ fn any_flipped_bit_is_detected() {
     let path = v.object_path(ObjectKind::Media, &id);
     let good = object_bytes(&v, &id);
     // Header fields, wrapped key, first/middle/last chunk, and tags.
-    for &pos in &[4usize, 6, 9, 17, 25, 40, 82, 83, 500_000, 1_048_600, good.len() - 20, good.len() - 1] {
+    for &pos in &[
+        4usize,
+        6,
+        9,
+        17,
+        25,
+        40,
+        82,
+        83,
+        500_000,
+        1_048_600,
+        good.len() - 20,
+        good.len() - 1,
+    ] {
         let mut bad = good.clone();
         bad[pos] ^= 0x01;
         fs::write(&path, &bad).unwrap();
@@ -266,7 +316,11 @@ fn chunks_cannot_be_swapped_or_moved_between_files() {
     assert!(v.verify_object(ObjectKind::Media, &ia).is_err());
 
     // Rename B's file to A's name: header is bound to the id, so it fails.
-    fs::copy(v.object_path(ObjectKind::Media, &ib), v.object_path(ObjectKind::Media, &ia)).unwrap();
+    fs::copy(
+        v.object_path(ObjectKind::Media, &ib),
+        v.object_path(ObjectKind::Media, &ia),
+    )
+    .unwrap();
     assert!(v.open_object(ObjectKind::Media, &ia).is_err());
 }
 
@@ -289,7 +343,8 @@ fn small_chunk_sizes_work_in_memory() {
     let id = ObjectId::random();
     for &len in &[0usize, 4095, 4096, 4097, 50_000] {
         let data = pseudo_random(len, 3);
-        let mut w = ObjectWriter::new(Cursor::new(Vec::new()), id, ObjectKind::Thumbnail, 12).unwrap();
+        let mut w =
+            ObjectWriter::new(Cursor::new(Vec::new()), id, ObjectKind::Thumbnail, 12).unwrap();
         std::io::Write::write_all(&mut w, &data).unwrap();
         let (cur, _) = w.finish(&master).unwrap();
         let mut r = ObjectReader::open(cur, &master, id, Some(ObjectKind::Thumbnail)).unwrap();
@@ -316,7 +371,10 @@ fn list_and_delete_objects() {
     v.delete_object(ObjectKind::Media, &a).unwrap();
     assert_eq!(v.list_objects(ObjectKind::Media).unwrap(), vec![b]);
     // No stray temp files left behind.
-    let leftovers: Vec<_> = walk(t.path()).into_iter().filter(|p| p.ends_with(".tmp")).collect();
+    let leftovers: Vec<_> = walk(t.path())
+        .into_iter()
+        .filter(|p| p.ends_with(".tmp"))
+        .collect();
     assert!(leftovers.is_empty(), "{leftovers:?}");
 }
 
@@ -344,14 +402,17 @@ fn database_round_trip_and_rotating_backups() {
     let conn = db::deserialize(&bytes).unwrap();
 
     for i in 0..15 {
-        conn.execute("INSERT INTO tags(name) VALUES (?)", [format!("tag{i}")]).unwrap();
+        conn.execute("INSERT INTO tags(name) VALUES (?)", [format!("tag{i}")])
+            .unwrap();
         v.save_db(&db::serialize(&conn).unwrap()).unwrap();
     }
     assert_eq!(v.db_backups().unwrap().len(), 10);
 
     let (bytes, _) = v.load_db().unwrap();
     let conn2 = db::deserialize(&bytes).unwrap();
-    let n: i64 = conn2.query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0)).unwrap();
+    let n: i64 = conn2
+        .query_row("SELECT COUNT(*) FROM tags", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(n, 15);
 
     // Database file is not readable SQLite on disk.
@@ -365,9 +426,11 @@ fn damaged_database_falls_back_to_newest_backup() {
     let t = tempfile::tempdir().unwrap();
     let (v, _) = new_vault(t.path());
     let conn = db::create_empty().unwrap();
-    conn.execute("INSERT INTO tags(name) VALUES ('first')", []).unwrap();
+    conn.execute("INSERT INTO tags(name) VALUES ('first')", [])
+        .unwrap();
     v.save_db(&db::serialize(&conn).unwrap()).unwrap();
-    conn.execute("INSERT INTO tags(name) VALUES ('second')", []).unwrap();
+    conn.execute("INSERT INTO tags(name) VALUES ('second')", [])
+        .unwrap();
     v.save_db(&db::serialize(&conn).unwrap()).unwrap();
 
     let main = t.path().join("v/meta.db.enc");
@@ -379,12 +442,23 @@ fn damaged_database_falls_back_to_newest_backup() {
     let (bytes, used) = v.load_db().unwrap();
     assert!(used.is_some());
     let c = db::deserialize(&bytes).unwrap();
-    let names: Vec<String> =
-        c.prepare("SELECT name FROM tags").unwrap().query_map([], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect();
+    let names: Vec<String> = c
+        .prepare("SELECT name FROM tags")
+        .unwrap()
+        .query_map([], |r| r.get(0))
+        .unwrap()
+        .map(|x| x.unwrap())
+        .collect();
     assert_eq!(names, vec!["first"]);
 }
 
-fn add_media(conn: &rusqlite::Connection, v: &Vault, name: &str, folder: Option<i64>, body: &[u8]) -> i64 {
+fn add_media(
+    conn: &rusqlite::Connection,
+    v: &Vault,
+    name: &str,
+    folder: Option<i64>,
+    body: &[u8],
+) -> i64 {
     let (id, w) = v.add_object(ObjectKind::Media, body).unwrap();
     conn.execute(
         "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at)
@@ -396,14 +470,19 @@ fn add_media(conn: &rusqlite::Connection, v: &Vault, name: &str, folder: Option<
 }
 
 fn add_folder(conn: &rusqlite::Connection, parent: Option<i64>, name: &str) -> i64 {
-    conn.execute("INSERT INTO folders(parent_id, name, created_at) VALUES (?1, ?2, 0)", rusqlite::params![parent, name])
-        .unwrap();
+    conn.execute(
+        "INSERT INTO folders(parent_id, name, created_at) VALUES (?1, ?2, 0)",
+        rusqlite::params![parent, name],
+    )
+    .unwrap();
     conn.last_insert_rowid()
 }
 
 fn tag(conn: &rusqlite::Connection, name: &str) -> i64 {
-    conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", [name]).unwrap();
-    conn.query_row("SELECT id FROM tags WHERE name = ?", [name], |r| r.get(0)).unwrap()
+    conn.execute("INSERT OR IGNORE INTO tags(name) VALUES (?)", [name])
+        .unwrap();
+    conn.query_row("SELECT id FROM tags WHERE name = ?", [name], |r| r.get(0))
+        .unwrap()
 }
 
 #[test]
@@ -423,24 +502,45 @@ fn tag_search_includes_inherited_folder_tags() {
 
     let t_alex = tag(&conn, "Alex");
     let t_sun = tag(&conn, "sunny");
-    conn.execute("INSERT INTO folder_tags VALUES (?, ?)", [alex, t_alex]).unwrap();
-    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m1, t_sun]).unwrap();
-    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m3, t_sun]).unwrap();
-    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m4, t_alex]).unwrap();
+    conn.execute("INSERT INTO folder_tags VALUES (?, ?)", [alex, t_alex])
+        .unwrap();
+    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m1, t_sun])
+        .unwrap();
+    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m3, t_sun])
+        .unwrap();
+    conn.execute("INSERT INTO media_tags VALUES (?, ?)", [m4, t_alex])
+        .unwrap();
 
-    assert_eq!(db::search_by_tags(&conn, &["alex"]).unwrap(), vec![m1, m2, m4]);
+    assert_eq!(
+        db::search_by_tags(&conn, &["alex"]).unwrap(),
+        vec![m1, m2, m4]
+    );
     assert_eq!(db::search_by_tags(&conn, &["SUNNY"]).unwrap(), vec![m1, m3]);
-    assert_eq!(db::search_by_tags(&conn, &["alex", "sunny"]).unwrap(), vec![m1]);
-    assert_eq!(db::search_by_tags(&conn, &["alex", "Alex "]).unwrap(), vec![m1, m2, m4]);
-    assert!(db::search_by_tags(&conn, &["alex", "nonexistent"]).unwrap().is_empty());
+    assert_eq!(
+        db::search_by_tags(&conn, &["alex", "sunny"]).unwrap(),
+        vec![m1]
+    );
+    assert_eq!(
+        db::search_by_tags(&conn, &["alex", "Alex "]).unwrap(),
+        vec![m1, m2, m4]
+    );
+    assert!(
+        db::search_by_tags(&conn, &["alex", "nonexistent"])
+            .unwrap()
+            .is_empty()
+    );
     assert!(db::search_by_tags(&conn, &[]).unwrap().is_empty());
 }
 
 #[test]
 fn tag_names_are_unique_ignoring_case() {
     let conn = db::create_empty().unwrap();
-    conn.execute("INSERT INTO tags(name) VALUES ('Alex')", []).unwrap();
-    assert!(conn.execute("INSERT INTO tags(name) VALUES ('alex')", []).is_err());
+    conn.execute("INSERT INTO tags(name) VALUES ('Alex')", [])
+        .unwrap();
+    assert!(
+        conn.execute("INSERT INTO tags(name) VALUES ('alex')", [])
+            .is_err()
+    );
 }
 
 // ---- export ---------------------------------------------------------------------
@@ -476,7 +576,10 @@ fn export_restores_names_folders_and_handles_awkward_names() {
         .unwrap()
         .map(|e| {
             let e = e.unwrap();
-            (e.file_name().to_string_lossy().into_owned(), fs::read(e.path()).unwrap())
+            (
+                e.file_name().to_string_lossy().into_owned(),
+                fs::read(e.path()).unwrap(),
+            )
         })
         .collect();
     got.sort();
@@ -495,7 +598,11 @@ fn export_continues_past_damaged_files() {
     let conn = db::create_empty().unwrap();
     add_media(&conn, &v, "good.jpg", None, b"fine");
     let bad_id = add_media(&conn, &v, "bad.jpg", None, &pseudo_random(10_000, 1));
-    let obj: String = conn.query_row("SELECT object_id FROM media WHERE id = ?", [bad_id], |r| r.get(0)).unwrap();
+    let obj: String = conn
+        .query_row("SELECT object_id FROM media WHERE id = ?", [bad_id], |r| {
+            r.get(0)
+        })
+        .unwrap();
     let path = v.object_path(ObjectKind::Media, &ObjectId::from_hex(&obj).unwrap());
     let mut raw = fs::read(&path).unwrap();
     raw[200] ^= 1;
@@ -508,14 +615,50 @@ fn export_continues_past_damaged_files() {
     assert_eq!(report.failed.len(), 1);
     assert_eq!(report.failed[0].0, "bad.jpg");
     assert!(out.join("good.jpg").exists());
-    assert!(!out.join("bad.jpg").exists(), "partial file should be removed");
+    assert!(
+        !out.join("bad.jpg").exists(),
+        "partial file should be removed"
+    );
 }
 
 #[test]
 fn safe_names() {
-    assert_eq!(export::safe_name("a<b>c:d\"e/f\\g|h?i*j.jpg"), "a_b_c_d_e_f_g_h_i_j.jpg");
+    assert_eq!(
+        export::safe_name("a<b>c:d\"e/f\\g|h?i*j.jpg"),
+        "a_b_c_d_e_f_g_h_i_j.jpg"
+    );
     assert_eq!(export::safe_name("trailing. . "), "trailing");
     assert_eq!(export::safe_name("nul.txt"), "_nul.txt");
     assert_eq!(export::safe_name(""), "_");
     assert_eq!(export::safe_name("Ünïcödé 写真.png"), "Ünïcödé 写真.png");
+}
+
+#[test]
+fn schema_v2_has_weights_and_upgrades_v1_libraries() {
+    let conn = db::create_empty().unwrap();
+    let v: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, 2);
+    conn.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('x','image','a.jpg','jpg',1,'h',0)", []).unwrap();
+    let w: f64 = conn
+        .query_row("SELECT weight FROM media", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(w, 1.0);
+    assert!(conn.execute("UPDATE media SET weight = -1", []).is_err());
+
+    // A v1 library (no weight column) is upgraded on load.
+    let old = rusqlite::Connection::open_in_memory().unwrap();
+    old.execute_batch("CREATE TABLE folders (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
+        CREATE TABLE media (id INTEGER PRIMARY KEY, object_id TEXT NOT NULL UNIQUE, folder_id INTEGER, kind TEXT NOT NULL, original_name TEXT NOT NULL, ext TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL, favourite INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('y','video','b.mp4','mp4',1,'h',0);
+        PRAGMA user_version = 1;").unwrap();
+    let bytes = db::serialize(&old).unwrap();
+    let up = db::deserialize(&bytes).unwrap();
+    let w: f64 = up
+        .query_row("SELECT weight FROM media", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(w, 1.0);
+    up.execute("UPDATE folders SET cover_media_id = NULL", [])
+        .unwrap();
 }

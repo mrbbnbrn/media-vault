@@ -12,7 +12,9 @@ pub fn find_parts(path: &Path) -> io::Result<Option<Vec<PathBuf>>> {
         Some(n) => n,
         None => return Ok(None),
     };
-    let Some((base, num)) = name.rsplit_once('.') else { return Ok(None) };
+    let Some((base, num)) = name.rsplit_once('.') else {
+        return Ok(None);
+    };
     if num.len() < 3 || !num.chars().all(|c| c.is_ascii_digit()) {
         return Ok(None);
     }
@@ -28,7 +30,10 @@ pub fn find_parts(path: &Path) -> io::Result<Option<Vec<PathBuf>>> {
         }
     }
     if parts.is_empty() {
-        return Err(io::Error::new(io::ErrorKind::NotFound, format!("first part {base}.{:0width$} is missing", 1)));
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("first part {base}.{:0width$} is missing", 1),
+        ));
     }
     Ok(Some(parts))
 }
@@ -52,7 +57,12 @@ impl MultiPartReader {
             len += f.metadata()?.len();
             files.push(f);
         }
-        Ok(Self { files, starts, len, pos: 0 })
+        Ok(Self {
+            files,
+            starts,
+            len,
+            pos: 0,
+        })
     }
 
     pub fn len(&self) -> u64 {
@@ -76,7 +86,10 @@ impl Read for MultiPartReader {
         let want = buf.len().min((part_end - self.pos) as usize);
         let n = f.read(&mut buf[..want])?;
         if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "archive part changed while reading"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "archive part changed while reading",
+            ));
         }
         self.pos += n as u64;
         Ok(n)
@@ -91,7 +104,10 @@ impl Seek for MultiPartReader {
             SeekFrom::Current(d) => self.pos as i128 + d as i128,
         };
         if new < 0 {
-            return Err(io::Error::new(io::ErrorKind::InvalidInput, "seek before start"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "seek before start",
+            ));
         }
         self.pos = new as u64;
         Ok(self.pos)
