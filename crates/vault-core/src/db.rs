@@ -17,7 +17,8 @@ CREATE TABLE folders (
     parent_id   INTEGER REFERENCES folders(id) ON DELETE RESTRICT,
     name        TEXT NOT NULL,
     sort_order  INTEGER NOT NULL DEFAULT 0,
-    created_at  INTEGER NOT NULL
+    created_at  INTEGER NOT NULL,
+    cover_media_id INTEGER REFERENCES media(id) ON DELETE SET NULL  -- picture on the folder's card
 );
 CREATE UNIQUE INDEX folders_unique_name ON folders(IFNULL(parent_id, 0), name COLLATE NOCASE);
 
