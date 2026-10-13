@@ -38,6 +38,10 @@ pub struct SelfItem {
 pub struct SelfTestInfo {
     pub items: Vec<SelfItem>,
     pub local: Vec<LocalItem>,
+    /// An empty folder to export into.
+    pub export_dir: String,
+    /// The build check copied a web engine next to the app: it must be used.
+    pub expect_builtin_engine: bool,
 }
 
 pub fn enabled() -> bool {
@@ -83,6 +87,17 @@ pub fn prepare(local: &LocalAccess) -> Result<(Session, SelfTestInfo), String> {
             report.failed
         ));
     }
+    // Extra pictures from the build check (faces, smart search), if any.
+    if let Some(extra) = std::env::var_os("MV_SELFTEST_EXTRA") {
+        import::run(
+            &s,
+            &import::Job { id: 1, paths: vec![PathBuf::from(extra).display().to_string()], target: None, password: None, archive_folder: true },
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+    }
+    let export_dir = dir.join("export");
+    std::fs::create_dir_all(&export_dir).map_err(|e| e.to_string())?;
     let items = library::query_items(&s.db(), &library::ItemFilter::default())?
         .into_iter()
         .map(|i| SelfItem {
@@ -92,7 +107,15 @@ pub fn prepare(local: &LocalAccess) -> Result<(Session, SelfTestInfo), String> {
         })
         .collect();
     let local = protocol::scan_local(local, &[src.display().to_string()])?.items;
-    Ok((s, SelfTestInfo { items, local }))
+    Ok((
+        s,
+        SelfTestInfo {
+            items,
+            local,
+            export_dir: export_dir.display().to_string(),
+            expect_builtin_engine: std::env::var_os("MV_SELFTEST_ENGINE").is_some(),
+        },
+    ))
 }
 
 pub fn finish(ok: bool, report: &str) -> i32 {

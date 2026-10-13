@@ -4,6 +4,19 @@ on:
   push:
   pull_request:
   workflow_dispatch:
+    inputs:
+      release:
+        description: Publish the full package as a GitHub release
+        type: boolean
+        default: false
+
+# A newer push makes an older run of the same branch pointless.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
 
 jobs:
   test:
@@ -16,6 +29,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
       - name: Linux libraries for the app window
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev
@@ -56,6 +70,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -66,31 +81,76 @@ jobs:
         run: |
           npm ci
           npx tauri build --no-bundle
-      - name: Self-test — pictures, GIFs and video play from the vault in the real Windows web engine
+      - name: Build vault-export.exe
+        run: cargo build --release --locked -p vault-export
+
+      - name: Smart-search models (from the models-v1 release of this repo)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p target/release/models
+          gh release download models-v1 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
+          ls -la target/release/models
+      - name: Built-in web engine (a copy of this runner's WebView2)
+        shell: pwsh
+        run: |
+          $base = "C:\Program Files (x86)\Microsoft\EdgeWebView\Application"
+          $v = Get-ChildItem $base -Directory | Where-Object { $_.Name -match '^\d+\.' } | Sort-Object { [version]$_.Name } -Descending | Select-Object -First 1
+          if (-not $v) { Write-Error "No WebView2 runtime on this runner"; exit 1 }
+          Copy-Item $v.FullName "target\release\WebView2" -Recurse
+          Set-Content "target\release\WebView2\VERSION.txt" $v.Name
+          "Copied WebView2 $($v.Name): $([math]::Round((Get-ChildItem target\release\WebView2 -Recurse | Measure-Object Length -Sum).Sum / 1MB)) MB"
+      - name: Test pictures for faces and smart search
+        shell: bash
+        run: |
+          mkdir -p extra
+          curl -fsSL -o extra/sample1.jpg https://raw.githubusercontent.com/vladmandic/face-api/master/demo/sample1.jpg
+          for f in baboon fruits building; do curl -fsSL -o extra/$f.jpg https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/$f.jpg; done
+          ls -la extra
+
+      - name: Self-test — media, safety tools, faces, smart search and the built-in engine, in the real Windows app
         shell: pwsh
         run: |
           $env:MV_SELFTEST = "1"
+          $env:MV_SELFTEST_ENGINE = "1"
+          $env:MV_SELFTEST_EXTRA = "$PWD\extra"
           $env:MV_SELFTEST_OUT = "$PWD\selftest.txt"
           $p = Start-Process -FilePath "target\release\MediaVault.exe" -PassThru
-          if (-not $p.WaitForExit(240000)) { $p.Kill(); Write-Error "The self-test did not finish in time"; exit 1 }
+          if (-not $p.WaitForExit(600000)) { $p.Kill(); Write-Error "The self-test did not finish in time"; exit 1 }
           if (Test-Path selftest.txt) {
             Get-Content selftest.txt
             $report = (Get-Content selftest.txt) -join '%0A'
             Write-Output "::notice title=Windows self-test::$report"
           } else { Write-Output "no report written" }
           if ($p.ExitCode -ne 0) { Write-Error "Self-test failed (exit $($p.ExitCode))"; exit 1 }
-      - name: Build vault-export.exe
-        run: cargo build --release --locked -p vault-export
-      - name: Package portable folder
+
+      - name: Package
         shell: bash
         run: |
           mkdir -p dist/MediaVault
-          cp target/release/MediaVault.exe dist/MediaVault/
-          cp target/release/vault-export.exe dist/MediaVault/
-          cp crates/vault-core/FORMAT.md dist/MediaVault/
-          cp tools/reference_decrypt.py dist/MediaVault/
-          cp packaging/README.txt dist/MediaVault/
-      - uses: actions/upload-artifact@v4
+          cp target/release/MediaVault.exe target/release/vault-export.exe dist/MediaVault/
+          cp crates/vault-core/FORMAT.md tools/reference_decrypt.py packaging/README.txt dist/MediaVault/
+      - name: Light package (build check download)
+        uses: actions/upload-artifact@v4
         with:
           name: MediaVault-windows
           path: dist/MediaVault
+          retention-days: 7
+
+      - name: Full package as a GitHub release
+        if: github.ref == 'refs/heads/main' && (contains(github.event.head_commit.message, '[release]') || inputs.release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp -r dist/MediaVault dist/MediaVault-light
+          cp -r target/release/WebView2 target/release/models dist/MediaVault/
+          cd dist
+          7z a -tzip -mx=5 MediaVault-full-windows.zip MediaVault > /dev/null
+          7z a -tzip -mx=9 MediaVault-light-windows.zip MediaVault-light > /dev/null
+          ls -la *.zip
+          tag="build-${GITHUB_RUN_NUMBER}"
+          gh release create "$tag" MediaVault-full-windows.zip MediaVault-light-windows.zip \
+            --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --latest \
+            --notes "Full package: the app with its own web engine and the smart-search models — unzip and run MediaVault.exe. Light package: just the app (uses the web engine that comes with Windows; no smart search)."

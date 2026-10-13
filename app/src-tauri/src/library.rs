@@ -106,6 +106,8 @@ pub struct FolderCard {
     pub color: Option<String>,
     /// Emoji shown before the name.
     pub emoji: Option<String>,
+    /// A person folder: face recognition learns this person from it.
+    pub person: bool,
 }
 
 struct FolderRow {
@@ -116,6 +118,7 @@ struct FolderRow {
     pinned: bool,
     color: Option<String>,
     emoji: Option<String>,
+    person: bool,
 }
 
 /// Every folder with counts, covers and tags, in tree order (parents before
@@ -123,7 +126,7 @@ struct FolderRow {
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
         .prepare(
-            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji FROM folders f \
+            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person FROM folders f \
              LEFT JOIN media m ON m.id = f.cover_media_id AND m.deleted_at IS NULL \
              WHERE f.deleted_at IS NULL ORDER BY f.sort_order, f.name COLLATE NOCASE",
         )
@@ -137,6 +140,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 pinned: r.get::<_, i64>(4)? != 0,
                 color: r.get(5)?,
                 emoji: r.get(6)?,
+                person: r.get::<_, i64>(7)? != 0,
             })
         })
         .map_err(e)?
@@ -269,6 +273,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 pinned: r.pinned,
                 color: r.color.clone(),
                 emoji: r.emoji.clone(),
+                person: r.person,
             }
         })
         .collect())

@@ -33,6 +33,10 @@ export interface AppConfig {
   /** Grid shows every item at its true shape (no cropping). */
   gridShape: boolean;
   viewer: ViewerSettings;
+  /** Use the web engine shipped next to the app (full package). */
+  builtinEngine: boolean;
+  /** The smart-search switch next to the search box. */
+  smartSearch: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -51,6 +55,126 @@ export interface SessionInfo {
   folders: number;
   needsNewPassword: boolean;
   restoredFromBackup: string | null;
+  /** Only right after unlocking. */
+  login?: LoginInfo | null;
+}
+
+export interface LoginInfo {
+  /** The previous opening (seconds, computer name). */
+  last: { at: number; computer: string } | null;
+  /** Wrong passwords / recovery words tried since then (seconds). */
+  failed: number[];
+}
+
+export interface DamageReport {
+  itemsChecked: number;
+  bytesChecked: number;
+  damaged: { id: number; name: string; location: string; inTrash: boolean; problem: string }[];
+  thumbsRedone: number;
+  backupsOk: number;
+  backupsBad: string[];
+  cancelled: boolean;
+  seconds: number;
+}
+
+export interface ExportRequest {
+  ids?: number[];
+  folder?: number | null;
+  all?: boolean;
+  dest: string;
+}
+
+export interface ExportProgress {
+  done: number;
+  total: number;
+  bytes: number;
+  totalBytes: number;
+  name: string;
+}
+
+export interface ExportDone {
+  exported: number;
+  bytes: number;
+  failed: [string, string][];
+  folder: string;
+  cancelled: boolean;
+  error: string | null;
+}
+
+export interface EngineInfo {
+  mode: 'builtin' | 'system' | 'fallback';
+  available: boolean;
+  version: string | null;
+}
+
+export interface ScanRequest {
+  ids?: number[];
+  folder?: number | null;
+  all?: boolean;
+  again?: boolean;
+}
+
+export interface ScanStatus {
+  queued: number;
+  scanned: number;
+  faces: number;
+  failed: number;
+}
+
+export interface FaceIn {
+  frameMs: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  score: number;
+  descriptor: number[];
+}
+
+export interface FaceBox {
+  id: number;
+  frameMs: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  person: number | null;
+}
+
+export interface Suggestion {
+  faceId: number;
+  item: Item;
+  frameMs: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  confidence: number;
+  /** Very likely: ticked by default. */
+  sure: boolean;
+}
+
+export interface PersonGroup {
+  person: { folder: number; name: string; known: number; unsure: number };
+  suggestions: Suggestion[];
+}
+
+export interface UnknownGroup {
+  faceIds: number[];
+  samples: Suggestion[];
+  photos: number;
+}
+
+export interface FaceReview {
+  people: PersonGroup[];
+  unknown: UnknownGroup[];
+  status: ScanStatus;
+}
+
+export interface ClipStatus {
+  total: number;
+  done: number;
+  failed: number;
 }
 
 export interface AppState {
@@ -103,6 +227,8 @@ export interface FolderCard {
   pinned: boolean;
   color: string | null;
   emoji: string | null;
+  /** A person folder (face recognition learns this person from it). */
+  person: boolean;
 }
 
 export interface FolderView {
@@ -250,6 +376,18 @@ export interface StorageDone {
 
 export type LockReason = 'idle' | 'safetyNet' | 'systemLocked' | 'sleep' | 'minimized' | 'panicKey' | 'manual';
 
+let lastLogin: LoginInfo | null = null;
+function keepLogin(s: SessionInfo): SessionInfo {
+  lastLogin = s.login ?? null;
+  return s;
+}
+/** The login history from the last unlock, once. */
+export function takeLogin(): LoginInfo | null {
+  const l = lastLogin;
+  lastLogin = null;
+  return l;
+}
+
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export const api = {
@@ -259,8 +397,8 @@ export const api = {
   forgetVault: (path: string) => call<void>('forget_vault', { path }),
   createVault: (parent: string, name: string, password: string) =>
     call<{ session: SessionInfo; words: string[] }>('create_vault', { parent, name, password }),
-  unlock: (path: string, password: string) => call<SessionInfo>('unlock', { path, password }),
-  unlockWithRecovery: (path: string, words: string) => call<SessionInfo>('unlock_with_recovery', { path, words }),
+  unlock: (path: string, password: string) => call<SessionInfo>('unlock', { path, password }).then(keepLogin),
+  unlockWithRecovery: (path: string, words: string) => call<SessionInfo>('unlock_with_recovery', { path, words }).then(keepLogin),
   setNewPassword: (password: string) => call<SessionInfo>('set_new_password', { password }),
   changePassword: (current: string, password: string) => call<void>('change_password', { current, password }),
   resetRecovery: (current: string) => call<string[]>('reset_recovery', { current }),
@@ -334,6 +472,37 @@ export const api = {
 
   // outside-vault player
   scanLocal: (paths: string[]) => call<LocalSet>('scan_local', { paths }),
+
+  // safety
+  checkDamage: () => call<void>('check_damage'),
+  cancelTask: (task: 'check' | 'export') => call<void>('cancel_task', { task }),
+  exportStart: (request: ExportRequest) => call<void>('export_start', { request }),
+  engineInfo: () => call<EngineInfo>('engine_info'),
+  engineStarted: () => call<void>('engine_started'),
+  engineRetry: () => call<void>('engine_retry'),
+
+  // faces
+  setPersonFolder: (folder: number, on: boolean) => call<void>('set_person_folder', { folder, on }),
+  facesQueue: (request: ScanRequest) => call<number>('faces_queue', { request }),
+  facesNeeded: (limit: number) => call<{ id: number; kind: Kind; durationMs: number | null }[]>('faces_needed', { limit }),
+  facesSave: (media: number, faces: FaceIn[]) => call<number>('faces_save', { media, faces }),
+  facesFailed: (media: number) => call<void>('faces_failed', { media }),
+  facesStatus: () => call<ScanStatus>('faces_status'),
+  facesReview: () => call<FaceReview>('faces_review'),
+  facesAccept: (faceIds: number[], person: number) => call<{ moved: number; tagged: number }>('faces_accept', { faceIds, person }),
+  facesReject: (faceIds: number[], person: number) => call<void>('faces_reject', { faceIds, person }),
+  facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>
+    call<{ folder: number; accepted: { moved: number; tagged: number } }>('faces_new_person', { name, parent, faceIds }),
+  facesOf: (media: number) => call<FaceBox[]>('faces_of', { media }),
+  facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),
+
+  // smart search
+  clipNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('clip_needed', { limit }),
+  clipSave: (media: number, vec: number[]) => call<void>('clip_save', { media, vec }),
+  clipFailed: (media: number) => call<void>('clip_failed', { media }),
+  clipStatus: () => call<ClipStatus>('clip_status'),
+  smartSearch: (vec: number[], folder: number | null, limit?: number) =>
+    call<{ item: Item; score: number }[]>('smart_search', { vec, folder, limit }),
 };
 
 export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
@@ -351,6 +520,7 @@ function proto(scheme: string, path: string): string {
 export const mediaUrl = (id: number) => proto('vault', `media/${id}`);
 export const thumbUrl = (id: number) => proto('vault', `thumb/${id}`);
 export const localUrl = (key: string) => proto('local', `f/${key}`);
+export const modelUrl = (name: string) => proto('models', name);
 
 export async function pickFolder(title: string): Promise<string | null> {
   if (!inTauri) return mock.pickFolder();
@@ -393,6 +563,8 @@ const mock = {
       wholeOnHover: false,
       gridShape: false,
       viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30 },
+      builtinEngine: true,
+      smartSearch: false,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -460,7 +632,19 @@ const mock = {
         return { items: 0, bytes: 0, folders: 0, tags: 0, favourites: 0, neverViewed: 0, totalViews: 0, trashItems: 0, trashBytes: 0, byKind: [], byFolder: [], byMonth: [], mostViewed: [] };
       case 'bookmarks':
       case 'folder_samples':
+      case 'faces_needed':
+      case 'clip_needed':
+      case 'faces_of':
+      case 'smart_search':
         return [];
+      case 'engine_info':
+        return { mode: 'system', available: false, version: null };
+      case 'faces_status':
+        return { queued: 0, scanned: 0, faces: 0, failed: 0 };
+      case 'faces_review':
+        return { people: [], unknown: [], status: { queued: 0, scanned: 0, faces: 0, failed: 0 } };
+      case 'clip_status':
+        return { total: 0, done: 0, failed: 0 };
       case 'folder_view':
         return { folder: null, subfolders: [], items: [] };
       default:

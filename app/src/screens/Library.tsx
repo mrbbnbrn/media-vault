@@ -6,7 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
-  type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
+  type ClipStatus, type ExportRequest, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
+  takeLogin,
 } from '../api';
 import type { Nav } from '../App';
 import { ContactSheet } from '../components/ContactSheet';
@@ -14,8 +15,13 @@ import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
   ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
-  PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
+  ExportIcon, FaceIcon, PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
+import { PeopleView } from '../components/People';
+import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
+import { kickFaceScanner } from '../ml/facescan';
+import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
+import { useTasks } from '../tasks';
 import { MediaGrid } from '../components/MediaGrid';
 import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
 import { StatsView } from '../components/StatsView';
@@ -36,7 +42,9 @@ export type LibView =
   | { kind: 'timeline' }
   | { kind: 'trash' }
   | { kind: 'stats' }
-  | { kind: 'search'; tags: string[]; names: string[] };
+  | { kind: 'search'; tags: string[]; names: string[] }
+  | { kind: 'smart'; q: string }
+  | { kind: 'people' };
 
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
@@ -53,7 +61,8 @@ type Dialog =
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | { t: 'shortcuts' }
-  | { t: 'sheet' };
+  | { t: 'sheet' }
+  | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string };
 
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
@@ -91,6 +100,8 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
     case 'trash': return 'Trash';
     case 'stats': return 'Statistics';
     case 'search': return 'Search';
+    case 'smart': return `Smart search: “${v.q}”`;
+    case 'people': return 'People';
   }
 }
 
@@ -142,6 +153,10 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const [samples, setSamples] = useState<Record<number, number[]>>({});
   const [cycle, setCycle] = useState(0);
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
+  const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
+  const [smartOk, setSmartOk] = useState(false);
+  const [clip, setClip] = useState<ClipStatus | null>(null);
+  const tasks = useTasks();
   const undoTop = useUndoTop();
   const [pick, dismissPick] = useTodaysPick(s.path);
   const preview = cfg.preview ?? 'hover';
@@ -161,6 +176,19 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       b.then((u) => u());
     };
   }, []);
+  // Smart search: are the models there, and how far is the analysis?
+  useEffect(() => {
+    smartAvailable().then(setSmartOk);
+    const upd = () => api.clipStatus().then(setClip).catch(() => {});
+    upd();
+    return onClipProgress(upd);
+  }, []);
+  // The login note goes away by itself unless wrong passwords were tried.
+  useEffect(() => {
+    if (!login || login.failed.length) return;
+    const t = setTimeout(() => setLogin(null), 20_000);
+    return () => clearTimeout(t);
+  }, [login]);
   // Undo history belongs to this unlock only.
   useEffect(() => () => clearUndo(), [s.path]);
 
@@ -184,7 +212,12 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       } else {
         setFolder(null);
         setSubfolders([]);
-        if (view.kind === 'folders' || view.kind === 'stats') setItems([]);
+        if (view.kind === 'folders' || view.kind === 'stats' || view.kind === 'people') setItems([]);
+        else if (view.kind === 'smart') {
+          const vec = await embedQuery(view.q);
+          const hits = await api.smartSearch(Array.from(vec), null);
+          setItems(hits.map((h) => h.item));
+        }
         else if (view.kind === 'all' || view.kind === 'timeline') setItems(await api.queryItems({}));
         else if (view.kind === 'favourites') setItems(await api.queryItems({ favouritesOnly: true }));
         else if (view.kind === 'recent') setItems(await api.queryItems({ recentDays: 14 }));
@@ -426,21 +459,22 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 
   const timeline = view.kind === 'timeline';
   const inTrash = view.kind === 'trash';
+  const smart = view.kind === 'smart';
   const shown = useMemo(() => {
     const k = kind === 'any' ? items : items.filter((i) => i.kind === kind);
     if (timeline) {
       const dir = sort === 'oldest' ? 1 : -1;
       return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     }
-    if (inTrash) return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
+    if (inTrash || smart) return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt })), sort);
-  }, [items, kind, sort, timeline, inTrash]);
+  }, [items, kind, sort, timeline, inTrash, smart]);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
 
   const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
   const pinned = folders.filter((f) => f.pinned);
   const selIds = [...selected];
-  const gridView = !['folders', 'stats'].includes(view.kind);
+  const gridView = !['folders', 'stats', 'people'].includes(view.kind);
 
   const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
     if (!list.length) return;
@@ -490,11 +524,33 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
+    { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
+    { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+    { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
     { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
+
+  const setPersonFolder = (f: FolderCard, on: boolean) => act(async () => {
+    await api.setPersonFolder(f.id, on);
+    did(on ? `“${f.name}” is now a person folder` : `“${f.name}” is no longer a person folder`, () => api.setPersonFolder(f.id, !on));
+    if (on) {
+      const n = await api.facesQueue({ folder: f.id });
+      kickFaceScanner();
+      if (n) setNote({ text: `Scanning ${plural(n, 'item')} in “${f.name}” for faces. See People.`, at: 0 });
+    }
+  });
+  const scanFaces = async (req: { ids?: number[]; folder?: number }, what: string) => {
+    try {
+      const n = await api.facesQueue(req);
+      kickFaceScanner();
+      setNote({ text: n ? `Scanning ${plural(n, 'item')} in ${what} for faces. Results appear in People.` : `${what} has been scanned already.`, at: 0 });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
     e.preventDefault();
@@ -533,6 +589,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
         { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }) },
+        { label: 'Scan for faces', sepBefore: true, onSelect: () => scanFaces({ ids }, many ? `${ids.length} items` : `“${it.name}”`) },
+        { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { ids }, what: many ? `${ids.length} items` : `“${it.name}”` }) },
         ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
         { label: many ? `Delete ${ids.length} items` : 'Delete', hint: 'to the trash', danger: true, sepBefore: true, onSelect: () => trashItems(ids) },
       ],
@@ -596,7 +654,15 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <span>{s.name}</span>
         </div>
         <SearchBar tags={tags} value={view.kind === 'search' ? view : { tags: [], names: [] }}
-          onChange={(v) => setView(v.tags.length || v.names.length ? { kind: 'search', ...v } : { kind: 'folders' })} />
+          onChange={(v) => setView(v.tags.length || v.names.length ? { kind: 'search', ...v } : { kind: 'folders' })}
+          smart={smartOk && !!cfg.smartSearch} smartQuery={smart ? view.q : ''}
+          onSmart={(q) => setView(q ? { kind: 'smart', q } : { kind: 'folders' })} />
+        <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
+          disabled={!smartOk} aria-label="Smart search"
+          title={!smartOk ? 'Smart search needs the full package (with the “models” folder next to the app)'
+            : cfg.smartSearch ? 'Smart search is on: describe what you are looking for, in any language. Click to turn off.'
+            : 'Smart search: find pictures by describing them (“beach at sunset”, “kırmızı araba”). Click to turn on.'}
+          onClick={() => saveCfg({ smartSearch: !cfg.smartSearch })}><SparkleIcon /></button>
         <nav className="row" style={{ gap: 8 }}>
           <button type="button" className="btn btn-icon btn-sm" aria-label="Random journey" title="Random journey: jump to a random item in a random folder"
             onClick={randomJourney}><DiceIcon /></button>
@@ -628,6 +694,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           {sideView({ kind: 'favourites' }, 'Favourites')}
           {sideView({ kind: 'recent' }, 'Recently added')}
           {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon />)}
+          {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={14} />)}
           {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
           {pinned.map((f) => (
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
@@ -635,6 +702,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               <span className="twisty" />
               <button type="button" className="tree-name" onClick={() => openFolder(f.id)} title={f.path.map((c) => c.name).concat(f.name).join(' › ')}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
+                {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
             </div>
@@ -657,6 +725,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               ) : <span className="twisty" />}
               <button type="button" className="tree-name" onClick={() => openFolder(f.id)}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
+                {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
             </div>
@@ -669,6 +738,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         </aside>
 
         <main className="lib-main" ref={scroller} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
+          {login && <LoginBanner login={login} onClose={() => setLogin(null)} />}
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
           )}
@@ -697,7 +767,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
-                : view.kind === 'stats' ? ''
+                : view.kind === 'stats' || view.kind === 'people' ? ''
                 : inTrash && trash ? (trash.totalItems ? `${plural(trash.totalItems, 'item')} · ${formatBytes(trash.totalBytes)}` : 'empty')
                 : `${shown.length.toLocaleString()} items`}
               {loading && ' · loading…'}
@@ -727,8 +797,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                       <SheetIcon /> Contact sheet
                     </button>
                   )}
-                  <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
-                    items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />
+                  {!smart && <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
+                    items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
                   <div role="group" aria-label="Tile shape" className="seg">
                     <button type="button" className={!shape ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => saveCfg({ gridShape: false })}>Tiles</button>
@@ -739,7 +809,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
                 <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
               )}
-              {view.kind !== 'stats' && (
+              {view.kind !== 'stats' && view.kind !== 'people' && (
                 <>
                   <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }}>Size</label>
                   <input id="tile-size" type="range" min={120} max={320} step={10} value={tile} onChange={(e) => setTile(Number(e.target.value))} />
@@ -752,6 +822,15 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             <div className="error" role="alert">
               <span style={{ flex: 1 }}>{error}</span>
               <button type="button" className="link" onClick={() => setError(null)}>Dismiss</button>
+            </div>
+          )}
+
+          {view.kind === 'people' && (
+            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} />
+          )}
+          {smart && clip && clip.done + clip.failed < clip.total && (
+            <div className="info" style={{ marginBottom: 12 }}>
+              Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
             </div>
           )}
 
@@ -831,7 +910,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                 {inTrash ? <TrashIcon size={28} /> : <ImportIcon size={28} />}
                 <b>{inTrash ? 'The trash is empty'
                   : view.kind === 'folder' ? 'This folder is empty'
-                  : view.kind === 'search' ? 'Nothing matches this search'
+                  : view.kind === 'search' || smart ? 'Nothing matches this search'
                   : 'Nothing here yet'}</b>
                 {!inTrash && <span className="muted">Drag files, folders or .7z archives from Windows onto any folder to import them.</span>}
               </div>
@@ -868,6 +947,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'weight', ids: selIds, current: itemById(selIds[0])?.weight ?? 1 })}>
                 <WeightIcon /> Weight…</button>
               <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveItems', ids: selIds })}><MoveIcon /> Move to…</button>
+              <button type="button" className="btn btn-sm" title="Write unencrypted copies to a folder"
+                onClick={() => setDialog({ t: 'export', request: { ids: selIds }, what: plural(selIds.length, 'item') })}><ExportIcon /> Export…</button>
               {folder && selected.size === 1 && (
                 <button type="button" className="btn btn-sm" onClick={() => act(() => api.setCover(folder.id, selIds[0]))}>Set as folder cover</button>
               )}
@@ -878,8 +959,9 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         </div>
       )}
 
-      {(totalImporting.length > 0 || reports.length > 0 || storageJob || storageMsg) && (
+      {(totalImporting.length > 0 || reports.length > 0 || storageJob || storageMsg || hasTaskCards(tasks)) && (
         <section className="imports" aria-label="Import progress">
+          <TaskCards />
           {storageJob && (
             <div className="icard">
               <b>{storageJob.task === 'convert' ? 'Packing files' : 'Reclaiming space'}</b>
@@ -985,6 +1067,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         }} />
       )}
       {dialog?.t === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog?.t === 'export' && <ExportDialog request={dialog.request} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'sheet' && (
         <ContactSheet title={heading} items={shown} onClose={() => setDialog(null)} onOpen={(it) => { setDialog(null); playItems(false, it.id); }} />
       )}
@@ -997,7 +1080,36 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   );
 }
 
-function SearchBar(props: { tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void }) {
+function SearchBar(props: {
+  tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void;
+  smart: boolean; smartQuery: string; onSmart: (q: string) => void;
+}) {
+  if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} />;
+  return <TagNameBar {...props} />;
+}
+
+/** Smart search: type a description, Enter to search. */
+function SmartBar(props: { query: string; onSearch: (q: string) => void }) {
+  const [text, setText] = useState(props.query);
+  useEffect(() => setText(props.query), [props.query]);
+  return (
+    <div className="search smart">
+      <SparkleIcon />
+      <label htmlFor="lib-search" className="sr-only">Smart search</label>
+      <input id="lib-search" value={text} autoComplete="off" placeholder="Describe what you're looking for… (any language)"
+        onChange={(e) => setText(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') { e.preventDefault(); props.onSearch(text.trim()); }
+          else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
+        }} />
+      {text && (
+        <button type="button" className="link" aria-label="Clear" onClick={() => { setText(''); props.onSearch(''); }}><CloseIcon size={12} /></button>
+      )}
+    </div>
+  );
+}
+
+function TagNameBar(props: { tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void }) {
   const [text, setText] = useState('');
   const [focus, setFocus] = useState(false);
   const [hi, setHi] = useState(0);

@@ -698,6 +698,11 @@ impl Vault {
         Ok(out)
     }
 
+    /// Check that a database file (the main one or a backup) decrypts.
+    pub fn verify_db_file(&self, path: &Path) -> Result<()> {
+        self.read_db_file(path).map(|_| ())
+    }
+
     /// Load the database. If the main copy is damaged, the newest backup that
     /// still decrypts is used instead, and its file name is returned so the
     /// app can tell the user.

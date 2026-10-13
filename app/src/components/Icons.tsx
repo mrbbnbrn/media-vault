@@ -272,3 +272,28 @@ export const RestoreIcon = ({ size = 14 }: P) => (
     <path d="M3 4v5h5" />
   </svg>
 );
+export const FaceIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="8" r="4" />
+    <path d="M4 21a8 8 0 0 1 16 0" />
+  </svg>
+);
+export const SparkleIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" />
+    <path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z" strokeWidth={1.5} />
+  </svg>
+);
+export const ShieldIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M12 3l8 3v6c0 4.5-3.4 8-8 9-4.6-1-8-4.5-8-9V6z" />
+    <path d="M9 12l2 2 4-4" />
+  </svg>
+);
+export const ExportIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M12 15V3" />
+    <path d="M7 8l5-5 5 5" />
+    <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
+  </svg>
+);

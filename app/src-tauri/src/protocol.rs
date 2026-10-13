@@ -370,6 +370,42 @@ pub fn scan_local(access: &LocalAccess, paths: &[String]) -> Result<LocalSet, St
     })
 }
 
+
+// ---- offline models (smart search) ------------------------------------------------------
+
+/// Where the smart-search models live: `models` next to MediaVault.exe, or
+/// MV_MODELS_DIR while developing.
+pub fn models_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("MV_MODELS_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    std::env::current_exe().ok()?.parent().map(|p| p.join("models"))
+}
+
+/// Serve a model file by plain name ("clip-vision.onnx"). No sub-folders,
+/// no "..": only files directly in the models folder.
+pub fn serve_models(req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let name = req.uri().path().trim_start_matches('/').to_string();
+    let ok_char = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_');
+    if name.is_empty() || !name.chars().all(ok_char) || name.starts_with('.') {
+        return plain(StatusCode::BAD_REQUEST, "Bad model name.");
+    }
+    let Some(dir) = models_dir() else {
+        return plain(StatusCode::NOT_FOUND, "No models folder.");
+    };
+    let path = dir.join(&name);
+    let Ok(f) = std::fs::File::open(&path) else {
+        return plain(StatusCode::NOT_FOUND, "Model not found.");
+    };
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+        "wasm" => "application/wasm",
+        "json" => "application/json",
+        _ => "application/octet-stream",
+    };
+    respond(std::io::BufReader::new(f), len, mime, header_str(req, header::RANGE))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

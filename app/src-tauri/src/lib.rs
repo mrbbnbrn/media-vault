@@ -1,10 +1,16 @@
 //! Media Vault desktop app: the bridge between the window (React UI) and the
 //! vault core. All crypto happens here in Rust; the UI never sees keys.
 
+mod access;
 mod activity;
+mod clip;
 mod config;
+mod engine;
+mod exporter;
 mod extras;
+mod faces;
 mod import;
+mod integrity;
 mod library;
 mod meta;
 mod protocol;
@@ -41,6 +47,9 @@ pub struct Inner {
     import_gate: Mutex<()>,
     next_job: AtomicU64,
     selftest: Mutex<Option<selftest::SelfTestInfo>>,
+    /// Cancel flags of running background tasks ("check", "export").
+    tasks: Mutex<HashMap<&'static str, Arc<AtomicBool>>>,
+    engine: engine::EngineInfo,
 }
 
 type Shared = Arc<Inner>;
@@ -89,17 +98,21 @@ fn with_session<T>(
 }
 
 fn install_session(inner: &Inner, s: Session) -> SessionInfo {
-    let info = s.info();
+    let mut info = s.info();
+    info.login = Some(access::on_unlock(&s));
     *inner.activity.lock().unwrap() = Activity::new(Instant::now());
     let s = Arc::new(s);
     if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
         old.close();
     }
     start_background(s);
-    let mut cfg = inner.config.lock().unwrap();
-    cfg.add_vault(&info.path);
-    cfg.last_vault = Some(info.path.clone());
-    let _ = config::save(&inner.config_dir, &cfg);
+    if !selftest::enabled() {
+        // The throwaway self-test vault is never remembered.
+        let mut cfg = inner.config.lock().unwrap();
+        cfg.add_vault(&info.path);
+        cfg.last_vault = Some(info.path.clone());
+        let _ = config::save(&inner.config_dir, &cfg);
+    }
     info
 }
 
@@ -217,6 +230,11 @@ async fn create_vault(
     .await
 }
 
+/// A wrong password (or wrong recovery words) for a real vault is counted.
+fn note_failure(path: &str) {
+    access::record_failure(std::path::Path::new(path));
+}
+
 #[tauri::command]
 async fn unlock(
     state: State<'_, Shared>,
@@ -224,7 +242,11 @@ async fn unlock(
     password: String,
 ) -> Result<SessionInfo, String> {
     let inner = state.inner().clone();
-    blocking(move || Ok(install_session(&inner, session::unlock(&path, &password)?))).await
+    blocking(move || {
+        let s = session::unlock(&path, &password).inspect_err(|_| note_failure(&path))?;
+        Ok(install_session(&inner, s))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -235,10 +257,8 @@ async fn unlock_with_recovery(
 ) -> Result<SessionInfo, String> {
     let inner = state.inner().clone();
     blocking(move || {
-        Ok(install_session(
-            &inner,
-            session::unlock_with_recovery(&path, &words)?,
-        ))
+        let s = session::unlock_with_recovery(&path, &words).inspect_err(|_| note_failure(&path))?;
+        Ok(install_session(&inner, s))
     })
     .await
 }
@@ -688,6 +708,7 @@ async fn save_thumb(
                 rusqlite::params![tid.to_hex(), width, height, duration_ms, id],
             )
             .map_err(|e| e.to_string())?;
+            let _ = clip::reset(&db, id);
             old
         };
         if let Some(o) = old.filter(|o| !o.is_empty())
@@ -838,6 +859,202 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
     Ok(())
 }
 
+// ---- check for damage, export ------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TaskProgress {
+    task: &'static str,
+    done: usize,
+    total: usize,
+}
+
+fn begin_task(inner: &Inner, name: &'static str) -> Result<Arc<AtomicBool>, String> {
+    let mut t = inner.tasks.lock().unwrap();
+    if t.contains_key(name) {
+        return Err("That is already running.".into());
+    }
+    let c = Arc::new(AtomicBool::new(false));
+    t.insert(name, c.clone());
+    Ok(c)
+}
+
+/// Read every item in full to find damage. Reports "check-progress" and
+/// finally "check-done" with the report.
+#[tauri::command]
+fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> {
+    let s = sess(&state)?;
+    let inner = state.inner().clone();
+    let cancel = begin_task(&inner, "check")?;
+    std::thread::spawn(move || {
+        let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
+        let mut last = Instant::now();
+        let r = integrity::run(&s, &cancel, &mut |done, total| {
+            if last.elapsed() > Duration::from_millis(150) || done == total {
+                last = Instant::now();
+                let _ = app.emit("check-progress", TaskProgress { task: "check", done, total });
+            }
+        });
+        inner.tasks.lock().unwrap().remove("check");
+        let _ = app.emit("check-done", r.map_err(|e| e.to_string()));
+    });
+    Ok(())
+}
+
+#[tauri::command]
+fn cancel_task(state: State<'_, Shared>, task: String) {
+    if let Some(c) = state.tasks.lock().unwrap().get(task.as_str()) {
+        c.store(true, Ordering::SeqCst);
+    }
+}
+
+/// Write items out as ordinary (unencrypted) files. "export-progress", then "export-done".
+#[tauri::command]
+fn export_start(app: AppHandle, state: State<'_, Shared>, request: exporter::ExportRequest) -> Result<(), String> {
+    let s = sess(&state)?;
+    let inner = state.inner().clone();
+    let cancel = begin_task(&inner, "export")?;
+    std::thread::spawn(move || {
+        let mut last = Instant::now();
+        let done = exporter::run(&s, &request, &cancel, &mut |p| {
+            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
+                last = Instant::now();
+                let _ = app.emit("export-progress", p);
+            }
+        });
+        inner.tasks.lock().unwrap().remove("export");
+        let _ = app.emit("export-done", done);
+    });
+    Ok(())
+}
+
+// ---- web engine --------------------------------------------------------------------
+
+#[tauri::command]
+fn engine_info(state: State<'_, Shared>) -> engine::EngineInfo {
+    state.engine.clone()
+}
+
+#[tauri::command]
+fn engine_started(state: State<'_, Shared>) {
+    engine::started(&state.config_dir, &state.engine);
+}
+
+#[tauri::command]
+fn engine_retry(state: State<'_, Shared>) {
+    engine::retry(&state.config_dir);
+}
+
+// ---- face recognition -----------------------------------------------------------------
+
+#[tauri::command]
+async fn set_person_folder(state: State<'_, Shared>, folder: i64, on: bool) -> Result<(), String> {
+    edit_db(state.inner(), move |c| faces::set_person(c, folder, on)).await
+}
+
+#[tauri::command]
+async fn faces_queue(state: State<'_, Shared>, request: faces::ScanRequest) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::queue(c, &request)).await
+}
+
+#[tauri::command]
+async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces::ScanTask>, String> {
+    read_db(state.inner(), move |c| faces::needed(c, limit)).await
+}
+
+#[tauri::command]
+async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::save(c, media, &faces)).await
+}
+
+#[tauri::command]
+async fn faces_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| faces::failed(c, media)).await
+}
+
+#[tauri::command]
+async fn faces_status(state: State<'_, Shared>) -> Result<faces::ScanStatus, String> {
+    read_db(state.inner(), faces::status).await
+}
+
+#[tauri::command]
+async fn faces_review(state: State<'_, Shared>) -> Result<faces::Review, String> {
+    read_db(state.inner(), faces::review).await
+}
+
+#[tauri::command]
+async fn faces_accept(state: State<'_, Shared>, face_ids: Vec<i64>, person: i64) -> Result<faces::Accepted, String> {
+    edit_db(state.inner(), move |c| faces::accept(c, &face_ids, person)).await
+}
+
+#[tauri::command]
+async fn faces_reject(state: State<'_, Shared>, face_ids: Vec<i64>, person: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| faces::reject(c, &face_ids, person)).await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct NewPerson {
+    folder: i64,
+    accepted: faces::Accepted,
+}
+
+#[tauri::command]
+async fn faces_new_person(
+    state: State<'_, Shared>,
+    name: String,
+    parent: Option<i64>,
+    face_ids: Vec<i64>,
+) -> Result<NewPerson, String> {
+    edit_db(state.inner(), move |c| {
+        let (folder, accepted) = faces::new_person(c, &name, parent, &face_ids)?;
+        Ok(NewPerson { folder, accepted })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn faces_of(state: State<'_, Shared>, media: i64) -> Result<Vec<faces::FaceBox>, String> {
+    read_db(state.inner(), move |c| faces::faces_of(c, media)).await
+}
+
+#[tauri::command]
+async fn faces_unsure(state: State<'_, Shared>, person: i64) -> Result<Vec<library::Item>, String> {
+    read_db(state.inner(), move |c| faces::unsure_items(c, person)).await
+}
+
+// ---- smart search -----------------------------------------------------------------------
+
+#[tauri::command]
+async fn clip_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<clip::ClipTask>, String> {
+    read_db(state.inner(), move |c| clip::needed(c, limit)).await
+}
+
+#[tauri::command]
+async fn clip_save(state: State<'_, Shared>, media: i64, vec: Vec<f32>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| clip::save(c, media, &vec)).await
+}
+
+#[tauri::command]
+async fn clip_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| clip::failed(c, media)).await
+}
+
+#[tauri::command]
+async fn clip_status(state: State<'_, Shared>) -> Result<clip::ClipStatus, String> {
+    read_db(state.inner(), clip::status).await
+}
+
+#[tauri::command]
+async fn smart_search(
+    state: State<'_, Shared>,
+    vec: Vec<f32>,
+    folder: Option<i64>,
+    limit: Option<usize>,
+) -> Result<Vec<clip::Hit>, String> {
+    read_db(state.inner(), move |c| clip::search(c, &vec, folder, limit.unwrap_or(300))).await
+}
+
 // ---- self-test ---------------------------------------------------------------------
 
 #[tauri::command]
@@ -909,6 +1126,7 @@ fn start_watcher(app: AppHandle, inner: Shared) {
 pub fn run() {
     let config_dir = config::config_dir();
     let cfg = config::load(&config_dir);
+    let engine = engine::prepare(&config_dir, cfg.builtin_engine);
     let inner: Shared = Arc::new(Inner {
         config_dir,
         config: Mutex::new(cfg),
@@ -920,6 +1138,8 @@ pub fn run() {
         import_gate: Mutex::new(()),
         next_job: AtomicU64::new(0),
         selftest: Mutex::new(None),
+        tasks: Mutex::new(HashMap::new()),
+        engine,
     });
 
     let panic = panic_shortcut();
@@ -943,6 +1163,9 @@ pub fn run() {
                 responder.respond(protocol::serve_vault(s.as_deref(), &req));
             });
         })
+        .register_asynchronous_uri_scheme_protocol("models", |_ctx, req, responder| {
+            std::thread::spawn(move || responder.respond(protocol::serve_models(&req)));
+        })
         .register_asynchronous_uri_scheme_protocol("local", |ctx, req, responder| {
             let inner = ctx.app_handle().state::<Shared>().inner().clone();
             std::thread::spawn(move || {
@@ -964,7 +1187,7 @@ pub fn run() {
                     }
                 }
                 std::thread::spawn(|| {
-                    std::thread::sleep(Duration::from_secs(150));
+                    std::thread::sleep(Duration::from_secs(480));
                     std::process::exit(selftest::finish(
                         false,
                         "timed out: the window never reported back",
@@ -1049,6 +1272,29 @@ pub fn run() {
             storage_info,
             storage_task,
             selftest_done,
+            check_damage,
+            cancel_task,
+            export_start,
+            engine_info,
+            engine_started,
+            engine_retry,
+            set_person_folder,
+            faces_queue,
+            faces_needed,
+            faces_save,
+            faces_failed,
+            faces_status,
+            faces_review,
+            faces_accept,
+            faces_reject,
+            faces_new_person,
+            faces_of,
+            faces_unsure,
+            clip_needed,
+            clip_save,
+            clip_failed,
+            clip_status,
+            smart_search,
         ])
         .run(tauri::generate_context!())
         .expect("Media Vault failed to start");

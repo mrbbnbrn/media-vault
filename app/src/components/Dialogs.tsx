@@ -175,7 +175,14 @@ export interface MenuItem {
 /** A dropdown anchored to its button; closes on outside click or Esc. */
 export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className?: string; up?: boolean; title?: string; ariaLabel?: string }) {
   const [open, setOpen] = useState(false);
+  const [right, setRight] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
+  // Menus near the right edge open towards the left instead of running off screen.
+  useLayoutEffect(() => {
+    if (!open) return setRight(false);
+    const m = ref.current?.querySelector<HTMLElement>('.menu');
+    if (m && m.getBoundingClientRect().right > window.innerWidth - 8) setRight(true);
+  }, [open]);
   useEffect(() => {
     if (!open) return;
     const close = (e: Event) => {
@@ -196,7 +203,7 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
         {props.label}
       </button>
       {open && (
-        <div className={`menu${props.up ? ' up' : ''}`} role="menu">
+        <div className={`menu${props.up ? ' up' : ''}${right ? ' right' : ''}`} role="menu">
           {props.items.map((it) => [
             it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
             <button key={it.label} type="button" role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}

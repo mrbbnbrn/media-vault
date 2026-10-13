@@ -18,7 +18,17 @@ If the main app ever stops working
   FORMAT.md describes the storage format in full, and reference_decrypt.py
   is a second, independent decrypter (needs Python).
 
+What's in the full package
+  WebView2\   The app's own copy of Microsoft's web engine (draws the window
+              and plays videos), so Windows updates can't change how things
+              play. If it ever fails to start, the app uses the one that
+              comes with Windows instead and says so in Settings.
+  models\     Offline smart-search models (find pictures by describing
+              them, in 50+ languages). Without this folder smart search is
+              simply turned off; everything else works.
+  Face recognition is built into MediaVault.exe and also works offline.
+
 Requirements
-  Windows 10 or 11 with the Microsoft Edge WebView2 runtime, which is
-  already part of Windows 11 and of up-to-date Windows 10. A later version
-  of this package will carry its own copy so it never depends on Windows.
+  Windows 10 or 11. The full package brings its own web engine. The light
+  package uses the Microsoft Edge WebView2 runtime that is part of Windows 11
+  and of up-to-date Windows 10.

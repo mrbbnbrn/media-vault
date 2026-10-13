@@ -3,14 +3,40 @@
 // from the encrypted vault and from ordinary files.
 
 import { invoke } from '@tauri-apps/api/core';
-import { api, inTauri, localUrl, mediaUrl, thumbUrl, type Kind, type LocalItem } from './api';
+import { api, inTauri, localUrl, mediaUrl, onEvent, thumbUrl, type DamageReport, type ExportDone, type Kind, type LocalItem } from './api';
 import { animationMs, makeThumb } from './media';
 import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
+import { faceBackend, scanItem } from './ml/facescan';
+import { embedPixels, embedQuery, pixelsOf, smartAvailable } from './ml/smart';
+import { cosine } from './ml/clipcore';
 
 interface Info {
   items: { id: number; kind: Kind; name: string }[];
   local: LocalItem[];
+  exportDir: string;
+  expectBuiltinEngine: boolean;
+}
+
+function waitEvent<T>(name: string, ms: number): Promise<T> {
+  return timeout(
+    new Promise<T>((res) => {
+      const off = onEvent<T>(name, (p) => {
+        off.then((u) => u());
+        res(p);
+      });
+    }),
+    ms,
+    name,
+  );
+}
+
+async function loadImage(src: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = src;
+  await img.decode();
+  return img;
 }
 
 const timeout = <T,>(p: Promise<T>, ms: number, what: string) =>
@@ -95,8 +121,11 @@ function check(kind: Kind, src: string): Promise<string> {
   }
 }
 
+let started = false;
+
 export async function runSelfTestIfRequested(): Promise<boolean> {
-  if (!inTauri) return false;
+  if (!inTauri || started) return false;
+  started = true;
   const info = await invoke<Info | null>('selftest_info');
   if (!info) return false;
   const lines: string[] = [`engine: ${navigator.userAgent}`];
@@ -196,6 +225,62 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       return `${list.length} bookmark, deleted and restored`;
     });
   }
+  // Batch 3: safety, faces, smart search, built-in engine.
+  await step('web engine', async () => {
+    const e = await api.engineInfo();
+    const v = navigator.userAgent.match(/Edg\/([\d.]+)/)?.[1] ?? '?';
+    if (info.expectBuiltinEngine && e.mode !== 'builtin') throw new Error(`expected the built-in engine, got ${e.mode}`);
+    await api.engineStarted();
+    return `${e.mode}${e.version ? ` ${e.version}` : ''}, running ${v}`;
+  });
+  await step('check for damage', async () => {
+    const done = waitEvent<{ Ok?: DamageReport; Err?: string }>('check-done', 120_000);
+    await api.checkDamage();
+    const r = await done;
+    if (!r.Ok) throw new Error(r.Err ?? 'no report');
+    if (r.Ok.damaged.length || r.Ok.backupsBad.length) throw new Error(`reported damage: ${JSON.stringify(r.Ok.damaged)}`);
+    return `${r.Ok.itemsChecked} items, ${r.Ok.backupsOk} backups OK`;
+  });
+  await step('export decrypted', async () => {
+    const all = await api.queryItems({});
+    const done = waitEvent<ExportDone>('export-done', 120_000);
+    await api.exportStart({ all: true, dest: info.exportDir });
+    const r = await done;
+    if (r.error) throw new Error(r.error);
+    if (r.exported !== all.length || r.failed.length) throw new Error(`${r.exported} of ${all.length} exported, failed ${JSON.stringify(r.failed)}`);
+    return `${r.exported} files, ${r.bytes} bytes`;
+  });
+  const people = info.items.find((i) => i.name === 'sample1.jpg');
+  if (people) {
+    await step('face recognition', async () => {
+      const t = performance.now();
+      const faces = await timeout(scanItem(people.id, 'image'), 240_000, 'scan');
+      if (faces.length < 2) throw new Error(`found ${faces.length} faces`);
+      await api.facesSave(people.id, faces);
+      const st = await api.facesStatus();
+      return `${faces.length} faces in ${Math.round(performance.now() - t)} ms on ${faceBackend()}, ${st.faces} stored`;
+    });
+  }
+  const monkey = info.items.find((i) => i.name === 'baboon.jpg');
+  if (monkey && (await smartAvailable())) {
+    await step('smart search', async () => {
+      const t = performance.now();
+      const pics = info.items.filter((i) => i.kind === 'image');
+      for (const p of pics) {
+        const img = await loadImage(thumbUrl(p.id));
+        await api.clipSave(p.id, Array.from(await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight))));
+      }
+      const q = await embedQuery('maymun');
+      const hits = await api.smartSearch(Array.from(q), null, 5);
+      if (hits[0]?.item.id !== monkey.id) throw new Error(`top hit ${hits[0]?.item.name}`);
+      const img = await loadImage(mediaUrl(monkey.id));
+      const full = await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight));
+      return `${pics.length} pictures, “maymun” → ${hits[0].item.name} (${hits[0].score.toFixed(3)}, full picture ${cosine(q, full).toFixed(3)}) in ${Math.round(performance.now() - t)} ms`;
+    });
+  } else if (monkey) {
+    lines.push('skip  smart search: no models folder');
+  }
+
   await step('storage is packed', async () => {
     const st = await api.storageInfo();
     if (st.looseObjects !== 0 || st.packFiles < 1) throw new Error(`loose ${st.looseObjects}, packs ${st.packFiles}`);

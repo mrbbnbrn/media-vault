@@ -2,10 +2,15 @@ import { useEffect, useState } from 'react';
 import { api, DEFAULT_VIEWER, onEvent, type AppConfig, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
-import { BackIcon } from '../components/Icons';
+import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
+import { DamageReportView, ExportDialog } from '../components/Safety';
+import { faceBackend } from '../ml/facescan';
+import { smartAvailable } from '../ml/smart';
+import { startCheck, useTasks } from '../tasks';
+import type { ClipStatus, EngineInfo, ScanStatus } from '../api';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 
-type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'about';
+type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
 export function Settings({ nav }: { nav: Nav }) {
   const [section, setSection] = useState<Section>('appearance');
@@ -31,6 +36,8 @@ export function Settings({ nav }: { nav: Nav }) {
     ['viewer', 'Viewer & videos'],
     ['vault', 'Vault & password'],
     ['storage', 'Storage & backups'],
+    ['safety', 'Safety & export'],
+    ['smart', 'Faces & smart search'],
     ['about', 'About'],
   ];
   const custom = !ACCENTS.some((a) => a.hex === cfg.accent);
@@ -157,6 +164,8 @@ export function Settings({ nav }: { nav: Nav }) {
           )}
           {section === 'vault' && <VaultSection nav={nav} />}
           {section === 'storage' && <StorageSection />}
+          {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
+          {section === 'smart' && <SmartSection />}
           {section === 'about' && (
             <section className="section">
               <h2>Media Vault 0.1.0</h2>
@@ -337,5 +346,133 @@ function StorageSection() {
       )}
       {done && <div className={done.ok ? 'info' : 'error'}>{done.message}</div>}
     </section>
+  );
+}
+
+function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
+  const t = useTasks();
+  const [exporting, setExporting] = useState(false);
+  const [engine, setEngine] = useState<EngineInfo | null>(null);
+  const [retried, setRetried] = useState(false);
+  useEffect(() => {
+    api.engineInfo().then(setEngine).catch(() => {});
+  }, []);
+  return (
+    <>
+      <section className="section">
+        <h2>Check for damage</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          Reads every item, thumbnail and library backup in full and checks it against its encryption seal, so even a single
+          changed byte on the disk is found. Takes a while for big vaults; you can keep using the app.
+        </p>
+        <div>
+          <button type="button" className="btn btn-primary" disabled={!!t.check} onClick={() => startCheck()}>
+            <ShieldIcon /> {t.check ? `Checking… ${t.check.total ? `${t.check.done.toLocaleString()} / ${t.check.total.toLocaleString()}` : ''}` : 'Check now'}
+          </button>
+          {t.check && <button type="button" className="btn" style={{ marginLeft: 8 }} onClick={() => api.cancelTask('check')}>Stop</button>}
+        </div>
+        {t.checkResult && 'report' in t.checkResult && <DamageReportView report={t.checkResult.report} />}
+        {t.checkResult && 'error' in t.checkResult && <div className="error">{t.checkResult.error}</div>}
+      </section>
+
+      <div className="divider" />
+
+      <section className="section">
+        <h2>Export decrypted</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          Write everything back out as ordinary files, with the original names and folders. You can also export a single
+          folder or a selection from its menu in the library.
+        </p>
+        <div>
+          <button type="button" className="btn" disabled={!!t.exporting || t.exportStarting} onClick={() => setExporting(true)}>
+            <ExportIcon /> Export everything…
+          </button>
+        </div>
+        {exporting && <ExportDialog request={{ all: true }} what="everything" onClose={() => setExporting(false)} />}
+        {t.exporting && <div className="info">Exporting… {t.exporting.done.toLocaleString()} / {t.exporting.total.toLocaleString()}</div>}
+        {t.exportDone && (
+          <div className={t.exportDone.error ? 'error' : 'info'}>
+            {t.exportDone.error ?? `${t.exportDone.exported.toLocaleString()} files written to ${t.exportDone.folder}${t.exportDone.cancelled ? ' (stopped early)' : ''}.`}
+          </div>
+        )}
+      </section>
+
+      <div className="divider" />
+
+      <section className="section">
+        <h2>Web engine</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          The app draws its window and plays videos with Microsoft's WebView2 engine. The full package brings its own copy,
+          so Windows updates can't change how things play.
+        </p>
+        {engine && (
+          <div className="info">
+            {engine.mode === 'builtin' && <>Using the built-in engine{engine.version ? ` (version ${engine.version})` : ''}.</>}
+            {engine.mode === 'system' && (engine.available ? 'Using the engine that comes with Windows (the built-in one is turned off).' : "Using the engine that comes with Windows. This copy of the app doesn't include its own.")}
+            {engine.mode === 'fallback' && <>The built-in engine didn't start last time, so the one that comes with Windows is used.</>}
+          </div>
+        )}
+        {engine?.available && (
+          <Toggle title="Use the built-in engine" desc="Takes effect the next time the app starts." on={cfg.builtinEngine !== false}
+            set={(v) => update({ ...cfg, builtinEngine: v })} />
+        )}
+        {engine?.mode === 'fallback' && (
+          <div>
+            <button type="button" className="btn btn-sm" disabled={retried} onClick={() => { api.engineRetry(); setRetried(true); }}>
+              {retried ? 'It will be tried at the next start' : 'Try the built-in engine again next time'}
+            </button>
+          </div>
+        )}
+      </section>
+    </>
+  );
+}
+
+function SmartSection() {
+  const [faces, setFaces] = useState<ScanStatus | null>(null);
+  const [clip, setClip] = useState<ClipStatus | null>(null);
+  const [models, setModels] = useState<boolean | null>(null);
+  useEffect(() => {
+    api.facesStatus().then(setFaces).catch(() => {});
+    api.clipStatus().then(setClip).catch(() => {});
+    smartAvailable().then(setModels);
+  }, []);
+  return (
+    <>
+      <section className="section">
+        <h2>Face recognition</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          Mark a folder as a <b>person folder</b> (folder menu) and the app learns that person from the pictures inside, then
+          suggests other pictures that show them in <b>People</b>. Scanning only happens for what you choose to scan, and
+          nothing is moved until you confirm. Everything stays on this PC, inside the encrypted vault.
+        </p>
+        {faces && (
+          <div className="stats" style={{ flexWrap: 'wrap' }}>
+            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Scanned</span><b>{faces.scanned.toLocaleString()}</b></div>
+            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Faces found</span><b>{faces.faces.toLocaleString()}</b></div>
+            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Waiting</span><b>{faces.queued.toLocaleString()}</b></div>
+            {faceBackend() && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{faceBackend() === 'webgl' ? 'graphics card' : 'processor'}</b></div>}
+          </div>
+        )}
+      </section>
+
+      <div className="divider" />
+
+      <section className="section">
+        <h2>Smart search</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          Turn it on with the ✦ button next to the search box, then describe what you're looking for — “dog on the beach”,
+          “kırmızı elbise”, “Geburtstagstorte”. Works in 50+ languages, fully offline. Pictures and videos are analysed in the
+          background (using their thumbnails); the results stay inside the encrypted vault.
+        </p>
+        {models === false && <div className="notice">This copy of the app doesn't include the smart-search models. Use the full package (it has a “models” folder next to MediaVault.exe).</div>}
+        {models && clip && (
+          <div className="stats" style={{ flexWrap: 'wrap' }}>
+            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Analysed</span><b>{clip.done.toLocaleString()} / {clip.total.toLocaleString()}</b></div>
+            {clip.failed > 0 && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Couldn't analyse</span><b>{clip.failed}</b></div>}
+          </div>
+        )}
+      </section>
+    </>
   );
 }

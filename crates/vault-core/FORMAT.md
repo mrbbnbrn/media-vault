@@ -135,15 +135,30 @@ Concatenate the decrypted chunks to get the original file.
 Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 `library.db` and open it with any SQLite tool. Key tables:
 
-- `folders(id, parent_id, name, pinned, color, emoji, deleted_at, …)` — the folder tree; `parent_id` NULL = top level
+- `folders(id, parent_id, name, pinned, color, emoji, person, deleted_at, …)` — the folder tree; `parent_id` NULL = top level;
+  `person` = 1 marks a person folder for face recognition
 - `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, weight, taken_at, views, deleted_at, …)`
   — `kind` is image, gif, video, text or pdf; `folder_id` NULL = top level.
   A non-NULL `deleted_at` (milliseconds) means the item or folder is in the app's
   trash; it is still fully stored and can be recovered like anything else.
 - `bookmarks(id, media_id, position_ms, note)` — bookmarks inside videos
+- `faces(id, media_id, frame_ms, x, y, w, h, score, descriptor, person_id)` — faces found by
+  face recognition; position as fractions of the picture, `descriptor` = 128 little-endian
+  float32 values, `person_id` = the person folder it was confirmed for.
+  `face_rejects(face_id, folder_id)` remembers "not this person".
+- `clip(media_id, vec)` — smart-search vector of an item: 512 little-endian float32 values
+  (unit length, CLIP ViT-B/32 space)
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings
+
+Nothing in these tables is needed to get your files back; they can all be
+rebuilt by the app.
+
+The vault folder may also hold `attempts.json`: the times of recent wrong
+passwords (shown after the next successful unlock). It holds only times, no
+other information, and is not encrypted because it is written before the
+vault is open.
 
 If `meta.db.enc` is damaged, use the newest file in `meta-backups/`; it has the
 same format.

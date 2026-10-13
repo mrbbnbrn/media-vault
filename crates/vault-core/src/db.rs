@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 4;
+pub const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -235,6 +235,44 @@ fn migrate(conn: &Connection) -> Result<()> {
                 WHERE deleted_at IS NULL;
             CREATE INDEX media_deleted ON media(deleted_at) WHERE deleted_at IS NOT NULL;
             PRAGMA user_version = 4;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
+        }
+    }
+    if v < 5 {
+        // v5: face recognition (person folders, faces found in each item)
+        // and smart search (one picture fingerprint per item).
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE folders ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE media ADD COLUMN faces_state INTEGER NOT NULL DEFAULT 0;  -- 0 not scanned, 2 queued, 1 done, -1 failed
+            ALTER TABLE media ADD COLUMN clip_state INTEGER NOT NULL DEFAULT 0;   -- 0 not analysed, 1 done, -1 failed
+            CREATE TABLE faces (
+                id          INTEGER PRIMARY KEY,
+                media_id    INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                frame_ms    INTEGER NOT NULL DEFAULT 0,   -- videos: where in the video
+                x REAL NOT NULL, y REAL NOT NULL, w REAL NOT NULL, h REAL NOT NULL,  -- 0..1 of the picture
+                score       REAL NOT NULL,
+                descriptor  BLOB NOT NULL,                -- 128 little-endian f32
+                person_id   INTEGER REFERENCES folders(id) ON DELETE SET NULL
+            );
+            CREATE INDEX faces_media ON faces(media_id);
+            CREATE INDEX faces_person ON faces(person_id);
+            CREATE TABLE face_rejects (
+                face_id    INTEGER NOT NULL REFERENCES faces(id) ON DELETE CASCADE,
+                folder_id  INTEGER NOT NULL REFERENCES folders(id) ON DELETE CASCADE,
+                PRIMARY KEY (face_id, folder_id)
+            ) WITHOUT ROWID;
+            CREATE TABLE clip (
+                media_id  INTEGER PRIMARY KEY REFERENCES media(id) ON DELETE CASCADE,
+                vec       BLOB NOT NULL                   -- 512 little-endian f32, unit length
+            );
+            PRAGMA user_version = 5;
             COMMIT;
             "#,
         );

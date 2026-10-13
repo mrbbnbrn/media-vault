@@ -15,6 +15,8 @@ import { Viewer } from './screens/Viewer';
 import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
+import { startFaceScanner } from './ml/facescan';
+import { startClipIndexer } from './ml/smart';
 import { runSelfTestIfRequested } from './selftest';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
@@ -64,6 +66,8 @@ export function App() {
 
   useEffect(() => {
     runSelfTestIfRequested().catch(() => {});
+    // The window is up: the built-in web engine (if used) works.
+    api.engineStarted().catch(() => {});
     refresh()
       .then((s) => {
         if (s.session) setScreen(s.session.needsNewPassword ? { name: 'newPassword' } : { name: 'library' });
@@ -89,6 +93,10 @@ export function App() {
   // Thumbnails are made in the background while a vault is open.
   const open = !!app?.session && !app.session.needsNewPassword && !app.session.name.startsWith('SelfTest');
   useEffect(() => (open ? startThumbnailer() : undefined), [open]);
+  // Faces are found only in what the user asked to scan; pictures are analysed
+  // for smart search whenever its models are there (full package).
+  useEffect(() => (open ? startFaceScanner() : undefined), [open]);
+  useEffect(() => (open ? startClipIndexer() : undefined), [open]);
 
   useEffect(() => {
     if (!toast) return;

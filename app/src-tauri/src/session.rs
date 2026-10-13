@@ -40,6 +40,8 @@ pub struct SessionInfo {
     pub needs_new_password: bool,
     /// Set if the main database was damaged and a backup was used.
     pub restored_from_backup: Option<String>,
+    /// Only right after unlocking: the previous opening and wrong passwords since.
+    pub login: Option<crate::access::LoginInfo>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -220,6 +222,7 @@ impl Session {
                 .restored_from_backup
                 .as_ref()
                 .map(|p| p.display().to_string()),
+            login: None,
         }
     }
 }

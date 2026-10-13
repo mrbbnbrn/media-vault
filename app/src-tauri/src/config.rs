@@ -85,6 +85,10 @@ pub struct AppConfig {
     /// Grid shows every item at its true shape (no cropping).
     pub grid_shape: bool,
     pub viewer: ViewerSettings,
+    /// Use the web engine shipped next to the app (when there is one).
+    pub builtin_engine: bool,
+    /// The smart-search switch next to the search box.
+    pub smart_search: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -101,6 +105,8 @@ impl Default for AppConfig {
             whole_on_hover: false,
             grid_shape: false,
             viewer: ViewerSettings::default(),
+            builtin_engine: true,
+            smart_search: false,
             vaults: Vec::new(),
             last_vault: None,
         }
