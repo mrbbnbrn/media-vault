@@ -83,6 +83,7 @@ export function Player(props: PlayerProps) {
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoStart = useRef(0);
   const frameDur = useRef(0);
+  const wasPaused = useRef(false);
   const stageRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState({ s: 1, x: 0, y: 0 });
   const [docZoom, setDocZoom] = useState(1);
@@ -319,8 +320,10 @@ export function Player(props: PlayerProps) {
     v.volume = volume;
     v.muted = muted;
     v.playbackRate = s.speed;
+    const resumed = wasPaused.current && !paused;
+    wasPaused.current = paused;
     if (paused) v.pause();
-    else v.play().catch(() => {});
+    else if (v.paused && (!v.ended || resumed)) v.play().catch(() => {}); // play() after the end starts over
   });
 
   // Learn the video's frame length (for single-frame steps).
@@ -414,7 +417,8 @@ export function Player(props: PlayerProps) {
   const seekTo = (t: number) => {
     const v = videoRef.current;
     if (!v) return;
-    v.currentTime = Math.max(0, Math.min(Number.isFinite(v.duration) ? v.duration : t, t));
+    // Stop just short of the end so a jump forward doesn't end the video.
+    v.currentTime = Math.max(0, Math.min(Number.isFinite(v.duration) ? Math.max(0, v.duration - 0.05) : t, t));
     videoStart.current = v.currentTime;
     setTime((x) => ({ ...x, at: v.currentTime }));
   };
@@ -756,11 +760,13 @@ export function Player(props: PlayerProps) {
             )}
             {timedTools}
             <span className="vsep" />
+            {/* With the video tools showing, order and repeat shrink to icons (names in the tooltip). */}
             <Dropdown up className={`btn btn-sm glass${s.order === 'shuffle' || s.order === 'random' || s.order === 'weighted' ? ' accent-soft' : ''}`}
-              label={<><ShuffleIcon /> {orderLabel}</>} title={`Order: ${orderLabel}`} items={orderItems} />
+              label={<><ShuffleIcon />{timedTools ? '' : ` ${orderLabel}`}</>} title={`Order: ${orderLabel}`} ariaLabel={`Order: ${orderLabel}`} items={orderItems} />
             <button type="button" className={`btn btn-sm glass${s.repeat !== 'off' ? ' accent-soft' : ''}`} onClick={cycleRepeat}
-              title="Off → repeat all → repeat one">
-              <RepeatIcon /> {s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}
+              title={`${s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'} (off → all → one)`}
+              aria-label={s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}>
+              <RepeatIcon />{timedTools ? (s.repeat === 'one' ? ' 1' : '') : ` ${s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}`}
             </button>
             {speedButton}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
