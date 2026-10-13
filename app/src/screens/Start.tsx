@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api, pickFolder, type VaultEntry } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, OfflineFooter, TopBar } from '../components/Chrome';
+import { PlayIcon } from '../components/Icons';
 import { FolderIcon, PlusIcon } from '../components/Icons';
 import { formatBytes } from '../theme';
 
@@ -57,7 +58,12 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
 
   return (
     <>
-      <TopBar />
+      <TopBar>
+        <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'player' })}
+          title="Play files and folders from your PC without opening a vault">
+          <PlayIcon size={14} /> Open player
+        </button>
+      </TopBar>
       <div className="center">
         <section className="vaults" aria-label="Your vaults">
           <div className="eyebrow" style={{ marginBottom: 4 }}>Your vaults</div>

@@ -7,8 +7,15 @@ import { CreateVault } from './screens/CreateVault';
 import { RecoveryWords } from './screens/RecoveryWords';
 import { Recover } from './screens/Recover';
 import { NewPassword } from './screens/NewPassword';
-import { Library } from './screens/Library';
+import { Library, type LibView } from './screens/Library';
 import { Settings } from './screens/Settings';
+import { Viewer } from './screens/Viewer';
+import { MultiScreen } from './screens/MultiScreen';
+import { startExternalDrops } from './drop';
+import { startThumbnailer } from './media';
+import { runSelfTestIfRequested } from './selftest';
+import type { PlayItem } from './media';
+import type { Order } from './playlist';
 
 export type Screen =
   | { name: 'start'; select?: string }
@@ -17,7 +24,10 @@ export type Screen =
   | { name: 'newPassword' }
   | { name: 'words'; words: string[]; context: 'create' | 'reset' }
   | { name: 'library' }
-  | { name: 'settings' };
+  | { name: 'settings' }
+  | { name: 'viewer'; items: PlayItem[]; startKey?: string; title: string; auto: boolean; back: LibView; order?: Order }
+  | { name: 'multi'; back: LibView }
+  | { name: 'player' };
 
 export interface Nav {
   app: AppState;
@@ -40,6 +50,7 @@ export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'start' });
   const [toast, setToast] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
+  const [libView, setLibView] = useState<LibView>({ kind: 'folders' });
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -49,16 +60,19 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    runSelfTestIfRequested().catch(() => {});
     refresh()
       .then((s) => {
         if (s.session) setScreen(s.session.needsNewPassword ? { name: 'newPassword' } : { name: 'library' });
       })
       .catch((e) => setFatal(String(e)));
     const stopTracking = startActivityTracking();
+    startExternalDrops();
     const unlisten = onLocked((reason) => {
       stopAllPlaying();
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
-      setScreen({ name: 'start' });
+      setScreen((cur) => (cur.name === 'player' ? cur : { name: 'start' }));
+      setLibView({ kind: 'folders' });
       setToast(LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });
@@ -67,6 +81,10 @@ export function App() {
       unlisten.then((u) => u());
     };
   }, [refresh]);
+
+  // Thumbnails are made in the background while a vault is open.
+  const open = !!app?.session && !app.session.needsNewPassword && !app.session.name.startsWith('SelfTest');
+  useEffect(() => (open ? startThumbnailer() : undefined), [open]);
 
   useEffect(() => {
     if (!toast) return;
@@ -85,8 +103,18 @@ export function App() {
       {screen.name === 'recover' && <Recover nav={nav} path={screen.path} />}
       {screen.name === 'newPassword' && <NewPassword nav={nav} />}
       {screen.name === 'words' && <RecoveryWords nav={nav} words={screen.words} context={screen.context} />}
-      {screen.name === 'library' && <Library nav={nav} />}
+      {screen.name === 'library' && app.session && <Library nav={nav} view={libView} setView={setLibView} />}
       {screen.name === 'settings' && <Settings nav={nav} />}
+      {screen.name === 'viewer' && (
+        <Viewer nav={nav} items={screen.items} startKey={screen.startKey} title={screen.title} auto={screen.auto} order={screen.order}
+          onBack={() => { setLibView(screen.back); setScreen(app.session ? { name: 'library' } : { name: 'start' }); }} />
+      )}
+      {screen.name === 'multi' && app.session && (
+        <MultiScreen nav={nav} vault onBack={() => { setLibView(screen.back); setScreen({ name: 'library' }); }} />
+      )}
+      {screen.name === 'player' && (
+        <MultiScreen nav={nav} vault={false} onBack={() => setScreen(app.session ? { name: 'library' } : { name: 'start' })} />
+      )}
       {toast && (
         <div className="toast" role="status">
           {toast}

@@ -1067,3 +1067,65 @@ mod tests {
         assert_eq!(r.imported, 0);
     }
 }
+
+/// Developer helper: builds a demo vault for trying the app.
+/// MV_SEED_DIR=<parent> MV_SEED_SRC=<folder with media> cargo test seed_demo_vault -- --ignored
+#[cfg(test)]
+mod seed {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn seed_demo_vault() {
+        let dir = std::env::var("MV_SEED_DIR").expect("MV_SEED_DIR");
+        let src = PathBuf::from(std::env::var("MV_SEED_SRC").expect("MV_SEED_SRC"));
+        let (s, _) = crate::session::create(
+            &dir,
+            "Photos",
+            "demo password",
+            vault_core::KdfParams::TEST_ONLY,
+        )
+        .unwrap();
+        let paths: Vec<String> = ["People", "Trips", "Clips"]
+            .iter()
+            .map(|p| src.join(p).display().to_string())
+            .collect();
+        let r = run(
+            &s,
+            &Job {
+                id: 1,
+                paths,
+                target: None,
+                password: None,
+                archive_folder: true,
+            },
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        assert!(r.failed.is_empty(), "{:?}", r.failed);
+        let db = s.db();
+        let people = library::find_child(&db, None, "People").unwrap().unwrap();
+        let alex = library::find_child(&db, Some(people), "Alex")
+            .unwrap()
+            .unwrap();
+        library::tag_folder(&db, alex, &["alex".into()]).unwrap();
+        let beach = library::find_child(
+            &db,
+            library::find_child(&db, None, "Trips").unwrap(),
+            "Beach 2024",
+        )
+        .unwrap()
+        .unwrap();
+        library::tag_folder(&db, beach, &["beach".into(), "summer".into()]).unwrap();
+        let ids: Vec<i64> = library::query_items(&db, &library::ItemFilter::default())
+            .unwrap()
+            .iter()
+            .map(|i| i.id)
+            .collect();
+        library::set_favourite(&db, &ids[..3], true).unwrap();
+        library::set_weight(&db, &ids[3..5], 5.0).unwrap();
+        drop(db);
+        s.save().unwrap();
+        println!("imported {}", r.imported);
+    }
+}

@@ -120,6 +120,21 @@ fn header_str(req: &Request<Vec<u8>>, name: header::HeaderName) -> Option<&str> 
 }
 
 pub fn serve_vault(session: Option<&Session>, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
+    let r = serve_vault_inner(session, req);
+    if std::env::var_os("MV_DEBUG").is_some() {
+        eprintln!(
+            "vault {} range={:?} -> {} {:?} len={}",
+            req.uri(),
+            header_str(req, header::RANGE),
+            r.status(),
+            r.headers().get(header::CONTENT_RANGE),
+            r.body().len()
+        );
+    }
+    r
+}
+
+fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let Some(s) = session.filter(|s| !s.is_closed()) else {
         return plain(StatusCode::FORBIDDEN, "The vault is locked.");
     };

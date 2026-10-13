@@ -6,6 +6,7 @@ mod config;
 mod import;
 mod library;
 mod protocol;
+mod selftest;
 mod session;
 
 use std::collections::HashMap;
@@ -36,6 +37,7 @@ pub struct Inner {
     /// Imports run one at a time; later drops wait their turn.
     import_gate: Mutex<()>,
     next_job: AtomicU64,
+    selftest: Mutex<Option<selftest::SelfTestInfo>>,
 }
 
 type Shared = Arc<Inner>;
@@ -624,6 +626,20 @@ async fn scan_local(
     blocking(move || protocol::scan_local(&inner.local, &paths)).await
 }
 
+// ---- self-test ---------------------------------------------------------------------
+
+#[tauri::command]
+fn selftest_info(state: State<'_, Shared>) -> Option<selftest::SelfTestInfo> {
+    state.selftest.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn selftest_done(state: State<'_, Shared>, ok: bool, report: String) {
+    if state.selftest.lock().unwrap().is_some() {
+        std::process::exit(selftest::finish(ok, &report));
+    }
+}
+
 // ---- background watcher ---------------------------------------------------------
 
 #[cfg(windows)]
@@ -691,6 +707,7 @@ pub fn run() {
         imports: Mutex::new(HashMap::new()),
         import_gate: Mutex::new(()),
         next_job: AtomicU64::new(0),
+        selftest: Mutex::new(None),
     });
 
     let panic = panic_shortcut();
@@ -724,6 +741,24 @@ pub fn run() {
             // The panic key is a convenience; if another program owns the
             // shortcut the app still works.
             let _ = app.global_shortcut().register(panic_shortcut());
+            if selftest::enabled() {
+                match selftest::prepare(&inner.local) {
+                    Ok((s, info)) => {
+                        install_session(&inner, s);
+                        *inner.selftest.lock().unwrap() = Some(info);
+                    }
+                    Err(e) => {
+                        std::process::exit(selftest::finish(false, &format!("setup failed: {e}")))
+                    }
+                }
+                std::thread::spawn(|| {
+                    std::thread::sleep(Duration::from_secs(150));
+                    std::process::exit(selftest::finish(
+                        false,
+                        "timed out: the window never reported back",
+                    ));
+                });
+            }
             start_watcher(app.handle().clone(), inner.clone());
             Ok(())
         })
@@ -780,6 +815,8 @@ pub fn run() {
             start_import,
             cancel_import,
             scan_local,
+            selftest_info,
+            selftest_done,
         ])
         .run(tauri::generate_context!())
         .expect("Media Vault failed to start");

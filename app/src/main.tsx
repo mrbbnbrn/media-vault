@@ -1,6 +1,7 @@
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
+import './screens.css';
 import { App } from './App';
 
 // No right-click menu (it offers "Save image as…", "Inspect", etc.).

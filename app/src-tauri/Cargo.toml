@@ -23,7 +23,7 @@ rusqlite = "=0.40.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sevenz-rust2 = { version = "=0.24.0", features = ["aes256"] }
-tauri = "2"
+tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
 vault-core = { version = "0.1.0", path = "../../crates/vault-core" }

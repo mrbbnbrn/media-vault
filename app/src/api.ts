@@ -43,6 +43,123 @@ export interface AppState {
   minPasswordChars: number;
 }
 
+export type Kind = 'image' | 'gif' | 'video';
+
+export interface Item {
+  id: number;
+  kind: Kind;
+  name: string;
+  ext: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  durationMs: number | null;
+  favourite: boolean;
+  weight: number;
+  thumb: 'ok' | 'pending' | 'failed';
+  importedAt: number;
+  folderId: number | null;
+}
+
+export interface Crumb {
+  id: number;
+  name: string;
+}
+
+export interface FolderCard {
+  id: number;
+  name: string;
+  parentId: number | null;
+  path: Crumb[];
+  depth: number;
+  items: number;
+  directItems: number;
+  subfolders: number;
+  cover: number | null;
+  tags: string[];
+}
+
+export interface FolderView {
+  folder: FolderCard | null;
+  subfolders: FolderCard[];
+  items: Item[];
+}
+
+export interface ItemFilter {
+  /** number = that folder, null = top level, undefined = no folder limit */
+  folder?: number | null;
+  recursive?: boolean;
+  folders?: number[];
+  tags?: string[];
+  favouritesOnly?: boolean;
+  kinds?: Kind[];
+  recentDays?: number;
+}
+
+export interface TagCount {
+  name: string;
+  items: number;
+  folders: number;
+}
+
+export interface Named<S = unknown> {
+  id: number | null;
+  name: string;
+  settings: S;
+}
+
+export interface ArchiveInfo {
+  path: string;
+  name: string;
+  parts: number;
+  needsPassword: boolean;
+  media: number;
+  error: string | null;
+}
+
+export interface DropSummary {
+  files: number;
+  folders: number;
+  archives: ArchiveInfo[];
+  unsupported: number;
+}
+
+export interface ImportProgress {
+  job: number;
+  done: number;
+  total: number;
+  bytes: number;
+  current: string;
+  source: string;
+}
+
+export interface ImportReport {
+  job: number;
+  imported: number;
+  duplicates: number;
+  skipped: string[];
+  skippedCount: number;
+  failed: [string, string][];
+  cancelled: boolean;
+  bytes: number;
+  seconds: number;
+}
+
+export interface LocalItem {
+  key: string;
+  name: string;
+  path: string;
+  kind: Kind;
+  size: number;
+  modified: number;
+}
+
+export interface LocalSet {
+  title: string;
+  items: LocalItem[];
+  start: number;
+}
+
 export type LockReason = 'idle' | 'safetyNet' | 'systemLocked' | 'sleep' | 'minimized' | 'panicKey' | 'manual';
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -61,7 +178,63 @@ export const api = {
   resetRecovery: (current: string) => call<string[]>('reset_recovery', { current }),
   lock: () => call<void>('lock_vault'),
   reportActivity: (kind: 'input' | 'playing') => call<void>('report_activity', { kind }),
+
+  // library
+  folders: () => call<FolderCard[]>('library_folders'),
+  folderView: (folder: number | null) => call<FolderView>('folder_view', { folder }),
+  queryItems: (filter: ItemFilter) => call<Item[]>('query_items', { filter }),
+  getItem: (id: number) => call<Item>('get_item', { id }),
+  createFolder: (parent: number | null, name: string) => call<number>('create_folder', { parent, name }),
+  renameFolder: (id: number, name: string) => call<void>('rename_folder', { id, name }),
+  moveFolder: (id: number, parent: number | null) => call<void>('move_folder', { id, parent }),
+  deleteFolder: (id: number) => call<number>('delete_folder', { id }),
+  deleteItems: (ids: number[]) => call<number>('delete_items', { ids }),
+  moveItems: (ids: number[], folder: number | null) => call<number>('move_items', { ids, folder }),
+  setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
+  setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
+  setCover: (folder: number, media: number | null) => call<void>('set_cover', { folder, media }),
+  allTags: () => call<TagCount[]>('all_tags'),
+  itemTags: (id: number) => call<{ own: string[]; inherited: [string, string][] }>('item_tags', { id }),
+  tagItems: (ids: number[], tags: string[]) => call<void>('tag_items', { ids, tags }),
+  untagItems: (ids: number[], tag: string) => call<void>('untag_items', { ids, tag }),
+  tagFolder: (folder: number, tags: string[]) => call<void>('tag_folder', { folder, tags }),
+  untagFolder: (folder: number, tag: string) => call<void>('untag_folder', { folder, tag }),
+  listNamed: <S,>(kind: 'preset' | 'layout') => call<Named<S>[]>('list_named', { kind }),
+  saveNamed: <S,>(kind: 'preset' | 'layout', item: Named<S>) => call<number>('save_named', { kind, item }),
+  deleteNamed: (kind: 'preset' | 'layout', id: number) => call<void>('delete_named', { kind, id }),
+
+  // thumbnails
+  thumbsNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_needed', { limit }),
+  saveThumb: (id: number, data: number[], width: number | null, height: number | null, durationMs: number | null) =>
+    call<void>('save_thumb', { id, data, width, height, durationMs }),
+  thumbFailed: (id: number) => call<void>('thumb_failed', { id }),
+
+  // import
+  inspectDrop: (paths: string[]) => call<DropSummary>('inspect_drop', { paths }),
+  checkArchivePassword: (path: string, password: string) => call<void>('check_archive_password', { path, password }),
+  startImport: (paths: string[], target: number | null, password: string | null, archiveFolder = true) =>
+    call<number>('start_import', { paths, target, password, archiveFolder }),
+  cancelImport: (job: number) => call<void>('cancel_import', { job }),
+
+  // outside-vault player
+  scanLocal: (paths: string[]) => call<LocalSet>('scan_local', { paths }),
 };
+
+export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
+  if (!inTauri) return Promise.resolve(() => {});
+  return listen<T>(name, (e) => cb(e.payload));
+}
+
+const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
+
+/** URL for a custom protocol path (Windows uses http://<scheme>.localhost). */
+function proto(scheme: string, path: string): string {
+  return isWindows ? `http://${scheme}.localhost/${path}` : `${scheme}://localhost/${path}`;
+}
+
+export const mediaUrl = (id: number) => proto('vault', `media/${id}`);
+export const thumbUrl = (id: number) => proto('vault', `thumb/${id}`);
+export const localUrl = (key: string) => proto('local', `f/${key}`);
 
 export async function pickFolder(title: string): Promise<string | null> {
   if (!inTauri) return mock.pickFolder();
@@ -153,6 +326,14 @@ const mock = {
         return;
       case 'add_vault':
         throw new Error('Preview: adding vaults works in the real app.');
+      case 'library_folders':
+      case 'query_items':
+      case 'all_tags':
+      case 'list_named':
+      case 'thumbs_needed':
+        return [];
+      case 'folder_view':
+        return { folder: null, subfolders: [], items: [] };
       default:
         return;
     }

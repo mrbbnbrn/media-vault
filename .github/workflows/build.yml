@@ -66,6 +66,15 @@ jobs:
         run: |
           npm ci
           npx tauri build --no-bundle
+      - name: Self-test — pictures, GIFs and video play from the vault in the real Windows web engine
+        shell: pwsh
+        run: |
+          $env:MV_SELFTEST = "1"
+          $env:MV_SELFTEST_OUT = "$PWD\selftest.txt"
+          $p = Start-Process -FilePath "target\release\MediaVault.exe" -PassThru
+          if (-not $p.WaitForExit(240000)) { $p.Kill(); Write-Error "The self-test did not finish in time"; exit 1 }
+          if (Test-Path selftest.txt) { Get-Content selftest.txt } else { Write-Output "no report written" }
+          if ($p.ExitCode -ne 0) { Write-Error "Self-test failed (exit $($p.ExitCode))"; exit 1 }
       - name: Build vault-export.exe
         run: cargo build --release --locked -p vault-export
       - name: Package portable folder
