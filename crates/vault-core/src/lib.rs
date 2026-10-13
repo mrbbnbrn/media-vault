@@ -8,6 +8,7 @@ pub mod crypto;
 pub mod db;
 pub mod error;
 pub mod export;
+pub mod multipart;
 pub mod stream;
 pub mod vault;
 

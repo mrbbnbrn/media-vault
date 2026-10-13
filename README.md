@@ -1,6 +1,6 @@
 # Media Vault
 
-A private, encrypted media library for Windows. See the project spec for the full plan.
+A private, encrypted media library for Windows. Repository: https://github.com/mrbbnbrn/media-vault
 
 ## Status
 
