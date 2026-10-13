@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 3;
+pub const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -205,6 +205,42 @@ fn migrate(conn: &Connection) -> Result<()> {
             return Err(Error::Corrupt(format!(
                 "{bad} broken references after upgrade"
             )));
+        }
+    }
+    if v < 4 {
+        // v4: trash (deleted_at), pinned folders, folder colour and emoji,
+        // date taken, view counts, video bookmarks.
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE folders ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE folders ADD COLUMN color TEXT;
+            ALTER TABLE folders ADD COLUMN emoji TEXT;
+            ALTER TABLE folders ADD COLUMN deleted_at INTEGER;   -- ms; items deleted together share it
+            ALTER TABLE media ADD COLUMN deleted_at INTEGER;     -- ms; NULL = not in the trash
+            ALTER TABLE media ADD COLUMN taken_at INTEGER;       -- s; NULL = not looked at yet, 0 = unknown
+            ALTER TABLE media ADD COLUMN file_mtime INTEGER;     -- s; the original file's modified time
+            ALTER TABLE media ADD COLUMN views INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE media ADD COLUMN last_viewed_at INTEGER;
+            CREATE TABLE bookmarks (
+                id           INTEGER PRIMARY KEY,
+                media_id     INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+                position_ms  INTEGER NOT NULL,
+                note         TEXT NOT NULL DEFAULT '',
+                created_at   INTEGER NOT NULL
+            );
+            CREATE INDEX bookmarks_media ON bookmarks(media_id);
+            DROP INDEX IF EXISTS folders_unique_name;
+            CREATE UNIQUE INDEX folders_unique_name ON folders(IFNULL(parent_id, 0), name COLLATE NOCASE)
+                WHERE deleted_at IS NULL;
+            CREATE INDEX media_deleted ON media(deleted_at) WHERE deleted_at IS NOT NULL;
+            PRAGMA user_version = 4;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
         }
     }
     Ok(())

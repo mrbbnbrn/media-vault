@@ -13,6 +13,8 @@ export interface PlayItem extends Entry {
   durationMs: number | null;
   /** Vault item id (favourites, weights); null for files outside the vault. */
   itemId: number | null;
+  /** Its folder in the vault (where saved frames and GIFs go). */
+  folderId: number | null;
   favourite: boolean;
 }
 
@@ -28,6 +30,7 @@ export function fromItem(i: Item): PlayItem {
     thumb: i.thumb === 'ok' ? thumbUrl(i.id) : null,
     durationMs: i.durationMs,
     itemId: i.id,
+    folderId: i.folderId,
     favourite: i.favourite,
   };
 }
@@ -44,6 +47,7 @@ export function fromLocal(l: LocalItem): PlayItem {
     thumb: null,
     durationMs: null,
     itemId: null,
+    folderId: null,
     favourite: false,
   };
 }

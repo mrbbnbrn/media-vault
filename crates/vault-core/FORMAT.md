@@ -135,9 +135,12 @@ Concatenate the decrypted chunks to get the original file.
 Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 `library.db` and open it with any SQLite tool. Key tables:
 
-- `folders(id, parent_id, name, …)` — the folder tree; `parent_id` NULL = top level
-- `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, weight, …)`
-  — `kind` is image, gif, video, text or pdf; `folder_id` NULL = top level
+- `folders(id, parent_id, name, pinned, color, emoji, deleted_at, …)` — the folder tree; `parent_id` NULL = top level
+- `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, weight, taken_at, views, deleted_at, …)`
+  — `kind` is image, gif, video, text or pdf; `folder_id` NULL = top level.
+  A non-NULL `deleted_at` (milliseconds) means the item or folder is in the app's
+  trash; it is still fully stored and can be recovered like anything else.
+- `bookmarks(id, media_id, position_ms, note)` — bookmarks inside videos
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings

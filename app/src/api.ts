@@ -12,12 +12,27 @@ export interface LockSettings {
   safetyNetMinutes: number;
 }
 
+export interface ViewerSettings {
+  smoothFit: boolean;
+  smoothZoom: boolean;
+  sharpen: boolean;
+  seekSeconds: number;
+  seekBigSeconds: number;
+}
+
+export const DEFAULT_VIEWER: ViewerSettings = { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30 };
+
 export interface AppConfig {
   accent: string;
   lock: LockSettings;
   fullscreenControlsOnMouse: boolean;
   /** Grid previews: everything on screen plays, only the hovered one, or none (always muted). */
   preview: 'all' | 'hover' | 'off';
+  /** While previewing, the hovered video/GIF shows uncropped. */
+  wholeOnHover: boolean;
+  /** Grid shows every item at its true shape (no cropping). */
+  gridShape: boolean;
+  viewer: ViewerSettings;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -61,6 +76,11 @@ export interface Item {
   thumb: 'ok' | 'pending' | 'failed';
   importedAt: number;
   folderId: number | null;
+  /** Best known date taken (seconds). */
+  takenAt: number;
+  views: number;
+  /** In the trash since (ms). */
+  deletedAt: number | null;
 }
 
 export interface Crumb {
@@ -80,6 +100,9 @@ export interface FolderCard {
   cover: number | null;
   coverKind: Kind | null;
   tags: string[];
+  pinned: boolean;
+  color: string | null;
+  emoji: string | null;
 }
 
 export interface FolderView {
@@ -97,6 +120,48 @@ export interface ItemFilter {
   favouritesOnly?: boolean;
   kinds?: Kind[];
   recentDays?: number;
+  /** File name contains each of these. */
+  names?: string[];
+  trash?: boolean;
+}
+
+export interface TrashFolder {
+  id: number;
+  name: string;
+  location: string;
+  deletedAt: number;
+  items: number;
+  bytes: number;
+  cover: number | null;
+}
+
+export interface TrashView {
+  folders: TrashFolder[];
+  items: Item[];
+  totalItems: number;
+  totalBytes: number;
+}
+
+export interface Stats {
+  items: number;
+  bytes: number;
+  folders: number;
+  tags: number;
+  favourites: number;
+  neverViewed: number;
+  totalViews: number;
+  trashItems: number;
+  trashBytes: number;
+  byKind: { kind: Kind; items: number; bytes: number }[];
+  byFolder: { id: number | null; name: string; items: number; bytes: number }[];
+  byMonth: { month: string; items: number; bytes: number }[];
+  mostViewed: Item[];
+}
+
+export interface Bookmark {
+  id: number;
+  positionMs: number;
+  note: string;
 }
 
 export interface TagCount {
@@ -210,16 +275,40 @@ export const api = {
   createFolder: (parent: number | null, name: string) => call<number>('create_folder', { parent, name }),
   renameFolder: (id: number, name: string) => call<void>('rename_folder', { id, name }),
   moveFolder: (id: number, parent: number | null) => call<void>('move_folder', { id, parent }),
+  /** Moves to the trash. */
   deleteFolder: (id: number) => call<number>('delete_folder', { id }),
+  /** Moves to the trash. */
   deleteItems: (ids: number[]) => call<number>('delete_items', { ids }),
+  restoreItems: (ids: number[]) => call<number>('restore_items', { ids }),
+  restoreFolder: (id: number) => call<void>('restore_folder', { id }),
+  trashView: () => call<TrashView>('trash_view'),
+  deleteForever: (ids: number[]) => call<number>('delete_forever', { ids }),
+  deleteFolderForever: (id: number) => call<number>('delete_folder_forever', { id }),
+  emptyTrash: () => call<number>('empty_trash'),
+  setPinned: (id: number, on: boolean) => call<void>('set_pinned', { id, on }),
+  setFolderLook: (id: number, color: string | null, emoji: string | null) => call<void>('set_folder_look', { id, color, emoji }),
+  stats: () => call<Stats>('library_stats'),
+  markViewed: (id: number) => call<void>('mark_viewed', { id }),
+  randomJourney: () => call<{ folder: number | null; item: number } | null>('random_journey'),
+  todaysPick: (day: number) => call<Item | null>('todays_pick', { day }),
+  folderSamples: (folder: number, n: number) => call<number[]>('folder_samples', { folder, n }),
+  bookmarks: (media: number) => call<Bookmark[]>('bookmarks', { media }),
+  addBookmark: (media: number, positionMs: number, note: string) => call<number>('add_bookmark', { media, positionMs, note }),
+  updateBookmark: (id: number, positionMs: number, note: string) => call<void>('update_bookmark', { id, positionMs, note }),
+  deleteBookmark: (id: number) => call<void>('delete_bookmark', { id }),
+  /** Save a file made in the app (frame, GIF) into a folder; returns the new item id. */
+  addFileBytes: (folder: number | null, name: string, data: Uint8Array) =>
+    call<number>('add_file_bytes', { folder, name, data: Array.from(data) }),
   moveItems: (ids: number[], folder: number | null) => call<number>('move_items', { ids, folder }),
   setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
   setCover: (folder: number, media: number | null) => call<void>('set_cover', { folder, media }),
   allTags: () => call<TagCount[]>('all_tags'),
   itemTags: (id: number) => call<{ own: string[]; inherited: [string, string][] }>('item_tags', { id }),
-  tagItems: (ids: number[], tags: string[]) => call<void>('tag_items', { ids, tags }),
-  untagItems: (ids: number[], tag: string) => call<void>('untag_items', { ids, tag }),
+  /** Returns, per tag, the items that newly got it. */
+  tagItems: (ids: number[], tags: string[]) => call<[string, number[]][]>('tag_items', { ids, tags }),
+  /** Returns the items that had the tag. */
+  untagItems: (ids: number[], tag: string) => call<number[]>('untag_items', { ids, tag }),
   tagFolder: (folder: number, tags: string[]) => call<void>('tag_folder', { folder, tags }),
   untagFolder: (folder: number, tag: string) => call<void>('untag_folder', { folder, tag }),
   listNamed: <S,>(kind: 'preset' | 'layout') => call<Named<S>[]>('list_named', { kind }),
@@ -301,6 +390,9 @@ const mock = {
       lock: { idleMinutes: 15, onSystemLock: true, onMinimize: false, safetyNetMinutes: 0 },
       fullscreenControlsOnMouse: true,
       preview: 'hover',
+      wholeOnHover: false,
+      gridShape: false,
+      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30 },
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -362,6 +454,13 @@ const mock = {
         return [];
       case 'storage_info':
         return { files: 14, totalBytes: 3.2e9, packFiles: 4, reclaimableBytes: 0, looseObjects: 0 };
+      case 'trash_view':
+        return { folders: [], items: [], totalItems: 0, totalBytes: 0 };
+      case 'library_stats':
+        return { items: 0, bytes: 0, folders: 0, tags: 0, favourites: 0, neverViewed: 0, totalViews: 0, trashItems: 0, trashBytes: 0, byKind: [], byFolder: [], byMonth: [], mostViewed: [] };
+      case 'bookmarks':
+      case 'folder_samples':
+        return [];
       case 'folder_view':
         return { folder: null, subfolders: [], items: [] };
       default:

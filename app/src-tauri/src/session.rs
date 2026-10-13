@@ -213,8 +213,8 @@ impl Session {
         SessionInfo {
             path: root.display().to_string(),
             name: folder_name(&root),
-            items: count("SELECT COUNT(*) FROM media"),
-            folders: count("SELECT COUNT(*) FROM folders"),
+            items: count("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL"),
+            folders: count("SELECT COUNT(*) FROM folders WHERE deleted_at IS NULL"),
             needs_new_password: self.needs_new_password(),
             restored_from_backup: self
                 .restored_from_backup

@@ -3,8 +3,10 @@
 
 mod activity;
 mod config;
+mod extras;
 mod import;
 mod library;
+mod meta;
 mod protocol;
 mod selftest;
 mod session;
@@ -89,14 +91,33 @@ fn with_session<T>(
 fn install_session(inner: &Inner, s: Session) -> SessionInfo {
     let info = s.info();
     *inner.activity.lock().unwrap() = Activity::new(Instant::now());
-    if let Some(old) = inner.session.lock().unwrap().replace(Arc::new(s)) {
+    let s = Arc::new(s);
+    if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
         old.close();
     }
+    start_background(s);
     let mut cfg = inner.config.lock().unwrap();
     cfg.add_vault(&info.path);
     cfg.last_vault = Some(info.path.clone());
     let _ = config::save(&inner.config_dir, &cfg);
     info
+}
+
+/// Work that runs while a vault is open: empty old trash, find dates taken.
+fn start_background(s: Arc<Session>) {
+    let s2 = s.clone();
+    std::thread::spawn(move || {
+        let orphans = library::purge_trash(&s2.db(), library::TRASH_DAYS);
+        if let Ok(o) = orphans
+            && !o.media.is_empty()
+        {
+            s2.mark_dirty();
+            if s2.save().is_ok() {
+                import::remove_objects(&s2, &o);
+            }
+        }
+    });
+    meta::backfill(s);
 }
 
 async fn blocking<T: Send + 'static>(
@@ -386,14 +407,139 @@ async fn delete_and_clean(
     .await
 }
 
+/// "Delete" puts things in the trash; they can be restored for 30 days.
 #[tauri::command]
-async fn delete_folder(state: State<'_, Shared>, id: i64) -> Result<usize, String> {
-    delete_and_clean(state.inner(), move |c| library::delete_folder(c, id)).await
+async fn delete_folder(state: State<'_, Shared>, id: i64) -> Result<i64, String> {
+    edit_db(state.inner(), move |c| library::trash_folder(c, id)).await
 }
 
 #[tauri::command]
-async fn delete_items(state: State<'_, Shared>, ids: Vec<i64>) -> Result<usize, String> {
-    delete_and_clean(state.inner(), move |c| library::delete_items(c, &ids)).await
+async fn delete_items(state: State<'_, Shared>, ids: Vec<i64>) -> Result<i64, String> {
+    edit_db(state.inner(), move |c| library::trash_items(c, &ids)).await
+}
+
+#[tauri::command]
+async fn restore_items(state: State<'_, Shared>, ids: Vec<i64>) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| library::restore_items(c, &ids)).await
+}
+
+#[tauri::command]
+async fn restore_folder(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| library::restore_folder(c, id)).await
+}
+
+#[tauri::command]
+async fn trash_view(state: State<'_, Shared>) -> Result<library::TrashView, String> {
+    read_db(state.inner(), library::trash_view).await
+}
+
+#[tauri::command]
+async fn delete_forever(state: State<'_, Shared>, ids: Vec<i64>) -> Result<usize, String> {
+    delete_and_clean(state.inner(), move |c| library::delete_forever(c, &ids)).await
+}
+
+#[tauri::command]
+async fn delete_folder_forever(state: State<'_, Shared>, id: i64) -> Result<usize, String> {
+    delete_and_clean(state.inner(), move |c| {
+        library::delete_folder_forever(c, id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn empty_trash(state: State<'_, Shared>) -> Result<usize, String> {
+    delete_and_clean(state.inner(), library::empty_trash).await
+}
+
+#[tauri::command]
+async fn set_pinned(state: State<'_, Shared>, id: i64, on: bool) -> Result<(), String> {
+    edit_db(state.inner(), move |c| library::set_pinned(c, id, on)).await
+}
+
+#[tauri::command]
+async fn set_folder_look(
+    state: State<'_, Shared>,
+    id: i64,
+    color: Option<String>,
+    emoji: Option<String>,
+) -> Result<(), String> {
+    edit_db(state.inner(), move |c| {
+        library::set_folder_look(c, id, color.as_deref(), emoji.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn library_stats(state: State<'_, Shared>) -> Result<extras::Stats, String> {
+    read_db(state.inner(), extras::stats).await
+}
+
+#[tauri::command]
+async fn mark_viewed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| extras::mark_viewed(c, id)).await
+}
+
+#[tauri::command]
+async fn random_journey(state: State<'_, Shared>) -> Result<Option<extras::Pick>, String> {
+    read_db(state.inner(), extras::random_journey).await
+}
+
+#[tauri::command]
+async fn todays_pick(state: State<'_, Shared>, day: i64) -> Result<Option<library::Item>, String> {
+    read_db(state.inner(), move |c| extras::todays_pick(c, day)).await
+}
+
+#[tauri::command]
+async fn folder_samples(state: State<'_, Shared>, folder: i64, n: i64) -> Result<Vec<i64>, String> {
+    read_db(state.inner(), move |c| extras::folder_samples(c, folder, n)).await
+}
+
+#[tauri::command]
+async fn bookmarks(state: State<'_, Shared>, media: i64) -> Result<Vec<extras::Bookmark>, String> {
+    read_db(state.inner(), move |c| extras::bookmarks(c, media)).await
+}
+
+#[tauri::command]
+async fn add_bookmark(
+    state: State<'_, Shared>,
+    media: i64,
+    position_ms: i64,
+    note: String,
+) -> Result<i64, String> {
+    edit_db(state.inner(), move |c| {
+        extras::add_bookmark(c, media, position_ms, &note)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_bookmark(
+    state: State<'_, Shared>,
+    id: i64,
+    position_ms: i64,
+    note: String,
+) -> Result<(), String> {
+    edit_db(state.inner(), move |c| {
+        extras::update_bookmark(c, id, position_ms, &note)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_bookmark(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| extras::delete_bookmark(c, id)).await
+}
+
+/// Save something made in the app (a video frame, a GIF) into a folder.
+#[tauri::command]
+async fn add_file_bytes(
+    state: State<'_, Shared>,
+    folder: Option<i64>,
+    name: String,
+    data: Vec<u8>,
+) -> Result<i64, String> {
+    let s = sess(state.inner())?;
+    blocking(move || import::add_bytes(&s, folder, &name, &data)).await
 }
 
 #[tauri::command]
@@ -439,12 +585,16 @@ async fn tag_items(
     state: State<'_, Shared>,
     ids: Vec<i64>,
     tags: Vec<String>,
-) -> Result<(), String> {
+) -> Result<Vec<(String, Vec<i64>)>, String> {
     edit_db(state.inner(), move |c| library::tag_items(c, &ids, &tags)).await
 }
 
 #[tauri::command]
-async fn untag_items(state: State<'_, Shared>, ids: Vec<i64>, tag: String) -> Result<(), String> {
+async fn untag_items(
+    state: State<'_, Shared>,
+    ids: Vec<i64>,
+    tag: String,
+) -> Result<Vec<i64>, String> {
     edit_db(state.inner(), move |c| library::untag_items(c, &ids, &tag)).await
 }
 
@@ -856,6 +1006,24 @@ pub fn run() {
             move_folder,
             delete_folder,
             delete_items,
+            restore_items,
+            restore_folder,
+            trash_view,
+            delete_forever,
+            delete_folder_forever,
+            empty_trash,
+            set_pinned,
+            set_folder_look,
+            library_stats,
+            mark_viewed,
+            random_journey,
+            todays_pick,
+            folder_samples,
+            bookmarks,
+            add_bookmark,
+            update_bookmark,
+            delete_bookmark,
+            add_file_bytes,
             move_items,
             set_favourite,
             set_weight,

@@ -1,13 +1,15 @@
-// Thumbnail grid that only draws the rows on screen, so 10,000+ items scroll
+// Thumbnail grid that only draws the tiles on screen, so 10,000+ items scroll
 // smoothly. Click to select (Ctrl/Shift for more), double-click to open, and
 // drag a selection onto any folder to move it there.
+//
+// Layouts: equal tiles ("grid") or every item at its true shape ("shape"),
+// optionally in groups with a header (the timeline's months).
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { mediaUrl, thumbUrl, type Item } from '../api';
+import { layoutGrid, visibleRange, type Group, HEADER_H } from '../gridlayout';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
-
-const GAP = 10;
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
 function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
@@ -22,18 +24,23 @@ export function MediaGrid(props: {
   onSelect: (sel: Set<number>, anchor: number | null) => void;
   anchor: number | null;
   onOpen: (item: Item) => void;
-  onDropOnFolder: (ids: number[], target: string) => void;
+  onDropOnFolder?: (ids: number[], target: string) => void;
   onContext: (e: React.MouseEvent, item: Item) => void;
   /** Videos and GIFs play (muted) in the grid: all on screen, only the hovered one, or none. */
   preview: 'all' | 'hover' | 'off';
+  /** The hovered video/GIF shows uncropped (grid mode only). */
+  wholeOnHover?: boolean;
+  layout?: 'grid' | 'shape';
+  groups?: Group[];
   scroller: React.RefObject<HTMLElement | null>;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
-  const [range, setRange] = useState({ from: 0, to: 40 });
+  const [view, setView] = useState({ top: 0, bottom: 1200 });
   const [ready, setReady] = useState<Set<number>>(new Set());
   const [drag, setDrag] = useState<{ x: number; y: number; n: number; over: string | null } | null>(null);
+  const mode = props.layout ?? 'grid';
 
   useEffect(() => onThumb((id) => setReady((r) => new Set(r).add(id))), []);
 
@@ -46,10 +53,10 @@ export function MediaGrid(props: {
     return () => ro.disconnect();
   }, []);
 
-  const cols = Math.max(1, Math.floor((width + GAP) / (props.tile + GAP)));
-  const tileW = (width - GAP * (cols - 1)) / cols;
-  const rowH = tileW * 0.75 + GAP;
-  const rows = Math.ceil(props.items.length / cols);
+  const layout = useMemo(
+    () => layoutGrid(props.items, width, props.tile, mode, props.groups),
+    [props.items, width, props.tile, mode, props.groups],
+  );
 
   useEffect(() => {
     const sc = props.scroller.current;
@@ -57,9 +64,8 @@ export function MediaGrid(props: {
     if (!sc || !el) return;
     const update = () => {
       const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
-      const first = Math.max(0, Math.floor((sc.scrollTop - top) / rowH) - 3);
-      const last = Math.min(rows, Math.ceil((sc.scrollTop - top + sc.clientHeight) / rowH) + 3);
-      setRange({ from: first * cols, to: Math.min(props.items.length, last * cols) });
+      const t = sc.scrollTop - top;
+      setView({ top: t, bottom: t + sc.clientHeight });
     };
     update();
     sc.addEventListener('scroll', update, { passive: true });
@@ -68,7 +74,9 @@ export function MediaGrid(props: {
       sc.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
     };
-  }, [props.scroller, rowH, rows, cols, props.items.length]);
+  }, [props.scroller, layout]);
+
+  const [from, to] = visibleRange(layout.boxes, view.top - 600, view.bottom + 600);
 
   const click = (e: React.MouseEvent, item: Item, i: number) => {
     const sel = new Set(props.selected);
@@ -94,7 +102,7 @@ export function MediaGrid(props: {
 
   // Pointer-based dragging (works the same with files dropped from Windows enabled).
   const startDrag = (e: React.PointerEvent, item: Item) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !props.onDropOnFolder) return;
     const x0 = e.clientX;
     const y0 = e.clientY;
     let active = false;
@@ -116,7 +124,7 @@ export function MediaGrid(props: {
       window.removeEventListener('pointerup', up);
       over?.classList.remove('drop-over');
       setDrag(null);
-      if (active && over?.dataset.drop) props.onDropOnFolder(ids, over.dataset.drop);
+      if (active && over?.dataset.drop) props.onDropOnFolder?.(ids, over.dataset.drop);
       if (active) {
         // Don't treat the end of a drag as a click.
         const block = (ce: MouseEvent) => {
@@ -131,19 +139,43 @@ export function MediaGrid(props: {
     window.addEventListener('pointerup', up);
   };
 
-  const visible = props.items.slice(range.from, range.to);
+  // The hovered video/GIF uncropped: same scale as in its tile, the tile
+  // just grows in the direction that was cut off. Kept inside the view.
+  const hoverIdx = hover != null ? props.items.findIndex((x) => x.id === hover) : -1;
+  const hovered = hoverIdx >= 0 ? props.items[hoverIdx] : null;
+  let pop: { left: number; top: number; w: number; h: number; item: Item } | null = null;
+  if (props.wholeOnHover && mode === 'grid' && hovered && live(hovered, props.preview, hover) && hovered.width && hovered.height) {
+    const b = layout.boxes[hoverIdx];
+    const s = Math.max(b.w / hovered.width, b.h / hovered.height);
+    const w = hovered.width * s;
+    const h = hovered.height * s;
+    if (w > b.w + 2 || h > b.h + 2) {
+      let left = b.x + (b.w - w) / 2;
+      let top = b.y + (b.h - h) / 2;
+      left = Math.max(0, Math.min(width - w, left));
+      const vTop = Math.max(0, view.top + 4);
+      top = Math.max(vTop, Math.min(view.bottom - 4 - h, top));
+      pop = { left, top, w, h, item: hovered };
+    }
+  }
+
   return (
-    <div ref={ref} className="mgrid" style={{ height: Math.max(0, rows * rowH - GAP) }} role="grid" aria-label="Media">
-      {visible.map((it, k) => {
-        const i = range.from + k;
-        const r = Math.floor(i / cols);
-        const c = i % cols;
+    <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height }} role="grid" aria-label="Media">
+      {layout.headers.filter((h) => h.y + HEADER_H >= view.top - 600 && h.y <= view.bottom + 600).map((h) => (
+        <div key={h.y} className="group-head" style={{ top: h.y, height: HEADER_H }}>
+          <b>{h.label}</b> <span className="faint">{h.count.toLocaleString()}</span>
+        </div>
+      ))}
+      {props.items.slice(from, to).map((it, k) => {
+        const i = from + k;
+        const b = layout.boxes[i];
         const hasThumb = it.thumb === 'ok' || ready.has(it.id);
         const sel = props.selected.has(it.id);
+        const playing = live(it, props.preview, hover) && pop?.item.id !== it.id;
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.name}
             className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`}
-            style={{ left: c * (tileW + GAP), top: r * rowH, width: tileW, height: tileW * 0.75 }}
+            style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
             onClick={(e) => click(e, it, i)} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
             onContextMenu={(e) => {
@@ -158,10 +190,10 @@ export function MediaGrid(props: {
             ) : (
               <span className="tile-msg"><span className="spinner small" /></span>
             )}
-            {live(it, props.preview, hover) && it.kind === 'video' && (
+            {playing && it.kind === 'video' && (
               <video className="live" src={mediaUrl(it.id)} muted loop autoPlay playsInline preload="auto" />
             )}
-            {live(it, props.preview, hover) && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
+            {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
             {sel && <span className="tick" aria-hidden="true">✓</span>}
             {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
             {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
@@ -172,6 +204,13 @@ export function MediaGrid(props: {
           </button>
         );
       })}
+      {pop && (
+        <div className="whole-pop" style={{ left: pop.left, top: pop.top, width: pop.w, height: pop.h }} aria-hidden="true">
+          {pop.item.kind === 'video'
+            ? <video key={pop.item.id} src={mediaUrl(pop.item.id)} muted loop autoPlay playsInline preload="auto" />
+            : <img key={pop.item.id} src={mediaUrl(pop.item.id)} alt="" draggable={false} />}
+        </div>
+      )}
       {drag && (
         <div className="drag-ghost" style={{ left: drag.x + 14, top: drag.y + 10 }}>
           {drag.over ? `Move ${drag.n} item${drag.n > 1 ? 's' : ''} here` : `${drag.n} item${drag.n > 1 ? 's' : ''}`}

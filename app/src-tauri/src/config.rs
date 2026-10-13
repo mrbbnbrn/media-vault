@@ -35,6 +35,34 @@ impl Default for LockSettings {
     }
 }
 
+/// How pictures are scaled and how far the arrow keys jump in videos.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ViewerSettings {
+    /// High-quality smoothing when a picture is shrunk to fit the window.
+    pub smooth_fit: bool,
+    /// Smoothing when zoomed in past 100%; off shows crisp square pixels.
+    pub smooth_zoom: bool,
+    /// Light sharpening after smoothing.
+    pub sharpen: bool,
+    /// ←/→ in videos jump this many seconds…
+    pub seek_seconds: f64,
+    /// …and Shift+←/→ this many.
+    pub seek_big_seconds: f64,
+}
+
+impl Default for ViewerSettings {
+    fn default() -> Self {
+        Self {
+            smooth_fit: true,
+            smooth_zoom: true,
+            sharpen: false,
+            seek_seconds: 5.0,
+            seek_big_seconds: 30.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase", default)]
 #[derive(Default)]
@@ -52,6 +80,11 @@ pub struct AppConfig {
     /// Grid previews of videos and GIFs: "all" (everything on screen plays,
     /// muted), "hover" (the one under the mouse plays, muted) or "off".
     pub preview: String,
+    /// While previewing, the hovered video/GIF shows uncropped.
+    pub whole_on_hover: bool,
+    /// Grid shows every item at its true shape (no cropping).
+    pub grid_shape: bool,
+    pub viewer: ViewerSettings,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -65,6 +98,9 @@ impl Default for AppConfig {
             lock: LockSettings::default(),
             fullscreen_controls_on_mouse: true,
             preview: "hover".into(),
+            whole_on_hover: false,
+            grid_shape: false,
+            viewer: ViewerSettings::default(),
             vaults: Vec::new(),
             last_vault: None,
         }
@@ -81,6 +117,11 @@ impl AppConfig {
         if !["all", "hover", "off"].contains(&self.preview.as_str()) {
             self.preview = "hover".into();
         }
+        let v = &mut self.viewer;
+        let clamp =
+            |x: f64, lo: f64, hi: f64, d: f64| if x.is_finite() { x.clamp(lo, hi) } else { d };
+        v.seek_seconds = clamp(v.seek_seconds, 1.0, 600.0, 5.0);
+        v.seek_big_seconds = clamp(v.seek_big_seconds, 1.0, 3600.0, 30.0);
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();

@@ -371,6 +371,17 @@ impl Ctx<'_> {
     }
 }
 
+/// How much of the start of each file is kept in memory while importing:
+/// enough for format sniffing and the EXIF date.
+const HEAD_KEEP: usize = 256 * 1024;
+
+fn secs_of(t: std::time::SystemTime) -> Option<i64> {
+    t.duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() as i64)
+        .filter(|s| *s > 0)
+}
+
 /// Reads from the source while counting bytes, keeping the first bytes (for
 /// format sniffing) and stopping promptly on cancel or lock.
 struct Tap<'a, R: Read> {
@@ -387,8 +398,8 @@ impl<R: Read> Read for Tap<'_, R> {
             return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
         }
         let n = self.inner.read(buf)?;
-        if self.head.len() < 32 {
-            let take = (32 - self.head.len()).min(n);
+        if self.head.len() < HEAD_KEEP {
+            let take = (HEAD_KEEP - self.head.len()).min(n);
             self.head.extend_from_slice(&buf[..take]);
         }
         self.bytes.fetch_add(n as u64, Ordering::Relaxed);
@@ -407,6 +418,7 @@ fn add_one(
     folder: Option<i64>,
     name: &str,
     reader: &mut dyn Read,
+    mtime: Option<i64>,
 ) -> Result<Added, String> {
     let mut tap = Tap {
         inner: reader,
@@ -425,7 +437,7 @@ fn add_one(
     let db = ctx.s.db();
     let dup: bool = db
         .query_row(
-            "SELECT 1 FROM media WHERE sha256 = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0)",
+            "SELECT 1 FROM media WHERE sha256 = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0) AND deleted_at IS NULL",
             params![written.sha256_hex, folder],
             |_| Ok(()),
         )
@@ -439,9 +451,19 @@ fn add_one(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| name.to_string());
+    // Date taken: pictures carry it near the start; a video whose header is
+    // at the end is looked at later by the background pass (NULL = not yet).
+    let ext = ext_of(name);
+    let taken: Option<i64> =
+        match crate::meta::media_date::<std::io::Cursor<&[u8]>>(&ext, &tap.head, None) {
+            Some(t) => Some(t),
+            None if matches!(ext.as_str(), "mp4" | "m4v") && tap.head.len() >= HEAD_KEEP => None,
+            None => Some(0),
+        };
     db.execute(
-        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![id.to_hex(), folder, kind, display, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs()],
+        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at, file_mtime) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+        params![id.to_hex(), folder, kind, display, ext, written.plaintext_len as i64, written.sha256_hex, now_secs(), taken, mtime],
     )
     .map_err(|e| e.to_string())?;
     drop(db);
@@ -496,9 +518,13 @@ fn import_file(ctx: &mut Ctx, folder: Option<i64>, path: &Path) {
         ctx.done += 1;
         return;
     }
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(secs_of);
     let r = File::open(path)
         .map_err(|e| e.to_string())
-        .and_then(|mut f| add_one(ctx, folder, &name, &mut f));
+        .and_then(|mut f| add_one(ctx, folder, &name, &mut f, mtime));
     record(ctx, &name, r);
 }
 
@@ -612,7 +638,12 @@ fn import_archive(
                 return Ok(true);
             }
         };
-        let r = add_one(ctx, folder, &name, rd);
+        let mtime = if entry.has_last_modified_date {
+            secs_of(entry.last_modified_date.into())
+        } else {
+            None
+        };
+        let r = add_one(ctx, folder, &name, rd, mtime);
         if let Err(e) = &r
             && !ctx.stopped()
         {
@@ -725,6 +756,45 @@ pub fn run(
         let _ = s.save();
     }
     ctx.report
+}
+
+/// Add a file made inside the app (a saved video frame, a GIF made from a
+/// video) straight from memory. Returns the new item's id.
+pub fn add_bytes(
+    s: &Session,
+    folder: Option<i64>,
+    name: &str,
+    bytes: &[u8],
+) -> Result<i64, String> {
+    let kind = kind_for(name, bytes).ok_or("That file type can't be added.")?;
+    if let Some(f) = folder {
+        let live: bool = s
+            .db()
+            .query_row(
+                "SELECT 1 FROM folders WHERE id = ? AND deleted_at IS NULL",
+                [f],
+                |_| Ok(()),
+            )
+            .is_ok();
+        if !live {
+            return Err("The folder no longer exists.".into());
+        }
+    }
+    let (id, written) = s
+        .vault()
+        .add_object(ObjectKind::Media, bytes)
+        .map_err(|e| e.to_string())?;
+    let db = s.db();
+    db.execute(
+        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
+        params![id.to_hex(), folder, kind, name, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs()],
+    )
+    .map_err(|e| e.to_string())?;
+    let new_id = db.last_insert_rowid();
+    drop(db);
+    s.mark_dirty();
+    Ok(new_id)
 }
 
 /// Remove encrypted files that the library no longer references.

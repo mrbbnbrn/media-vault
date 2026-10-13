@@ -1,22 +1,31 @@
-// The library: folder tree, folder cards with covers, the media grid, tag
-// search, selection actions, and importing by drag and drop.
+// The library: folder tree, folder cards with covers, the media grid, search
+// by tag and file name, the timeline, the trash, statistics, selection
+// actions with undo, and importing by drag and drop.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
-  type StorageDone, type StorageInfo, type StorageProgress, type TagCount,
+  type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
 } from '../api';
 import type { Nav } from '../App';
+import { ContactSheet } from '../components/ContactSheet';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
+import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
-  ChevronIcon, CloseIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, ImportIcon, LockIcon, MoveIcon, PlayIcon, PlusIcon, SearchIcon, TagIcon, TrashIcon, WeightIcon,
+  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
+  PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { MediaGrid } from '../components/MediaGrid';
+import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
+import { StatsView } from '../components/StatsView';
+import { TodaysPickCard, useTodaysPick } from '../components/TodaysPick';
 import { setDropHandler } from '../drop';
+import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
 import { formatBytes } from '../theme';
+import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 
 export type LibView =
   | { kind: 'folders' }
@@ -24,7 +33,10 @@ export type LibView =
   | { kind: 'all' }
   | { kind: 'favourites' }
   | { kind: 'recent' }
-  | { kind: 'search'; tags: string[] };
+  | { kind: 'timeline' }
+  | { kind: 'trash' }
+  | { kind: 'stats' }
+  | { kind: 'search'; tags: string[]; names: string[] };
 
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
@@ -32,12 +44,16 @@ type Dialog =
   | { t: 'moveFolder'; folder: FolderCard }
   | { t: 'deleteFolder'; folder: FolderCard }
   | { t: 'folderTag'; folder: FolderCard }
+  | { t: 'look'; folder: FolderCard }
   | { t: 'moveItems'; ids: number[] }
-  | { t: 'deleteItems'; ids: number[] }
   | { t: 'tagItems'; ids: number[] }
   | { t: 'weight'; ids: number[]; current: number }
   | { t: 'archivePassword'; paths: string[]; target: number | null; summary: DropSummary }
-  | { t: 'cover'; folder: FolderCard };
+  | { t: 'cover'; folder: FolderCard }
+  | { t: 'emptyTrash' }
+  | { t: 'forever'; ids: number[]; folder: number | null; what: string }
+  | { t: 'shortcuts' }
+  | { t: 'sheet' };
 
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
@@ -62,6 +78,8 @@ const PREVIEWS: { id: 'all' | 'hover' | 'off'; label: string; hint: string }[] =
   { id: 'off', label: 'No previews', hint: 'still pictures' },
 ];
 
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
 function viewTitle(v: LibView, folder: FolderCard | null): string {
   switch (v.kind) {
     case 'folders': return 'All folders';
@@ -69,16 +87,39 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
     case 'all': return 'All media';
     case 'favourites': return 'Favourites';
     case 'recent': return 'Recently added';
+    case 'timeline': return 'Timeline';
+    case 'trash': return 'Trash';
+    case 'stats': return 'Statistics';
     case 'search': return 'Search';
   }
 }
 
+function searchTitle(v: { tags: string[]; names: string[] }) {
+  const parts = [
+    ...v.tags.map((t) => `tagged “${t}”`),
+    ...v.names.map((n) => `name contains “${n}”`),
+  ];
+  return parts.join(' + ');
+}
+
+/** Group ids by a value, e.g. previous folder or previous weight (for undo). */
+function groupBy<K>(ids: number[], key: (id: number) => K): Map<K, number[]> {
+  const m = new Map<K, number[]>();
+  for (const id of ids) {
+    const k = key(id);
+    m.set(k, [...(m.get(k) ?? []), id]);
+  }
+  return m;
+}
+
 export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setView: (v: LibView) => void }) {
   const s = nav.app.session!;
+  const cfg = nav.app.config;
   const [folders, setFolders] = useState<FolderCard[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [subfolders, setSubfolders] = useState<FolderCard[]>([]);
   const [folder, setFolder] = useState<FolderCard | null>(null);
+  const [trash, setTrash] = useState<TrashView | null>(null);
   const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -98,7 +139,13 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const [storageJob, setStorageJob] = useState<StorageProgress | null>(null);
   const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
   const [hoverCard, setHoverCard] = useState<number | null>(null);
-  const preview = nav.app.config.preview ?? 'hover';
+  const [samples, setSamples] = useState<Record<number, number[]>>({});
+  const [cycle, setCycle] = useState(0);
+  const [note, setNote] = useState<{ text: string; at: number } | null>(null);
+  const undoTop = useUndoTop();
+  const [pick, dismissPick] = useTodaysPick(s.path);
+  const preview = cfg.preview ?? 'hover';
+  const shape = !!cfg.gridShape;
   const scroller = useRef<HTMLElement>(null);
 
   useEffect(() => {
@@ -114,9 +161,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       b.then((u) => u());
     };
   }, []);
+  // Undo history belongs to this unlock only.
+  useEffect(() => () => clearUndo(), [s.path]);
 
-  const setPreview = async (mode: 'all' | 'hover' | 'off') => {
-    await api.saveConfig({ ...nav.app.config, preview: mode });
+  const saveCfg = async (patch: Partial<typeof cfg>) => {
+    await api.saveConfig({ ...cfg, ...patch });
     await nav.refresh();
   };
 
@@ -126,6 +175,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       const [f, t] = await Promise.all([api.folders(), api.allTags()]);
       setFolders(f);
       setTags(t);
+      setTrash(null);
       if (view.kind === 'folder') {
         const fv = await api.folderView(view.id);
         setFolder(fv.folder);
@@ -134,15 +184,20 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       } else {
         setFolder(null);
         setSubfolders([]);
-        if (view.kind === 'folders') setItems([]);
-        else if (view.kind === 'all') setItems(await api.queryItems({}));
+        if (view.kind === 'folders' || view.kind === 'stats') setItems([]);
+        else if (view.kind === 'all' || view.kind === 'timeline') setItems(await api.queryItems({}));
         else if (view.kind === 'favourites') setItems(await api.queryItems({ favouritesOnly: true }));
         else if (view.kind === 'recent') setItems(await api.queryItems({ recentDays: 14 }));
-        else if (view.kind === 'search') setItems(await api.queryItems({ tags: view.tags }));
+        else if (view.kind === 'search') setItems(await api.queryItems({ tags: view.tags, names: view.names }));
+        else if (view.kind === 'trash') {
+          const t2 = await api.trashView();
+          setTrash(t2);
+          setItems(t2.items);
+        }
       }
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     } finally {
       setLoading(false);
     }
@@ -163,6 +218,152 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     return () => clearTimeout(t);
   }, [coverBump]);
 
+  // ---- undo -------------------------------------------------------------------------------
+
+  /** Record an action that can be undone, and say what happened. */
+  const did = (label: string, undo: () => Promise<unknown>) => {
+    pushUndo(label, undo);
+    setNote({ text: label, at: Date.now() });
+  };
+  const undo = useCallback(async () => {
+    try {
+      const label = await undoLast();
+      if (label) {
+        setNote({ text: `Undone: ${label}`, at: 0 });
+        await reload();
+        nav.refresh().catch(() => {});
+      }
+    } catch (e) {
+      setError(`Couldn't undo: ${errText(e)}`);
+    }
+  }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        undo();
+      } else if (e.key === 'Delete' && keyActions.current.selected.size) {
+        e.preventDefault();
+        keyActions.current.del();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [undo]);
+  useEffect(() => {
+    if (!note) return;
+    const t = setTimeout(() => setNote(null), 8000);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  const showHelp = useCallback(() => setDialog({ t: 'shortcuts' }), []);
+  useHelpKey(showHelp);
+
+  // ---- actions (all undoable) --------------------------------------------------------------
+
+  const itemById = (id: number) => items.find((i) => i.id === id);
+
+  const act = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn();
+      await reload();
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+
+  const moveItems = async (ids: number[], target: number | null) => {
+    const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
+    await api.moveItems(ids, target);
+    const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
+    did(`Moved ${plural(ids.length, 'item')} to “${name}”`, async () => {
+      for (const [f, g] of before) await api.moveItems(g, f);
+    });
+    setSelected(new Set());
+    await reload();
+  };
+  const setFav = (ids: number[], on: boolean) => act(async () => {
+    const before = groupBy(ids, (id) => !!itemById(id)?.favourite);
+    await api.setFavourite(ids, on);
+    did(on ? `Added ${plural(ids.length, 'item')} to favourites` : `Removed ${plural(ids.length, 'item')} from favourites`, async () => {
+      for (const [f, g] of before) await api.setFavourite(g, f);
+    });
+  });
+  const setWeight = async (ids: number[], w: number) => {
+    const before = groupBy(ids, (id) => itemById(id)?.weight ?? 1);
+    await api.setWeight(ids, w);
+    did(`Weight ${w} for ${plural(ids.length, 'item')}`, async () => {
+      for (const [old, g] of before) await api.setWeight(g, old);
+    });
+    await reload();
+  };
+  const trashItems = async (ids: number[]) => {
+    await api.deleteItems(ids);
+    did(`Moved ${plural(ids.length, 'item')} to the trash`, () => api.restoreItems(ids));
+    setSelected(new Set());
+    await reload();
+    nav.refresh().catch(() => {});
+  };
+  const trashFolder = async (f: FolderCard) => {
+    await api.deleteFolder(f.id);
+    did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
+    if (view.kind === 'folder' && (view.id === f.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folders' });
+    else await reload();
+    nav.refresh().catch(() => {});
+  };
+  const renameFolder = async (f: FolderCard, name: string) => {
+    await api.renameFolder(f.id, name);
+    did(`Renamed “${f.name}”`, () => api.renameFolder(f.id, f.name));
+    await reload();
+  };
+  const moveFolder = async (f: FolderCard, parent: number | null) => {
+    await api.moveFolder(f.id, parent);
+    did(`Moved “${f.name}”`, () => api.moveFolder(f.id, f.parentId));
+    await reload();
+  };
+  const tagFolder = async (f: FolderCard, list: string[]) => {
+    const fresh = list.map((t) => t.trim().replace(/^#/, '')).filter((t) => t && !f.tags.some((x) => x.toLowerCase() === t.toLowerCase()));
+    await api.tagFolder(f.id, list);
+    if (fresh.length) did(`Tagged “${f.name}”`, async () => { for (const t of fresh) await api.untagFolder(f.id, t); });
+    await reload();
+  };
+  const untagFolder = (f: FolderCard, t: string) => act(async () => {
+    await api.untagFolder(f.id, t);
+    did(`Removed tag “${t}” from “${f.name}”`, () => api.tagFolder(f.id, [t]));
+  });
+  const setPinned = (f: FolderCard, on: boolean) => act(async () => {
+    await api.setPinned(f.id, on);
+    did(on ? `Pinned “${f.name}”` : `Unpinned “${f.name}”`, () => api.setPinned(f.id, !on));
+  });
+  const setLook = async (f: FolderCard, color: string | null, emoji: string | null) => {
+    await api.setFolderLook(f.id, color, emoji);
+    did(`Changed the look of “${f.name}”`, () => api.setFolderLook(f.id, f.color, f.emoji));
+    await reload();
+  };
+  const restoreItems = (ids: number[]) => act(async () => {
+    const homeless = await api.restoreItems(ids);
+    did(`Restored ${plural(ids.length, 'item')}${homeless ? ` (${homeless} to the top level, their folder is gone)` : ''}`, () => api.deleteItems(ids));
+    setSelected(new Set());
+    nav.refresh().catch(() => {});
+  });
+  const restoreFolder = (id: number, name: string) => act(async () => {
+    await api.restoreFolder(id);
+    did(`Restored “${name}”`, () => api.deleteFolder(id));
+    nav.refresh().catch(() => {});
+  });
+
+  // The Delete key acts on the current selection.
+  const keyActions = useRef({ selected, del: () => {} });
+  keyActions.current = {
+    selected,
+    del: () => {
+      const ids = [...selected];
+      if (view.kind === 'trash') setDialog({ t: 'forever', ids, folder: null, what: plural(ids.length, 'item') });
+      else trashItems(ids);
+    },
+  };
+
   // ---- import ----------------------------------------------------------------------
 
   const currentTarget = (): number | null => (view.kind === 'folder' ? view.id : null);
@@ -175,12 +376,12 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         return;
       }
       if (!summary.files && !summary.archives.length) {
-        setError('Nothing to import there. Supported: mp4, m4v, webm, gif, webp, png, jpg and .7z archives.');
+        setError('Nothing to import there. Supported: pictures (jpg, png, webp), GIFs, videos (mp4, m4v, webm), text files, PDFs and .7z archives.');
         return;
       }
       await api.startImport(paths, target, null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   }, []);
 
@@ -216,57 +417,83 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const pickAndImport = async (directory: boolean) => {
     if (!inTauri) return;
     const r = await open({ directory, multiple: true, title: directory ? 'Import folders' : 'Import files or .7z archives',
-      filters: directory ? undefined : [{ name: 'Media and archives', extensions: ['mp4', 'm4v', 'webm', 'gif', 'webp', 'png', 'jpg', 'jpeg', '7z', '001'] }] });
+      filters: directory ? undefined : [{ name: 'Media, documents and archives', extensions: ['mp4', 'm4v', 'webm', 'gif', 'webp', 'png', 'jpg', 'jpeg', 'pdf', 'txt', 'md', 'log', 'csv', 'json', 'srt', '7z', '001'] }] });
     const paths = Array.isArray(r) ? r : r ? [r] : [];
     if (paths.length) beginImport(paths, currentTarget());
   };
 
   // ---- derived -------------------------------------------------------------------------
 
+  const timeline = view.kind === 'timeline';
+  const inTrash = view.kind === 'trash';
   const shown = useMemo(() => {
     const k = kind === 'any' ? items : items.filter((i) => i.kind === kind);
+    if (timeline) {
+      const dir = sort === 'oldest' ? 1 : -1;
+      return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
+    }
+    if (inTrash) return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt })), sort);
-  }, [items, kind, sort]);
+  }, [items, kind, sort, timeline, inTrash]);
+  const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
 
   const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
+  const pinned = folders.filter((f) => f.pinned);
   const selIds = [...selected];
+  const gridView = !['folders', 'stats'].includes(view.kind);
 
-  const act = async (fn: () => Promise<unknown>) => {
-    try {
-      await fn();
-      await reload();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    }
-  };
-
-  const playItems = (auto: boolean, startId?: number, onlySelected = false) => {
-    const list = onlySelected && selected.size > 1 ? shown.filter((i) => selected.has(i.id)) : shown;
+  const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
     if (!list.length) return;
     nav.go({
       name: 'viewer',
       items: list.map(fromItem),
       startKey: startId != null ? `v${startId}` : undefined,
-      title: viewTitle(view, folder),
+      title,
       auto,
       back: view,
-      order: sort,
+      order: timeline ? undefined : sort,
     });
+  };
+  const playItems = (auto: boolean, startId?: number, onlySelected = false) => {
+    const list = onlySelected && selected.size > 1 ? shown.filter((i) => selected.has(i.id)) : shown;
+    playList(list, auto, startId);
+  };
+
+  /** Open an item with its own folder as the playlist. */
+  const openInFolder = async (it: Item) => {
+    try {
+      const list = await api.queryItems({ folder: it.folderId });
+      const name = it.folderId == null ? 'Top level' : folders.find((f) => f.id === it.folderId)?.name ?? 'Folder';
+      nav.go({ name: 'viewer', items: list.map(fromItem), startKey: `v${it.id}`, title: name, auto: false, back: { kind: 'folder', id: it.folderId } });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+  const randomJourney = async () => {
+    try {
+      const p = await api.randomJourney();
+      if (!p) return setError('Nothing to visit yet — import some pictures or videos first.');
+      openInFolder({ id: p.item, folderId: p.folder } as Item);
+    } catch (e) {
+      setError(errText(e));
+    }
   };
 
   const openFolder = (id: number | null) => setView({ kind: 'folder', id });
-  const folderMenu = (f: FolderCard) => [
+  const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     { label: 'Slideshow', onSelect: async () => {
       const list = await api.queryItems({ folder: f.id, recursive: true });
       if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
     } },
-    { label: 'New folder inside…', onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
-    { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
-    { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
+    { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
+    { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
+    { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
+    { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
+    { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
-    { label: 'Delete…', danger: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
+    { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
@@ -284,7 +511,15 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     }
     const ids = [...sel];
     const many = ids.length > 1;
-    const allFav = ids.every((id) => items.find((x) => x.id === id)?.favourite);
+    if (inTrash) {
+      setCtx({ x: e.clientX, y: e.clientY, title: many ? `${ids.length} items` : it.name, items: [
+        { label: 'Open', onSelect: () => playItems(false, it.id) },
+        { label: many ? `Restore ${ids.length} items` : 'Restore', onSelect: () => restoreItems(ids) },
+        { label: 'Delete for good…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'forever', ids, folder: null, what: many ? `${ids.length} items` : `“${it.name}”` }) },
+      ] });
+      return;
+    }
+    const allFav = ids.every((id) => itemById(id)?.favourite);
     const home = it.folderId != null ? folders.find((f) => f.id === it.folderId) : null;
     setCtx({
       x: e.clientX,
@@ -293,40 +528,66 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       items: [
         { label: 'Open', onSelect: () => playItems(false, it.id) },
         { label: many ? 'Play these as a slideshow' : 'Slideshow from here', onSelect: () => playItems(true, it.id, many) },
-        { label: allFav ? 'Remove from favourites' : 'Add to favourites', onSelect: () => act(() => api.setFavourite(ids, !allFav)) },
+        ...(view.kind !== 'folder' && !many ? [{ label: 'Show in its folder', onSelect: () => openFolder(it.folderId) }] : []),
+        { label: allFav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => setFav(ids, !allFav) },
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
         { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }) },
         ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
-        { label: many ? `Delete ${ids.length} items…` : 'Delete…', danger: true, onSelect: () => setDialog({ t: 'deleteItems', ids }) },
+        { label: many ? `Delete ${ids.length} items` : 'Delete', hint: 'to the trash', danger: true, sepBefore: true, onSelect: () => trashItems(ids) },
       ],
     });
   };
 
+  // Living folder cards: hovering a card cycles through a few items inside.
+  useEffect(() => {
+    if (hoverCard == null) return;
+    const id = hoverCard;
+    const t = setTimeout(() => {
+      if (!samples[id]) api.folderSamples(id, 8).then((v) => setSamples((m) => ({ ...m, [id]: v }))).catch(() => {});
+    }, 200);
+    setCycle(0);
+    const iv = setInterval(() => setCycle((c) => c + 1), 900);
+    return () => {
+      clearTimeout(t);
+      clearInterval(iv);
+    };
+  }, [hoverCard]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const coverView = (f: FolderCard) => {
+    const hovered = hoverCard === f.id;
+    const playing = preview === 'all' || (preview === 'hover' && hovered);
+    const animated = f.coverKind === 'video' || f.coverKind === 'gif';
+    if (f.cover && playing && animated) {
+      const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+      if (f.coverKind === 'video') return <>{still}<video src={mediaUrl(f.cover)} muted loop autoPlay playsInline preload="auto" /></>;
+      return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
+    }
+    const list = samples[f.id];
+    if (hovered && list && list.length > 1 && cycle > 0) {
+      const id = list[(cycle - 1) % list.length];
+      return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
+    }
     if (!f.cover) return <FolderIcon size={40} />;
-    const playing = preview === 'all' || (preview === 'hover' && hoverCard === f.id);
-    const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
-    if (playing && f.coverKind === 'video')
-      return <>{still}<video src={mediaUrl(f.cover)} muted loop autoPlay playsInline preload="auto" /></>;
-    if (playing && f.coverKind === 'gif') return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
-    return still;
+    return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
   };
 
   // ---- render ---------------------------------------------------------------------------
 
   const visibleTree = folders.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
-  const sideView = (v: LibView, label: string, count?: number) => {
+  const sideView = (v: LibView, label: React.ReactNode, count?: number, icon?: React.ReactNode) => {
     const on = v.kind === view.kind && (v.kind !== 'folder' || (view.kind === 'folder' && view.id === v.id));
     return (
       <button type="button" className={`side-row${on ? ' on' : ''}`} onClick={() => setView(v)}>
-        {label}
-        {count != null && <span className="count">{count.toLocaleString()}</span>}
+        {icon}{label}
+        {count != null && count > 0 && <span className="count">{count.toLocaleString()}</span>}
       </button>
     );
   };
 
+  const heading = view.kind === 'search' ? `Search: ${searchTitle(view)}` : viewTitle(view, folder);
   const totalImporting = Object.values(jobs);
+  const showNote = note && (Date.now() - note.at < 8000 || note.at === 0);
   return (
     <div className="library">
       <header className="lib-top">
@@ -334,18 +595,27 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <LockIcon size={18} />
           <span>{s.name}</span>
         </div>
-        <SearchBar tags={tags} value={view.kind === 'search' ? view.tags : []}
-          onChange={(t) => setView(t.length ? { kind: 'search', tags: t } : { kind: 'folders' })} />
+        <SearchBar tags={tags} value={view.kind === 'search' ? view : { tags: [], names: [] }}
+          onChange={(v) => setView(v.tags.length || v.names.length ? { kind: 'search', ...v } : { kind: 'folders' })} />
         <nav className="row" style={{ gap: 8 }}>
+          <button type="button" className="btn btn-icon btn-sm" aria-label="Random journey" title="Random journey: jump to a random item in a random folder"
+            onClick={randomJourney}><DiceIcon /></button>
           <Dropdown label={`Preview: ${preview === 'all' ? 'all' : preview === 'hover' ? 'hover' : 'off'} ▾`} title="Play videos and GIFs in the grid (always muted)"
-            items={PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => setPreview(p.id) }))} />
-          <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length}
+            items={[
+              ...PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => saveCfg({ preview: p.id }) })),
+              { label: 'Show the whole video on hover', hint: 'uncropped', checked: !!cfg.wholeOnHover, sepBefore: true,
+                disabled: preview === 'off', onSelect: () => saveCfg({ wholeOnHover: !cfg.wholeOnHover }) },
+            ]} />
+          <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length || inTrash}
             title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button>
           <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'multi', back: view })}><GridIcon /> Multi-screen</button>
           <Dropdown className="btn btn-sm btn-primary" label={<><ImportIcon /> Import</>} items={[
             { label: 'Files or .7z archives…', onSelect: () => pickAndImport(false) },
             { label: 'Folders…', onSelect: () => pickAndImport(true) },
           ]} />
+          <button type="button" className={`btn btn-icon btn-sm${view.kind === 'stats' ? ' accent-soft' : ''}`} aria-label="Statistics" title="Statistics"
+            onClick={() => setView({ kind: 'stats' })}><ChartIcon /></button>
+          <button type="button" className="btn btn-icon btn-sm" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={showHelp}><HelpIcon /></button>
           <button type="button" className="btn btn-icon btn-sm" aria-label="Settings" onClick={() => nav.go({ name: 'settings' })}><GearIcon /></button>
           <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button>
         </nav>
@@ -357,6 +627,18 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           {sideView({ kind: 'all' }, 'All media', s.items)}
           {sideView({ kind: 'favourites' }, 'Favourites')}
           {sideView({ kind: 'recent' }, 'Recently added')}
+          {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon />)}
+          {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
+          {pinned.map((f) => (
+            <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
+              onContextMenu={(e) => folderContext(e, f)}>
+              <span className="twisty" />
+              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} title={f.path.map((c) => c.name).concat(f.name).join(' › ')}>
+                {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
+              </button>
+              <span className="count">{f.items.toLocaleString()}</span>
+            </div>
+          ))}
           <div className="side-head">Folders</div>
           <button type="button" data-drop="folder:top" className={`side-row${view.kind === 'folder' && view.id === null ? ' on' : ''}`}
             onClick={() => openFolder(null)}>
@@ -374,7 +656,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
               <button type="button" className="tree-name" onClick={() => openFolder(f.id)}>
-                <FolderIcon size={15} /> <span className="ellipsis">{f.name}</span>
+                {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
             </div>
@@ -382,9 +664,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <button type="button" className="side-row faint" onClick={() => setDialog({ t: 'newFolder', parent: view.kind === 'folder' ? view.id : null })}>
             <PlusIcon size={14} /> New folder
           </button>
+          <div className="side-spacer" />
+          {sideView({ kind: 'trash' }, 'Trash', undefined, <TrashIcon size={14} />)}
         </aside>
 
-        <main className="lib-main" ref={scroller} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : 'folder:top'}>
+        <main className="lib-main" ref={scroller} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
           )}
@@ -410,16 +694,19 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                 {' ›'}
               </span>
             )}
-            <h1>{view.kind === 'search' ? `Tagged ${view.tags.map((t) => `“${t}”`).join(' + ')}` : viewTitle(view, folder)}</h1>
+            <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
             <span className="faint">
-              {view.kind === 'folders' ? `${cards.length} folders` : `${shown.length.toLocaleString()} items`}
+              {view.kind === 'folders' ? `${cards.length} folders`
+                : view.kind === 'stats' ? ''
+                : inTrash && trash ? (trash.totalItems ? `${plural(trash.totalItems, 'item')} · ${formatBytes(trash.totalBytes)}` : 'empty')
+                : `${shown.length.toLocaleString()} items`}
               {loading && ' · loading…'}
             </span>
             {folder && (
               <div className="row" style={{ gap: 6 }}>
                 {folder.tags.map((t) => (
                   <span key={t} className="chip">{t}
-                    <button type="button" aria-label={`Remove tag ${t}`} onClick={() => act(() => api.untagFolder(folder.id, t))}><CloseIcon size={11} /></button>
+                    <button type="button" aria-label={`Remove tag ${t}`} onClick={() => untagFolder(folder, t)}><CloseIcon size={11} /></button>
                   </span>
                 ))}
                 <button type="button" className="chip dashed" onClick={() => setDialog({ t: 'folderTag', folder })}>+ tag folder</button>
@@ -427,19 +714,37 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               </div>
             )}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
-              {view.kind === 'folders' ? (
+              {view.kind === 'folders' && (
                 <div role="group" aria-label="Show" className="seg">
                   <button type="button" className={!everyFolder ? 'on' : ''} onClick={() => setEveryFolder(false)}>Top level</button>
                   <button type="button" className={everyFolder ? 'on' : ''} onClick={() => setEveryFolder(true)}>Every folder</button>
                 </div>
-              ) : (
+              )}
+              {gridView && !inTrash && (
                 <>
-                  <Dropdown label={`${SORTS.find((x) => x.id === sort)?.label} ▾`} items={SORTS.map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />
+                  {shown.length > 0 && (
+                    <button type="button" className="btn btn-sm" title="See everything here on one sheet" onClick={() => setDialog({ t: 'sheet' })}>
+                      <SheetIcon /> Contact sheet
+                    </button>
+                  )}
+                  <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
+                    items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
+                  <div role="group" aria-label="Tile shape" className="seg">
+                    <button type="button" className={!shape ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => saveCfg({ gridShape: false })}>Tiles</button>
+                    <button type="button" className={shape ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => saveCfg({ gridShape: true })}>True shape</button>
+                  </div>
                 </>
               )}
-              <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }}>Size</label>
-              <input id="tile-size" type="range" min={120} max={320} step={10} value={tile} onChange={(e) => setTile(Number(e.target.value))} />
+              {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
+                <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
+              )}
+              {view.kind !== 'stats' && (
+                <>
+                  <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }}>Size</label>
+                  <input id="tile-size" type="range" min={120} max={320} step={10} value={tile} onChange={(e) => setTile(Number(e.target.value))} />
+                </>
+              )}
             </div>
           </div>
 
@@ -450,18 +755,54 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             </div>
           )}
 
-          {cards.length > 0 && (
+          {view.kind === 'stats' && (
+            <StatsView onOpenFolder={(id) => openFolder(id)} onOpenItem={(it, list) => playList(list, false, it.id, 'Most viewed')} />
+          )}
+
+          {inTrash && (
+            <p className="faint" style={{ margin: '0 0 12px', fontSize: 13 }}>
+              Deleted things stay here for 30 days, then they are removed for good. Restore puts them back where they were.
+            </p>
+          )}
+          {inTrash && trash && trash.folders.length > 0 && (
+            <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(tile * 1.1)}px, 1fr))` }}>
+              {trash.folders.map((f) => (
+                <div key={f.id} className="fcard trashed">
+                  <div className="fcover">{f.cover ? <img src={thumbUrl(f.cover)} alt="" draggable={false} /> : <FolderIcon size={40} />}</div>
+                  <div className="fmeta" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 6 }}>
+                    <div style={{ minWidth: 0 }}>
+                      <div className="fname ellipsis">{f.name}</div>
+                      <div className="faint ellipsis" style={{ fontSize: 12 }}>
+                        {plural(f.items, 'item')} · {formatBytes(f.bytes)} · was in {f.location} · deleted {new Date(f.deletedAt).toLocaleDateString()}
+                      </div>
+                    </div>
+                    <div className="row" style={{ gap: 6 }}>
+                      <button type="button" className="btn btn-sm" onClick={() => restoreFolder(f.id, f.name)}><RestoreIcon /> Restore</button>
+                      <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'forever', ids: [], folder: f.id, what: `“${f.name}” and ${plural(f.items, 'item')} in it` })}>
+                        Delete for good
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {!inTrash && cards.length > 0 && (
             <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(tile * 1.1)}px, 1fr))` }}>
               {cards.map((f) => (
                 <div key={f.id} className="fcard" data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
+                  style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
-                  <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}`} onClick={() => openFolder(f.id)} aria-label={`Open ${f.name}`}>
+                  <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
+                    onClick={() => openFolder(f.id)} aria-label={`Open ${f.name}`}>
                     {coverView(f)}
+                    {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>
                   </button>
                   <div className="fmeta">
                     <div style={{ minWidth: 0 }}>
-                      <div className="fname ellipsis">{f.name}</div>
+                      <div className="fname ellipsis"><FolderMark f={f} />{f.name}</div>
                       <div className="faint ellipsis" style={{ fontSize: 12 }}>
                         {view.kind === 'folders' && everyFolder && f.path.length > 0 ? `${f.path.map((c) => c.name).join(' › ')} · ` : ''}
                         {f.items.toLocaleString()} items{f.subfolders ? ` · ${f.subfolders} subfolder${f.subfolders > 1 ? 's' : ''}` : ''}
@@ -474,22 +815,25 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             </div>
           )}
 
-          {view.kind !== 'folders' && (
+          {gridView && (
             shown.length ? (
               <MediaGrid items={shown} tile={tile} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a) => { setSelected(sel); setAnchor(a); }}
                 onOpen={(it) => playItems(false, it.id)}
                 onContext={itemContext}
-                preview={preview}
-                onDropOnFolder={(ids, target) => act(async () => {
-                  await api.moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7)));
-                  setSelected(new Set());
-                })} />
-            ) : !loading && (
+                preview={inTrash ? 'off' : preview}
+                wholeOnHover={!!cfg.wholeOnHover}
+                layout={shape ? 'shape' : 'grid'}
+                groups={groups}
+                onDropOnFolder={inTrash ? undefined : (ids, target) => act(() => moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7))))} />
+            ) : !loading && !(inTrash && trash?.folders.length) && (
               <div className="dropzone">
-                <ImportIcon size={28} />
-                <b>{view.kind === 'folder' ? 'This folder is empty' : view.kind === 'search' ? 'Nothing has all of these tags' : 'Nothing here yet'}</b>
-                <span className="muted">Drag files, folders or .7z archives from Windows onto any folder to import them.</span>
+                {inTrash ? <TrashIcon size={28} /> : <ImportIcon size={28} />}
+                <b>{inTrash ? 'The trash is empty'
+                  : view.kind === 'folder' ? 'This folder is empty'
+                  : view.kind === 'search' ? 'Nothing matches this search'
+                  : 'Nothing here yet'}</b>
+                {!inTrash && <span className="muted">Drag files, folders or .7z archives from Windows onto any folder to import them.</span>}
               </div>
             )
           )}
@@ -507,19 +851,29 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       {selected.size > 0 && (
         <div className="selbar" role="toolbar" aria-label="Selection">
           <b>{selected.size} selected</b>
-          <button type="button" className="btn btn-sm" onClick={() => playItems(true, selIds[0], true)}><PlayIcon size={13} /> Play</button>
-          <button type="button" className="btn btn-sm" onClick={() => {
-            const allFav = selIds.every((id) => items.find((i) => i.id === id)?.favourite);
-            act(() => api.setFavourite(selIds, !allFav));
-          }}><HeartIcon size={14} /> Favourite</button>
-          <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'tagItems', ids: selIds })}><TagIcon /> Tag…</button>
-          <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'weight', ids: selIds, current: items.find((i) => i.id === selIds[0])?.weight ?? 1 })}>
-            <WeightIcon /> Weight…</button>
-          <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveItems', ids: selIds })}><MoveIcon /> Move to…</button>
-          {folder && selected.size === 1 && (
-            <button type="button" className="btn btn-sm" onClick={() => act(() => api.setCover(folder.id, selIds[0]))}>Set as folder cover</button>
+          {inTrash ? (
+            <>
+              <button type="button" className="btn btn-sm" onClick={() => restoreItems(selIds)}><RestoreIcon /> Restore</button>
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'forever', ids: selIds, folder: null, what: plural(selIds.length, 'item') })}>
+                Delete for good</button>
+            </>
+          ) : (
+            <>
+              <button type="button" className="btn btn-sm" onClick={() => playItems(true, selIds[0], true)}><PlayIcon size={13} /> Play</button>
+              <button type="button" className="btn btn-sm" onClick={() => {
+                const allFav = selIds.every((id) => itemById(id)?.favourite);
+                setFav(selIds, !allFav);
+              }}><HeartIcon size={14} /> Favourite</button>
+              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'tagItems', ids: selIds })}><TagIcon /> Tag…</button>
+              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'weight', ids: selIds, current: itemById(selIds[0])?.weight ?? 1 })}>
+                <WeightIcon /> Weight…</button>
+              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveItems', ids: selIds })}><MoveIcon /> Move to…</button>
+              {folder && selected.size === 1 && (
+                <button type="button" className="btn btn-sm" onClick={() => act(() => api.setCover(folder.id, selIds[0]))}>Set as folder cover</button>
+              )}
+              <button type="button" className="btn btn-sm btn-danger" onClick={() => trashItems(selIds)} title="Moves to the trash (Ctrl+Z to undo)"><TrashIcon /> Delete</button>
+            </>
           )}
-          <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'deleteItems', ids: selIds })}><TrashIcon /> Delete</button>
           <button type="button" className="link" onClick={() => setSelected(new Set())}>Clear</button>
         </div>
       )}
@@ -549,21 +903,38 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         </section>
       )}
 
+      {showNote && note && (
+        <div className="undo-toast" role="status">
+          <span className="ellipsis">{note.text}</span>
+          {note.at !== 0 && undoTop && undoTop.label === note.text && (
+            <button type="button" className="btn btn-sm" onClick={undo}><UndoIcon /> Undo <kbd>Ctrl+Z</kbd></button>
+          )}
+          <button type="button" className="link" aria-label="Dismiss" onClick={() => setNote(null)}><CloseIcon size={12} /></button>
+        </div>
+      )}
+
+      {pick && !dialog && (
+        <TodaysPickCard item={pick} onClose={dismissPick} onOpen={() => { dismissPick(); openInFolder(pick); }} />
+      )}
+
       {dialog?.t === 'newFolder' && (
         <PromptDialog title="New folder" label="Name" confirm="Create" onClose={() => setDialog(null)}
           onSubmit={async (name) => { await api.createFolder(dialog.parent, name); await reload(); }} />
       )}
       {dialog?.t === 'rename' && (
         <PromptDialog title="Rename folder" label="Name" initial={dialog.folder.name} confirm="Rename" onClose={() => setDialog(null)}
-          onSubmit={async (name) => { await api.renameFolder(dialog.folder.id, name); await reload(); }} />
+          onSubmit={(name) => renameFolder(dialog.folder, name)} />
       )}
       {dialog?.t === 'folderTag' && (
         <PromptDialog title={`Tag “${dialog.folder.name}”`} label="Tags (separate with commas)" confirm="Add"
           hint="Everything inside this folder, including subfolders, counts as tagged." onClose={() => setDialog(null)}
-          onSubmit={async (v) => { await api.tagFolder(dialog.folder.id, v.split(',')); await reload(); }} />
+          onSubmit={(v) => tagFolder(dialog.folder, v.split(','))} />
+      )}
+      {dialog?.t === 'look' && (
+        <FolderLookDialog folder={dialog.folder} onClose={() => setDialog(null)} onSave={(c, e) => setLook(dialog.folder, c, e)} />
       )}
       {dialog?.t === 'tagItems' && (
-        <TagItemsDialog ids={dialog.ids} all={tags} onClose={() => setDialog(null)} onDone={reload} />
+        <TagItemsDialog ids={dialog.ids} all={tags} onClose={() => setDialog(null)} onDone={reload} did={did} />
       )}
       {dialog?.t === 'weight' && (
         <PromptDialog title={`Weight for ${dialog.ids.length} item${dialog.ids.length > 1 ? 's' : ''}`} label="Weight" type="number"
@@ -572,34 +943,39 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           onSubmit={async (v) => {
             const w = Number(v.replace(',', '.'));
             if (!Number.isFinite(w)) throw new Error('Enter a number, e.g. 1, 2.5 or 10.');
-            await api.setWeight(dialog.ids, w);
-            await reload();
+            await setWeight(dialog.ids, w);
           }} />
       )}
       {dialog?.t === 'moveItems' && (
         <FolderPicker title={`Move ${dialog.ids.length} item${dialog.ids.length > 1 ? 's' : ''} to…`} folders={folders} confirm="Move"
-          onClose={() => setDialog(null)} onPick={async (f) => { await api.moveItems(dialog.ids, f); setSelected(new Set()); await reload(); }} />
+          onClose={() => setDialog(null)} onPick={(f) => moveItems(dialog.ids, f)} />
       )}
       {dialog?.t === 'moveFolder' && (
         <FolderPicker title={`Move “${dialog.folder.name}” into…`} folders={folders} exclude={[dialog.folder.id]} confirm="Move"
-          onClose={() => setDialog(null)} onPick={async (f) => { await api.moveFolder(dialog.folder.id, f); await reload(); }} />
+          onClose={() => setDialog(null)} onPick={(f) => moveFolder(dialog.folder, f)} />
       )}
       {dialog?.t === 'deleteFolder' && (
-        <ConfirmDialog title={`Delete “${dialog.folder.name}”?`} confirm="Delete from vault" danger onClose={() => setDialog(null)}
-          onConfirm={async () => {
-            await api.deleteFolder(dialog.folder.id);
-            if (view.kind === 'folder' && (view.id === dialog.folder.id || folder?.path.some((c) => c.id === dialog.folder.id))) setView({ kind: 'folders' });
-            else await reload();
-            nav.refresh().catch(() => {});
-          }}>
-          This removes the folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside from the vault.
-          Your original files outside the vault are not touched. This can't be undone.
+        <ConfirmDialog title={`Delete “${dialog.folder.name}”?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+          onConfirm={() => trashFolder(dialog.folder)}>
+          The folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside go to the trash.
+          You can restore them from there for 30 days, or press Ctrl+Z right away. Your original files outside the vault are not touched.
         </ConfirmDialog>
       )}
-      {dialog?.t === 'deleteItems' && (
-        <ConfirmDialog title={`Delete ${dialog.ids.length} item${dialog.ids.length > 1 ? 's' : ''}?`} confirm="Delete from vault" danger
-          onClose={() => setDialog(null)} onConfirm={async () => { await api.deleteItems(dialog.ids); setSelected(new Set()); await reload(); nav.refresh().catch(() => {}); }}>
-          They are removed from the vault for good. Your original files outside the vault are not touched.
+      {dialog?.t === 'forever' && (
+        <ConfirmDialog title="Delete for good?" confirm="Delete for good" danger onClose={() => setDialog(null)}
+          onConfirm={async () => {
+            if (dialog.folder != null) await api.deleteFolderForever(dialog.folder);
+            else await api.deleteForever(dialog.ids);
+            setSelected(new Set());
+            await reload();
+          }}>
+          {dialog.what} will be removed from the vault and can't be brought back.
+        </ConfirmDialog>
+      )}
+      {dialog?.t === 'emptyTrash' && (
+        <ConfirmDialog title="Empty the trash?" confirm="Empty trash" danger onClose={() => setDialog(null)}
+          onConfirm={async () => { await api.emptyTrash(); clearUndo(); await reload(); }}>
+          Everything in the trash ({plural(trash?.totalItems ?? 0, 'item')}, {formatBytes(trash?.totalBytes ?? 0)}) is removed for good.
         </ConfirmDialog>
       )}
       {dialog?.t === 'cover' && (
@@ -607,6 +983,10 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           await api.setCover(dialog.folder.id, id);
           await reload();
         }} />
+      )}
+      {dialog?.t === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog?.t === 'sheet' && (
+        <ContactSheet title={heading} items={shown} onClose={() => setDialog(null)} onOpen={(it) => { setDialog(null); playItems(false, it.id); }} />
       )}
       {ctx && <ContextMenu x={ctx.x} y={ctx.y} title={ctx.title} items={ctx.items} onClose={() => setCtx(null)} />}
       {dialog?.t === 'archivePassword' && (
@@ -617,48 +997,65 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   );
 }
 
-function SearchBar(props: { tags: TagCount[]; value: string[]; onChange: (t: string[]) => void }) {
+function SearchBar(props: { tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void }) {
   const [text, setText] = useState('');
   const [focus, setFocus] = useState(false);
   const [hi, setHi] = useState(0);
   const q = text.trim().toLowerCase();
-  const suggestions = props.tags
-    .filter((t) => !props.value.some((v) => v.toLowerCase() === t.name.toLowerCase()))
+  const { tags, names } = props.value;
+  const tagHits = props.tags
+    .filter((t) => !tags.some((v) => v.toLowerCase() === t.name.toLowerCase()))
     .filter((t) => !q || t.name.toLowerCase().includes(q))
     .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)))
     .slice(0, 8);
-  const add = (t: string) => {
-    if (!t.trim()) return;
-    props.onChange([...props.value, t.trim()]);
+  type Opt = { t: 'tag'; name: string; hint: string } | { t: 'name'; text: string };
+  const exact = tagHits.find((t) => t.name.toLowerCase() === q);
+  const tagOpts: Opt[] = tagHits.map((t) => ({
+    t: 'tag', name: t.name,
+    hint: `${t.items ? `${t.items} items` : ''}${t.items && t.folders ? ' · ' : ''}${t.folders ? `${t.folders} folders` : ''}`,
+  }));
+  const nameOpt: Opt[] = q ? [{ t: 'name', text: text.trim() }] : [];
+  const opts: Opt[] = exact ? [tagOpts[0], ...nameOpt, ...tagOpts.slice(1)] : [...nameOpt, ...tagOpts];
+  const choose = (o: Opt | undefined) => {
+    if (!o) return;
+    if (o.t === 'tag') props.onChange({ tags: [...tags, o.name], names });
+    else props.onChange({ tags, names: [...names, o.text] });
     setText('');
     setHi(0);
   };
   return (
     <div className="search">
       <SearchIcon />
-      {props.value.map((t) => (
-        <span key={t} className="chip accent">{t}
-          <button type="button" aria-label={`Remove tag ${t}`} onClick={() => props.onChange(props.value.filter((x) => x !== t))}><CloseIcon size={11} /></button>
+      {tags.map((t) => (
+        <span key={`t${t}`} className="chip accent"><TagIcon size={11} /> {t}
+          <button type="button" aria-label={`Remove tag ${t}`} onClick={() => props.onChange({ tags: tags.filter((x) => x !== t), names })}><CloseIcon size={11} /></button>
         </span>
       ))}
-      <label htmlFor="tag-search" className="sr-only">Search by tag</label>
-      <input id="tag-search" value={text} placeholder={props.value.length ? 'Add another tag…' : 'Search by tag…'} autoComplete="off"
+      {names.map((n) => (
+        <span key={`n${n}`} className="chip name">“{n}” in name
+          <button type="button" aria-label={`Remove ${n}`} onClick={() => props.onChange({ tags, names: names.filter((x) => x !== n) })}><CloseIcon size={11} /></button>
+        </span>
+      ))}
+      <label htmlFor="lib-search" className="sr-only">Search by tag or file name</label>
+      <input id="lib-search" value={text} placeholder={tags.length || names.length ? 'Narrow down…' : 'Search tags or file names…'} autoComplete="off"
         onFocus={() => setFocus(true)} onBlur={() => setTimeout(() => setFocus(false), 150)}
         onChange={(e) => { setText(e.target.value); setHi(0); }}
         onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); add(suggestions[hi]?.name ?? text); }
-          else if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, suggestions.length - 1)); }
+          if (e.key === 'Enter') { e.preventDefault(); choose(opts[hi]); }
+          else if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, opts.length - 1)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
-          else if (e.key === 'Backspace' && !text && props.value.length) props.onChange(props.value.slice(0, -1));
-          else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
+          else if (e.key === 'Backspace' && !text && (tags.length || names.length)) {
+            if (names.length) props.onChange({ tags, names: names.slice(0, -1) });
+            else props.onChange({ tags: tags.slice(0, -1), names });
+          } else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
         }} />
-      {focus && suggestions.length > 0 && (
+      {focus && opts.length > 0 && (
         <div className="menu suggest" role="listbox">
-          {suggestions.map((t, i) => (
-            <button key={t.name} type="button" role="option" aria-selected={i === hi} className={`menu-item${i === hi ? ' on' : ''}`}
-              onMouseDown={(e) => { e.preventDefault(); add(t.name); }}>
-              <TagIcon size={13} /> {t.name}
-              <span className="hint">{t.items ? `${t.items} items` : ''}{t.items && t.folders ? ' · ' : ''}{t.folders ? `${t.folders} folders` : ''}</span>
+          {opts.map((o, i) => (
+            <button key={o.t === 'tag' ? `t${o.name}` : 'name'} type="button" role="option" aria-selected={i === hi} className={`menu-item${i === hi ? ' on' : ''}`}
+              onMouseDown={(e) => { e.preventDefault(); choose(o); }}>
+              {o.t === 'tag' ? <><TagIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
+                : <><SearchIcon size={13} /> File name contains “{o.text}”</>}
             </button>
           ))}
         </div>
@@ -667,7 +1064,10 @@ function SearchBar(props: { tags: TagCount[]; value: string[]; onChange: (t: str
   );
 }
 
-function TagItemsDialog(props: { ids: number[]; all: TagCount[]; onClose: () => void; onDone: () => Promise<void> }) {
+function TagItemsDialog(props: {
+  ids: number[]; all: TagCount[]; onClose: () => void; onDone: () => Promise<void>;
+  did: (label: string, undo: () => Promise<unknown>) => void;
+}) {
   const [own, setOwn] = useState<string[]>([]);
   const [inherited, setInherited] = useState<[string, string][]>([]);
   const [text, setText] = useState('');
@@ -684,14 +1084,20 @@ function TagItemsDialog(props: { ids: number[]; all: TagCount[]; onClose: () => 
     const list = text.split(',').map((t) => t.trim()).filter(Boolean);
     if (!list.length) return;
     try {
-      await api.tagItems(props.ids, list);
+      const added = await api.tagItems(props.ids, list);
+      const real = added.filter(([, ids]) => ids.length);
+      if (real.length)
+        props.did(`Tagged ${plural(new Set(real.flatMap(([, ids]) => ids)).size, 'item')} “${real.map(([t]) => t).join('”, “')}”`, async () => {
+          for (const [t, ids] of real) await api.untagItems(ids, t);
+        });
       setText('');
       await load();
       await props.onDone();
     } catch (e) { setErr(String(e)); }
   };
   const remove = async (t: string) => {
-    await api.untagItems(props.ids, t);
+    const had = await api.untagItems(props.ids, t);
+    if (had.length) props.did(`Removed tag “${t}” from ${plural(had.length, 'item')}`, () => api.tagItems(had, [t]));
     await load();
     await props.onDone();
   };

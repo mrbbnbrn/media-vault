@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { api, onEvent, type AppConfig, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
+import { api, DEFAULT_VIEWER, onEvent, type AppConfig, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
 import { BackIcon } from '../components/Icons';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 
-type Section = 'appearance' | 'vault' | 'storage' | 'about';
+type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'about';
 
 export function Settings({ nav }: { nav: Nav }) {
   const [section, setSection] = useState<Section>('appearance');
@@ -23,9 +23,12 @@ export function Settings({ nav }: { nav: Nav }) {
     }
   }
   const setLock = (patch: Partial<AppConfig['lock']>) => update({ ...cfg, lock: { ...cfg.lock, ...patch } });
+  const viewer = { ...DEFAULT_VIEWER, ...(cfg.viewer ?? {}) };
+  const setViewer = (patch: Partial<ViewerSettings>) => update({ ...cfg, viewer: { ...viewer, ...patch } });
 
   const sections: [Section, string][] = [
     ['appearance', 'Appearance & locking'],
+    ['viewer', 'Viewer & videos'],
     ['vault', 'Vault & password'],
     ['storage', 'Storage & backups'],
     ['about', 'About'],
@@ -113,6 +116,42 @@ export function Settings({ nav }: { nav: Nav }) {
                 <h2>Clean full screen</h2>
                 <Toggle title="Show controls while the mouse moves" desc="They fade away again after a moment. When off, only the keyboard controls playback."
                   on={cfg.fullscreenControlsOnMouse} set={(v) => update({ ...cfg, fullscreenControlsOnMouse: v })} />
+              </section>
+            </>
+          )}
+          {section === 'viewer' && (
+            <>
+              <section className="section">
+                <h2>Picture scaling</h2>
+                <p className="muted" style={{ margin: 0 }}>The same three choices are in the viewer's “View” menu.</p>
+                <Toggle title="Smooth when shrinking to fit" desc="High-quality resampling for pictures bigger than the window. Off shows hard pixels."
+                  on={viewer.smoothFit} set={(v) => setViewer({ smoothFit: v })} />
+                <Toggle title="Smooth when zoomed in" desc="Off keeps every pixel a crisp square when you zoom in, which suits pixel art. Press P in the viewer to switch."
+                  on={viewer.smoothZoom} set={(v) => setViewer({ smoothZoom: v })} />
+                <Toggle title="Sharpen after smoothing" desc="A light sharpening pass on smoothed pictures."
+                  on={viewer.sharpen} set={(v) => setViewer({ sharpen: v })} />
+              </section>
+
+              <div className="divider" />
+
+              <section className="section">
+                <h2>Arrow keys in videos</h2>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="seek-small">← and → jump</label>
+                    <span className="desc">On pictures the arrow keys still go to the previous and next item.</span>
+                  </div>
+                  <span className="row"><input id="seek-small" className="input small" type="number" min={1} max={600} value={viewer.seekSeconds}
+                    onChange={(e) => setViewer({ seekSeconds: Math.max(1, Math.min(600, Number(e.target.value) || 5)) })} /> seconds</span>
+                </div>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="seek-big">Shift + ← and → jump</label>
+                    <span className="desc">Ctrl + ← and → step one frame (and pause). Ctrl + Space and Shift + Space go to the next and previous item.</span>
+                  </div>
+                  <span className="row"><input id="seek-big" className="input small" type="number" min={1} max={3600} value={viewer.seekBigSeconds}
+                    onChange={(e) => setViewer({ seekBigSeconds: Math.max(1, Math.min(3600, Number(e.target.value) || 30)) })} /> seconds</span>
+                </div>
               </section>
             </>
           )}

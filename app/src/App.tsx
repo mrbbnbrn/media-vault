@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, onLocked, type AppState, type LockReason } from './api';
 import { applyAccent } from './theme';
+import { setPrefsConfig } from './prefs';
+import { clearUndo } from './undo';
 import { startActivityTracking, stopAllPlaying } from './activity';
 import { Start } from './screens/Start';
 import { CreateVault } from './screens/CreateVault';
@@ -55,6 +57,7 @@ export function App() {
   const refresh = useCallback(async () => {
     const s = await api.getState();
     setApp(s);
+    setPrefsConfig(s.config);
     applyAccent(s.config.accent);
     return s;
   }, []);
@@ -70,6 +73,7 @@ export function App() {
     startExternalDrops();
     const unlisten = onLocked((reason) => {
       stopAllPlaying();
+      clearUndo();
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       setScreen((cur) => (cur.name === 'player' ? cur : { name: 'start' }));
       setLibView({ kind: 'folders' });
@@ -98,6 +102,12 @@ export function App() {
   const nav: Nav = { app, go: setScreen, refresh };
   return (
     <div className="app">
+      {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
+      <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
+        <filter id="mv-sharpen" colorInterpolationFilters="sRGB">
+          <feConvolveMatrix order="3" preserveAlpha="true" kernelMatrix="0 -0.35 0 -0.35 2.4 -0.35 0 -0.35 0" />
+        </filter>
+      </svg>
       {screen.name === 'start' && <Start nav={nav} select={screen.select} />}
       {screen.name === 'create' && <CreateVault nav={nav} />}
       {screen.name === 'recover' && <Recover nav={nav} path={screen.path} />}

@@ -4,17 +4,26 @@
 // Mouse: wheel = next / previous (scrolls inside text and PDF), Ctrl+wheel =
 // zoom, drag = draw a rectangle (click inside it to zoom to it, outside to
 // dismiss), right-drag = move the zoomed picture, 0 = reset zoom.
+// Videos: ←/→ jump (Shift = bigger jump), Ctrl+←/→ one frame, Ctrl+Space /
+// Shift+Space next / previous item, A/B/X loop, K bookmark, S save frame.
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
-import { animationMs, formatTime, type PlayItem } from '../media';
+import { api, type Bookmark } from '../api';
+import { captureVideoFrame, derivedName } from '../clips';
+import { formatTime, kickThumbnails, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
+import { saveViewerPrefs, useViewerPrefs } from '../prefs';
 import { Dropdown } from './Dialogs';
 import { PdfView, TextView } from './DocViews';
+import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
 import {
-  BrokenIcon, FullscreenIcon, HeartIcon, MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
+  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon, MuteIcon, NextIcon,
+  PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
+import { ShortcutsDialog } from './Shortcuts';
+import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
@@ -52,9 +61,11 @@ export interface PlayerProps {
 }
 
 const WEIGHTS = [0, 0.5, 1, 2, 3, 5, 10];
+const NO_LOOP = { a: null, b: null } as { a: number | null; b: number | null };
 
 export function Player(props: PlayerProps) {
   const { settings: s, onSettings } = props;
+  const prefs = useViewerPrefs();
   const listRef = useRef<Playlist<PlayItem> | null>(null);
   const [cur, setCur] = useState<PlayItem | null>(null);
   const [tick, setTick] = useState(0); // bumps when the same item restarts
@@ -62,23 +73,36 @@ export function Player(props: PlayerProps) {
   const [slideshow, setSlideshow] = useState(!!props.autoSlideshow);
   const [overrides, setOverrides] = useState<Record<string, Partial<PlayItem>>>({});
   const [failed, setFailed] = useState(false);
-  const [gifUrl, setGifUrl] = useState<string | null>(null);
-  const [gifMs, setGifMs] = useState(0);
+  const [imgInfo, setImgInfo] = useState<ImageInfo | null>(null);
+  const [gifFrame, setGifFrame] = useState({ index: 0, count: 0 });
   const [time, setTime] = useState({ at: 0, dur: 0 });
   const [controls, setControls] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const imgRef = useRef<ImageStageHandle>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoStart = useRef(0);
+  const frameDur = useRef(0);
   const stageRef = useRef<HTMLDivElement>(null);
   const [zoom, setZoom] = useState({ s: 1, x: 0, y: 0 });
   const [docZoom, setDocZoom] = useState(1);
   const [rect, setRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [drawing, setDrawing] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [loop, setLoop] = useState(NO_LOOP);
+  const [bookmarks, setBookmarks] = useState<Bookmark[]>([]);
+  const [bmOpen, setBmOpen] = useState(false);
+  const [bmFocus, setBmFocus] = useState<number | null>(null);
+  const [gifMaker, setGifMaker] = useState(false);
+  const [help, setHelp] = useState(false);
+  const [flash, setFlash] = useState<string | null>(null);
   const lastWheel = useRef(0);
   const zoomed = zoom.s > 1.001;
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
+  const isVideo = item?.kind === 'video';
+  const isGif = item?.kind === 'gif';
+  const isPicture = item?.kind === 'image' || isGif;
+  const inVault = item?.itemId != null;
 
   // Build the play order whenever the item list changes.
   useEffect(() => {
@@ -100,12 +124,38 @@ export function Player(props: PlayerProps) {
 
   useEffect(() => props.onCurrent?.(item), [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // A new item starts unzoomed.
+  // A new item starts unzoomed, without a loop.
   useEffect(() => {
     setZoom({ s: 1, x: 0, y: 0 });
     setRect(null);
     setDrawing(null);
+    setLoop(NO_LOOP);
+    setImgInfo(null);
+    setGifFrame({ index: 0, count: 0 });
+    setBmOpen(false);
+    frameDur.current = 0;
   }, [item?.key]);
+
+  // Counts as viewed after a couple of seconds on screen (main viewer only).
+  useEffect(() => {
+    if (!props.keys || item?.itemId == null) return;
+    const id = item.itemId;
+    const t = setTimeout(() => api.markViewed(id).catch(() => {}), 2000);
+    return () => clearTimeout(t);
+  }, [item?.key, props.keys]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Bookmarks of the current video.
+  const loadBookmarks = useCallback(() => {
+    if (!isVideo || item?.itemId == null || props.compact) return setBookmarks([]);
+    api.bookmarks(item.itemId).then(setBookmarks).catch(() => setBookmarks([]));
+  }, [item?.key, isVideo, props.compact]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(loadBookmarks, [loadBookmarks]);
+
+  useEffect(() => {
+    if (!flash) return;
+    const t = setTimeout(() => setFlash(null), 2600);
+    return () => clearTimeout(t);
+  }, [flash]);
 
   const go = useCallback((dir: 'next' | 'prev', auto = false) => {
     const p = listRef.current;
@@ -129,29 +179,6 @@ export function Player(props: PlayerProps) {
     setCur(n);
   }, []);
 
-  // GIFs: read the file once (in memory) to learn how long one loop lasts.
-  useEffect(() => {
-    setGifUrl(null);
-    setGifMs(0);
-    if (!item || item.kind !== 'gif') return;
-    let url: string | null = null;
-    let cancelled = false;
-    fetch(item.src)
-      .then((r) => (r.ok ? r.arrayBuffer() : Promise.reject(new Error(String(r.status)))))
-      .then((buf) => {
-        if (cancelled) return;
-        const bytes = new Uint8Array(buf);
-        setGifMs(animationMs(bytes));
-        url = URL.createObjectURL(new Blob([bytes], { type: item.name.toLowerCase().endsWith('.webp') ? 'image/webp' : 'image/gif' }));
-        setGifUrl(url);
-      })
-      .catch(() => !cancelled && setFailed(true));
-    return () => {
-      cancelled = true;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [item?.key, tick]); // eslint-disable-line react-hooks/exhaustive-deps
-
   // Pictures and GIFs advance on a timer while the slideshow runs.
   useEffect(() => {
     if (!item || !slideshow || paused || zoomed) return;
@@ -159,12 +186,12 @@ export function Player(props: PlayerProps) {
     if (failed) ms = 1500;
     else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf') ms = s.imageSeconds * 1000;
     else if (item.kind === 'gif') {
-      if (!gifUrl) return;
-      ms = gifShowMs(s, gifMs);
+      if (!imgInfo) return;
+      ms = gifShowMs(s, imgInfo.loopMs);
     } else return;
     const t = setTimeout(() => go('next', true), ms);
     return () => clearTimeout(t);
-  }, [item?.key, tick, slideshow, paused, zoomed, failed, gifUrl, gifMs, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, tick, slideshow, paused, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- zoom, rectangle zoom, panning, wheel ---------------------------------------------
 
@@ -175,14 +202,14 @@ export function Player(props: PlayerProps) {
   };
   const clampZoom = (z: { s: number; x: number; y: number }) => {
     const { w, h } = stageSize();
-    const sc = Math.min(40, Math.max(1, z.s));
+    const sc = Math.min(64, Math.max(1, z.s));
     if (sc <= 1.001) return { s: 1, x: 0, y: 0 };
     // Keep at least part of the picture on screen.
     return { s: sc, x: Math.min(w * 0.5, Math.max(w * 0.5 - w * sc, z.x)), y: Math.min(h * 0.5, Math.max(h * 0.5 - h * sc, z.y)) };
   };
   const zoomAt = (px: number, py: number, factor: number) =>
     setZoom((z) => {
-      const ns = Math.min(40, Math.max(1, z.s * factor));
+      const ns = Math.min(64, Math.max(1, z.s * factor));
       const k = ns / z.s;
       return clampZoom({ s: ns, x: px - (px - z.x) * k, y: py - (py - z.y) * k });
     });
@@ -190,7 +217,7 @@ export function Player(props: PlayerProps) {
     setZoom((z) => {
       const { w, h } = stageSize();
       const k = Math.min(w / r.w, h / r.h);
-      const ns = Math.min(40, z.s * k);
+      const ns = Math.min(64, z.s * k);
       const cx = (r.x + r.w / 2 - z.x) / z.s;
       const cy = (r.y + r.h / 2 - z.y) / z.s;
       return clampZoom({ s: ns, x: w / 2 - ns * cx, y: h / 2 - ns * cy });
@@ -275,7 +302,7 @@ export function Player(props: PlayerProps) {
         const inside = x1 >= rect.x && x1 <= rect.x + rect.w && y1 >= rect.y && y1 <= rect.y + rect.h;
         if (inside) zoomToRect(rect);
         setRect(null);
-      } else if (item.kind === 'video') {
+      } else if (item.kind === 'video' || (item.kind === 'gif' && !slideshow)) {
         setPaused((p) => !p);
       }
     };
@@ -295,6 +322,52 @@ export function Player(props: PlayerProps) {
     if (paused) v.pause();
     else v.play().catch(() => {});
   });
+
+  // Learn the video's frame length (for single-frame steps).
+  useEffect(() => {
+    const v = videoRef.current as (HTMLVideoElement & { requestVideoFrameCallback?: (cb: (now: number, m: { mediaTime: number }) => void) => number; cancelVideoFrameCallback?: (h: number) => void }) | null;
+    if (!v || !isVideo || !v.requestVideoFrameCallback) return;
+    let last: number | null = null;
+    let samples = 0;
+    let handle = 0;
+    const cb = (_now: number, m: { mediaTime: number }) => {
+      if (last != null) {
+        const d = m.mediaTime - last;
+        if (d > 0.004 && d < 0.2) {
+          frameDur.current = frameDur.current ? Math.min(frameDur.current, d) : d;
+          samples += 1;
+        }
+      }
+      last = m.mediaTime;
+      if (samples < 40) handle = v.requestVideoFrameCallback!(cb);
+    };
+    handle = v.requestVideoFrameCallback(cb);
+    return () => v.cancelVideoFrameCallback?.(handle);
+  }, [item?.key, isVideo]);
+
+  // A–B loop for videos.
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !isVideo || loop.a == null || loop.b == null) return;
+    const lo = Math.min(loop.a, loop.b);
+    const hi = Math.max(loop.a, loop.b);
+    let raf = 0;
+    const check = () => {
+      if (v.currentTime >= hi || v.ended) {
+        v.currentTime = lo;
+        if (!paused) v.play().catch(() => {});
+      }
+      raf = requestAnimationFrame(check);
+    };
+    raf = requestAnimationFrame(check);
+    return () => cancelAnimationFrame(raf);
+  }, [loop, isVideo, paused, item?.key]);
+
+  // A–B loop for GIFs (frames).
+  useEffect(() => {
+    if (!isGif) return;
+    imgRef.current?.setLoop(loop.a != null && loop.b != null ? { a: loop.a, b: loop.b } : null);
+  }, [loop, isGif]);
 
   // Tell auto-lock that something is playing.
   const isPlaying = !!item && !paused && (slideshow || item.kind === 'video');
@@ -325,6 +398,7 @@ export function Player(props: PlayerProps) {
   };
 
   const onVideoEnd = () => {
+    if (loop.a != null && loop.b != null) return; // the loop takes over
     if (slideshow) go('next', true);
     else if (s.repeat === 'one') {
       const v = videoRef.current;
@@ -332,6 +406,75 @@ export function Player(props: PlayerProps) {
         v.currentTime = 0;
         v.play().catch(() => {});
       }
+    }
+  };
+
+  // ---- video and GIF tools ------------------------------------------------------------------
+
+  const seekTo = (t: number) => {
+    const v = videoRef.current;
+    if (!v) return;
+    v.currentTime = Math.max(0, Math.min(Number.isFinite(v.duration) ? v.duration : t, t));
+    videoStart.current = v.currentTime;
+    setTime((x) => ({ ...x, at: v.currentTime }));
+  };
+  const seekBy = (d: number) => {
+    const v = videoRef.current;
+    if (v) seekTo(v.currentTime + d);
+  };
+  const stepFrame = (dir: 1 | -1) => {
+    if (isGif) {
+      setPaused(true);
+      imgRef.current?.step(dir);
+      return;
+    }
+    const v = videoRef.current;
+    if (!v) return;
+    setPaused(true);
+    v.pause();
+    const fd = frameDur.current || 1 / 30;
+    seekTo(v.currentTime + dir * fd);
+  };
+  const position = () => (isGif ? gifFrame.index : videoRef.current?.currentTime ?? 0);
+  const setLoopPoint = (which: 'a' | 'b') => {
+    const at = position();
+    setLoop((l) => ({ ...l, [which]: at }));
+    setFlash(`Loop ${which === 'a' ? 'start' : 'end'}: ${isGif ? `frame ${at + 1}` : preciseTime(at)}`);
+  };
+  const clearLoop = () => {
+    setLoop(NO_LOOP);
+    setFlash('Loop cleared');
+  };
+  const addBookmark = async () => {
+    const v = videoRef.current;
+    if (!v || item?.itemId == null) return;
+    try {
+      const id = await api.addBookmark(item.itemId, Math.round(v.currentTime * 1000), '');
+      setBmFocus(id);
+      setBmOpen(true);
+      loadBookmarks();
+    } catch (e) {
+      setFlash(String(e));
+    }
+  };
+  const saveFrame = async () => {
+    if (!item || item.itemId == null) return;
+    try {
+      let blob: Blob | null;
+      let name: string;
+      if (isVideo && videoRef.current) {
+        blob = await captureVideoFrame(videoRef.current);
+        name = derivedName(item.name, videoRef.current.currentTime, 'jpg');
+      } else {
+        blob = (await imgRef.current?.capture()) ?? null;
+        name = derivedName(item.name, null, 'png', `frame ${gifFrame.index + 1}`);
+      }
+      if (!blob) throw new Error('Nothing to save yet.');
+      await api.addFileBytes(item.folderId, name, new Uint8Array(await blob.arrayBuffer()));
+      kickThumbnails();
+      setFlash(`Saved “${name}” in this folder`);
+    } catch (e) {
+      setFlash(`Couldn't save the frame: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -375,12 +518,28 @@ export function Player(props: PlayerProps) {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       const k = e.key.toLowerCase();
+      const timed = isVideo || isGif;
       if (k === ' ') {
         e.preventDefault();
-        if (item?.kind === 'video' && !slideshow) setPaused((p) => !p);
+        if (e.ctrlKey) go('next');
+        else if (e.shiftKey) go('prev');
+        else if (timed && !slideshow) setPaused((p) => !p);
         else toggleSlideshow();
-      } else if (k === 'arrowright') go('next');
-      else if (k === 'arrowleft') go('prev');
+      } else if (k === 'arrowright' || k === 'arrowleft') {
+        const dir = k === 'arrowright' ? 1 : -1;
+        e.preventDefault();
+        if (e.ctrlKey && timed) stepFrame(dir);
+        else if (isVideo) seekBy(dir * (e.shiftKey ? prefs.seekBigSeconds : prefs.seekSeconds));
+        else go(dir > 0 ? 'next' : 'prev');
+      } else if (k === 'a' && timed && !e.ctrlKey) setLoopPoint('a');
+      else if (k === 'b' && timed && !e.ctrlKey) setLoopPoint('b');
+      else if (k === 'x' && timed && !e.ctrlKey) clearLoop();
+      else if (k === 'k' && isVideo && inVault) addBookmark();
+      else if (k === 's' && (isVideo || isGif) && inVault && !e.ctrlKey) saveFrame();
+      else if (k === 'p' && !e.ctrlKey) {
+        saveViewerPrefs({ smoothZoom: !prefs.smoothZoom });
+        setFlash(prefs.smoothZoom ? 'Crisp pixels when zoomed in' : 'Smooth when zoomed in');
+      } else if (k === '?') setHelp(true);
       else if (k === 'm') set({ muted: !s.muted });
       else if (k === 'f') props.onFullscreen?.();
       else if (k === '0') {
@@ -393,7 +552,8 @@ export function Player(props: PlayerProps) {
           const st = stageSize();
           zoomAt(st.w / 2, st.h / 2, f);
         }
-      } else if (k === 'escape' && (rect || zoomed)) {
+      } else if (k === 'escape' && bmOpen) setBmOpen(false);
+      else if (k === 'escape' && (rect || zoomed)) {
         setRect(null);
         setZoom({ s: 1, x: 0, y: 0 });
       } else if (k === 'escape') props.onClose?.();
@@ -409,10 +569,10 @@ export function Player(props: PlayerProps) {
   const orderLabel = ORDERS.find((o) => o.id === s.order)?.label ?? '';
   const orderItems = ORDERS.map((o) => ({ label: o.label, hint: o.hint, checked: o.id === s.order, onSelect: () => set({ order: o.id as Order }) }));
   const showUi = controls && allowControls;
+  const anim = s.transition === 'fade' ? 'fade-in' : undefined;
+  const pixelVideo = !prefs.smoothZoom && zoomed;
   const media = useMemo(() => {
     if (!item) return null;
-    const fit = { objectFit: s.fit } as const;
-    const anim = s.transition === 'fade' ? 'fade-in' : undefined;
     if (failed)
       return (
         <div className="media-failed">
@@ -422,33 +582,25 @@ export function Player(props: PlayerProps) {
       );
     if (item.kind === 'video')
       return (
-        <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`} style={fit} src={item.src} autoPlay={!paused}
+        <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`} style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined }}
+          src={item.src} autoPlay={!paused} crossOrigin="anonymous"
           playsInline preload="auto" onLoadedMetadata={onVideoMeta} onTimeUpdate={onVideoTime} onEnded={onVideoEnd}
           onError={() => setFailed(true)} />
       );
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
-    if (item.kind === 'gif')
-      return gifUrl ? <img key={item.key + tick} className={`media ${anim ?? ''}`} style={fit} src={gifUrl} alt={item.name} draggable={false} /> : null;
-    return <img key={item.key} className={`media ${anim ?? ''}`} style={fit} src={item.src} alt={item.name} draggable={false} onError={() => setFailed(true)} />;
-  }, [item?.key, item?.src, gifUrl, failed, s.fit, s.transition, tick, docZoom]); // eslint-disable-line react-hooks/exhaustive-deps
+    return null;
+  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
   const weight = item?.weight ?? 1;
-  const timeline = item?.kind === 'video' && time.dur > 0 && (
-    <div className="timeline">
-      <span>{formatTime(time.at * 1000)}</span>
-      <input type="range" min={0} max={time.dur} step={0.1} value={time.at} aria-label="Position"
-        onChange={(e) => {
-          const v = videoRef.current;
-          if (v) {
-            v.currentTime = Number(e.target.value);
-            videoStart.current = v.currentTime;
-          }
-        }} />
-      <span>{formatTime(time.dur * 1000)}{s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''}</span>
-    </div>
-  );
+  const timeline = !props.compact && isGif && gifFrame.count > 1 ? (
+    <PositionBar at={gifFrame.index} dur={gifFrame.count - 1} onSeek={(i) => { setPaused(true); imgRef.current?.seek(i); }}
+      bookmarks={[]} loop={loop} frames={gifFrame} />
+  ) : isVideo && time.dur > 0 ? (
+    <PositionBar at={time.at} dur={time.dur} onSeek={seekTo} bookmarks={props.compact ? [] : bookmarks} loop={props.compact ? NO_LOOP : loop}
+      suffix={s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''} />
+  ) : null;
 
   const speedButton = (
     <div role="group" aria-label="Playback speed" className="seg">
@@ -459,12 +611,50 @@ export function Player(props: PlayerProps) {
     </div>
   );
 
+  const timedTools = (isVideo || isGif) && !failed && (
+    <>
+      <span className="vsep" />
+      <button type="button" className="pbtn" aria-label="One frame back" title="One frame back (Ctrl+←)" onClick={() => stepFrame(-1)}><FrameBackIcon /></button>
+      <button type="button" className="pbtn" aria-label="One frame forward" title="One frame forward (Ctrl+→)" onClick={() => stepFrame(1)}><FrameNextIcon /></button>
+      <div className="ab-group" role="group" aria-label="A–B loop">
+        <LoopIcon size={14} />
+        <button type="button" className={`ab${loop.a != null ? ' on' : ''}`} title="Loop start here (A)" onClick={() => setLoopPoint('a')}>A</button>
+        <button type="button" className={`ab${loop.b != null ? ' on' : ''}`} title="Loop end here (B)" onClick={() => setLoopPoint('b')}>B</button>
+        {(loop.a != null || loop.b != null) && (
+          <button type="button" className="ab" title="Clear the loop (X)" aria-label="Clear the loop" onClick={clearLoop}><CloseIcon size={10} /></button>
+        )}
+      </div>
+      {inVault && isVideo && (
+        <div className="bm-wrap">
+          <button type="button" className={`pbtn bm-toggle${bmOpen ? ' on' : ''}`} aria-label="Bookmarks" title="Bookmarks (K adds one here)"
+            onClick={() => { setBmFocus(null); setBmOpen((o) => !o); }}>
+            <BookmarkIcon />{bookmarks.length > 0 && <small>{bookmarks.length}</small>}
+          </button>
+          {bmOpen && (
+            <BookmarksPanel list={bookmarks} at={time.at} focusId={bmFocus} onAdd={addBookmark} onChange={loadBookmarks}
+              onJump={(ms) => seekTo(ms / 1000)} onClose={() => setBmOpen(false)} />
+          )}
+        </div>
+      )}
+      {inVault && (
+        <button type="button" className="pbtn" aria-label="Save this frame as a picture" title="Save this frame as a picture (S)" onClick={saveFrame}><CameraIcon /></button>
+      )}
+      {inVault && isVideo && (
+        <button type="button" className="pbtn" aria-label="Make a GIF" title="Make a GIF from part of this video" onClick={() => { setPaused(true); setGifMaker(true); }}><GifIcon /></button>
+      )}
+    </>
+  );
+
   return (
     <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi ? '' : ' idle'}`}
       onMouseMove={poke} onMouseDown={poke}>
       <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}`} onPointerDown={onStagePointerDown}
         onContextMenu={(e) => e.preventDefault()}>
-        {isDoc ? media : (
+        {isDoc ? media : isPicture && item && !failed ? (
+          <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom}
+            prefs={prefs} paused={paused} className={anim}
+            onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })} onError={() => setFailed(true)} />
+        ) : (
           <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
         )}
         {!item && <div className="media-failed">Nothing to play here.</div>}
@@ -478,9 +668,10 @@ export function Player(props: PlayerProps) {
       {(zoomed || (isDoc && Math.abs(docZoom - 1) > 0.01)) && (
         <button type="button" className="zoom-badge" onClick={() => { setZoom({ s: 1, x: 0, y: 0 }); setDocZoom(1); }}
           title="Reset zoom (0)">
-          {Math.round((isDoc ? docZoom : zoom.s) * 100)}% · Reset
+          {Math.round((isDoc ? docZoom : zoom.s) * 100)}%{!isDoc && !prefs.smoothZoom ? ' · crisp' : ''} · Reset
         </button>
       )}
+      {flash && <div className="p-flash" role="status">{flash}</div>}
 
       {!props.compact && (
         <div className="p-top">
@@ -509,7 +700,13 @@ export function Player(props: PlayerProps) {
                   props.onFavourite!(item, !fav);
                 }}><HeartIcon filled={fav} size={18} /></button>
             )}
+            <ScalingMenu prefs={prefs} />
             {props.topRight}
+            {props.keys && (
+              <button type="button" className="btn btn-icon btn-sm glass" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={() => setHelp(true)}>
+                <HelpIcon />
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -525,12 +722,12 @@ export function Player(props: PlayerProps) {
           <div className="p-bottom">
             {timeline}
             <div className="row" style={{ gap: 6 }}>
-              <button type="button" className="pbtn" aria-label="Previous" onClick={() => go('prev')}><PrevIcon size={14} /></button>
+              <button type="button" className="pbtn" aria-label="Previous" title="Previous" onClick={() => go('prev')}><PrevIcon size={14} /></button>
               <button type="button" className="pbtn main" aria-label={slideshow && !paused ? 'Pause' : 'Play'} onClick={() => {
                 if (slideshow && !paused) setPaused(true);
                 else { setSlideshow(true); setPaused(false); }
               }}>{slideshow && !paused ? <PauseIcon size={14} /> : <PlayIcon size={14} />}</button>
-              <button type="button" className="pbtn" aria-label="Next" onClick={() => go('next')}><NextIcon size={14} /></button>
+              <button type="button" className="pbtn" aria-label="Next" title="Next" onClick={() => go('next')}><NextIcon size={14} /></button>
               <Dropdown up className={`pbtn${s.order === 'shuffle' || s.order === 'random' || s.order === 'weighted' ? ' on' : ''}`}
                 ariaLabel={`Order: ${orderLabel}`} title={`Order: ${orderLabel}`} label={<ShuffleIcon size={14} />} items={orderItems} />
               <button type="button" className={`pbtn${s.repeat !== 'off' ? ' on' : ''}`} aria-label={`Repeat: ${s.repeat}`} title={`Repeat: ${s.repeat}`}
@@ -546,26 +743,28 @@ export function Player(props: PlayerProps) {
         <div className="p-controls">
           {timeline}
           <div className="row" style={{ gap: 8 }}>
-            <button type="button" className="pbtn lg" aria-label="Previous" onClick={() => go('prev')}><PrevIcon /></button>
-            <button type="button" className="btn btn-primary slideshow" aria-pressed={slideshow && !paused} onClick={toggleSlideshow}>
+            <button type="button" className="pbtn lg" aria-label="Previous" title={isVideo || isGif ? 'Previous (Shift+Space)' : 'Previous (←)'} onClick={() => go('prev')}><PrevIcon /></button>
+            <button type="button" className="btn btn-primary slideshow" aria-pressed={slideshow && !paused} onClick={toggleSlideshow}
+              title={isVideo || isGif ? 'Slideshow' : 'Slideshow (Space)'}>
               {slideshow && !paused ? <PauseIcon /> : <PlayIcon />} Slideshow
             </button>
-            <button type="button" className="pbtn lg" aria-label="Next" onClick={() => go('next')}><NextIcon /></button>
-            {item?.kind === 'video' && !slideshow && (
-              <button type="button" className="pbtn lg" aria-label={paused ? 'Play video' : 'Pause video'} onClick={() => setPaused((p) => !p)}>
+            <button type="button" className="pbtn lg" aria-label="Next" title={isVideo || isGif ? 'Next (Ctrl+Space)' : 'Next (→)'} onClick={() => go('next')}><NextIcon /></button>
+            {(isVideo || isGif) && !slideshow && (
+              <button type="button" className="pbtn lg" aria-label={paused ? 'Play' : 'Pause'} title={paused ? 'Play (Space)' : 'Pause (Space)'} onClick={() => setPaused((p) => !p)}>
                 {paused ? <PlayIcon /> : <PauseIcon />}
               </button>
             )}
+            {timedTools}
             <span className="vsep" />
             <Dropdown up className={`btn btn-sm glass${s.order === 'shuffle' || s.order === 'random' || s.order === 'weighted' ? ' accent-soft' : ''}`}
-              label={<><ShuffleIcon /> Order: {orderLabel}</>} items={orderItems} />
+              label={<><ShuffleIcon /> {orderLabel}</>} title={`Order: ${orderLabel}`} items={orderItems} />
             <button type="button" className={`btn btn-sm glass${s.repeat !== 'off' ? ' accent-soft' : ''}`} onClick={cycleRepeat}
               title="Off → repeat all → repeat one">
               <RepeatIcon /> {s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}
             </button>
             {speedButton}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
-              <button type="button" className="pbtn lg" aria-label={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => set({ muted: !s.muted })}>
+              <button type="button" className="pbtn lg" aria-label={muted ? 'Unmute (M)' : 'Mute (M)'} title={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => set({ muted: !s.muted })}>
                 {muted ? <MuteIcon /> : <SoundIcon />}
               </button>
               <input type="range" min={0} max={1} step={0.01} value={s.volume} aria-label="Volume" className="vol"
@@ -579,6 +778,12 @@ export function Player(props: PlayerProps) {
           </div>
         </div>
       )}
+      {gifMaker && item && isVideo && (
+        <GifMakerDialog name={item.name} src={item.src} folder={item.folderId} at={time.at} dur={time.dur} loop={loop}
+          videoWidth={videoRef.current?.videoWidth ?? 480} onClose={() => setGifMaker(false)}
+          onSaved={(n) => { kickThumbnails(); setFlash(`Saved “${n}” in this folder`); }} />
+      )}
+      {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
     </div>
   );
 }

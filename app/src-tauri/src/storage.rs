@@ -185,8 +185,9 @@ mod tests {
 
         let items = library::query_items(&s.db(), &library::ItemFilter::default()).unwrap();
         let (gone, kept): (Vec<_>, Vec<_>) = items.iter().partition(|i| i.name.as_str() < "09");
-        let o =
-            library::delete_items(&s.db(), &gone.iter().map(|i| i.id).collect::<Vec<_>>()).unwrap();
+        let gone_ids: Vec<i64> = gone.iter().map(|i| i.id).collect();
+        library::trash_items(&s.db(), &gone_ids).unwrap();
+        let o = library::delete_forever(&s.db(), &gone_ids).unwrap();
         s.save().unwrap();
         import::remove_objects(&s, &o);
         assert!(info(&s).unwrap().reclaimable_bytes > 1_500_000);

@@ -1,0 +1,196 @@
+// Pieces of the player for videos and GIFs: the position bar with bookmarks
+// and the A–B loop, the bookmarks panel, the GIF maker, and the picture
+// scaling menu.
+
+import { useEffect, useRef, useState } from 'react';
+import { api, type Bookmark, type ViewerSettings } from '../api';
+import { derivedName, GIF_MAX_FRAMES, GIF_MAX_SECONDS, makeGif } from '../clips';
+import { formatTime } from '../media';
+import { saveViewerPrefs } from '../prefs';
+import { Dropdown, Modal } from './Dialogs';
+import { CloseIcon } from './Icons';
+
+/** Seconds with tenths: 83.46 → "1:23.4" */
+export function preciseTime(s: number): string {
+  if (!Number.isFinite(s)) return '';
+  const m = Math.floor(s / 60);
+  const sec = s - m * 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec.toFixed(1)}`;
+}
+
+export function PositionBar(props: {
+  at: number;
+  dur: number;
+  onSeek: (t: number) => void;
+  bookmarks: Bookmark[];
+  loop: { a: number | null; b: number | null };
+  suffix?: string;
+  /** Show frames instead of time (GIFs). */
+  frames?: { index: number; count: number };
+}) {
+  const { at, dur } = props;
+  const pct = (t: number) => `${Math.max(0, Math.min(100, (t / Math.max(dur, 0.001)) * 100))}%`;
+  const a = props.loop.a;
+  const b = props.loop.b;
+  return (
+    <div className="timeline">
+      <span>{props.frames ? `${props.frames.index + 1}` : formatTime(at * 1000)}</span>
+      <div className="track-wrap">
+        {a != null && (
+          <div className={`ab-region${b == null ? ' open' : ''}`}
+            style={{ left: pct(Math.min(a, b ?? a)), width: b != null ? `calc(${pct(Math.abs(b - a))})` : '2px' }} />
+        )}
+        <input type="range" min={0} max={dur} step={props.frames ? 1 : 0.05} value={at} aria-label="Position"
+          onChange={(e) => props.onSeek(Number(e.target.value))} />
+        {props.bookmarks.map((bm) => (
+          <button key={bm.id} type="button" className="bm-mark" style={{ left: pct(bm.positionMs / 1000) }}
+            aria-label={`Bookmark at ${formatTime(bm.positionMs)}${bm.note ? `: ${bm.note}` : ''}`}
+            onClick={() => props.onSeek(bm.positionMs / 1000)}>
+            {bm.note && <span className="bm-label">{bm.note}</span>}
+            <span className="bm-tip">{formatTime(bm.positionMs)}{bm.note ? ` — ${bm.note}` : ''}</span>
+          </button>
+        ))}
+      </div>
+      <span>{props.frames ? `${props.frames.count} frames` : formatTime(dur * 1000)}{props.suffix ?? ''}</span>
+    </div>
+  );
+}
+
+export function BookmarksPanel(props: {
+  list: Bookmark[];
+  at: number;
+  focusId: number | null;
+  onAdd: () => void;
+  onJump: (ms: number) => void;
+  onChange: () => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const close = (e: Event) => {
+      if (!ref.current?.contains(e.target as Node) && !(e.target as HTMLElement).closest('.bm-toggle')) props.onClose();
+    };
+    window.addEventListener('mousedown', close);
+    return () => window.removeEventListener('mousedown', close);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (props.focusId != null) ref.current?.querySelector<HTMLInputElement>(`input[data-id="${props.focusId}"]`)?.focus();
+  }, [props.focusId, props.list.length]);
+  return (
+    <div ref={ref} className="bm-panel" role="dialog" aria-label="Bookmarks" onKeyDown={(e) => e.stopPropagation()}>
+      <div className="row-between">
+        <b>Bookmarks</b>
+        <button type="button" className="btn btn-sm btn-primary" onClick={props.onAdd}>Add at {formatTime(props.at * 1000)} <kbd>K</kbd></button>
+      </div>
+      {props.list.length === 0 && <p className="faint" style={{ margin: 0, fontSize: 13 }}>No bookmarks in this video yet. They show as marks on the position bar.</p>}
+      <div className="bm-list">
+        {props.list.map((b) => (
+          <div key={b.id} className="bm-row">
+            <button type="button" className="link mono" onClick={() => props.onJump(b.positionMs)}>{formatTime(b.positionMs)}</button>
+            <input className="input small" data-id={b.id} defaultValue={b.note} placeholder="Add a note…" maxLength={500}
+              aria-label={`Note for ${formatTime(b.positionMs)}`}
+              onKeyDown={(e) => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+              onBlur={async (e) => {
+                if (e.target.value !== b.note) {
+                  await api.updateBookmark(b.id, b.positionMs, e.target.value).catch(() => {});
+                  props.onChange();
+                }
+              }} />
+            <button type="button" className="btn btn-icon btn-sm ghost" aria-label="Delete bookmark"
+              onClick={async () => { await api.deleteBookmark(b.id).catch(() => {}); props.onChange(); }}><CloseIcon size={12} /></button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+export function GifMakerDialog(props: {
+  name: string;
+  src: string;
+  folder: number | null;
+  at: number;
+  dur: number;
+  loop: { a: number | null; b: number | null };
+  videoWidth: number;
+  onClose: () => void;
+  onSaved: (name: string) => void;
+}) {
+  const fromLoop = props.loop.a != null && props.loop.b != null;
+  const [start, setStart] = useState(fromLoop ? Math.min(props.loop.a!, props.loop.b!) : props.at);
+  const [end, setEnd] = useState(fromLoop ? Math.max(props.loop.a!, props.loop.b!) : Math.min(props.dur, props.at + 3));
+  const [fps, setFps] = useState(15);
+  const [width, setWidth] = useState(Math.min(480, props.videoWidth || 480));
+  const [busy, setBusy] = useState<{ done: number; total: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const abort = useRef<AbortController | null>(null);
+  const len = Math.max(0, end - start);
+  const frames = Math.min(GIF_MAX_FRAMES, Math.round(Math.min(len, GIF_MAX_SECONDS) * fps));
+  const widths = [240, 320, 480, 640, 800].filter((w) => w <= (props.videoWidth || 800));
+  useEffect(() => () => abort.current?.abort(), []);
+
+  const make = async () => {
+    setErr(null);
+    if (len < 0.1) return setErr('The end must be after the start.');
+    abort.current = new AbortController();
+    setBusy({ done: 0, total: frames });
+    try {
+      const bytes = await makeGif(props.src, { start, end: Math.min(end, start + GIF_MAX_SECONDS), fps, width }, (done, total) => setBusy({ done, total }), abort.current.signal);
+      const name = derivedName(props.name, start, 'gif', 'clip');
+      await api.addFileBytes(props.folder, name, bytes);
+      props.onSaved(name);
+      props.onClose();
+    } catch (e) {
+      if ((e as Error).name !== 'AbortError') setErr(e instanceof Error ? e.message : String(e));
+      setBusy(null);
+    }
+  };
+  const num = (v: string) => Math.max(0, Math.min(props.dur, Number(v.replace(',', '.')) || 0));
+  return (
+    <Modal title="Make a GIF" onClose={() => (busy ? abort.current?.abort() : props.onClose())}>
+      <p className="faint" style={{ margin: 0, fontSize: 13 }}>
+        From “{props.name}”. The GIF is saved in the same folder, encrypted like everything else.
+        {fromLoop ? ' Starts with your A–B loop.' : ' Tip: set a loop with A and B first.'}
+      </p>
+      <div className="form-grid">
+        <label htmlFor="gif-start">Start (seconds)</label>
+        <span className="row"><input id="gif-start" className="input small" type="number" step="0.1" min={0} value={Number(start.toFixed(2))}
+          onChange={(e) => setStart(num(e.target.value))} /> <span className="faint">{preciseTime(start)}</span></span>
+        <label htmlFor="gif-end">End (seconds)</label>
+        <span className="row"><input id="gif-end" className="input small" type="number" step="0.1" min={0} value={Number(end.toFixed(2))}
+          onChange={(e) => setEnd(num(e.target.value))} /> <span className="faint">{preciseTime(end)} · {len.toFixed(1)} s{len > GIF_MAX_SECONDS ? ` (max ${GIF_MAX_SECONDS} s)` : ''}</span></span>
+        <span>Smoothness</span>
+        <div role="group" className="seg">
+          {[10, 15, 20, 25].map((f) => <button key={f} type="button" className={fps === f ? 'on' : ''} onClick={() => setFps(f)}>{f} fps</button>)}
+        </div>
+        <span>Width</span>
+        <div role="group" className="seg">
+          {widths.map((w) => <button key={w} type="button" className={width === w ? 'on' : ''} onClick={() => setWidth(w)}>{w}px</button>)}
+        </div>
+      </div>
+      <span className="faint" style={{ fontSize: 12 }}>{frames} frames. Bigger and smoother GIFs take longer and are larger files.</span>
+      {busy && (
+        <div className="stack" style={{ gap: 6 }}>
+          <div className="bar"><div style={{ width: `${(busy.done / Math.max(1, busy.total)) * 100}%` }} /></div>
+          <span className="faint mono" style={{ fontSize: 12 }}>{busy.done} / {busy.total} frames</span>
+        </div>
+      )}
+      {err && <div className="error">{err}</div>}
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <button type="button" className="btn" onClick={() => (busy ? abort.current?.abort() : props.onClose())}>{busy ? 'Stop' : 'Cancel'}</button>
+        <button type="button" className="btn btn-primary" disabled={!!busy} onClick={make}>{busy ? 'Making…' : 'Make GIF'}</button>
+      </div>
+    </Modal>
+  );
+}
+
+/** Picture scaling, like IrfanView's "Use Resample for fitting / zooming". */
+export function ScalingMenu({ prefs }: { prefs: ViewerSettings }) {
+  return (
+    <Dropdown className="btn btn-sm glass" label="View ▾" title="How pictures are scaled" items={[
+      { label: 'Smooth when shrinking to fit', hint: 'better quality', checked: prefs.smoothFit, onSelect: () => saveViewerPrefs({ smoothFit: !prefs.smoothFit }) },
+      { label: 'Smooth when zoomed in', hint: 'off = crisp pixels (P)', checked: prefs.smoothZoom, onSelect: () => saveViewerPrefs({ smoothZoom: !prefs.smoothZoom }) },
+      { label: 'Sharpen after smoothing', checked: prefs.sharpen, onSelect: () => saveViewerPrefs({ sharpen: !prefs.sharpen }) },
+    ]} />
+  );
+}

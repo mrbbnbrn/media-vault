@@ -37,10 +37,17 @@ pub struct Item {
     pub thumb: String,
     pub imported_at: i64,
     pub folder_id: Option<i64>,
+    /// Best known date: when the photo/video was taken, else the original
+    /// file's modified time, else when it was imported (seconds).
+    pub taken_at: i64,
+    pub views: i64,
+    /// When it was put in the trash (ms), if it is there.
+    pub deleted_at: Option<i64>,
 }
 
 const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, m.height, m.duration_ms, \
-     m.favourite, m.weight, m.thumb_object_id, m.imported_at, m.folder_id";
+     m.favourite, m.weight, m.thumb_object_id, m.imported_at, m.folder_id, \
+     COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at";
 
 fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
     let thumb: Option<String> = r.get(10)?;
@@ -63,6 +70,9 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         .into(),
         imported_at: r.get(11)?,
         folder_id: r.get(12)?,
+        taken_at: r.get(13)?,
+        views: r.get(14)?,
+        deleted_at: r.get(15)?,
     })
 }
 
@@ -91,6 +101,11 @@ pub struct FolderCard {
     /// Kind of the cover item: a "video" or "gif" cover plays in the folders view.
     pub cover_kind: Option<String>,
     pub tags: Vec<String>,
+    pub pinned: bool,
+    /// Colour dot shown with the name ("#rrggbb").
+    pub color: Option<String>,
+    /// Emoji shown before the name.
+    pub emoji: Option<String>,
 }
 
 struct FolderRow {
@@ -98,15 +113,32 @@ struct FolderRow {
     parent: Option<i64>,
     name: String,
     cover: Option<i64>,
+    pinned: bool,
+    color: Option<String>,
+    emoji: Option<String>,
 }
 
 /// Every folder with counts, covers and tags, in tree order (parents before
 /// children, siblings by sort order then name).
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
-        .prepare("SELECT id, parent_id, name, cover_media_id FROM folders ORDER BY sort_order, name COLLATE NOCASE")
+        .prepare(
+            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji FROM folders f \
+             LEFT JOIN media m ON m.id = f.cover_media_id AND m.deleted_at IS NULL \
+             WHERE f.deleted_at IS NULL ORDER BY f.sort_order, f.name COLLATE NOCASE",
+        )
         .map_err(e)?
-        .query_map([], |r| Ok(FolderRow { id: r.get(0)?, parent: r.get(1)?, name: r.get(2)?, cover: r.get(3)? }))
+        .query_map([], |r| {
+            Ok(FolderRow {
+                id: r.get(0)?,
+                parent: r.get(1)?,
+                name: r.get(2)?,
+                cover: r.get(3)?,
+                pinned: r.get::<_, i64>(4)? != 0,
+                color: r.get(5)?,
+                emoji: r.get(6)?,
+            })
+        })
         .map_err(e)?
         .collect::<rusqlite::Result<_>>()
         .map_err(e)?;
@@ -118,7 +150,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             .prepare(
                 "SELECT folder_id, COUNT(*), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' \
                  AND kind = 'image' THEN id END), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' THEN id END) \
-                 FROM media WHERE folder_id IS NOT NULL GROUP BY folder_id",
+                 FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL GROUP BY folder_id",
             )
             .map_err(e)?;
         let it = st
@@ -234,6 +266,9 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 subfolders: children.get(&Some(id)).map(|v| v.len() as i64).unwrap_or(0),
                 cover,
                 tags: tags.remove(&id).unwrap_or_default(),
+                pinned: r.pinned,
+                color: r.color.clone(),
+                emoji: r.emoji.clone(),
             }
         })
         .collect())
@@ -290,6 +325,10 @@ pub struct ItemFilter {
     pub kinds: Vec<String>,
     /// Imported within the last N days.
     pub recent_days: Option<i64>,
+    /// File name contains each of these (case-insensitive).
+    pub names: Vec<String>,
+    /// List what is in the trash instead of what is not.
+    pub trash: bool,
 }
 
 mod double_option {
@@ -328,7 +367,11 @@ fn descendants(conn: &Connection, roots: &[i64]) -> R<Vec<i64>> {
 }
 
 pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
-    let mut wh: Vec<String> = Vec::new();
+    let mut wh: Vec<String> = vec![if f.trash {
+        "m.deleted_at IS NOT NULL".into()
+    } else {
+        "m.deleted_at IS NULL".into()
+    }];
     let mut args: Vec<Value> = Vec::new();
 
     let mut folder_ids: Vec<i64> = f.folders.clone();
@@ -366,7 +409,7 @@ pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
     let kinds: Vec<&String> = f
         .kinds
         .iter()
-        .filter(|k| ["image", "gif", "video"].contains(&k.as_str()))
+        .filter(|k| ["image", "gif", "video", "text", "pdf"].contains(&k.as_str()))
         .collect();
     if !kinds.is_empty() {
         wh.push(format!("m.kind IN ({})", vec!["?"; kinds.len()].join(",")));
@@ -386,20 +429,35 @@ pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
         args.extend(ids.into_iter().map(Value::Integer));
     }
     let sql = format!(
-        "SELECT {ITEM_COLS} FROM media m {} ORDER BY m.imported_at DESC, m.id DESC",
-        if wh.is_empty() {
-            String::new()
-        } else {
-            format!("WHERE {}", wh.join(" AND "))
-        }
+        "SELECT {ITEM_COLS} FROM media m WHERE {} ORDER BY m.imported_at DESC, m.id DESC",
+        wh.join(" AND ")
     );
     let mut st = conn.prepare(&sql).map_err(e)?;
-    let items = st
+    let mut items = st
         .query_map(params_from_iter(args), item_row)
         .map_err(e)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(e)?;
+    // Name search is done here rather than in SQL so that Turkish letters
+    // match regardless of case (SQLite only folds A–Z).
+    let names: Vec<String> = f
+        .names
+        .iter()
+        .map(|n| fold(n.trim()))
+        .filter(|n| !n.is_empty())
+        .collect();
+    if !names.is_empty() {
+        items.retain(|i| {
+            let n = fold(&i.name);
+            names.iter().all(|q| n.contains(q.as_str()))
+        });
+    }
     Ok(items)
+}
+
+/// Lower-case for searching: "İ", "I", "ı" and "i" all match each other.
+pub fn fold(s: &str) -> String {
+    s.to_lowercase().replace('\u{307}', "").replace('ı', "i")
 }
 
 pub fn get_item(conn: &Connection, id: i64) -> R<Item> {
@@ -427,15 +485,19 @@ pub fn check_name(name: &str) -> R<String> {
 }
 
 fn folder_exists(conn: &Connection, id: i64) -> R<bool> {
-    conn.query_row("SELECT 1 FROM folders WHERE id = ?", [id], |_| Ok(()))
-        .optional()
-        .map_err(e)
-        .map(|o| o.is_some())
+    conn.query_row(
+        "SELECT 1 FROM folders WHERE id = ? AND deleted_at IS NULL",
+        [id],
+        |_| Ok(()),
+    )
+    .optional()
+    .map_err(e)
+    .map(|o| o.is_some())
 }
 
 pub fn find_child(conn: &Connection, parent: Option<i64>, name: &str) -> R<Option<i64>> {
     conn.query_row(
-        "SELECT id FROM folders WHERE IFNULL(parent_id, 0) = IFNULL(?1, 0) AND name = ?2 COLLATE NOCASE",
+        "SELECT id FROM folders WHERE IFNULL(parent_id, 0) = IFNULL(?1, 0) AND name = ?2 COLLATE NOCASE AND deleted_at IS NULL",
         params![parent, name.trim()],
         |r| r.get(0),
     )
@@ -549,30 +611,412 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
     Ok(o)
 }
 
-/// Delete a folder, its subfolders and every item in them from the vault.
-pub fn delete_folder(conn: &Connection, id: i64) -> R<Orphans> {
+// ---- trash -------------------------------------------------------------------------------
+
+pub const TRASH_DAYS: i64 = 30;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// A fresh trash stamp. Everything deleted in one action shares a stamp, so
+/// restoring a folder brings back exactly what was deleted with it.
+fn next_stamp(conn: &Connection) -> R<i64> {
+    let last: Option<i64> = conn
+        .query_row(
+            "SELECT MAX(x) FROM (SELECT MAX(deleted_at) AS x FROM media UNION ALL SELECT MAX(deleted_at) FROM folders)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(e)?;
+    Ok(now_ms().max(last.unwrap_or(0) + 1))
+}
+
+/// Put a folder, its subfolders and everything in them in the trash.
+pub fn trash_folder(conn: &Connection, id: i64) -> R<i64> {
+    if !folder_exists(conn, id)? {
+        return Err("That folder no longer exists.".into());
+    }
+    let stamp = next_stamp(conn)?;
     let all = descendants(conn, &[id])?;
-    let ph = vec!["?"; all.len()].join(",");
-    let args: Vec<Value> = all.iter().map(|i| Value::Integer(*i)).collect();
-    let orphans = collect_orphans(conn, &format!("folder_id IN ({ph})"), &args)?;
+    let (ph, args) = id_list(&all);
+    let mut a = vec![Value::Integer(stamp)];
+    a.extend(args);
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute(
-        &format!("UPDATE folders SET cover_media_id = NULL WHERE id IN ({ph})"),
+        &format!(
+            "UPDATE media SET deleted_at = ? WHERE deleted_at IS NULL AND folder_id IN ({ph})"
+        ),
+        params_from_iter(a.iter().cloned()),
+    )
+    .map_err(e)?;
+    tx.execute(
+        &format!("UPDATE folders SET deleted_at = ? WHERE deleted_at IS NULL AND id IN ({ph})"),
+        params_from_iter(a),
+    )
+    .map_err(e)?;
+    tx.commit().map_err(e)?;
+    Ok(stamp)
+}
+
+pub fn trash_items(conn: &Connection, ids: &[i64]) -> R<i64> {
+    let stamp = next_stamp(conn)?;
+    if ids.is_empty() {
+        return Ok(stamp);
+    }
+    let (ph, mut args) = id_list(ids);
+    args.insert(0, Value::Integer(stamp));
+    conn.execute(
+        &format!("UPDATE media SET deleted_at = ? WHERE deleted_at IS NULL AND id IN ({ph})"),
+        params_from_iter(args),
+    )
+    .map_err(e)?;
+    Ok(stamp)
+}
+
+/// Bring items back. Items whose folder is gone (or in the trash) come back
+/// at the top level. Returns how many went to the top level that way.
+pub fn restore_items(conn: &Connection, ids: &[i64]) -> R<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let (ph, args) = id_list(ids);
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    let homeless = tx
+        .execute(
+            &format!(
+                "UPDATE media SET folder_id = NULL WHERE id IN ({ph}) AND deleted_at IS NOT NULL AND folder_id IS NOT NULL \
+                 AND folder_id NOT IN (SELECT id FROM folders WHERE deleted_at IS NULL)"
+            ),
+            params_from_iter(args.iter().cloned()),
+        )
+        .map_err(e)?;
+    tx.execute(
+        &format!("UPDATE media SET deleted_at = NULL WHERE id IN ({ph})"),
+        params_from_iter(args),
+    )
+    .map_err(e)?;
+    tx.commit().map_err(e)?;
+    Ok(homeless)
+}
+
+/// A free name for a folder coming back: "Name", else "Name (restored)", …
+fn free_name(conn: &Connection, parent: Option<i64>, name: &str, except: i64) -> R<String> {
+    let mut candidate = name.to_string();
+    let mut n = 1;
+    loop {
+        match find_child(conn, parent, &candidate)? {
+            Some(other) if other != except => {
+                candidate = if n == 1 {
+                    format!("{name} (restored)")
+                } else {
+                    format!("{name} (restored {n})")
+                };
+                n += 1;
+            }
+            _ => return Ok(candidate),
+        }
+    }
+}
+
+/// Bring a deleted folder back with everything that was deleted with it.
+pub fn restore_folder(conn: &Connection, id: i64) -> R<()> {
+    let (stamp, parent, name): (Option<i64>, Option<i64>, String) = conn
+        .query_row(
+            "SELECT deleted_at, parent_id, name FROM folders WHERE id = ?",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .optional()
+        .map_err(e)?
+        .ok_or("That folder no longer exists.")?;
+    let Some(stamp) = stamp else {
+        return Ok(());
+    };
+    // If the folder it was in is gone or still in the trash, it returns to the top level.
+    let parent = match parent {
+        Some(p) if folder_exists(conn, p)? => Some(p),
+        _ => None,
+    };
+    let name = free_name(conn, parent, &name, id)?;
+    let tree: Vec<i64> = descendants(conn, &[id])?;
+    let (ph, args) = id_list(&tree);
+    let mut a = vec![Value::Integer(stamp)];
+    a.extend(args);
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    tx.execute(
+        "UPDATE folders SET parent_id = ?, name = ? WHERE id = ?",
+        params![parent, name, id],
+    )
+    .map_err(e)?;
+    tx.execute(
+        &format!("UPDATE folders SET deleted_at = NULL WHERE deleted_at = ? AND id IN ({ph})"),
+        params_from_iter(a.iter().cloned()),
+    )
+    .map_err(e)?;
+    tx.execute(
+        &format!("UPDATE media SET deleted_at = NULL WHERE deleted_at = ? AND folder_id IN ({ph})"),
+        params_from_iter(a),
+    )
+    .map_err(e)?;
+    tx.commit().map_err(e)?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashFolder {
+    pub id: i64,
+    pub name: String,
+    /// Where it was, e.g. "People › Family".
+    pub location: String,
+    pub deleted_at: i64,
+    pub items: i64,
+    pub bytes: i64,
+    pub cover: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TrashView {
+    pub folders: Vec<TrashFolder>,
+    /// Items deleted on their own (not as part of a deleted folder).
+    pub items: Vec<Item>,
+    pub total_items: i64,
+    pub total_bytes: i64,
+}
+
+pub fn trash_view(conn: &Connection) -> R<TrashView> {
+    let paths = vault_core::db::folder_paths(conn).map_err(|x| x.to_string())?;
+    let roots: Vec<(i64, String, Option<i64>, i64)> = conn
+        .prepare(
+            "SELECT f.id, f.name, f.parent_id, f.deleted_at FROM folders f LEFT JOIN folders p ON p.id = f.parent_id \
+             WHERE f.deleted_at IS NOT NULL AND (p.id IS NULL OR p.deleted_at IS NULL OR p.deleted_at <> f.deleted_at) \
+             ORDER BY f.deleted_at DESC",
+        )
+        .map_err(e)?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    let mut folders = Vec::new();
+    for (id, name, parent, stamp) in roots {
+        let tree = descendants(conn, &[id])?;
+        let (ph, args) = id_list(&tree);
+        let mut a = vec![Value::Integer(stamp)];
+        a.extend(args);
+        let (items, bytes, cover): (i64, i64, Option<i64>) = conn
+            .query_row(
+                &format!(
+                    "SELECT COUNT(*), IFNULL(SUM(size), 0), MIN(CASE WHEN thumb_object_id <> '' THEN id END) FROM media \
+                     WHERE deleted_at = ? AND folder_id IN ({ph})"
+                ),
+                params_from_iter(a),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .map_err(e)?;
+        folders.push(TrashFolder {
+            id,
+            name,
+            location: parent
+                .and_then(|p| paths.get(&p))
+                .map(|v| v.join(" › "))
+                .unwrap_or_else(|| "Top level".into()),
+            deleted_at: stamp,
+            items,
+            bytes,
+            cover,
+        });
+    }
+    let items = conn
+        .prepare(&format!(
+            "SELECT {ITEM_COLS} FROM media m LEFT JOIN folders f ON f.id = m.folder_id \
+             WHERE m.deleted_at IS NOT NULL AND (f.id IS NULL OR f.deleted_at IS NULL OR f.deleted_at <> m.deleted_at) \
+             ORDER BY m.deleted_at DESC, m.id"
+        ))
+        .map_err(e)?
+        .query_map([], item_row)
+        .map_err(e)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(e)?;
+    let (total_items, total_bytes) = conn
+        .query_row(
+            "SELECT COUNT(*), IFNULL(SUM(size), 0) FROM media WHERE deleted_at IS NOT NULL",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(e)?;
+    Ok(TrashView {
+        folders,
+        items,
+        total_items,
+        total_bytes,
+    })
+}
+
+/// Remove folder rows that are in the trash and no longer hold anything.
+fn drop_empty_trashed_folders(conn: &Connection) -> R<()> {
+    loop {
+        let n = conn
+            .execute(
+                "DELETE FROM folders WHERE deleted_at IS NOT NULL \
+                 AND id NOT IN (SELECT folder_id FROM media WHERE folder_id IS NOT NULL) \
+                 AND id NOT IN (SELECT parent_id FROM folders WHERE parent_id IS NOT NULL)",
+                [],
+            )
+            .map_err(e)?;
+        if n == 0 {
+            return Ok(());
+        }
+    }
+}
+
+/// Delete items in the trash for good. Returns the encrypted files to remove.
+pub fn delete_forever(conn: &Connection, ids: &[i64]) -> R<Orphans> {
+    if ids.is_empty() {
+        return Ok(Orphans::default());
+    }
+    let (ph, args) = id_list(ids);
+    let w = format!("id IN ({ph}) AND deleted_at IS NOT NULL");
+    let orphans = collect_orphans(conn, &w, &args)?;
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    tx.execute(
+        &format!("DELETE FROM media WHERE {w}"),
+        params_from_iter(args),
+    )
+    .map_err(e)?;
+    drop_empty_trashed_folders(&tx)?;
+    tx.commit().map_err(e)?;
+    Ok(orphans)
+}
+
+/// Delete a folder in the trash (and what was deleted with it) for good.
+pub fn delete_folder_forever(conn: &Connection, id: i64) -> R<Orphans> {
+    let stamp: Option<i64> = conn
+        .query_row("SELECT deleted_at FROM folders WHERE id = ?", [id], |r| {
+            r.get(0)
+        })
+        .optional()
+        .map_err(e)?
+        .flatten();
+    let Some(stamp) = stamp else {
+        return Err("Only folders in the trash can be deleted for good.".into());
+    };
+    let tree = descendants(conn, &[id])?;
+    let (ph, args) = id_list(&tree);
+    let mut a = vec![Value::Integer(stamp)];
+    a.extend(args.iter().cloned());
+    let w = format!("deleted_at = ? AND folder_id IN ({ph})");
+    let orphans = collect_orphans(conn, &w, &a)?;
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    tx.execute(&format!("DELETE FROM media WHERE {w}"), params_from_iter(a))
+        .map_err(e)?;
+    // Items deleted earlier on their own stay in the trash; they come back at the top level.
+    tx.execute(
+        &format!("UPDATE media SET folder_id = NULL WHERE folder_id IN ({ph})"),
         params_from_iter(args.iter().cloned()),
     )
     .map_err(e)?;
     tx.execute(
-        &format!("DELETE FROM media WHERE folder_id IN ({ph})"),
-        params_from_iter(args.iter().cloned()),
+        &format!(
+            "UPDATE folders SET parent_id = NULL WHERE parent_id IN ({ph}) AND id NOT IN ({ph})"
+        ),
+        params_from_iter(args.iter().cloned().chain(args.iter().cloned())),
     )
     .map_err(e)?;
-    // Children first so the parent_id references never dangle.
-    for f in all.iter().rev() {
-        tx.execute("DELETE FROM folders WHERE id = ?", [f])
-            .map_err(e)?;
-    }
+    tx.execute(
+        &format!("UPDATE folders SET deleted_at = ?, parent_id = NULL WHERE id IN ({ph})"),
+        params_from_iter(std::iter::once(Value::Integer(stamp)).chain(args.iter().cloned())),
+    )
+    .map_err(e)?;
+    tx.execute(
+        &format!("DELETE FROM folders WHERE id IN ({ph})"),
+        params_from_iter(args),
+    )
+    .map_err(e)?;
     tx.commit().map_err(e)?;
     Ok(orphans)
+}
+
+pub fn empty_trash(conn: &Connection) -> R<Orphans> {
+    let orphans = collect_orphans(conn, "deleted_at IS NOT NULL", &[])?;
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    tx.execute("DELETE FROM media WHERE deleted_at IS NOT NULL", [])
+        .map_err(e)?;
+    tx.execute(
+        "UPDATE folders SET parent_id = NULL WHERE deleted_at IS NOT NULL",
+        [],
+    )
+    .map_err(e)?;
+    tx.execute("DELETE FROM folders WHERE deleted_at IS NOT NULL", [])
+        .map_err(e)?;
+    tx.commit().map_err(e)?;
+    Ok(orphans)
+}
+
+/// Remove things that have been in the trash longer than `days`.
+pub fn purge_trash(conn: &Connection, days: i64) -> R<Orphans> {
+    let cutoff = now_ms() - days * 86_400_000;
+    let ids: Vec<i64> = conn
+        .prepare("SELECT id FROM media WHERE deleted_at IS NOT NULL AND deleted_at < ?")
+        .map_err(e)?
+        .query_map([cutoff], |r| r.get(0))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    let mut o = delete_forever(conn, &ids)?;
+    let old_roots: Vec<i64> = conn
+        .prepare("SELECT id FROM folders WHERE deleted_at IS NOT NULL AND deleted_at < ?")
+        .map_err(e)?
+        .query_map([cutoff], |r| r.get(0))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    for f in old_roots {
+        if let Ok(more) = delete_folder_forever(conn, f) {
+            o.media.extend(more.media);
+            o.thumbs.extend(more.thumbs);
+        }
+    }
+    Ok(o)
+}
+
+// ---- folder look -----------------------------------------------------------------------
+
+pub fn set_pinned(conn: &Connection, id: i64, on: bool) -> R<()> {
+    conn.execute(
+        "UPDATE folders SET pinned = ? WHERE id = ?",
+        params![on as i64, id],
+    )
+    .map_err(e)?;
+    Ok(())
+}
+
+fn clean_color(c: Option<&str>) -> Option<String> {
+    let c = c?.trim();
+    let ok = c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|ch| ch.is_ascii_hexdigit());
+    ok.then(|| c.to_ascii_lowercase())
+}
+
+pub fn set_folder_look(
+    conn: &Connection,
+    id: i64,
+    color: Option<&str>,
+    emoji: Option<&str>,
+) -> R<()> {
+    let emoji = emoji
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| s.chars().take(8).collect::<String>());
+    conn.execute(
+        "UPDATE folders SET color = ?, emoji = ? WHERE id = ?",
+        params![clean_color(color), emoji, id],
+    )
+    .map_err(e)?;
+    Ok(())
 }
 
 pub fn set_cover(conn: &Connection, folder: i64, media: Option<i64>) -> R<()> {
@@ -609,20 +1053,6 @@ pub fn move_items(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<usiz
         params_from_iter(args),
     )
     .map_err(e)
-}
-
-pub fn delete_items(conn: &Connection, ids: &[i64]) -> R<Orphans> {
-    if ids.is_empty() {
-        return Ok(Orphans::default());
-    }
-    let (ph, args) = id_list(ids);
-    let orphans = collect_orphans(conn, &format!("id IN ({ph})"), &args)?;
-    conn.execute(
-        &format!("DELETE FROM media WHERE id IN ({ph})"),
-        params_from_iter(args),
-    )
-    .map_err(e)?;
-    Ok(orphans)
 }
 
 pub fn set_favourite(conn: &Connection, ids: &[i64], on: bool) -> R<()> {
@@ -715,29 +1145,44 @@ fn drop_unused_tags(conn: &Connection) -> R<()> {
     Ok(())
 }
 
-pub fn tag_items(conn: &Connection, ids: &[i64], tags: &[String]) -> R<()> {
+/// Returns, per tag, the items that didn't have it before (for undo).
+pub fn tag_items(conn: &Connection, ids: &[i64], tags: &[String]) -> R<Vec<(String, Vec<i64>)>> {
+    let mut out = Vec::new();
     for t in tags.iter().filter_map(|t| clean_tag(t)) {
         let tid = tag_id(conn, &t)?;
+        let mut added = Vec::new();
         for id in ids {
-            conn.execute(
-                "INSERT OR IGNORE INTO media_tags(media_id, tag_id) VALUES (?, ?)",
-                [id, &tid],
-            )
-            .map_err(e)?;
+            let n = conn
+                .execute(
+                    "INSERT OR IGNORE INTO media_tags(media_id, tag_id) VALUES (?, ?)",
+                    [id, &tid],
+                )
+                .map_err(e)?;
+            if n > 0 {
+                added.push(*id);
+            }
         }
+        out.push((t, added));
     }
-    Ok(())
+    Ok(out)
 }
 
-pub fn untag_items(conn: &Connection, ids: &[i64], tag: &str) -> R<()> {
+/// Returns the items that had the tag (for undo).
+pub fn untag_items(conn: &Connection, ids: &[i64], tag: &str) -> R<Vec<i64>> {
+    let mut had = Vec::new();
     for id in ids {
-        conn.execute(
-            "DELETE FROM media_tags WHERE media_id = ? AND tag_id = (SELECT id FROM tags WHERE name = ?)",
-            params![id, tag.trim()],
-        )
-        .map_err(e)?;
+        let n = conn
+            .execute(
+                "DELETE FROM media_tags WHERE media_id = ? AND tag_id = (SELECT id FROM tags WHERE name = ?)",
+                params![id, tag.trim()],
+            )
+            .map_err(e)?;
+        if n > 0 {
+            had.push(*id);
+        }
     }
-    drop_unused_tags(conn)
+    drop_unused_tags(conn)?;
+    Ok(had)
 }
 
 pub fn tag_folder(conn: &Connection, folder: i64, tags: &[String]) -> R<()> {
@@ -983,25 +1428,146 @@ mod tests {
     }
 
     #[test]
-    fn delete_folder_returns_files_to_remove() {
+    fn trash_restore_and_delete_forever() {
         let c = db::create_empty().unwrap();
         let a = create_folder(&c, None, "A").unwrap();
         let b = create_folder(&c, Some(a), "B").unwrap();
-        add(&c, "x", Some(a), "image");
-        add(&c, "y", Some(b), "image");
+        let x = add(&c, "x", Some(a), "image");
+        let y = add(&c, "y", Some(b), "image");
+        let early = add(&c, "early", Some(b), "image");
         let keep = add(&c, "z", None, "image");
-        let o = delete_folder(&c, a).unwrap();
-        assert_eq!(o.media.len(), 2);
-        assert_eq!(o.thumbs.len(), 2);
-        assert!(all_folders(&c).unwrap().is_empty());
-        assert_eq!(
-            query_items(&c, &ItemFilter::default())
+        let live = |c: &Connection| {
+            let mut v: Vec<i64> = query_items(c, &ItemFilter::default())
                 .unwrap()
                 .iter()
                 .map(|i| i.id)
-                .collect::<Vec<_>>(),
-            vec![keep]
+                .collect();
+            v.sort();
+            v
+        };
+
+        // One item deleted on its own first, then the whole folder.
+        trash_items(&c, &[early]).unwrap();
+        trash_folder(&c, a).unwrap();
+        assert_eq!(live(&c), vec![keep]);
+        assert!(all_folders(&c).unwrap().is_empty());
+        let t = trash_view(&c).unwrap();
+        assert_eq!(
+            t.folders.len(),
+            1,
+            "only the deleted folder itself, not its subfolder"
         );
+        assert_eq!(t.folders[0].items, 2, "items deleted with it");
+        assert_eq!(
+            t.items.iter().map(|i| i.id).collect::<Vec<_>>(),
+            vec![early],
+            "deleted on its own"
+        );
+        assert_eq!(t.total_items, 3);
+
+        // A new folder may take the deleted one's name; restoring then renames.
+        let a2 = create_folder(&c, None, "A").unwrap();
+        restore_folder(&c, a).unwrap();
+        let names: Vec<String> = all_folders(&c)
+            .unwrap()
+            .iter()
+            .map(|f| f.name.clone())
+            .collect();
+        assert!(
+            names.contains(&"A (restored)".to_string()) && names.contains(&"B".to_string()),
+            "{names:?}"
+        );
+        assert_eq!(live(&c), vec![x, y, keep]);
+        assert!(
+            query_items(
+                &c,
+                &ItemFilter {
+                    trash: true,
+                    ..Default::default()
+                }
+            )
+            .unwrap()
+            .iter()
+            .all(|i| i.id == early)
+        );
+
+        // Restoring an item whose folder is gone puts it at the top level.
+        trash_folder(&c, a).unwrap();
+        let o = delete_folder_forever(&c, a).unwrap();
+        assert_eq!(o.media.len(), 2);
+        restore_items(&c, &[early]).unwrap();
+        assert_eq!(get_item(&c, early).unwrap().folder_id, None);
+        let _ = a2;
+
+        // Duplicate checks, names and empty trash.
+        trash_items(&c, &[keep]).unwrap();
+        let o = empty_trash(&c).unwrap();
+        assert_eq!(o.media.len(), 1);
+        assert_eq!(live(&c), vec![early]);
+        assert_eq!(trash_view(&c).unwrap().total_items, 0);
+        assert!(
+            delete_forever(&c, &[early]).unwrap().media.is_empty(),
+            "only things in the trash"
+        );
+    }
+
+    #[test]
+    fn old_trash_is_purged() {
+        let c = db::create_empty().unwrap();
+        let f = create_folder(&c, None, "Old").unwrap();
+        add(&c, "a", Some(f), "image");
+        let fresh = add(&c, "b", None, "image");
+        trash_folder(&c, f).unwrap();
+        trash_items(&c, &[fresh]).unwrap();
+        c.execute("UPDATE folders SET deleted_at = 1000", [])
+            .unwrap();
+        c.execute("UPDATE media SET deleted_at = 1000 WHERE id <> ?", [fresh])
+            .unwrap();
+        let o = purge_trash(&c, TRASH_DAYS).unwrap();
+        assert_eq!(o.media.len(), 1);
+        assert_eq!(trash_view(&c).unwrap().total_items, 1);
+        assert!(trash_view(&c).unwrap().folders.is_empty());
+    }
+
+    #[test]
+    fn name_search_ignores_case_including_turkish() {
+        let c = db::create_empty().unwrap();
+        let a = add(&c, "İSTANBUL_2023.jpg", None, "image");
+        let b = add(&c, "ırmak kenarı.jpg", None, "image");
+        add(&c, "other.png", None, "image");
+        let find = |q: &[&str]| {
+            query_items(
+                &c,
+                &ItemFilter {
+                    names: q.iter().map(|s| s.to_string()).collect(),
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+            .iter()
+            .map(|i| i.id)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(find(&["istanbul"]), vec![a]);
+        assert_eq!(find(&["IRMAK"]), vec![b]);
+        assert_eq!(find(&["jpg", "2023"]), vec![a]);
+        assert!(find(&["%"]).is_empty());
+    }
+
+    #[test]
+    fn pins_colours_and_emoji() {
+        let c = db::create_empty().unwrap();
+        let f = create_folder(&c, None, "Trips").unwrap();
+        set_pinned(&c, f, true).unwrap();
+        set_folder_look(&c, f, Some("#2EC4B6"), Some(" 🌊 ")).unwrap();
+        let card = &all_folders(&c).unwrap()[0];
+        assert!(card.pinned);
+        assert_eq!(card.color.as_deref(), Some("#2ec4b6"));
+        assert_eq!(card.emoji.as_deref(), Some("🌊"));
+        set_folder_look(&c, f, Some("red; drop table"), None).unwrap();
+        let card = &all_folders(&c).unwrap()[0];
+        assert_eq!(card.color, None);
+        assert_eq!(card.emoji, None);
     }
 
     #[test]
@@ -1013,7 +1579,13 @@ mod tests {
         let m2 = add(&c, "2", Some(sub), "video");
         let m3 = add(&c, "3", None, "gif");
         tag_folder(&c, alex, &["Alex".into()]).unwrap();
-        tag_items(&c, &[m2, m3], &["#sunny ".into()]).unwrap();
+        let added = tag_items(&c, &[m2, m3], &["#sunny ".into()]).unwrap();
+        assert_eq!(added, vec![("sunny".to_string(), vec![m2, m3])]);
+        assert_eq!(
+            tag_items(&c, &[m2, m1], &["sunny".into()]).unwrap()[0].1,
+            vec![m1]
+        );
+        assert_eq!(untag_items(&c, &[m1], "sunny").unwrap(), vec![m1]);
         set_favourite(&c, &[m1, m3], true).unwrap();
         set_weight(&c, &[m2], 5.0).unwrap();
         assert!(set_weight(&c, &[m2], -1.0).is_err());

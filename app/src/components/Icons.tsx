@@ -184,3 +184,91 @@ export const ImportIcon = ({ size = 16 }: P) => (
     <path d="M4 17v3h16v-3" />
   </svg>
 );
+export const DiceIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="4" y="4" width="16" height="16" rx="3" />
+    <path d="M8.5 8.5h.01M15.5 15.5h.01M15.5 8.5h.01M8.5 15.5h.01M12 12h.01" strokeWidth={3} />
+  </svg>
+);
+export const ChartIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M4 20h16" />
+    <path d="M7 16v-5M12 16V7M17 16v-8" />
+  </svg>
+);
+export const PinIcon = ({ size = 14 }: P) => (
+  <svg {...base(size)}>
+    <path d="M9 4h6l-1 5 3 3H7l3-3z" />
+    <path d="M12 12v8" />
+  </svg>
+);
+export const HelpIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.3" />
+    <path d="M12 17h.01" />
+  </svg>
+);
+export const ClockIcon = ({ size = 15 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7v5l3 2" />
+  </svg>
+);
+export const UndoIcon = ({ size = 14 }: P) => (
+  <svg {...base(size)}>
+    <path d="M9 14L4 9l5-5" />
+    <path d="M4 9h10a6 6 0 0 1 0 12h-3" />
+  </svg>
+);
+export const SheetIcon = ({ size = 15 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="3" width="7" height="7" rx="1" />
+    <rect x="14" y="3" width="7" height="7" rx="1" />
+    <rect x="3" y="14" width="7" height="7" rx="1" />
+    <rect x="14" y="14" width="7" height="7" rx="1" />
+  </svg>
+);
+export const BookmarkIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M6 3h12v18l-6-4-6 4z" />
+  </svg>
+);
+export const CameraIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M4 8h3l2-3h6l2 3h3v11H4z" />
+    <circle cx="12" cy="13" r="3.5" />
+  </svg>
+);
+export const FrameBackIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M6 5v14" />
+    <path d="M18 6l-8 6 8 6z" />
+  </svg>
+);
+export const FrameNextIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M18 5v14" />
+    <path d="M6 6l8 6-8 6z" />
+  </svg>
+);
+export const LoopIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M17 2l3 3-3 3" />
+    <path d="M4 11V9a4 4 0 0 1 4-4h12" />
+    <path d="M7 22l-3-3 3-3" />
+    <path d="M20 13v2a4 4 0 0 1-4 4H4" />
+  </svg>
+);
+export const GifIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M10 10H8v4h2v-2M13 10v4M16 14v-4h2M16 12h1.5" strokeWidth={1.6} />
+  </svg>
+);
+export const RestoreIcon = ({ size = 14 }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 12a9 9 0 1 0 3-6.7" />
+    <path d="M3 4v5h5" />
+  </svg>
+);

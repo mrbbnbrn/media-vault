@@ -1,6 +1,6 @@
 // Small modal dialogs and a dropdown menu, kept plain and keyboard-friendly.
 
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { FolderCard } from '../api';
 import { FolderIcon } from './Icons';
 
@@ -167,6 +167,8 @@ export interface MenuItem {
   checked?: boolean;
   danger?: boolean;
   disabled?: boolean;
+  /** Draw a divider line above this item. */
+  sepBefore?: boolean;
   onSelect: () => void;
 }
 
@@ -195,7 +197,8 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
       </button>
       {open && (
         <div className={`menu${props.up ? ' up' : ''}`} role="menu">
-          {props.items.map((it) => (
+          {props.items.map((it) => [
+            it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
             <button key={it.label} type="button" role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
               aria-checked={it.checked} disabled={it.disabled}
               className={`menu-item${it.checked ? ' on' : ''}${it.danger ? ' danger' : ''}`}
@@ -206,8 +209,8 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
               <span className="tick">{it.checked ? '✓' : ''}</span>
               {it.label}
               {it.hint && <span className="hint">{it.hint}</span>}
-            </button>
-          ))}
+            </button>,
+          ])}
         </div>
       )}
     </div>
@@ -218,16 +221,25 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
 export function ContextMenu(props: { x: number; y: number; title?: string; items: MenuItem[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: props.x, top: props.y });
+  // Keep the whole menu on screen (measured before it is shown).
+  useLayoutEffect(() => {
+    const place = () => {
+      const el = ref.current;
+      if (!el) return;
+      const h = el.scrollHeight + 2;
+      const w = el.offsetWidth;
+      setPos({
+        left: Math.max(8, Math.min(props.x, window.innerWidth - w - 8)),
+        top: Math.max(8, Math.min(props.y, window.innerHeight - Math.min(h, window.innerHeight - 16) - 8)),
+      });
+    };
+    place();
+    const raf = requestAnimationFrame(place);
+    return () => cancelAnimationFrame(raf);
+  }, [props.x, props.y]);
   useEffect(() => {
     const el = ref.current;
-    if (el) {
-      const r = el.getBoundingClientRect();
-      setPos({
-        left: Math.max(8, Math.min(props.x, window.innerWidth - r.width - 8)),
-        top: Math.max(8, Math.min(props.y, window.innerHeight - r.height - 8)),
-      });
-      el.querySelector<HTMLElement>('button')?.focus();
-    }
+    if (el) el.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
     const close = (e: Event) => {
       if (!ref.current?.contains(e.target as Node)) props.onClose();
     };
@@ -244,10 +256,11 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
     };
   }, [props.x, props.y]); // eslint-disable-line react-hooks/exhaustive-deps
   return (
-    <div ref={ref} className="menu context" role="menu" aria-label={props.title} style={{ left: pos.left, top: pos.top }}
+    <div ref={ref} className="menu context" role="menu" aria-label={props.title} style={{ left: pos.left, top: pos.top, maxHeight: 'calc(100vh - 16px)' }}
       onContextMenu={(e) => e.preventDefault()}>
       {props.title && <div className="menu-title ellipsis">{props.title}</div>}
-      {props.items.map((it) => (
+      {props.items.map((it) => [
+        it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
         <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
           className={`menu-item${it.danger ? ' danger' : ''}`}
           onClick={() => {
@@ -257,8 +270,8 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
           <span className="tick">{it.checked ? '✓' : ''}</span>
           {it.label}
           {it.hint && <span className="hint">{it.hint}</span>}
-        </button>
-      ))}
+        </button>,
+      ])}
     </div>
   );
 }
