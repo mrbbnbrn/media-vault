@@ -30,6 +30,7 @@ import { setDropHandler } from '../drop';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
+import { saveViewerPrefs, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 
@@ -123,6 +124,12 @@ function groupBy<K>(ids: number[], key: (id: number) => K): Map<K, number[]> {
   return m;
 }
 
+let colsTimer: ReturnType<typeof setTimeout> | null = null;
+function saveColsLater(n: number) {
+  if (colsTimer) clearTimeout(colsTimer);
+  colsTimer = setTimeout(() => saveViewerPrefs({ gridColumns: n }), 700);
+}
+
 export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setView: (v: LibView) => void }) {
   const s = nav.app.session!;
   const cfg = nav.app.config;
@@ -136,7 +143,14 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const [anchor, setAnchor] = useState<number | null>(null);
   const [sort, setSort] = useState<Order>('newest');
   const [kind, setKind] = useState<Kind | 'any'>('any');
-  const [tile, setTile] = useState(180);
+  // Items per row (Ctrl + mouse wheel or the slider); remembered.
+  const viewerPrefs = useViewerPrefs();
+  const [cols, setColsNow] = useState(() => viewerPrefs.gridColumns || 5);
+  const setCols = useCallback((n: number) => {
+    const c = Math.min(12, Math.max(2, Math.round(n)));
+    setColsNow(c);
+    saveColsLater(c);
+  }, []);
   const [everyFolder, setEveryFolder] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -289,6 +303,28 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     const t = setTimeout(() => setNote(null), 8000);
     return () => clearTimeout(t);
   }, [note]);
+
+  // Ctrl + mouse wheel: fewer (bigger) or more (smaller) items per row.
+  useEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let acc = 0;
+    const onWheel = (e: WheelEvent) => {
+      if (!e.ctrlKey) return;
+      e.preventDefault();
+      acc += e.deltaY;
+      if (Math.abs(acc) < 40) return;
+      const step = acc > 0 ? 1 : -1;
+      acc = 0;
+      setColsNow((c) => {
+        const n = Math.min(12, Math.max(2, c + step));
+        saveColsLater(n);
+        return n;
+      });
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []);
 
   const showHelp = useCallback(() => setDialog({ t: 'shortcuts' }), []);
   useHelpKey(showHelp);
@@ -811,8 +847,9 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               )}
               {view.kind !== 'stats' && view.kind !== 'people' && (
                 <>
-                  <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }}>Size</label>
-                  <input id="tile-size" type="range" min={120} max={320} step={10} value={tile} onChange={(e) => setTile(Number(e.target.value))} />
+                  <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }} title="Ctrl + mouse wheel changes this too">Size · {cols} per row</label>
+                  <input id="tile-size" type="range" min={2} max={12} step={1} value={cols} style={{ direction: 'rtl' }}
+                    title={`${cols} per row — Ctrl + mouse wheel changes this too`} onChange={(e) => setCols(Number(e.target.value))} />
                 </>
               )}
             </div>
@@ -844,7 +881,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             </p>
           )}
           {inTrash && trash && trash.folders.length > 0 && (
-            <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(tile * 1.1)}px, 1fr))` }}>
+            <div className="fgrid" style={{ gridTemplateColumns: `repeat(${Math.max(1, cols - 1)}, minmax(0, 1fr))` }}>
               {trash.folders.map((f) => (
                 <div key={f.id} className="fcard trashed">
                   <div className="fcover">{f.cover ? <img src={thumbUrl(f.cover)} alt="" draggable={false} /> : <FolderIcon size={40} />}</div>
@@ -868,7 +905,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           )}
 
           {!inTrash && cards.length > 0 && (
-            <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(tile * 1.1)}px, 1fr))` }}>
+            <div className="fgrid" style={{ gridTemplateColumns: `repeat(${Math.max(1, cols - 1)}, minmax(0, 1fr))` }}>
               {cards.map((f) => (
                 <div key={f.id} className="fcard" data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
@@ -896,7 +933,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 
           {gridView && (
             shown.length ? (
-              <MediaGrid items={shown} tile={tile} selected={selected} anchor={anchor} scroller={scroller}
+              <MediaGrid items={shown} columns={cols} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a) => { setSelected(sel); setAnchor(a); }}
                 onOpen={(it) => playItems(false, it.id)}
                 onContext={itemContext}

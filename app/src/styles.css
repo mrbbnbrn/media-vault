@@ -31,6 +31,8 @@
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; }
+/* Only the app's own panels scroll, never the page itself. */
+html, body { overflow: hidden; }
 body {
   background: var(--ground);
   color: var(--text);
@@ -47,7 +49,7 @@ a:hover, .link:hover { color: var(--accent-text); }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 /* ---- layout ---- */
-.app { min-height: 100%; display: flex; flex-direction: column; }
+.app { height: 100%; overflow: auto; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: center; gap: 12px; padding: 14px 22px; border-bottom: 1px solid var(--line); background: var(--panel); min-height: 64px; }
 .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 15px; letter-spacing: 0.02em; }
 .brand svg { color: var(--accent); }

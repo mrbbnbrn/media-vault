@@ -18,9 +18,16 @@ export interface ViewerSettings {
   sharpen: boolean;
   seekSeconds: number;
   seekBigSeconds: number;
+  /** Last mute choice, used by every player. */
+  muted: boolean;
+  volume: number;
+  /** Items per row in the library grid (0 = automatic). */
+  gridColumns: number;
 }
 
-export const DEFAULT_VIEWER: ViewerSettings = { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30 };
+export const DEFAULT_VIEWER: ViewerSettings = {
+  smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, volume: 0.8, gridColumns: 0,
+};
 
 export interface AppConfig {
   accent: string;
@@ -562,7 +569,7 @@ const mock = {
       preview: 'hover',
       wholeOnHover: false,
       gridShape: false,
-      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30 },
+      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, volume: 0.8, gridColumns: 0 },
       builtinEngine: true,
       smartSearch: false,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],

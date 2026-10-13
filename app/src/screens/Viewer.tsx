@@ -9,6 +9,7 @@ import { Player } from '../components/Player';
 import type { PlayItem } from '../media';
 import type { Order } from '../playlist';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
+import { withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
 
 let lastSettings: PlaybackSettings = DEFAULT_PLAYBACK;
@@ -17,7 +18,8 @@ export function Viewer(props: { nav: Nav; items: PlayItem[]; startKey?: string; 
   const [settings, setSettings] = useState<PlaybackSettings>(() => {
     // Follow the library's sort order, unless a random order was chosen before.
     const random = ['shuffle', 'random', 'weighted'].includes(lastSettings.order);
-    return props.order && !random ? { ...lastSettings, order: props.order } : lastSettings;
+    const base = withSound(lastSettings);
+    return props.order && !random ? { ...base, order: props.order } : base;
   });
   const [presets, setPresets] = useState<Named<PlaybackSettings>[]>([]);
   const [presetName, setPresetName] = useState<string | null>(null);
@@ -44,7 +46,7 @@ export function Viewer(props: { nav: Nav; items: PlayItem[]; startKey?: string; 
       label: p.name,
       checked: p.name === presetName,
       onSelect: () => {
-        setSettings(normalize(p.settings));
+        setSettings(withSound(normalize(p.settings)));
         setPresetName(p.name);
       },
     })),

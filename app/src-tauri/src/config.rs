@@ -49,6 +49,11 @@ pub struct ViewerSettings {
     pub seek_seconds: f64,
     /// …and Shift+←/→ this many.
     pub seek_big_seconds: f64,
+    /// Sound: the last mute choice, used by every player (muted by default).
+    pub muted: bool,
+    pub volume: f64,
+    /// Items per row in the library grid (0 = automatic from the size slider).
+    pub grid_columns: u32,
 }
 
 impl Default for ViewerSettings {
@@ -59,6 +64,9 @@ impl Default for ViewerSettings {
             sharpen: false,
             seek_seconds: 5.0,
             seek_big_seconds: 30.0,
+            muted: true,
+            volume: 0.8,
+            grid_columns: 0,
         }
     }
 }
@@ -128,6 +136,8 @@ impl AppConfig {
             |x: f64, lo: f64, hi: f64, d: f64| if x.is_finite() { x.clamp(lo, hi) } else { d };
         v.seek_seconds = clamp(v.seek_seconds, 1.0, 600.0, 5.0);
         v.seek_big_seconds = clamp(v.seek_big_seconds, 1.0, 3600.0, 30.0);
+        v.volume = clamp(v.volume, 0.0, 1.0, 0.8);
+        v.grid_columns = v.grid_columns.min(16);
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();

@@ -14,7 +14,7 @@ import { captureVideoFrame, derivedName } from '../clips';
 import { formatTime, kickThumbnails, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
-import { saveViewerPrefs, useViewerPrefs } from '../prefs';
+import { rememberSound, saveViewerPrefs, useViewerPrefs } from '../prefs';
 import { Dropdown } from './Dialogs';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
@@ -485,7 +485,11 @@ export function Player(props: PlayerProps) {
     }
   };
 
-  const set = (patch: Partial<PlaybackSettings>) => onSettings({ ...s, ...patch });
+  const set = (patch: Partial<PlaybackSettings>) => {
+    const next = { ...s, ...patch };
+    if ('muted' in patch || 'volume' in patch) rememberSound(next.muted, next.volume);
+    onSettings(next);
+  };
   const toggleSlideshow = () => {
     if (slideshow && !paused) setSlideshow(false);
     else {
@@ -501,7 +505,7 @@ export function Player(props: PlayerProps) {
     isPaused: () => paused,
     next: () => go('next'),
     prev: () => go('prev'),
-    toggleMute: () => onSettings({ ...s, muted: !s.muted }),
+    toggleMute: () => set({ muted: !s.muted }),
   }));
 
   // Controls fade out while watching and come back when the mouse moves.

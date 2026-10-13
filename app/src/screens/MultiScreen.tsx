@@ -20,6 +20,7 @@ import { setDropHandler } from '../drop';
 import { setCleanFullscreen } from '../fullscreen';
 import { fromItem, fromLocal, type PlayItem } from '../media';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
+import { rememberSound, withSound } from '../prefs';
 import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_LAYOUTS } from '../shapes';
 import { SettingsMenu } from './Viewer';
 
@@ -82,7 +83,7 @@ async function resolve(s: Source): Promise<{ items: PlayItem[]; startKey?: strin
 }
 
 let nextId = 1;
-const blank = (settings = DEFAULT_PLAYBACK): Panel => ({ id: nextId++, source: null, settings, items: [] });
+const blank = (settings?: PlaybackSettings): Panel => ({ id: nextId++, source: null, settings: settings ?? withSound(DEFAULT_PLAYBACK), items: [] });
 const blankWall = (): WallState => ({ source: null, items: [], count: 20, speed: 'normal' });
 
 /** Panels survive leaving and coming back during this session (not saved to disk). */
@@ -403,9 +404,15 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             </button>
             <button type="button" className="pbtn" aria-label="Next" onClick={() => h.next()}><NextIcon size={14} /></button>
             <button type="button" className={`pbtn${muted ? '' : ' on'}`} aria-label={muted ? 'Sound off — turn on' : 'Sound on — mute'}
-              onClick={() => update(i, { settings: { ...p.settings, muted: !p.settings.muted } })}>{muted ? <MuteIcon size={14} /> : <SoundIcon size={14} />}</button>
+              onClick={() => {
+                rememberSound(!p.settings.muted, p.settings.volume);
+                update(i, { settings: { ...p.settings, muted: !p.settings.muted } });
+              }}>{muted ? <MuteIcon size={14} /> : <SoundIcon size={14} />}</button>
             <input type="range" min={0} max={1} step={0.01} value={p.settings.volume} aria-label="Volume" className="vol"
-              onChange={(e) => update(i, { settings: { ...p.settings, volume: Number(e.target.value), muted: false } })} />
+              onChange={(e) => {
+                rememberSound(false, Number(e.target.value));
+                update(i, { settings: { ...p.settings, volume: Number(e.target.value), muted: false } });
+              }} />
             <SettingsMenu compact s={p.settings} set={(x) => update(i, { settings: { ...p.settings, ...x } })} />
             <button type="button" className="pbtn" title="Watch this one alone (double-click)" aria-label="Watch this one alone" onClick={() => enterSolo(i)}>
               <FullscreenIcon size={14} />

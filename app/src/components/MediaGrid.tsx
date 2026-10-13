@@ -7,7 +7,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { mediaUrl, thumbUrl, type Item } from '../api';
-import { layoutGrid, visibleRange, type Group, HEADER_H } from '../gridlayout';
+import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayout';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
 
@@ -19,7 +19,8 @@ function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): bo
 
 export function MediaGrid(props: {
   items: Item[];
-  tile: number;
+  /** Items per row. */
+  columns: number;
   selected: Set<number>;
   onSelect: (sel: Set<number>, anchor: number | null) => void;
   anchor: number | null;
@@ -54,8 +55,8 @@ export function MediaGrid(props: {
   }, []);
 
   const layout = useMemo(
-    () => layoutGrid(props.items, width, props.tile, mode, props.groups),
-    [props.items, width, props.tile, mode, props.groups],
+    () => layoutGrid(props.items, width, Math.max(40, (width + GAP) / Math.max(1, props.columns) - GAP - 0.01), mode, props.groups),
+    [props.items, width, props.columns, mode, props.groups],
   );
 
   useEffect(() => {
