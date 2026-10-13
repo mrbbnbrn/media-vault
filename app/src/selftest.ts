@@ -5,6 +5,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { api, inTauri, localUrl, mediaUrl, thumbUrl, type Kind, type LocalItem } from './api';
 import { animationMs, makeThumb } from './media';
+import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 
 interface Info {
   items: { id: number; kind: Kind; name: string }[];
@@ -60,6 +61,39 @@ async function checkGif(src: string): Promise<string> {
   return `${await checkImage(src)}, loop ${ms} ms`;
 }
 
+async function checkText(src: string): Promise<string> {
+  const t = decodeText(await fetchBytes(src));
+  if (!t.text.includes('ğüşıöç')) throw new Error(`text came out wrong (${t.encoding})`);
+  return `${t.encoding}, ${t.text.length} characters`;
+}
+
+async function checkPdf(src: string): Promise<string> {
+  const doc = await openPdf(await fetchBytes(src));
+  try {
+    const c = document.createElement('canvas');
+    await renderPage(doc, 1, c, 300);
+    if (!c.width || !c.height) throw new Error('page did not render');
+    return `${doc.numPages} pages, page 1 drawn at ${c.width}×${c.height}`;
+  } finally {
+    await doc.loadingTask.destroy();
+  }
+}
+
+function check(kind: Kind, src: string): Promise<string> {
+  switch (kind) {
+    case 'video':
+      return checkVideo(src);
+    case 'gif':
+      return checkGif(src);
+    case 'text':
+      return checkText(src);
+    case 'pdf':
+      return checkPdf(src);
+    default:
+      return checkImage(src);
+  }
+}
+
 export async function runSelfTestIfRequested(): Promise<boolean> {
   if (!inTauri) return false;
   const info = await invoke<Info | null>('selftest_info');
@@ -76,7 +110,7 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
   };
   for (const it of info.items) {
     const src = mediaUrl(it.id);
-    await step(`vault ${it.name}`, () => (it.kind === 'video' ? checkVideo(src) : it.kind === 'gif' ? checkGif(src) : checkImage(src)));
+    await step(`vault ${it.name}`, () => check(it.kind, src));
     await step(`thumbnail ${it.name}`, async () => {
       const t = await makeThumb(it.id, it.kind);
       await api.saveThumb(it.id, t.bytes, t.w, t.h, t.ms);
@@ -85,8 +119,13 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
   }
   for (const l of info.local) {
     const src = localUrl(l.key);
-    await step(`outside vault ${l.name}`, () => (l.kind === 'video' ? checkVideo(src) : l.kind === 'gif' ? checkGif(src) : checkImage(src)));
+    await step(`outside vault ${l.name}`, () => check(l.kind, src));
   }
+  await step('storage is packed', async () => {
+    const st = await api.storageInfo();
+    if (st.looseObjects !== 0 || st.packFiles < 1) throw new Error(`loose ${st.looseObjects}, packs ${st.packFiles}`);
+    return `${st.files} files in the vault folder, ${st.packFiles} packs`;
+  });
   await step('locked vault refuses media', async () => {
     await api.lock();
     const r = await fetch(mediaUrl(info.items[0].id));

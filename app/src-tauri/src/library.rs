@@ -88,6 +88,8 @@ pub struct FolderCard {
     pub subfolders: i64,
     /// Media id whose thumbnail is the folder's cover.
     pub cover: Option<i64>,
+    /// Kind of the cover item: a "video" or "gif" cover plays in the folders view.
+    pub cover_kind: Option<String>,
     pub tags: Vec<String>,
 }
 
@@ -208,11 +210,20 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         }
     }
 
+    let kinds: HashMap<i64, String> = {
+        let mut st = conn.prepare("SELECT id, kind FROM media WHERE id IN (SELECT cover_media_id FROM folders) OR thumb_object_id IS NOT NULL").map_err(e)?;
+        st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(e)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(e)?
+    };
     Ok(order
         .into_iter()
         .map(|(id, path)| {
             let r = by_id[&id];
+            let cover = r.cover.or_else(|| cover_below.get(&id).copied());
             FolderCard {
+                cover_kind: cover.and_then(|c| kinds.get(&c).cloned()),
                 id,
                 name: r.name.clone(),
                 parent_id: r.parent,
@@ -221,7 +232,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 items: total.get(&id).copied().unwrap_or(0),
                 direct_items: direct.get(&id).copied().unwrap_or(0),
                 subfolders: children.get(&Some(id)).map(|v| v.len() as i64).unwrap_or(0),
-                cover: r.cover.or_else(|| cover_below.get(&id).copied()),
+                cover,
                 tags: tags.remove(&id).unwrap_or_default(),
             }
         })

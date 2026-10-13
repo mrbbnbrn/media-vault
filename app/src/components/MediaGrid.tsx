@@ -3,11 +3,17 @@
 // drag a selection onto any folder to move it there.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { thumbUrl, type Item } from '../api';
+import { mediaUrl, thumbUrl, type Item } from '../api';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
 
 const GAP = 10;
+
+/** Should this tile play its video / GIF right now? (Always muted.) */
+function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
+  if (mode === 'off' || it.thumb === 'failed' || (it.kind !== 'video' && it.kind !== 'gif')) return false;
+  return mode === 'all' || hover === it.id;
+}
 
 export function MediaGrid(props: {
   items: Item[];
@@ -17,8 +23,12 @@ export function MediaGrid(props: {
   anchor: number | null;
   onOpen: (item: Item) => void;
   onDropOnFolder: (ids: number[], target: string) => void;
+  onContext: (e: React.MouseEvent, item: Item) => void;
+  /** Videos and GIFs play (muted) in the grid: all on screen, only the hovered one, or none. */
+  preview: 'all' | 'hover' | 'off';
   scroller: React.RefObject<HTMLElement | null>;
 }) {
+  const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
   const [range, setRange] = useState({ from: 0, to: 40 });
@@ -132,10 +142,15 @@ export function MediaGrid(props: {
         const sel = props.selected.has(it.id);
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.name}
-            className={`tile${sel ? ' sel' : ''}`}
+            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`}
             style={{ left: c * (tileW + GAP), top: r * rowH, width: tileW, height: tileW * 0.75 }}
             onClick={(e) => click(e, it, i)} onDoubleClick={() => props.onOpen(it)}
-            onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}>
+            onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              props.onContext(e, it);
+            }}
+            onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
             {hasThumb && it.thumb !== 'failed' ? (
               <img src={`${thumbUrl(it.id)}?v=${ready.has(it.id) ? 1 : 0}`} alt="" loading="lazy" draggable={false} />
             ) : it.thumb === 'failed' ? (
@@ -143,11 +158,17 @@ export function MediaGrid(props: {
             ) : (
               <span className="tile-msg"><span className="spinner small" /></span>
             )}
+            {live(it, props.preview, hover) && it.kind === 'video' && (
+              <video className="live" src={mediaUrl(it.id)} muted loop autoPlay playsInline preload="auto" />
+            )}
+            {live(it, props.preview, hover) && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
             {sel && <span className="tick" aria-hidden="true">✓</span>}
             {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
             {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
             {it.kind === 'video' && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
             {it.kind === 'gif' && <span className="badge">GIF</span>}
+            {it.kind === 'pdf' && <span className="badge">PDF</span>}
+            {it.kind === 'text' && <span className="badge">{it.ext.toUpperCase()}</span>}
           </button>
         );
       })}

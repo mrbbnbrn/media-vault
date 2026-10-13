@@ -4,10 +4,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  api, inTauri, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind, type TagCount,
+  api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
+  type StorageDone, type StorageInfo, type StorageProgress, type TagCount,
 } from '../api';
 import type { Nav } from '../App';
-import { ConfirmDialog, Dropdown, FolderPicker, Modal, PromptDialog } from '../components/Dialogs';
+import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import {
   ChevronIcon, CloseIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, ImportIcon, LockIcon, MoveIcon, PlayIcon, PlusIcon, SearchIcon, TagIcon, TrashIcon, WeightIcon,
 } from '../components/Icons';
@@ -35,7 +36,8 @@ type Dialog =
   | { t: 'deleteItems'; ids: number[] }
   | { t: 'tagItems'; ids: number[] }
   | { t: 'weight'; ids: number[]; current: number }
-  | { t: 'archivePassword'; paths: string[]; target: number | null; summary: DropSummary };
+  | { t: 'archivePassword'; paths: string[]; target: number | null; summary: DropSummary }
+  | { t: 'cover'; folder: FolderCard };
 
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
@@ -50,6 +52,14 @@ const KINDS: { id: Kind | 'any'; label: string }[] = [
   { id: 'image', label: 'Pictures' },
   { id: 'gif', label: 'GIFs' },
   { id: 'video', label: 'Videos' },
+  { id: 'text', label: 'Text files' },
+  { id: 'pdf', label: 'PDFs' },
+];
+
+const PREVIEWS: { id: 'all' | 'hover' | 'off'; label: string; hint: string }[] = [
+  { id: 'all', label: 'Play everything on screen', hint: 'muted' },
+  { id: 'hover', label: 'Play what I hover', hint: 'muted' },
+  { id: 'off', label: 'No previews', hint: 'still pictures' },
 ];
 
 function viewTitle(v: LibView, folder: FolderCard | null): string {
@@ -83,7 +93,32 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const [jobs, setJobs] = useState<Record<number, ImportProgress>>({});
   const [reports, setReports] = useState<ImportReport[]>([]);
   const [coverBump, setCoverBump] = useState(0);
+  const [ctx, setCtx] = useState<{ x: number; y: number; title: string; items: MenuItem[] } | null>(null);
+  const [storage, setStorage] = useState<StorageInfo | null>(null);
+  const [storageJob, setStorageJob] = useState<StorageProgress | null>(null);
+  const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
+  const [hoverCard, setHoverCard] = useState<number | null>(null);
+  const preview = nav.app.config.preview ?? 'hover';
   const scroller = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    api.storageInfo().then(setStorage).catch(() => {});
+    const a = onEvent<StorageProgress>('storage-progress', setStorageJob);
+    const b = onEvent<StorageDone>('storage-done', (d) => {
+      setStorageJob(null);
+      setStorageMsg(d);
+      api.storageInfo().then(setStorage).catch(() => {});
+    });
+    return () => {
+      a.then((u) => u());
+      b.then((u) => u());
+    };
+  }, []);
+
+  const setPreview = async (mode: 'all' | 'hover' | 'off') => {
+    await api.saveConfig({ ...nav.app.config, preview: mode });
+    await nav.refresh();
+  };
 
   const reload = useCallback(async () => {
     setLoading(true);
@@ -229,9 +264,54 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     { label: 'New folder inside…', onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
+    { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
     { label: 'Delete…', danger: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
+
+  const folderContext = (e: React.MouseEvent, f: FolderCard) => {
+    e.preventDefault();
+    setCtx({ x: e.clientX, y: e.clientY, title: f.name, items: folderMenu(f) });
+  };
+
+  const itemContext = (e: React.MouseEvent, it: Item) => {
+    // Right-clicking outside the selection selects just that item.
+    let sel = selected;
+    if (!selected.has(it.id)) {
+      sel = new Set([it.id]);
+      setSelected(sel);
+      setAnchor(it.id);
+    }
+    const ids = [...sel];
+    const many = ids.length > 1;
+    const allFav = ids.every((id) => items.find((x) => x.id === id)?.favourite);
+    const home = it.folderId != null ? folders.find((f) => f.id === it.folderId) : null;
+    setCtx({
+      x: e.clientX,
+      y: e.clientY,
+      title: many ? `${ids.length} items` : it.name,
+      items: [
+        { label: 'Open', onSelect: () => playItems(false, it.id) },
+        { label: many ? 'Play these as a slideshow' : 'Slideshow from here', onSelect: () => playItems(true, it.id, many) },
+        { label: allFav ? 'Remove from favourites' : 'Add to favourites', onSelect: () => act(() => api.setFavourite(ids, !allFav)) },
+        { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
+        { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
+        { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }) },
+        ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
+        { label: many ? `Delete ${ids.length} items…` : 'Delete…', danger: true, onSelect: () => setDialog({ t: 'deleteItems', ids }) },
+      ],
+    });
+  };
+
+  const coverView = (f: FolderCard) => {
+    if (!f.cover) return <FolderIcon size={40} />;
+    const playing = preview === 'all' || (preview === 'hover' && hoverCard === f.id);
+    const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+    if (playing && f.coverKind === 'video')
+      return <>{still}<video src={mediaUrl(f.cover)} muted loop autoPlay playsInline preload="auto" /></>;
+    if (playing && f.coverKind === 'gif') return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
+    return still;
+  };
 
   // ---- render ---------------------------------------------------------------------------
 
@@ -257,6 +337,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         <SearchBar tags={tags} value={view.kind === 'search' ? view.tags : []}
           onChange={(t) => setView(t.length ? { kind: 'search', tags: t } : { kind: 'folders' })} />
         <nav className="row" style={{ gap: 8 }}>
+          <Dropdown label={`Preview: ${preview === 'all' ? 'all' : preview === 'hover' ? 'hover' : 'off'} ▾`} title="Play videos and GIFs in the grid (always muted)"
+            items={PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => setPreview(p.id) }))} />
           <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length}
             title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button>
           <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'multi', back: view })}><GridIcon /> Multi-screen</button>
@@ -282,7 +364,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           </button>
           {visibleTree.map((f) => (
             <div key={f.id} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
-              style={{ paddingLeft: 6 + f.depth * 16 }}>
+              style={{ paddingLeft: 6 + f.depth * 16 }} onContextMenu={(e) => folderContext(e, f)}>
               {f.subfolders > 0 ? (
                 <button type="button" className="twisty" aria-label={collapsed.has(f.id) ? 'Expand' : 'Collapse'} onClick={() => setCollapsed((c) => {
                   const n = new Set(c);
@@ -305,6 +387,18 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         <main className="lib-main" ref={scroller} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : 'folder:top'}>
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
+          )}
+          {storage && storage.looseObjects > 0 && !storageJob && (
+            <div className="info row-between">
+              <span>
+                This vault keeps every item and thumbnail as a separate file ({storage.files.toLocaleString()} files).
+                Packing them into a few large files makes backups much easier. Your files stay encrypted, and nothing is
+                deleted until the packed copies are checked.
+              </span>
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => api.storageTask('convert').catch((e) => setError(String(e)))}>
+                Pack now
+              </button>
+            </div>
           )}
           <div className="lib-head">
             {view.kind === 'folder' && (
@@ -359,9 +453,10 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           {cards.length > 0 && (
             <div className="fgrid" style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${Math.round(tile * 1.1)}px, 1fr))` }}>
               {cards.map((f) => (
-                <div key={f.id} className="fcard" data-drop={`folder:${f.id}`}>
-                  <button type="button" className="fcover" onClick={() => openFolder(f.id)} aria-label={`Open ${f.name}`}>
-                    {f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <FolderIcon size={40} />}
+                <div key={f.id} className="fcard" data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
+                  onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
+                  <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}`} onClick={() => openFolder(f.id)} aria-label={`Open ${f.name}`}>
+                    {coverView(f)}
                     <span className="drop-label">Drop here</span>
                   </button>
                   <div className="fmeta">
@@ -384,6 +479,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               <MediaGrid items={shown} tile={tile} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a) => { setSelected(sel); setAnchor(a); }}
                 onOpen={(it) => playItems(false, it.id)}
+                onContext={itemContext}
+                preview={preview}
                 onDropOnFolder={(ids, target) => act(async () => {
                   await api.moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7)));
                   setSelected(new Set());
@@ -427,8 +524,24 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         </div>
       )}
 
-      {(totalImporting.length > 0 || reports.length > 0) && (
+      {(totalImporting.length > 0 || reports.length > 0 || storageJob || storageMsg) && (
         <section className="imports" aria-label="Import progress">
+          {storageJob && (
+            <div className="icard">
+              <b>{storageJob.task === 'convert' ? 'Packing files' : 'Reclaiming space'}</b>
+              <div className="bar"><div style={{ width: `${storageJob.total ? (storageJob.done / storageJob.total) * 100 : 0}%` }} /></div>
+              <span className="mono faint" style={{ fontSize: 12 }}>{storageJob.done.toLocaleString()} / {storageJob.total.toLocaleString()}</span>
+            </div>
+          )}
+          {storageMsg && (
+            <div className="icard">
+              <div className="row-between">
+                <b>{storageMsg.ok ? 'Done' : 'Stopped'}</b>
+                <button type="button" className="link" onClick={() => setStorageMsg(null)}>Dismiss</button>
+              </div>
+              <span style={{ fontSize: 13 }}>{storageMsg.message}</span>
+            </div>
+          )}
           {totalImporting.map((p) => <ImportCard key={p.job} p={p} />)}
           {reports.map((r) => (
             <ImportSummary key={r.job} r={r} onClose={() => setReports((rs) => rs.filter((x) => x.job !== r.job))} />
@@ -489,6 +602,13 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           They are removed from the vault for good. Your original files outside the vault are not touched.
         </ConfirmDialog>
       )}
+      {dialog?.t === 'cover' && (
+        <CoverPicker folder={dialog.folder} onClose={() => setDialog(null)} onPicked={async (id) => {
+          await api.setCover(dialog.folder.id, id);
+          await reload();
+        }} />
+      )}
+      {ctx && <ContextMenu x={ctx.x} y={ctx.y} title={ctx.title} items={ctx.items} onClose={() => setCtx(null)} />}
       {dialog?.t === 'archivePassword' && (
         <ArchivePasswordDialog summary={dialog.summary} onClose={() => setDialog(null)}
           onImport={async (pw) => { await api.startImport(dialog.paths, dialog.target, pw); }} />
@@ -702,5 +822,44 @@ function ImportSummary({ r, onClose }: { r: ImportReport; onClose: () => void })
         </div>
       )}
     </div>
+  );
+}
+
+function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked: (id: number | null) => Promise<void> }) {
+  const [items, setItems] = useState<Item[] | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api.queryItems({ folder: props.folder.id, recursive: true }).then((x) => setItems(x.slice(0, 600))).catch((e) => setErr(String(e)));
+  }, [props.folder.id]);
+  const pick = async (id: number | null) => {
+    try {
+      await props.onPicked(id);
+      props.onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+  return (
+    <Modal title={`Cover for “${props.folder.name}”`} onClose={props.onClose} wide>
+      <p className="faint" style={{ margin: 0, fontSize: 13 }}>
+        Pick any picture, GIF or video inside this folder (or its subfolders). Videos and GIFs play on the card when previews are on.
+      </p>
+      {err && <div className="error">{err}</div>}
+      <div className="cover-grid">
+        <button type="button" className={`cover-pick${props.folder.cover == null ? ' on' : ''}`} onClick={() => pick(null)}>
+          <span className="tile-msg">Automatic<br />(first picture)</span>
+        </button>
+        {items?.map((it) => (
+          <button key={it.id} type="button" title={it.name} className={`cover-pick${props.folder.cover === it.id ? ' on' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`} onClick={() => pick(it.id)}>
+            {it.thumb === 'ok' ? <img src={thumbUrl(it.id)} alt={it.name} loading="lazy" /> : <span className="tile-msg">{it.name}</span>}
+            {it.kind !== 'image' && <span className="badge">{it.kind === 'video' ? 'VIDEO' : it.kind.toUpperCase()}</span>}
+          </button>
+        ))}
+        {!items && <span className="faint">Loading…</span>}
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <button type="button" className="btn" onClick={props.onClose}>Close</button>
+      </div>
+    </Modal>
   );
 }

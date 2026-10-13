@@ -213,3 +213,52 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
     </div>
   );
 }
+
+/** Right-click menu at the pointer. Same items as the "⋯" buttons. */
+export function ContextMenu(props: { x: number; y: number; title?: string; items: MenuItem[]; onClose: () => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState({ left: props.x, top: props.y });
+  useEffect(() => {
+    const el = ref.current;
+    if (el) {
+      const r = el.getBoundingClientRect();
+      setPos({
+        left: Math.max(8, Math.min(props.x, window.innerWidth - r.width - 8)),
+        top: Math.max(8, Math.min(props.y, window.innerHeight - r.height - 8)),
+      });
+      el.querySelector<HTMLElement>('button')?.focus();
+    }
+    const close = (e: Event) => {
+      if (!ref.current?.contains(e.target as Node)) props.onClose();
+    };
+    const key = (e: KeyboardEvent) => e.key === 'Escape' && props.onClose();
+    window.addEventListener('mousedown', close, true);
+    window.addEventListener('keydown', key);
+    window.addEventListener('resize', props.onClose);
+    window.addEventListener('wheel', props.onClose, { passive: true });
+    return () => {
+      window.removeEventListener('mousedown', close, true);
+      window.removeEventListener('keydown', key);
+      window.removeEventListener('resize', props.onClose);
+      window.removeEventListener('wheel', props.onClose);
+    };
+  }, [props.x, props.y]); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div ref={ref} className="menu context" role="menu" aria-label={props.title} style={{ left: pos.left, top: pos.top }}
+      onContextMenu={(e) => e.preventDefault()}>
+      {props.title && <div className="menu-title ellipsis">{props.title}</div>}
+      {props.items.map((it) => (
+        <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
+          className={`menu-item${it.danger ? ' danger' : ''}`}
+          onClick={() => {
+            props.onClose();
+            it.onSelect();
+          }}>
+          <span className="tick">{it.checked ? '✓' : ''}</span>
+          {it.label}
+          {it.hint && <span className="hint">{it.hint}</span>}
+        </button>
+      ))}
+    </div>
+  );
+}

@@ -16,6 +16,8 @@ export interface AppConfig {
   accent: string;
   lock: LockSettings;
   fullscreenControlsOnMouse: boolean;
+  /** Grid previews: everything on screen plays, only the hovered one, or none (always muted). */
+  preview: 'all' | 'hover' | 'off';
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -43,7 +45,7 @@ export interface AppState {
   minPasswordChars: number;
 }
 
-export type Kind = 'image' | 'gif' | 'video';
+export type Kind = 'image' | 'gif' | 'video' | 'text' | 'pdf';
 
 export interface Item {
   id: number;
@@ -76,6 +78,7 @@ export interface FolderCard {
   directItems: number;
   subfolders: number;
   cover: number | null;
+  coverKind: Kind | null;
   tags: string[];
 }
 
@@ -160,6 +163,26 @@ export interface LocalSet {
   start: number;
 }
 
+export interface StorageInfo {
+  files: number;
+  totalBytes: number;
+  packFiles: number;
+  reclaimableBytes: number;
+  looseObjects: number;
+}
+
+export interface StorageProgress {
+  task: 'convert' | 'reclaim';
+  done: number;
+  total: number;
+}
+
+export interface StorageDone {
+  task: 'convert' | 'reclaim';
+  ok: boolean;
+  message: string;
+}
+
 export type LockReason = 'idle' | 'safetyNet' | 'systemLocked' | 'sleep' | 'minimized' | 'panicKey' | 'manual';
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
@@ -215,6 +238,10 @@ export const api = {
   startImport: (paths: string[], target: number | null, password: string | null, archiveFolder = true) =>
     call<number>('start_import', { paths, target, password, archiveFolder }),
   cancelImport: (job: number) => call<void>('cancel_import', { job }),
+
+  // storage housekeeping
+  storageInfo: () => call<StorageInfo>('storage_info'),
+  storageTask: (task: 'convert' | 'reclaim') => call<void>('storage_task', { task }),
 
   // outside-vault player
   scanLocal: (paths: string[]) => call<LocalSet>('scan_local', { paths }),
@@ -273,6 +300,7 @@ const mock = {
       accent: '#2ec4b6',
       lock: { idleMinutes: 15, onSystemLock: true, onMinimize: false, safetyNetMinutes: 0 },
       fullscreenControlsOnMouse: true,
+      preview: 'hover',
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -332,6 +360,8 @@ const mock = {
       case 'list_named':
       case 'thumbs_needed':
         return [];
+      case 'storage_info':
+        return { files: 14, totalBytes: 3.2e9, packFiles: 4, reclaimableBytes: 0, looseObjects: 0 };
       case 'folder_view':
         return { folder: null, subfolders: [], items: [] };
       default:

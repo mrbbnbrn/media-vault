@@ -1,5 +1,9 @@
-// One player for pictures, GIFs / animated WebP and videos. Used by the
-// full viewer, each multi-screen panel, and the player outside the vault.
+// One player for pictures, GIFs / animated WebP, videos, text and PDF. Used
+// by the full viewer, each multi-screen panel, and the player outside the vault.
+//
+// Mouse: wheel = next / previous (scrolls inside text and PDF), Ctrl+wheel =
+// zoom, drag = draw a rectangle (click inside it to zoom to it, outside to
+// dismiss), right-drag = move the zoomed picture, 0 = reset zoom.
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
@@ -7,6 +11,7 @@ import { animationMs, formatTime, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
 import { Dropdown } from './Dialogs';
+import { PdfView, TextView } from './DocViews';
 import {
   BrokenIcon, FullscreenIcon, HeartIcon, MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
@@ -65,6 +70,13 @@ export function Player(props: PlayerProps) {
   const rootRef = useRef<HTMLDivElement>(null);
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoStart = useRef(0);
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState({ s: 1, x: 0, y: 0 });
+  const [docZoom, setDocZoom] = useState(1);
+  const [rect, setRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [drawing, setDrawing] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const lastWheel = useRef(0);
+  const zoomed = zoom.s > 1.001;
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
 
@@ -87,6 +99,13 @@ export function Player(props: PlayerProps) {
   }, [s.order, s.repeat]);
 
   useEffect(() => props.onCurrent?.(item), [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // A new item starts unzoomed.
+  useEffect(() => {
+    setZoom({ s: 1, x: 0, y: 0 });
+    setRect(null);
+    setDrawing(null);
+  }, [item?.key]);
 
   const go = useCallback((dir: 'next' | 'prev', auto = false) => {
     const p = listRef.current;
@@ -135,17 +154,134 @@ export function Player(props: PlayerProps) {
 
   // Pictures and GIFs advance on a timer while the slideshow runs.
   useEffect(() => {
-    if (!item || !slideshow || paused) return;
+    if (!item || !slideshow || paused || zoomed) return;
     let ms = 0;
     if (failed) ms = 1500;
-    else if (item.kind === 'image') ms = s.imageSeconds * 1000;
+    else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf') ms = s.imageSeconds * 1000;
     else if (item.kind === 'gif') {
       if (!gifUrl) return;
       ms = gifShowMs(s, gifMs);
     } else return;
     const t = setTimeout(() => go('next', true), ms);
     return () => clearTimeout(t);
-  }, [item?.key, tick, slideshow, paused, failed, gifUrl, gifMs, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, tick, slideshow, paused, zoomed, failed, gifUrl, gifMs, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- zoom, rectangle zoom, panning, wheel ---------------------------------------------
+
+  const isDoc = item?.kind === 'text' || item?.kind === 'pdf';
+  const stageSize = () => {
+    const r = stageRef.current?.getBoundingClientRect();
+    return r ? { left: r.left, top: r.top, w: r.width, h: r.height } : { left: 0, top: 0, w: 1, h: 1 };
+  };
+  const clampZoom = (z: { s: number; x: number; y: number }) => {
+    const { w, h } = stageSize();
+    const sc = Math.min(40, Math.max(1, z.s));
+    if (sc <= 1.001) return { s: 1, x: 0, y: 0 };
+    // Keep at least part of the picture on screen.
+    return { s: sc, x: Math.min(w * 0.5, Math.max(w * 0.5 - w * sc, z.x)), y: Math.min(h * 0.5, Math.max(h * 0.5 - h * sc, z.y)) };
+  };
+  const zoomAt = (px: number, py: number, factor: number) =>
+    setZoom((z) => {
+      const ns = Math.min(40, Math.max(1, z.s * factor));
+      const k = ns / z.s;
+      return clampZoom({ s: ns, x: px - (px - z.x) * k, y: py - (py - z.y) * k });
+    });
+  const zoomToRect = (r: { x: number; y: number; w: number; h: number }) =>
+    setZoom((z) => {
+      const { w, h } = stageSize();
+      const k = Math.min(w / r.w, h / r.h);
+      const ns = Math.min(40, z.s * k);
+      const cx = (r.x + r.w / 2 - z.x) / z.s;
+      const cy = (r.y + r.h / 2 - z.y) / z.s;
+      return clampZoom({ s: ns, x: w / 2 - ns * cx, y: h / 2 - ns * cy });
+    });
+
+  // Wheel needs a non-passive listener so Ctrl+wheel doesn't zoom the whole window.
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      const doc = isDoc;
+      if (e.ctrlKey) {
+        e.preventDefault();
+        const f = Math.exp(-e.deltaY * 0.0018);
+        if (doc) setDocZoom((d) => Math.min(6, Math.max(0.3, d * f)));
+        else {
+          const st = stageSize();
+          zoomAt(e.clientX - st.left, e.clientY - st.top, f);
+        }
+        return;
+      }
+      if (doc) return; // scroll inside the text / PDF
+      e.preventDefault();
+      const now = Date.now();
+      if (now - lastWheel.current < 280 || Math.abs(e.deltaY) < 4) return;
+      lastWheel.current = now;
+      go(e.deltaY > 0 ? 'next' : 'prev');
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const onStagePointerDown = (e: React.PointerEvent) => {
+    if (!item || isDoc || failed) return;
+    const st = stageSize();
+    const x0 = e.clientX - st.left;
+    const y0 = e.clientY - st.top;
+    const target = e.currentTarget as HTMLElement;
+    target.setPointerCapture(e.pointerId);
+    if (e.button === 2) {
+      // Right button: move the zoomed picture.
+      if (!zoomed) return;
+      let lx = e.clientX;
+      let ly = e.clientY;
+      const move = (ev: PointerEvent) => {
+        const dx = ev.clientX - lx;
+        const dy = ev.clientY - ly;
+        lx = ev.clientX;
+        ly = ev.clientY;
+        setZoom((z) => clampZoom({ ...z, x: z.x + dx, y: z.y + dy }));
+      };
+      const up = () => {
+        target.removeEventListener('pointermove', move);
+        target.removeEventListener('pointerup', up);
+      };
+      target.addEventListener('pointermove', move);
+      target.addEventListener('pointerup', up);
+      return;
+    }
+    if (e.button !== 0) return;
+    let dragged = false;
+    const move = (ev: PointerEvent) => {
+      const x1 = ev.clientX - st.left;
+      const y1 = ev.clientY - st.top;
+      if (!dragged && Math.hypot(x1 - x0, y1 - y0) < 6) return;
+      dragged = true;
+      setDrawing({ x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) });
+    };
+    const up = (ev: PointerEvent) => {
+      target.removeEventListener('pointermove', move);
+      target.removeEventListener('pointerup', up);
+      const x1 = ev.clientX - st.left;
+      const y1 = ev.clientY - st.top;
+      setDrawing(null);
+      if (dragged) {
+        const r = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
+        if (r.w > 12 && r.h > 12) setRect(r);
+        return;
+      }
+      // A plain click.
+      if (rect) {
+        const inside = x1 >= rect.x && x1 <= rect.x + rect.w && y1 >= rect.y && y1 <= rect.y + rect.h;
+        if (inside) zoomToRect(rect);
+        setRect(null);
+      } else if (item.kind === 'video') {
+        setPaused((p) => !p);
+      }
+    };
+    target.addEventListener('pointermove', move);
+    target.addEventListener('pointerup', up);
+  };
 
   // Video element follows play/pause, speed and volume.
   const volume = Math.max(0, Math.min(1, s.volume * (props.masterVolume ?? 1)));
@@ -247,7 +383,20 @@ export function Player(props: PlayerProps) {
       else if (k === 'arrowleft') go('prev');
       else if (k === 'm') set({ muted: !s.muted });
       else if (k === 'f') props.onFullscreen?.();
-      else if (k === 'escape') props.onClose?.();
+      else if (k === '0') {
+        setZoom({ s: 1, x: 0, y: 0 });
+        setDocZoom(1);
+      } else if (k === '+' || k === '=' || k === '-') {
+        const f = k === '-' ? 1 / 1.25 : 1.25;
+        if (isDoc) setDocZoom((d) => Math.min(6, Math.max(0.3, d * f)));
+        else {
+          const st = stageSize();
+          zoomAt(st.w / 2, st.h / 2, f);
+        }
+      } else if (k === 'escape' && (rect || zoomed)) {
+        setRect(null);
+        setZoom({ s: 1, x: 0, y: 0 });
+      } else if (k === 'escape') props.onClose?.();
       else return;
       poke();
     };
@@ -275,12 +424,14 @@ export function Player(props: PlayerProps) {
       return (
         <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`} style={fit} src={item.src} autoPlay={!paused}
           playsInline preload="auto" onLoadedMetadata={onVideoMeta} onTimeUpdate={onVideoTime} onEnded={onVideoEnd}
-          onError={() => setFailed(true)} onClick={() => setPaused((p) => !p)} />
+          onError={() => setFailed(true)} />
       );
+    if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
+    if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'gif')
       return gifUrl ? <img key={item.key + tick} className={`media ${anim ?? ''}`} style={fit} src={gifUrl} alt={item.name} draggable={false} /> : null;
     return <img key={item.key} className={`media ${anim ?? ''}`} style={fit} src={item.src} alt={item.name} draggable={false} onError={() => setFailed(true)} />;
-  }, [item?.key, item?.src, gifUrl, failed, s.fit, s.transition, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src, gifUrl, failed, s.fit, s.transition, tick, docZoom]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
   const weight = item?.weight ?? 1;
@@ -311,7 +462,25 @@ export function Player(props: PlayerProps) {
   return (
     <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi ? '' : ' idle'}`}
       onMouseMove={poke} onMouseDown={poke}>
-      <div className="stage">{media}{!item && <div className="media-failed">Nothing to play here.</div>}</div>
+      <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}`} onPointerDown={onStagePointerDown}
+        onContextMenu={(e) => e.preventDefault()}>
+        {isDoc ? media : (
+          <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
+        )}
+        {!item && <div className="media-failed">Nothing to play here.</div>}
+        {drawing && <div className="zoom-rect drawing" style={{ left: drawing.x, top: drawing.y, width: drawing.w, height: drawing.h }} />}
+        {rect && !drawing && (
+          <div className="zoom-rect" style={{ left: rect.x, top: rect.y, width: rect.w, height: rect.h }}>
+            <span>Click inside to zoom</span>
+          </div>
+        )}
+      </div>
+      {(zoomed || (isDoc && Math.abs(docZoom - 1) > 0.01)) && (
+        <button type="button" className="zoom-badge" onClick={() => { setZoom({ s: 1, x: 0, y: 0 }); setDocZoom(1); }}
+          title="Reset zoom (0)">
+          {Math.round((isDoc ? docZoom : zoom.s) * 100)}% · Reset
+        </button>
+      )}
 
       {!props.compact && (
         <div className="p-top">

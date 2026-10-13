@@ -21,6 +21,8 @@ const FIXTURES: &[(&str, &[u8])] = &[
     ("clip.webm", include_bytes!("../selftest/clip.webm")),
     ("picture.jpg", include_bytes!("../selftest/picture.jpg")),
     ("anim.gif", include_bytes!("../selftest/anim.gif")),
+    ("notes.txt", include_bytes!("../selftest/notes.txt")),
+    ("doc.pdf", include_bytes!("../selftest/doc.pdf")),
 ];
 
 #[derive(Debug, Clone, Serialize)]

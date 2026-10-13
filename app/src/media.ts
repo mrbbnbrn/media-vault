@@ -3,6 +3,7 @@
 
 import { api, mediaUrl, localUrl, thumbUrl, type Item, type Kind, type LocalItem } from './api';
 import type { Entry } from './playlist';
+import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
 
 /** Something a player can show: from the vault or from a dropped folder. */
 export interface PlayItem extends Entry {
@@ -197,9 +198,31 @@ async function videoThumb(id: number) {
   }
 }
 
+/** First lines of a text file as a little page. */
+async function textThumb(id: number) {
+  const bytes = await fetchBytes(mediaUrl(id));
+  const c = textThumbCanvas(decodeText(bytes.subarray(0, 64 * 1024)).text, THUMB_MAX, Math.round(THUMB_MAX * 0.75));
+  return { bytes: await canvasToBytes(c), w: null as number | null, h: null as number | null, ms: null as number | null };
+}
+
+async function pdfThumb(id: number) {
+  const bytes = await fetchBytes(mediaUrl(id));
+  const { canvas } = await pdfThumbCanvas(bytes, THUMB_MAX);
+  return { bytes: await canvasToBytes(canvas), w: canvas.width as number | null, h: canvas.height as number | null, ms: null as number | null };
+}
+
 /** Make a thumbnail for a vault item, in memory. Used by the background loop and the self-test. */
 export function makeThumb(id: number, kind: Kind) {
-  return kind === 'video' ? videoThumb(id) : imageThumb(id);
+  switch (kind) {
+    case 'video':
+      return videoThumb(id);
+    case 'text':
+      return textThumb(id);
+    case 'pdf':
+      return pdfThumb(id);
+    default:
+      return imageThumb(id);
+  }
 }
 
 let running = false;

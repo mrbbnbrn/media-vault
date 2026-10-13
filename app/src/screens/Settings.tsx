@@ -1,11 +1,11 @@
-import { useState } from 'react';
-import { api, type AppConfig } from '../api';
+import { useEffect, useState } from 'react';
+import { api, onEvent, type AppConfig, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
 import { BackIcon } from '../components/Icons';
-import { ACCENTS, applyAccent } from '../theme';
+import { ACCENTS, applyAccent, formatBytes } from '../theme';
 
-type Section = 'appearance' | 'vault' | 'about';
+type Section = 'appearance' | 'vault' | 'storage' | 'about';
 
 export function Settings({ nav }: { nav: Nav }) {
   const [section, setSection] = useState<Section>('appearance');
@@ -27,6 +27,7 @@ export function Settings({ nav }: { nav: Nav }) {
   const sections: [Section, string][] = [
     ['appearance', 'Appearance & locking'],
     ['vault', 'Vault & password'],
+    ['storage', 'Storage & backups'],
     ['about', 'About'],
   ];
   const custom = !ACCENTS.some((a) => a.hex === cfg.accent);
@@ -116,6 +117,7 @@ export function Settings({ nav }: { nav: Nav }) {
             </>
           )}
           {section === 'vault' && <VaultSection nav={nav} />}
+          {section === 'storage' && <StorageSection />}
           {section === 'about' && (
             <section className="section">
               <h2>Media Vault 0.1.0</h2>
@@ -225,5 +227,76 @@ function VaultSection({ nav }: { nav: Nav }) {
         </div>
       </form>
     </>
+  );
+}
+
+function StorageSection() {
+  const [info, setInfo] = useState<StorageInfo | null>(null);
+  const [job, setJob] = useState<StorageProgress | null>(null);
+  const [done, setDone] = useState<StorageDone | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    api.storageInfo().then(setInfo).catch((e) => setErr(String(e)));
+    const a = onEvent<StorageProgress>('storage-progress', setJob);
+    const b = onEvent<StorageDone>('storage-done', (d) => {
+      setJob(null);
+      setDone(d);
+      api.storageInfo().then(setInfo).catch(() => {});
+    });
+    return () => {
+      a.then((u) => u());
+      b.then((u) => u());
+    };
+  }, []);
+  const run = async (task: 'convert' | 'reclaim') => {
+    setDone(null);
+    setErr(null);
+    setJob({ task, done: 0, total: 0 });
+    try {
+      await api.storageTask(task);
+    } catch (e) {
+      setJob(null);
+      setErr(String(e));
+    }
+  };
+  return (
+    <section className="section">
+      <h2>Storage</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        Items and thumbnails are packed into a few large files (about 1 GB each), so backups and cloud services with
+        file-count limits have little to handle. To back up, copy the whole vault folder; it stays encrypted.
+      </p>
+      <ErrorBox error={err} />
+      {info && (
+        <div className="stats" style={{ flexWrap: 'wrap' }}>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Files in the vault folder</span><b>{info.files.toLocaleString()}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Size</span><b>{formatBytes(info.totalBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Pack files</span><b>{info.packFiles}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Space from deleted items</span><b>{info.reclaimableBytes ? formatBytes(info.reclaimableBytes) : 'none'}</b></div>
+        </div>
+      )}
+      {info && info.looseObjects > 0 && (
+        <div className="setting">
+          <div className="text">
+            <span className="title">Pack {info.looseObjects.toLocaleString()} separate files</span>
+            <span className="desc">This vault was made by the first version, which kept every item in its own file. Packing copies them into pack files, checks every copy, and only then removes the separate files. Safe to interrupt.</span>
+          </div>
+          <button type="button" className="btn btn-primary" disabled={!!job} onClick={() => run('convert')}>Pack now</button>
+        </div>
+      )}
+      <div className="setting">
+        <div className="text">
+          <span className="title">Reclaim space</span>
+          <span className="desc">Deleted items leave unused space inside packs. This copies what's still used into fresh packs and removes the old ones. Nothing is removed until the new copies are saved.</span>
+        </div>
+        <button type="button" className="btn" disabled={!!job || !info?.reclaimableBytes} onClick={() => run('reclaim')}>Reclaim</button>
+      </div>
+      {job && (
+        <div className="info">
+          {job.task === 'convert' ? 'Packing' : 'Reclaiming space'}… {job.total ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}` : ''}
+        </div>
+      )}
+      {done && <div className={done.ok ? 'info' : 'error'}>{done.message}</div>}
+    </section>
   );
 }

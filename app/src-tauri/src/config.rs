@@ -49,6 +49,9 @@ pub struct AppConfig {
     pub lock: LockSettings,
     /// In clean full screen, show controls while the mouse moves.
     pub fullscreen_controls_on_mouse: bool,
+    /// Grid previews of videos and GIFs: "all" (everything on screen plays,
+    /// muted), "hover" (the one under the mouse plays, muted) or "off".
+    pub preview: String,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -61,6 +64,7 @@ impl Default for AppConfig {
             accent: DEFAULT_ACCENT.into(),
             lock: LockSettings::default(),
             fullscreen_controls_on_mouse: true,
+            preview: "hover".into(),
             vaults: Vec::new(),
             last_vault: None,
         }
@@ -74,6 +78,9 @@ impl AppConfig {
             self.accent = DEFAULT_ACCENT.into();
         }
         self.accent = self.accent.to_ascii_lowercase();
+        if !["all", "hover", "off"].contains(&self.preview.as_str()) {
+            self.preview = "hover".into();
+        }
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();

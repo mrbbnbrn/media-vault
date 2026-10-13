@@ -30,6 +30,10 @@ pub fn mime_for(ext: &str) -> &'static str {
         "gif" => "image/gif",
         "mp4" | "m4v" => "video/mp4",
         "webm" => "video/webm",
+        "pdf" => "application/pdf",
+        // Text is decoded by the window itself (it guesses the encoding).
+        "txt" | "md" | "log" | "csv" | "json" | "xml" | "nfo" | "ini" | "srt" | "vtt" | "yaml"
+        | "yml" => "text/plain",
         _ => "application/octet-stream",
     }
 }
@@ -417,7 +421,7 @@ mod tests {
         std::fs::write(d.join("b.mp4"), b"bb").unwrap();
         std::fs::write(d.join("a.jpg"), b"aa").unwrap();
         std::fs::write(d.join("sub/c.gif"), b"cc").unwrap();
-        std::fs::write(d.join("x.txt"), b"x").unwrap();
+        std::fs::write(d.join("x.exe"), b"x").unwrap();
         let access = LocalAccess::default();
         let other = t.path().join("secret.jpg");
         std::fs::write(&other, b"s").unwrap();
@@ -453,6 +457,6 @@ mod tests {
             StatusCode::FORBIDDEN,
             "files outside dropped folders are refused"
         );
-        assert_eq!(get(&d.join("x.txt")), StatusCode::FORBIDDEN);
+        assert_eq!(get(&d.join("x.exe")), StatusCode::FORBIDDEN);
     }
 }

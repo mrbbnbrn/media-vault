@@ -22,6 +22,11 @@ use crate::session::Session;
 pub const IMAGE_EXT: &[&str] = &["jpg", "jpeg", "png", "webp"];
 pub const GIF_EXT: &[&str] = &["gif"];
 pub const VIDEO_EXT: &[&str] = &["mp4", "m4v", "webm"];
+/// Plain-text files shown as text (read-only).
+pub const TEXT_EXT: &[&str] = &[
+    "txt", "md", "log", "csv", "json", "xml", "nfo", "ini", "srt", "vtt", "yaml", "yml",
+];
+pub const PDF_EXT: &[&str] = &["pdf"];
 
 pub fn ext_of(name: &str) -> String {
     Path::new(name)
@@ -30,7 +35,7 @@ pub fn ext_of(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// "image", "gif" or "video" by file extension; None if not supported.
+/// "image", "gif", "video", "text" or "pdf" by file extension; None if not supported.
 pub fn kind_by_ext(name: &str) -> Option<&'static str> {
     let e = ext_of(name);
     if IMAGE_EXT.contains(&e.as_str()) {
@@ -39,6 +44,10 @@ pub fn kind_by_ext(name: &str) -> Option<&'static str> {
         Some("gif")
     } else if VIDEO_EXT.contains(&e.as_str()) {
         Some("video")
+    } else if TEXT_EXT.contains(&e.as_str()) {
+        Some("text")
+    } else if PDF_EXT.contains(&e.as_str()) {
+        Some("pdf")
     } else {
         None
     }
@@ -760,7 +769,9 @@ mod tests {
         assert_eq!(kind_by_ext("A.JPG"), Some("image"));
         assert_eq!(kind_by_ext("x.webm"), Some("video"));
         assert_eq!(kind_by_ext("x.gif"), Some("gif"));
-        assert_eq!(kind_by_ext("notes.txt"), None);
+        assert_eq!(kind_by_ext("notes.txt"), Some("text"));
+        assert_eq!(kind_by_ext("Book.PDF"), Some("pdf"));
+        assert_eq!(kind_by_ext("setup.exe"), None);
         assert!(
             is_archive_name("Beach.7z") && is_archive_name("b.7z.002") && !is_archive_name("b.zip")
         );
@@ -787,7 +798,7 @@ mod tests {
         fs::create_dir_all(src.join("Beach")).unwrap();
         fs::write(src.join("a.jpg"), b"aaa").unwrap();
         fs::write(src.join("Beach/b.mp4"), b"bbb").unwrap();
-        fs::write(src.join("Beach/notes.txt"), b"x").unwrap();
+        fs::write(src.join("Beach/Thumbs.db"), b"x").unwrap();
         let loose = t.path().join("loose.png");
         fs::write(&loose, b"ccc").unwrap();
 
@@ -889,7 +900,7 @@ mod tests {
             &[
                 ("People/Alex/a.jpg", b"jpeg"),
                 ("clip.mp4", &big),
-                ("readme.txt", b"x"),
+                ("setup.exe", b"x"),
             ],
         );
 
@@ -1086,7 +1097,7 @@ mod seed {
             vault_core::KdfParams::TEST_ONLY,
         )
         .unwrap();
-        let paths: Vec<String> = ["People", "Trips", "Clips"]
+        let paths: Vec<String> = ["People", "Trips", "Clips", "Docs"]
             .iter()
             .map(|p| src.join(p).display().to_string())
             .collect();
