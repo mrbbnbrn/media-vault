@@ -26,6 +26,8 @@ pub struct Session {
     closed: AtomicBool,
     dirty: AtomicBool,
     last_change: Mutex<Instant>,
+    /// One save at a time (the watcher, imports and commands all save).
+    save_lock: Mutex<()>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -116,6 +118,7 @@ pub fn check_password(pw: &str) -> Result<(), String> {
 fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, String> {
     let (bytes, backup) = vault.load_db().map_err(friendly)?;
     let db = db::deserialize(&bytes).map_err(friendly)?;
+    vault.load_index(db::load_index(&db).map_err(friendly)?);
     Ok(Session {
         vault: RwLock::new(vault),
         db: Mutex::new(db),
@@ -124,6 +127,7 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         closed: AtomicBool::new(false),
         dirty: AtomicBool::new(false),
         last_change: Mutex::new(Instant::now()),
+        save_lock: Mutex::new(()),
     })
 }
 
@@ -168,9 +172,17 @@ impl Session {
 
     /// Encrypt and save the library database now.
     pub fn save(&self) -> Result<(), String> {
+        let _one_at_a_time = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.dirty.store(false, Ordering::SeqCst);
+        // Where new encrypted files landed in the packs goes into the database too.
+        let changes = self.vault().drain_index_changes();
         let bytes = {
             let db = self.db();
+            if let Err(e) = db::apply_index_changes(&db, &changes) {
+                self.vault().restore_index_changes(changes);
+                self.dirty.store(true, Ordering::SeqCst);
+                return Err(format!("Couldn't save the library: {}", friendly(e)));
+            }
             db::serialize(&db).map_err(friendly)?
         };
         self.vault().save_db(&bytes).map_err(|e| {

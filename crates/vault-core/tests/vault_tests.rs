@@ -231,12 +231,25 @@ fn ciphertext_does_not_contain_plaintext() {
     let (v, _) = new_vault(t.path());
     let marker = b"THIS-IS-A-VERY-RECOGNISABLE-MARKER-STRING".repeat(1000);
     let (id, _) = v.add_object(ObjectKind::Media, &marker[..]).unwrap();
-    let raw = fs::read(v.object_path(ObjectKind::Media, &id)).unwrap();
+    let (pack, _, _) = v.object_location(ObjectKind::Media, &id).unwrap();
+    let raw = fs::read(pack).unwrap();
     assert!(!raw.windows(20).any(|w| w == &marker[..20]));
 }
 
+/// The encrypted bytes of an object, wherever it is stored.
 fn object_bytes(v: &Vault, id: &ObjectId) -> Vec<u8> {
-    fs::read(v.object_path(ObjectKind::Media, id)).unwrap()
+    let (path, off, len) = v.object_location(ObjectKind::Media, id).unwrap();
+    let all = fs::read(path).unwrap();
+    all[off as usize..(off + len) as usize].to_vec()
+}
+
+/// Overwrite an object's bytes in place (same length).
+fn put_object_bytes(v: &Vault, id: &ObjectId, bytes: &[u8]) {
+    let (path, off, len) = v.object_location(ObjectKind::Media, id).unwrap();
+    assert_eq!(bytes.len() as u64, len);
+    let mut all = fs::read(&path).unwrap();
+    all[off as usize..(off + len) as usize].copy_from_slice(bytes);
+    fs::write(path, all).unwrap();
 }
 
 #[test]
@@ -245,7 +258,6 @@ fn any_flipped_bit_is_detected() {
     let (v, _) = new_vault(t.path());
     let data = pseudo_random(2 * (1 << 20) + 100, 7);
     let (id, _) = v.add_object(ObjectKind::Media, &data[..]).unwrap();
-    let path = v.object_path(ObjectKind::Media, &id);
     let good = object_bytes(&v, &id);
     // Header fields, wrapped key, first/middle/last chunk, and tags.
     for &pos in &[
@@ -264,40 +276,46 @@ fn any_flipped_bit_is_detected() {
     ] {
         let mut bad = good.clone();
         bad[pos] ^= 0x01;
-        fs::write(&path, &bad).unwrap();
+        put_object_bytes(&v, &id, &bad);
         let ok = v.verify_object(ObjectKind::Media, &id).is_ok();
         assert!(!ok, "flip at {pos} went unnoticed");
     }
-    fs::write(&path, &good).unwrap();
+    put_object_bytes(&v, &id, &good);
     v.verify_object(ObjectKind::Media, &id).unwrap();
+}
+
+fn in_memory_object(data: &[u8]) -> (vault_core::crypto::Key, ObjectId, Vec<u8>) {
+    let master = crypto::random_key();
+    let id = ObjectId::random();
+    let mut w = ObjectWriter::new(Cursor::new(Vec::new()), id, ObjectKind::Media, 20).unwrap();
+    std::io::Write::write_all(&mut w, data).unwrap();
+    let (cur, _) = w.finish(&master).unwrap();
+    (master, id, cur.into_inner())
 }
 
 #[test]
 fn truncation_and_appending_are_detected() {
-    let t = tempfile::tempdir().unwrap();
-    let (v, _) = new_vault(t.path());
     let data = pseudo_random(3 * (1 << 20), 9);
-    let (id, _) = v.add_object(ObjectKind::Media, &data[..]).unwrap();
-    let path = v.object_path(ObjectKind::Media, &id);
-    let good = object_bytes(&v, &id);
+    let (master, id, good) = in_memory_object(&data);
     let chunk = (1 << 20) + 16;
 
     // Drop the final chunk entirely (cut exactly at a chunk boundary).
-    fs::write(&path, &good[..HEADER_LEN as usize + 2 * chunk]).unwrap();
-    assert!(v.verify_object(ObjectKind::Media, &id).is_err());
-    let mut r = v.open_object(ObjectKind::Media, &id).unwrap();
+    let cut = good[..HEADER_LEN as usize + 2 * chunk].to_vec();
+    let mut r = ObjectReader::open(Cursor::new(cut), &master, id, None).unwrap();
+    assert!(r.verify_all().is_err());
+    r.seek(SeekFrom::Start(0)).unwrap();
     let mut sink = Vec::new();
     assert!(r.read_to_end(&mut sink).is_err());
 
     // Extra bytes on the end.
     let mut longer = good.clone();
     longer.extend_from_slice(&[0u8; 50]);
-    fs::write(&path, &longer).unwrap();
-    assert!(v.verify_object(ObjectKind::Media, &id).is_err());
+    let mut r = ObjectReader::open(Cursor::new(longer), &master, id, None).unwrap();
+    assert!(r.verify_all().is_err());
 }
 
 #[test]
-fn chunks_cannot_be_swapped_or_moved_between_files() {
+fn chunks_cannot_be_swapped_or_moved_between_objects() {
     let t = tempfile::tempdir().unwrap();
     let (v, _) = new_vault(t.path());
     let a = pseudo_random(3 * (1 << 20), 1);
@@ -312,15 +330,12 @@ fn chunks_cannot_be_swapped_or_moved_between_files() {
     let mut sw = good.clone();
     sw[h..h + chunk].copy_from_slice(&good[h + chunk..h + 2 * chunk]);
     sw[h + chunk..h + 2 * chunk].copy_from_slice(&good[h..h + chunk]);
-    fs::write(v.object_path(ObjectKind::Media, &ia), &sw).unwrap();
+    put_object_bytes(&v, &ia, &sw);
     assert!(v.verify_object(ObjectKind::Media, &ia).is_err());
 
-    // Rename B's file to A's name: header is bound to the id, so it fails.
-    fs::copy(
-        v.object_path(ObjectKind::Media, &ib),
-        v.object_path(ObjectKind::Media, &ia),
-    )
-    .unwrap();
+    // Put B's bytes where A should be: the header is bound to the id, so it fails.
+    let bb = object_bytes(&v, &ib);
+    put_object_bytes(&v, &ia, &bb);
     assert!(v.open_object(ObjectKind::Media, &ia).is_err());
 }
 
@@ -331,9 +346,12 @@ fn objects_from_another_vault_do_not_open() {
     let (v1, _) = new_vault(t1.path());
     let (v2, _) = new_vault(t2.path());
     let (id, _) = v1.add_object(ObjectKind::Media, &b"secret"[..]).unwrap();
-    let dst = v2.object_path(ObjectKind::Media, &id);
-    fs::create_dir_all(dst.parent().unwrap()).unwrap();
-    fs::copy(v1.object_path(ObjectKind::Media, &id), dst).unwrap();
+    v1.save_db(&db::serialize(&db::create_empty().unwrap()).unwrap())
+        .unwrap();
+    // Plant v1's pack inside v2 and let v2 find it by scanning.
+    let (pack, _, _) = v1.object_location(ObjectKind::Media, &id).unwrap();
+    fs::copy(&pack, t2.path().join("v/packs/media-000099.pack")).unwrap();
+    v2.rescan_packs().unwrap();
     assert!(v2.open_object(ObjectKind::Media, &id).is_err());
 }
 
@@ -603,10 +621,10 @@ fn export_continues_past_damaged_files() {
             r.get(0)
         })
         .unwrap();
-    let path = v.object_path(ObjectKind::Media, &ObjectId::from_hex(&obj).unwrap());
-    let mut raw = fs::read(&path).unwrap();
+    let oid = ObjectId::from_hex(&obj).unwrap();
+    let mut raw = object_bytes(&v, &oid);
     raw[200] ^= 1;
-    fs::write(&path, raw).unwrap();
+    put_object_bytes(&v, &oid, &raw);
 
     let items = export::list_items(&conn, None).unwrap();
     let out = t.path().join("out");
@@ -639,7 +657,7 @@ fn schema_v2_has_weights_and_upgrades_v1_libraries() {
     let v: i64 = conn
         .pragma_query_value(None, "user_version", |r| r.get(0))
         .unwrap();
-    assert_eq!(v, 2);
+    assert_eq!(v, db::SCHEMA_VERSION);
     conn.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('x','image','a.jpg','jpg',1,'h',0)", []).unwrap();
     let w: f64 = conn
         .query_row("SELECT weight FROM media", [], |r| r.get(0))
@@ -650,7 +668,7 @@ fn schema_v2_has_weights_and_upgrades_v1_libraries() {
     // A v1 library (no weight column) is upgraded on load.
     let old = rusqlite::Connection::open_in_memory().unwrap();
     old.execute_batch("CREATE TABLE folders (id INTEGER PRIMARY KEY, parent_id INTEGER, name TEXT NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL);
-        CREATE TABLE media (id INTEGER PRIMARY KEY, object_id TEXT NOT NULL UNIQUE, folder_id INTEGER, kind TEXT NOT NULL, original_name TEXT NOT NULL, ext TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL, favourite INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE media (id INTEGER PRIMARY KEY, object_id TEXT NOT NULL UNIQUE, thumb_object_id TEXT, folder_id INTEGER, kind TEXT NOT NULL CHECK (kind IN ('image','gif','video')), width INTEGER, height INTEGER, duration_ms INTEGER, has_audio INTEGER, original_name TEXT NOT NULL, ext TEXT NOT NULL, size INTEGER NOT NULL, sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL, favourite INTEGER NOT NULL DEFAULT 0);
         INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('y','video','b.mp4','mp4',1,'h',0);
         PRAGMA user_version = 1;").unwrap();
     let bytes = db::serialize(&old).unwrap();

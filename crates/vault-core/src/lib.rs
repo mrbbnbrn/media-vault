@@ -9,6 +9,7 @@ pub mod db;
 pub mod error;
 pub mod export;
 pub mod multipart;
+pub mod pack;
 pub mod stream;
 pub mod vault;
 

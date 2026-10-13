@@ -46,8 +46,36 @@ def master_from_recovery(h, words):
     return AESGCM(kek).decrypt(bytes.fromhex(s["nonce"]), bytes.fromhex(s["wrapped_key"]), aad)
 
 
-def decrypt_object(master, path, object_id, out):
+def walk_packs(vault):
+    """Map object id (bytes) -> (pack path, offset, length), by walking every pack."""
+    found = {}
+    packs = os.path.join(vault, "packs")
+    if not os.path.isdir(packs):
+        return found
+    for name in sorted(os.listdir(packs)):
+        if not name.endswith(".pack"):
+            continue
+        path = os.path.join(packs, name)
+        size = os.path.getsize(path)
+        with open(path, "rb") as f:
+            assert f.read(4) == b"MVPK", "not a pack"
+            pos = 16
+            while pos + 28 <= size:
+                f.seek(pos)
+                h = f.read(28)
+                if h[:4] != b"MVPE":
+                    break
+                oid, n = h[4:20], struct.unpack("<Q", h[20:28])[0]
+                if n == 0 or pos + 28 + n > size:
+                    break  # interrupted write at the end
+                found[oid] = (path, pos + 28, n)
+                pos += 28 + n
+    return found
+
+
+def decrypt_object(master, path, object_id, out, offset=0, entry_len=None):
     with open(path, "rb") as f:
+        f.seek(offset)
         head = f.read(HEADER_LEN)
         assert head[:4] == b"MVOB" and head[4] == 1, "not an object file"
         c = head[6]
@@ -64,7 +92,10 @@ def decrypt_object(master, path, object_id, out):
             ct = f.read(plain + 16)
             nonce = prefix + struct.pack(">I", i) + bytes([1 if last else 0])
             out.write(aead.decrypt(nonce, ct, aad))
-        assert f.read(1) == b"", "unexpected extra data"
+        if entry_len is None:
+            assert f.read(1) == b"", "unexpected extra data"
+        else:
+            assert f.tell() == offset + entry_len, "object length mismatch"
 
 
 def main():
@@ -80,6 +111,7 @@ def main():
         with open(dbpath, "wb") as out:
             decrypt_object(master, os.path.join(vault, "meta.db.enc"), DB_OBJECT_ID, out)
         db = sqlite3.connect(dbpath)
+        packed = walk_packs(vault)
         folders = {i: (p, n) for i, p, n in db.execute("SELECT id, parent_id, name FROM folders")}
 
         def folder_path(fid):
@@ -95,7 +127,12 @@ def main():
             d = folder_path(fid)
             os.makedirs(d, exist_ok=True)
             with open(os.path.join(d, name), "xb") as out:
-                decrypt_object(master, os.path.join(vault, "media", obj[:2], obj + ".bin"), bytes.fromhex(obj), out)
+                oid = bytes.fromhex(obj)
+                if oid in packed:
+                    path, off, n = packed[oid]
+                    decrypt_object(master, path, oid, out, off, n)
+                else:  # vaults from the first app version: one file per object
+                    decrypt_object(master, os.path.join(vault, "media", obj[:2], obj + ".bin"), oid, out)
             count += 1
         db.close()
     print(f"exported {count} files")

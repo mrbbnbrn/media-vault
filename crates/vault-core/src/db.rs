@@ -8,8 +8,10 @@ use rusqlite::{MAIN_DB, params_from_iter};
 use zeroize::Zeroizing;
 
 use crate::error::{Error, Result};
+use crate::pack::{IndexChange, Location};
+use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -142,6 +144,125 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
         conn.pragma_update(None, "user_version", 2)?;
     }
+    if v < 3 {
+        // v3: text and PDF files; the pack index (where each encrypted
+        // object lives inside the pack files).
+        // SQLite can't change a CHECK rule in place, so the media table is
+        // rebuilt with the same rows (the standard SQLite procedure).
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            CREATE TABLE media_v3 (
+                id               INTEGER PRIMARY KEY,
+                object_id        TEXT NOT NULL UNIQUE,
+                thumb_object_id  TEXT,
+                folder_id        INTEGER REFERENCES folders(id) ON DELETE RESTRICT,
+                kind             TEXT NOT NULL CHECK (kind IN ('image', 'gif', 'video', 'text', 'pdf')),
+                original_name    TEXT NOT NULL,
+                ext              TEXT NOT NULL,
+                size             INTEGER NOT NULL,
+                width            INTEGER,
+                height           INTEGER,
+                duration_ms      INTEGER,
+                has_audio        INTEGER,
+                sha256           TEXT NOT NULL,
+                imported_at      INTEGER NOT NULL,
+                favourite        INTEGER NOT NULL DEFAULT 0,
+                weight           REAL NOT NULL DEFAULT 1 CHECK (weight >= 0)
+            );
+            INSERT INTO media_v3 (id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size,
+                                  width, height, duration_ms, has_audio, sha256, imported_at, favourite, weight)
+                SELECT id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size,
+                       width, height, duration_ms, has_audio, sha256, imported_at, favourite, weight FROM media;
+            DROP TABLE media;
+            ALTER TABLE media_v3 RENAME TO media;
+            CREATE INDEX media_folder ON media(folder_id);
+            CREATE INDEX media_sha256 ON media(sha256);
+            CREATE INDEX media_favourite ON media(favourite) WHERE favourite = 1;
+            CREATE TABLE IF NOT EXISTS objects (
+                object_id  TEXT PRIMARY KEY,   -- 32 hex characters
+                kind       INTEGER NOT NULL,   -- 1 = media, 2 = thumbnail
+                pack       INTEGER NOT NULL,   -- packs/<media|thumbs>-<pack, 6 digits>.pack
+                offset     INTEGER NOT NULL,   -- first byte of the object in that file
+                length     INTEGER NOT NULL
+            ) WITHOUT ROWID;
+            PRAGMA user_version = 3;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            return Err(e.into());
+        }
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        let bad: i64 =
+            conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| {
+                r.get(0)
+            })?;
+        if bad != 0 {
+            return Err(Error::Corrupt(format!(
+                "{bad} broken references after upgrade"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// The pack index stored in the database.
+pub fn load_index(conn: &Connection) -> Result<Vec<(ObjectId, Location)>> {
+    let mut st = conn.prepare("SELECT object_id, kind, pack, offset, length FROM objects")?;
+    let rows = st.query_map([], |r| {
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, i64>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, i64>(3)?,
+            r.get::<_, i64>(4)?,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, kind, pack, offset, len) = row?;
+        let kind = match kind {
+            1 => ObjectKind::Media,
+            2 => ObjectKind::Thumbnail,
+            _ => continue,
+        };
+        out.push((
+            ObjectId::from_hex(&id)?,
+            Location {
+                kind,
+                pack: pack as u32,
+                offset: offset as u64,
+                len: len as u64,
+            },
+        ));
+    }
+    Ok(out)
+}
+
+/// Write pack index changes into the database (done right before saving it).
+pub fn apply_index_changes(conn: &Connection, changes: &[IndexChange]) -> Result<()> {
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.unchecked_transaction()?;
+    for c in changes {
+        match c {
+            IndexChange::Put(id, l) => {
+                tx.execute(
+                    "INSERT OR REPLACE INTO objects(object_id, kind, pack, offset, length) VALUES (?1, ?2, ?3, ?4, ?5)",
+                    rusqlite::params![id.to_hex(), l.kind as u8 as i64, l.pack as i64, l.offset as i64, l.len as i64],
+                )?;
+            }
+            IndexChange::Remove(id) => {
+                tx.execute("DELETE FROM objects WHERE object_id = ?", [id.to_hex()])?;
+            }
+        }
+    }
+    tx.commit()?;
     Ok(())
 }
 

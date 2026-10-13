@@ -10,12 +10,15 @@ use zeroize::Zeroizing;
 
 use crate::crypto::{self, KEY_LEN, KdfParams, Key, NONCE_LEN};
 use crate::error::{Error, Result};
+use crate::pack::{self, CompactPlan, IndexChange, Location, PackStore, PackUsage, Slice};
 use crate::stream::{
     DEFAULT_CHUNK_LOG2, ObjectId, ObjectKind, ObjectReader, ObjectWriter, WrittenObject,
 };
 
 pub const FORMAT_NAME: &str = "media-vault";
-pub const FORMAT_VERSION: u32 = 1;
+/// 1 = one file per object (media/, thumbs/); 2 = pack files (packs/).
+/// Version 2 apps read both.
+pub const FORMAT_VERSION: u32 = 2;
 pub const HEADER_FILE: &str = "vault.json";
 pub const HEADER_BACKUP_FILE: &str = "vault.json.bak";
 pub const DB_FILE: &str = "meta.db.enc";
@@ -79,6 +82,7 @@ pub struct Vault {
     header: VaultHeader,
     master: Key,
     access: Access,
+    packs: PackStore,
     _lock: Option<File>,
 }
 
@@ -212,8 +216,7 @@ impl Vault {
                 )));
             }
         }
-        fs::create_dir_all(root.join(MEDIA_DIR))?;
-        fs::create_dir_all(root.join(THUMB_DIR))?;
+        fs::create_dir_all(root.join(pack::PACK_DIR))?;
         fs::create_dir_all(root.join(BACKUP_DIR))?;
 
         let master = crypto::random_key();
@@ -235,6 +238,7 @@ impl Vault {
             header,
             master,
             access: Access::ReadWrite,
+            packs: PackStore::new(root, true),
             _lock: None,
         };
         vault.write_header()?;
@@ -284,6 +288,7 @@ impl Vault {
             header,
             master,
             access,
+            packs: PackStore::new(root, access == Access::ReadWrite),
             _lock: None,
         };
         if access == Access::ReadWrite {
@@ -355,6 +360,7 @@ impl Vault {
 
     // ---- objects ---------------------------------------------------------
 
+    /// Where an object lived in format 1 (one file per object). Still read.
     pub fn object_path(&self, kind: ObjectKind, id: &ObjectId) -> PathBuf {
         let hex = id.to_hex();
         let dir = match kind {
@@ -368,18 +374,25 @@ impl Vault {
             .join(format!("{hex}.bin"))
     }
 
-    /// Encrypt everything read from `source` into a new object.
-    /// Returns its id, plaintext length and SHA-256.
+    /// Encrypt everything read from `source` into a new object (appended to
+    /// the newest pack). Returns its id, plaintext length and SHA-256.
     pub fn add_object(
         &self,
         kind: ObjectKind,
-        source: impl Read,
+        mut source: impl Read,
     ) -> Result<(ObjectId, WrittenObject)> {
+        self.require_write()?;
         let id = ObjectId::random();
-        let written = self.write_object_at(kind, id, source)?;
+        let (written, _) = self.packs.append(kind, id, |w| {
+            let mut ow = ObjectWriter::new(w, id, kind, DEFAULT_CHUNK_LOG2)?;
+            std::io::copy(&mut source, &mut ow)?;
+            let (_, written) = ow.finish(&self.master)?;
+            Ok(written)
+        })?;
         Ok((id, written))
     }
 
+    /// Write a loose object file (used for the database).
     fn write_object_at(
         &self,
         kind: ObjectKind,
@@ -412,14 +425,22 @@ impl Vault {
         }
     }
 
-    /// Open an object for random-access reading.
-    pub fn open_object(&self, kind: ObjectKind, id: &ObjectId) -> Result<ObjectReader<File>> {
+    fn open_raw(&self, kind: ObjectKind, id: &ObjectId) -> Result<Slice> {
+        if let Some(s) = self.packs.open(kind, id)? {
+            return Ok(s);
+        }
         let path = self.object_path(kind, id);
         let f = File::open(&path).map_err(|e| match e.kind() {
             std::io::ErrorKind::NotFound => Error::NotFound(format!("{kind:?} {id}")),
             _ => Error::Io(e),
         })?;
-        ObjectReader::open(f, &self.master, *id, Some(kind))
+        Ok(Slice::whole(f)?)
+    }
+
+    /// Open an object for random-access reading.
+    pub fn open_object(&self, kind: ObjectKind, id: &ObjectId) -> Result<ObjectReader<Slice>> {
+        let s = self.open_raw(kind, id)?;
+        ObjectReader::open(s, &self.master, *id, Some(kind))
     }
 
     /// Decrypt a whole object into memory (fine for thumbnails and images).
@@ -430,8 +451,10 @@ impl Vault {
         Ok(out)
     }
 
+    /// Forget an object. Its space inside a pack is freed by [`Vault::compact`].
     pub fn delete_object(&self, kind: ObjectKind, id: &ObjectId) -> Result<()> {
         self.require_write()?;
+        self.packs.remove(id);
         match fs::remove_file(self.object_path(kind, id)) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -444,12 +467,12 @@ impl Vault {
         self.open_object(kind, id)?.verify_all()
     }
 
-    /// All object ids of a kind present on disk (for integrity checks).
-    pub fn list_objects(&self, kind: ObjectKind) -> Result<Vec<ObjectId>> {
+    /// Object ids stored as separate files (format 1).
+    pub fn loose_objects(&self, kind: ObjectKind) -> Result<Vec<ObjectId>> {
         let dir = match kind {
             ObjectKind::Media => MEDIA_DIR,
             ObjectKind::Thumbnail => THUMB_DIR,
-            ObjectKind::Database => return Ok(vec![DB_OBJECT_ID]),
+            ObjectKind::Database => return Ok(vec![]),
         };
         let mut out = Vec::new();
         let base = self.root.join(dir);
@@ -475,12 +498,157 @@ impl Vault {
         Ok(out)
     }
 
+    /// All object ids of a kind (packed and loose).
+    pub fn list_objects(&self, kind: ObjectKind) -> Result<Vec<ObjectId>> {
+        if kind == ObjectKind::Database {
+            return Ok(vec![DB_OBJECT_ID]);
+        }
+        let mut out = self.packs.ids(kind);
+        out.extend(self.loose_objects(kind)?);
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    // ---- packs -------------------------------------------------------------
+
+    /// Set the pack index, read from the database after unlocking.
+    pub fn load_index(&self, entries: impl IntoIterator<Item = (ObjectId, Location)>) {
+        self.packs.load_index(entries)
+    }
+
+    /// Index changes to write into the database before it is saved.
+    pub fn drain_index_changes(&self) -> Vec<IndexChange> {
+        self.packs.drain_changes()
+    }
+
+    /// Put index changes back after a failed save.
+    pub fn restore_index_changes(&self, c: Vec<IndexChange>) {
+        self.packs.restore_changes(c)
+    }
+
+    /// The file and byte range holding an object (for tools and tests).
+    pub fn object_location(&self, kind: ObjectKind, id: &ObjectId) -> Option<(PathBuf, u64, u64)> {
+        if self.packs.open(kind, id).ok().flatten().is_some()
+            && let Some(l) = self.packs.location(id)
+        {
+            return Some((self.packs.path(l.kind, l.pack), l.offset, l.len));
+        }
+        let p = self.object_path(kind, id);
+        let len = fs::metadata(&p).ok()?.len();
+        Some((p, 0, len))
+    }
+
+    pub fn is_packed(&self, id: &ObjectId) -> bool {
+        self.packs.contains(id)
+    }
+
+    /// True if objects are still stored one file each (format 1).
+    pub fn has_loose_objects(&self) -> Result<bool> {
+        Ok(!self.loose_objects(ObjectKind::Media)?.is_empty()
+            || !self.loose_objects(ObjectKind::Thumbnail)?.is_empty())
+    }
+
+    /// Step 1 of converting a format-1 vault: copy every loose object into
+    /// packs (unchanged, still encrypted). `progress(done, total)`.
+    /// Then save the database, then call [`Vault::remove_packed_loose_files`].
+    pub fn pack_loose_objects(&self, mut progress: impl FnMut(usize, usize)) -> Result<usize> {
+        self.require_write()?;
+        let mut todo = Vec::new();
+        for kind in [ObjectKind::Media, ObjectKind::Thumbnail] {
+            for id in self.loose_objects(kind)? {
+                if !self.packs.contains(&id) {
+                    todo.push((kind, id));
+                }
+            }
+        }
+        let total = todo.len();
+        for (i, (kind, id)) in todo.into_iter().enumerate() {
+            let f = File::open(self.object_path(kind, &id))?;
+            self.packs.append_raw(kind, id, f)?;
+            // Make sure the packed copy is complete and decrypts.
+            self.open_object(kind, &id)?.verify_all()?;
+            progress(i + 1, total);
+        }
+        Ok(total)
+    }
+
+    /// Step 2: delete loose files whose packed copy exists (after the database
+    /// recording the packed locations has been saved). Marks the vault as format 2.
+    pub fn remove_packed_loose_files(&mut self) -> Result<usize> {
+        self.require_write()?;
+        let mut removed = 0;
+        for kind in [ObjectKind::Media, ObjectKind::Thumbnail] {
+            for id in self.loose_objects(kind)? {
+                if self.packs.contains(&id) {
+                    fs::remove_file(self.object_path(kind, &id))?;
+                    removed += 1;
+                }
+            }
+            let dir = self.root.join(if kind == ObjectKind::Media {
+                MEDIA_DIR
+            } else {
+                THUMB_DIR
+            });
+            if let Ok(rd) = fs::read_dir(&dir) {
+                for sub in rd.flatten() {
+                    let _ = fs::remove_dir(sub.path()); // only removes empty folders
+                }
+            }
+            let _ = fs::remove_dir(&dir);
+        }
+        if self.header.version < 2 && !self.has_loose_objects()? {
+            self.header.version = 2;
+            self.write_header()?;
+        }
+        Ok(removed)
+    }
+
+    /// The master key, for tests that build old-format files.
+    #[doc(hidden)]
+    pub fn test_master(&self) -> &Key {
+        &self.master
+    }
+
+    /// Smaller packs, for tests.
+    #[doc(hidden)]
+    pub fn set_pack_limit(&mut self, bytes: u64) {
+        self.packs.set_limit(bytes)
+    }
+
+    pub fn pack_usage(&self) -> Result<Vec<PackUsage>> {
+        self.packs.usage()
+    }
+
+    /// Step 1 of reclaiming space: copy live objects out of packs where at
+    /// least `min_waste` (0..1) is unused. Save the database, then call
+    /// [`Vault::finish_compact`].
+    pub fn compact(&self, min_waste: f64) -> Result<CompactPlan> {
+        self.require_write()?;
+        self.packs.compact(min_waste)
+    }
+
+    pub fn finish_compact(&self, plan: &CompactPlan) -> Result<()> {
+        self.require_write()?;
+        self.packs.delete_retired(plan)
+    }
+
+    /// Find every object by reading the packs (when the index can't be trusted).
+    pub fn rescan_packs(&self) -> Result<usize> {
+        let map = self.packs.scan_all()?;
+        let n = map.len();
+        self.packs.load_index(map);
+        Ok(n)
+    }
+
     // ---- database ----------------------------------------------------------
 
     /// Save the (serialized SQLite) database. The previous version is kept in
     /// meta-backups/, and only the newest DB_BACKUPS_KEPT copies are retained.
     pub fn save_db(&self, sqlite_bytes: &[u8]) -> Result<()> {
         self.require_write()?;
+        // The database points into the packs, so they must be on disk first.
+        self.packs.sync()?;
         let current = self.root.join(DB_FILE);
         let backups = self.root.join(BACKUP_DIR);
         fs::create_dir_all(&backups)?;
@@ -522,7 +690,7 @@ impl Vault {
     }
 
     fn read_db_file(&self, path: &Path) -> Result<Zeroizing<Vec<u8>>> {
-        let f = File::open(path)?;
+        let f = Slice::whole(File::open(path)?)?;
         let mut r = ObjectReader::open(f, &self.master, DB_OBJECT_ID, Some(ObjectKind::Database))?;
         let mut out = Zeroizing::new(Vec::new());
         r.read_to_end(&mut out)

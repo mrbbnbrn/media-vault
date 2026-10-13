@@ -16,17 +16,49 @@ app). This document is the fallback if that tool is ever unavailable.
 ## Folder layout
 
 ```
-vault.json            header (not secret): salts, settings, encrypted master key
-vault.json.bak        identical copy of vault.json
-meta.db.enc           the library database (encrypted object, kind 3)
-meta-backups/         previous versions of meta.db.enc (same format)
-media/xx/<id>.bin     encrypted media files (kind 1); xx = first 2 hex chars of <id>
-thumbs/xx/<id>.bin    encrypted thumbnails (kind 2)
-FORMAT.md             this file
-.lock                 empty; prevents two programs writing at once
+vault.json                header (not secret): salts, settings, encrypted master key
+vault.json.bak            identical copy of vault.json
+meta.db.enc               the library database (encrypted object, kind 3)
+meta-backups/             previous versions of meta.db.enc (same format)
+packs/media-NNNNNN.pack   encrypted media files, many per pack (about 1 GiB each)
+packs/thumbs-NNNNNN.pack  encrypted thumbnails
+FORMAT.md                 this file
+.lock                     empty; prevents two programs writing at once
 ```
 
+Vaults made by the first version of the app (`"version": 1` in vault.json)
+store every object as its own file instead: `media/xx/<id>.bin` and
+`thumbs/xx/<id>.bin`, where `xx` is the first 2 hex characters of `<id>`.
+A vault being converted can contain both; check the packs first.
+
 `<id>` is 16 random bytes written as 32 lowercase hex characters.
+
+## Pack files
+
+A pack is a 16-byte header followed by entries, back to back:
+
+| Offset | Size | Field |
+|---|---|---|
+| 0 | 4 | magic `MVPK` |
+| 4 | 1 | pack format version = 1 |
+| 5 | 1 | kind: 1 = media, 2 = thumbnails |
+| 6 | 10 | reserved |
+
+Each entry:
+
+| Size | Field |
+|---|---|
+| 4 | magic `MVPE` |
+| 16 | object id bytes |
+| 8 | `n` = object length in bytes, u64 little-endian |
+| n | the encrypted object, exactly as described below |
+
+To find an object, either look it up in the database table `objects`
+(`object_id`, `kind`, `pack` number, `offset` of the object's first byte,
+`length`), or simply walk every pack from byte 16, entry by entry, and match
+the id. An incomplete entry at the very end of a pack (an interrupted write)
+is ignored. Deleted objects stay in their pack until space is reclaimed;
+if the same id appears twice, either copy is valid.
 
 ## vault.json
 
@@ -78,8 +110,9 @@ Each object has its own random 32-byte **data key**. Integers are little-endian.
 | 35 | 48 | wrapped data key |
 | 83 | … | chunks |
 
-**Object id bytes.** For media and thumbnails, the 16 bytes whose hex is the
-file name. For the database, the ASCII bytes `media-vault-db` followed by two
+**Object id bytes.** For media and thumbnails, the 16 bytes of the object id
+(the `object_id` hex in the database, the id in the pack entry, or the old
+file name). For the database, the ASCII bytes `media-vault-db` followed by two
 zero bytes.
 
 **Data key.** `data_key = AES-256-GCM-decrypt(key = master, nonce = key nonce, ciphertext = wrapped data key, aad = header bytes 0..23 || object id bytes)`
@@ -103,8 +136,9 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 `library.db` and open it with any SQLite tool. Key tables:
 
 - `folders(id, parent_id, name, …)` — the folder tree; `parent_id` NULL = top level
-- `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, …)`
-  — `object_id` is the file name under `media/`, `folder_id` NULL = top level
+- `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, weight, …)`
+  — `kind` is image, gif, video, text or pdf; `folder_id` NULL = top level
+- `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings
 
@@ -115,5 +149,6 @@ same format.
 
 1. Get the master key from `vault.json` (password or recovery slot).
 2. Decrypt `meta.db.enc`, open it in SQLite, find the row in `media`.
-3. Decrypt `media/<first two chars of object_id>/<object_id>.bin` and save it
-   under `original_name`.
+3. Find that `object_id` in the packs (table `objects`, or by walking the
+   packs), or in `media/<first two chars>/<object_id>.bin` for old vaults.
+4. Decrypt it and save it under `original_name`.

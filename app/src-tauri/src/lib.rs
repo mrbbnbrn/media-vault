@@ -8,6 +8,7 @@ mod library;
 mod protocol;
 mod selftest;
 mod session;
+mod storage;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -626,6 +627,67 @@ async fn scan_local(
     blocking(move || protocol::scan_local(&inner.local, &paths)).await
 }
 
+// ---- storage ------------------------------------------------------------------------
+
+#[tauri::command]
+async fn storage_info(state: State<'_, Shared>) -> Result<storage::StorageInfo, String> {
+    let s = sess(state.inner())?;
+    blocking(move || storage::info(&s)).await
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageProgress {
+    task: &'static str,
+    done: usize,
+    total: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StorageDone {
+    task: &'static str,
+    ok: bool,
+    message: String,
+}
+
+/// Convert separate files into packs, or reclaim space. Runs in the
+/// background (never at the same time as an import) and reports progress.
+#[tauri::command]
+fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Result<(), String> {
+    let s = sess(&state)?;
+    let inner = state.inner().clone();
+    let task: &'static str = match task.as_str() {
+        "convert" => "convert",
+        "reclaim" => "reclaim",
+        _ => return Err("Unknown task.".into()),
+    };
+    std::thread::spawn(move || {
+        let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
+        let result = if task == "convert" {
+            storage::convert(&s, &mut |done, total| {
+                let _ = app.emit("storage-progress", StorageProgress { task, done, total });
+            })
+            .map(|n| format!("{n} items moved into pack files."))
+        } else {
+            storage::reclaim(&s).map(|r| {
+                format!(
+                    "Freed {:.1} MB ({} items moved, {} pack files removed).",
+                    r.reclaimed_bytes as f64 / 1e6,
+                    r.moved,
+                    r.packs_removed
+                )
+            })
+        };
+        let (ok, message) = match result {
+            Ok(m) => (true, m),
+            Err(e) => (false, e),
+        };
+        let _ = app.emit("storage-done", StorageDone { task, ok, message });
+    });
+    Ok(())
+}
+
 // ---- self-test ---------------------------------------------------------------------
 
 #[tauri::command]
@@ -816,6 +878,8 @@ pub fn run() {
             cancel_import,
             scan_local,
             selftest_info,
+            storage_info,
+            storage_task,
             selftest_done,
         ])
         .run(tauri::generate_context!())

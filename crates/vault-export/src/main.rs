@@ -101,7 +101,11 @@ fn load_conn(v: &Vault) -> Result<db::Connection, Box<dyn std::error::Error>> {
             b.display()
         );
     }
-    Ok(db::deserialize(&bytes)?)
+    let conn = db::deserialize(&bytes)?;
+    // Where each encrypted file lives inside the pack files. If anything is
+    // missing from this index, the packs are scanned automatically.
+    v.load_index(db::load_index(&conn)?);
+    Ok(conn)
 }
 
 fn info(root: PathBuf) -> R {
