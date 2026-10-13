@@ -16,7 +16,21 @@ jobs:
       - uses: actions/checkout@v4
       - name: Install pinned Rust toolchain (from rust-toolchain.toml)
         run: rustup show active-toolchain || rustup toolchain install
-      - name: Unit and integration tests
+      - name: Linux libraries for the app window
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev libxdo-dev
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: UI — install, test, build
+        working-directory: app
+        run: |
+          npm ci
+          npm test
+          npm run build
+      - name: Rust tests
         run: cargo test --workspace --release --locked
       - name: Lint
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -42,15 +56,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+      - name: Build MediaVault.exe
+        working-directory: app
+        run: |
+          npm ci
+          npx tauri build --no-bundle
       - name: Build vault-export.exe
         run: cargo build --release --locked -p vault-export
-      - name: Package
+      - name: Package portable folder
         shell: bash
         run: |
           mkdir -p dist/MediaVault
+          cp target/release/MediaVault.exe dist/MediaVault/
           cp target/release/vault-export.exe dist/MediaVault/
           cp crates/vault-core/FORMAT.md dist/MediaVault/
           cp tools/reference_decrypt.py dist/MediaVault/
+          cp packaging/README.txt dist/MediaVault/
       - uses: actions/upload-artifact@v4
         with:
           name: MediaVault-windows

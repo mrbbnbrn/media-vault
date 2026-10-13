@@ -1,0 +1,33 @@
+[package]
+name = "media-vault-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+default-run = "MediaVault"
+
+[[bin]]
+name = "MediaVault"
+path = "src/main.rs"
+
+[lib]
+name = "media_vault_app"
+path = "src/lib.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+tauri = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-global-shortcut = "2"
+vault-core = { version = "0.1.0", path = "../../crates/vault-core" }
+zeroize = "1.9.1"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation"] }
+
+[dev-dependencies]
+tempfile = "3.27.0"

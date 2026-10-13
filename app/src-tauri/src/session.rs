@@ -1,0 +1,215 @@
+//! Opening, creating and locking vaults. Independent of the window toolkit so
+//! it can be unit-tested.
+
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use serde::Serialize;
+use vault_core::db::{self, Connection};
+use vault_core::{Access, Error, KdfParams, Vault};
+
+pub const MIN_PASSWORD_CHARS: usize = 8;
+
+/// An unlocked vault. Dropping it wipes the master key from memory.
+pub struct Session {
+    pub vault: Vault,
+    pub db: Connection,
+    /// Opened with the recovery key: the user must set a new password.
+    pub needs_new_password: bool,
+    pub restored_from_backup: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionInfo {
+    pub path: String,
+    pub name: String,
+    pub items: i64,
+    pub folders: i64,
+    pub needs_new_password: bool,
+    /// Set if the main database was damaged and a backup was used.
+    pub restored_from_backup: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VaultEntry {
+    pub path: String,
+    pub name: String,
+    /// "ready", "missing" (drive not connected / folder gone) or "notVault".
+    pub status: String,
+    pub size_bytes: Option<u64>,
+}
+
+pub fn friendly(e: Error) -> String {
+    match e {
+        Error::WrongKey => "That password doesn't match this vault.".into(),
+        Error::BadRecoveryPhrase(m) => format!("Those recovery words aren't valid: {m}."),
+        Error::NotAVault(p) => format!("{} is not a Media Vault folder.", p.display()),
+        Error::AlreadyExists(p) => format!("There is already a vault in {}.", p.display()),
+        Error::UnsupportedVersion(v) => {
+            format!("This vault was made by a newer version of Media Vault (format {v}). Please update the app.")
+        }
+        other => other.to_string(),
+    }
+}
+
+pub fn folder_name(path: &Path) -> String {
+    path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.display().to_string())
+}
+
+fn dir_size(path: &Path) -> u64 {
+    let mut total = 0;
+    let mut stack = vec![path.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            match e.file_type() {
+                Ok(t) if t.is_dir() => stack.push(e.path()),
+                Ok(_) => total += e.metadata().map(|m| m.len()).unwrap_or(0),
+                Err(_) => {}
+            }
+        }
+    }
+    total
+}
+
+pub fn describe(path: &str) -> VaultEntry {
+    let p = Path::new(path);
+    let (status, size) = if !p.exists() {
+        ("missing", None)
+    } else if !vault_core::is_vault(p) {
+        ("notVault", None)
+    } else {
+        ("ready", Some(dir_size(p)))
+    };
+    VaultEntry { path: path.to_string(), name: folder_name(p), status: status.into(), size_bytes: size }
+}
+
+pub fn check_password(pw: &str) -> Result<(), String> {
+    if pw.chars().count() < MIN_PASSWORD_CHARS {
+        return Err(format!("Use at least {MIN_PASSWORD_CHARS} characters. A few unrelated words make a strong, memorable password."));
+    }
+    Ok(())
+}
+
+fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, String> {
+    let (bytes, backup) = vault.load_db().map_err(friendly)?;
+    let db = db::deserialize(&bytes).map_err(friendly)?;
+    Ok(Session { vault, db, needs_new_password, restored_from_backup: backup })
+}
+
+impl Session {
+    pub fn info(&self) -> SessionInfo {
+        let count = |sql: &str| self.db.query_row(sql, [], |r| r.get::<_, i64>(0)).unwrap_or(0);
+        SessionInfo {
+            path: self.vault.root().display().to_string(),
+            name: folder_name(self.vault.root()),
+            items: count("SELECT COUNT(*) FROM media"),
+            folders: count("SELECT COUNT(*) FROM folders"),
+            needs_new_password: self.needs_new_password,
+            restored_from_backup: self.restored_from_backup.as_ref().map(|p| p.display().to_string()),
+        }
+    }
+}
+
+/// Create a vault in `parent/name`. Returns the open session and the 24 words.
+pub fn create(parent: &str, name: &str, password: &str, kdf: KdfParams) -> Result<(Session, Vec<String>), String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("Give the vault a name.".into());
+    }
+    if name.chars().any(|c| r#"<>:"/\|?*"#.contains(c) || c.is_control()) || name.ends_with('.') {
+        return Err("A vault name can't contain < > : \" / \\ | ? * or end with a dot.".into());
+    }
+    check_password(password)?;
+    let parent = Path::new(parent);
+    if !parent.is_dir() {
+        return Err(format!("The folder {} doesn't exist.", parent.display()));
+    }
+    let root = parent.join(name);
+    let (vault, phrase) = Vault::create(&root, password, kdf).map_err(friendly)?;
+    let words = phrase.words().iter().map(|w| w.to_string()).collect();
+    Ok((open_session(vault, false)?, words))
+}
+
+pub fn unlock(path: &str, password: &str) -> Result<Session, String> {
+    let vault = Vault::unlock(Path::new(path), password, Access::ReadWrite).map_err(friendly)?;
+    open_session(vault, false)
+}
+
+pub fn unlock_with_recovery(path: &str, phrase: &str) -> Result<Session, String> {
+    let vault = Vault::unlock_with_recovery(Path::new(path), phrase, Access::ReadWrite).map_err(friendly)?;
+    open_session(vault, true)
+}
+
+/// Verify `current` against the vault on disk (slow on purpose, like unlocking).
+pub fn verify_password(path: &Path, current: &str) -> Result<(), String> {
+    Vault::unlock(path, current, Access::ReadOnly).map(|_| ()).map_err(|e| match e {
+        Error::WrongKey => "Your current password is not correct.".into(),
+        other => friendly(other),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KDF: KdfParams = KdfParams::TEST_ONLY;
+
+    #[test]
+    fn create_lock_unlock_and_recover() {
+        let t = tempfile::tempdir().unwrap();
+        let parent = t.path().to_str().unwrap();
+        let (s, words) = create(parent, "Photos", "long enough pw", KDF).unwrap();
+        assert_eq!(words.len(), 24);
+        let info = s.info();
+        assert_eq!(info.name, "Photos");
+        assert_eq!(info.items, 0);
+        let path = info.path.clone();
+        drop(s); // lock
+
+        assert_eq!(unlock(&path, "wrong password").err().unwrap(), "That password doesn't match this vault.");
+        let s = unlock(&path, "long enough pw").unwrap();
+        assert!(!s.info().needs_new_password);
+        drop(s);
+
+        let mut s = unlock_with_recovery(&path, &words.join(" ")).unwrap();
+        assert!(s.info().needs_new_password);
+        s.vault.change_password("a brand new one").unwrap();
+        drop(s);
+        assert!(unlock(&path, "a brand new one").is_ok());
+    }
+
+    #[test]
+    fn rejects_bad_names_and_short_passwords() {
+        let t = tempfile::tempdir().unwrap();
+        let parent = t.path().to_str().unwrap();
+        assert!(create(parent, "", "long enough pw", KDF).is_err());
+        assert!(create(parent, "a/b", "long enough pw", KDF).is_err());
+        assert!(create(parent, "ok", "short", KDF).err().unwrap().contains("at least 8"));
+        assert!(create(&format!("{parent}/missing"), "ok", "long enough pw", KDF).is_err());
+    }
+
+    #[test]
+    fn describes_vault_states() {
+        let t = tempfile::tempdir().unwrap();
+        let parent = t.path().to_str().unwrap();
+        let (s, _) = create(parent, "V", "long enough pw", KDF).unwrap();
+        let p = s.info().path;
+        drop(s);
+        let d = describe(&p);
+        assert_eq!(d.status, "ready");
+        assert!(d.size_bytes.unwrap() > 0);
+        assert_eq!(describe(&format!("{parent}/nope")).status, "missing");
+        assert_eq!(describe(parent).status, "notVault");
+    }
+
+    #[test]
+    fn verify_password_works() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        assert!(verify_password(s.vault.root(), "long enough pw").is_ok());
+        assert!(verify_password(s.vault.root(), "nope nope nope").is_err());
+    }
+}

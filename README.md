@@ -4,7 +4,8 @@ A private, encrypted media library for Windows. Repository: https://github.com/m
 
 ## Status
 
-**Step 1 — vault core: done.**
+**Step 1 — vault core: done.**  
+**Step 2 — app shell: done** (start screen, create/unlock/recover, settings, auto-lock).
 
 - `crates/vault-core` — encryption, key handling, encrypted object files with
   random-access reading, encrypted SQLite library database with rotating
@@ -12,6 +13,7 @@ A private, encrypted media library for Windows. Repository: https://github.com/m
 - `crates/vault-export` — `vault-export.exe`, a standalone tool that decrypts a
   vault back into ordinary files without the main app.
 - `crates/vault-core/FORMAT.md` — the on-disk format, copied into every vault.
+- `app/` — the desktop app: Tauri 2 (Rust, `app/src-tauri`) with a React UI (`app/src`).
 - `tools/reference_decrypt.py` — an independent decrypter written only from
   FORMAT.md. CI checks it produces the same output as `vault-export`.
 
