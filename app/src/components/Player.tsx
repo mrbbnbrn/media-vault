@@ -10,7 +10,7 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox } from '../api';
-import { useBeatSync } from '../beats';
+import { beatStatusText, useBeatSync } from '../beats';
 import { clipBox, drawnRect, type Box } from '../flip';
 import { kickFaceScanner } from '../ml/facescan';
 import { facesAt, kenBurnsPath, resumeStart, resumeValue } from '../viewerlogic';
@@ -32,6 +32,7 @@ import {
 } from './Icons';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
+import { UpscaleCompare } from './UpscaleCompare';
 import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 
 export interface PlayerHandle {
@@ -648,6 +649,7 @@ export function Player(props: PlayerProps) {
   // The offline AI upscaler (still pictures in the vault, full viewer only).
   const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
     keys: !!props.keys, onMessage: setFlash, onStart: () => setPaused(true) });
+  const upLayer = useRef<HTMLDivElement>(null);
 
   // ---- video and GIF tools ------------------------------------------------------------------
 
@@ -864,10 +866,11 @@ export function Player(props: PlayerProps) {
 
   const muteKey = props.onMinimize ? 'Shift+M' : 'M';
   // Beat sync status: a tiny level meter and the tempo.
+  const beatProblem = beatStatusText(beat);
   const beatBadge = s.beatSync && slideshow && (
-    <span className="beat-badge" title="The slideshow follows the music playing on your computer">
+    <span className={`beat-badge${beatProblem.problem && !paused ? ' problem' : ''}`} title={beatProblem.problem ? beatProblem.text : 'The slideshow follows the music playing on your computer'}>
       <span className="beat-meter" aria-hidden="true"><span style={{ transform: `scaleY(${Math.max(0.08, Math.min(1, beat.level))})` }} /></span>
-      {paused ? 'Beat sync paused' : beat.silent || !beat.bpm ? 'Listening… play some music on your computer' : `♪ ${Math.round(beat.bpm)} BPM`}
+      {paused ? 'Beat sync paused' : beatProblem.problem ? "Beat sync can't hear anything (see Timing)" : beat.silent || !beat.bpm ? 'Listening… play some music on your computer' : `♪ ${Math.round(beat.bpm)} BPM`}
     </span>
   );
 
@@ -968,11 +971,12 @@ export function Player(props: PlayerProps) {
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
             {up.src && item && (
-              <div className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
+              <div ref={upLayer} className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
                 <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} prefs={prefs} paused
                   onInfo={up.onShown} onError={up.onFailed} />
               </div>
             )}
+            {up.src && up.compare && <UpscaleCompare layer={upLayer} drawn={drawn} label={up.label} keys={!!props.keys} />}
             {drawn && shownFaces.length > 0 && (
               <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />

@@ -698,6 +698,8 @@ export const api = {
   /** Start listening; "beat" and "beat-level" events follow. Safe to call twice. */
   beatsStart: () => call<void>('beats_start'),
   beatsStop: () => call<void>('beats_stop'),
+  /** What the listener is doing (device, errors, recent log); "beat-status" events follow changes. */
+  beatsStatus: () => call<BeatStatus>('beats_status'),
 
   // duel mode: pick the better of two; Elo ratings set the slideshow weights
   duelRatings: (ids: number[]) => call<DuelState[]>('duel_ratings', { ids }),
@@ -838,6 +840,23 @@ export interface BeatLevelEvent {
   level: number;
 }
 
+/** What the beat listener is doing (beats_status, and the "beat-status" event). */
+export interface BeatStatus {
+  state: 'off' | 'starting' | 'listening' | 'error';
+  /** The sound output being listened to, e.g. "Speakers (Realtek(R) Audio)". */
+  device: string | null;
+  /** e.g. "48 kHz · stereo · 32-bit float". */
+  format: string | null;
+  error: string | null;
+  /** Sound arrived in the last second (Windows sends nothing while all is quiet). */
+  receiving: boolean;
+  /** Windows volume of that output, 0..1. */
+  volume: number | null;
+  muted: boolean;
+  /** The last few things that happened, oldest first. */
+  log: string[];
+}
+
 export type SimilarLevel = 'strict' | 'normal' | 'loose';
 
 export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
@@ -975,7 +994,10 @@ const mock = {
       case 'add_vault':
         throw new Error('Preview: adding vaults works in the real app.');
       case 'beats_supported':
-        return false;
+        // Preview: add ?beatdemo to the address to see the beat sync controls.
+        return typeof location !== 'undefined' && new URLSearchParams(location.search).has('beatdemo');
+      case 'beats_status':
+        return { state: 'listening', device: 'Speakers (Preview Audio)', format: '48 kHz · stereo · 32-bit float', error: null, receiving: true, volume: 0.62, muted: false, log: ['Listening to Speakers (Preview Audio) (48 kHz · stereo · 32-bit float)', 'Sound is coming in'] } satisfies BeatStatus;
       case 'upscale_info':
         return { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\upscaler', device: 'gpu', deviceKnown: false } satisfies UpscalerInfo;
       case 'upscale_start':

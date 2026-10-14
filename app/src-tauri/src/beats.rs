@@ -3,16 +3,24 @@
 //! what comes out. Nothing is kept beyond a few seconds of numbers.
 //!
 //! How it works:
+//! * Loudness: an automatic gain brings quiet and loud sound to the same
+//!   level first (Windows hands over the sound after its volume slider, so
+//!   music at 10 % volume is 30 dB quieter than at 100 %).
 //! * Onsets: spectral flux. Every 512 samples a 1024-sample Hann-windowed
-//!   FFT is taken; the flux is how much the (log-compressed) spectrum grew
-//!   since the previous frame.
-//! * Adaptive threshold: a flux peak counts as a beat when it beats
-//!   `1.5 × median + 1 × std` of the last second of flux, is the biggest
-//!   value within ±3 frames (~30 ms) and comes at least 200 ms after the
-//!   previous beat (longer once the tempo is known, so off-beats are skipped).
-//! * Tempo: autocorrelation of the last 8 s of the onset envelope, looking
-//!   at 60–200 BPM with a soft preference for tempos near 120 BPM (avoids
-//!   picking half or double the real tempo).
+//!   FFT is taken and summed into third-octave bands (so a kick drum counts
+//!   as much as the hi-hats); the flux is how much the log-compressed bands
+//!   grew since the previous frame.
+//! * Adaptive threshold: a flux peak is an onset when it beats
+//!   `2 × median + 2 × std` of the last second of flux and is the biggest
+//!   value within ±3 frames (~30 ms).
+//! * Tempo: for every tempo from 60 to 200 BPM (0.5 BPM steps), how well a
+//!   pulse train at that tempo lines up with the last 8 s of onsets (best
+//!   phase against the average), counting in its half and double (the
+//!   metre), with a soft preference for tempos near 120 BPM.
+//! * Beats: until the tempo is known, onsets at least 200 ms apart. Then
+//!   the beat grid (that tempo, lined up with the strongest onsets of the
+//!   last 4 s) gives the beats, so they land on the music's beat and not on
+//!   off-beat hi-hats or bass notes; they stop 1.5 s after the last onset.
 
 use std::collections::VecDeque;
 
@@ -20,12 +28,10 @@ pub const FRAME: usize = 1024;
 pub const HOP: usize = 512;
 /// Beats are never closer together than this.
 pub const MIN_GAP_MS: f64 = 200.0;
-/// Once the tempo is known, beats are at least this share of a beat apart.
-const GAP_SHARE_OF_BEAT: f64 = 0.7;
 const PEAK_RADIUS: usize = 3;
 const THRESH_SECONDS: f64 = 1.0;
-const THRESH_MEDIAN: f32 = 1.5;
-const THRESH_STD: f32 = 1.0;
+const THRESH_MEDIAN: f32 = 2.0;
+const THRESH_STD: f32 = 2.0;
 /// Absolute floor so tiny wiggles in near-silence never count.
 const THRESH_DELTA: f32 = 0.002;
 const TEMPO_SECONDS: f64 = 8.0;
@@ -37,6 +43,25 @@ const SILENCE_RMS: f32 = 1e-4;
 const LOG_GAMMA: f32 = 1000.0;
 /// Level meter updates per second.
 const LEVEL_RATE: u32 = 10;
+/// The analysis brings music to about this loudness (RMS)…
+const TARGET_RMS: f32 = 0.1;
+/// …boosting quiet sound at most this much (60 dB).
+const MAX_GAIN: f32 = 1000.0;
+/// How fast that loudness follows the music, per frame (~94 a second).
+const LOUDNESS_RISE: f32 = 0.01;
+const LOUDNESS_FALL: f32 = 0.002;
+/// How strongly tempos near 120 BPM are preferred (octaves; smaller is stronger).
+const TEMPO_SPREAD: f64 = 0.7;
+/// A tempo counts when its pulse stands out this much (times the average onset).
+const MIN_CONTRAST: f32 = 0.6;
+/// Another phase of the beat grid takes over when it lines up this much better.
+const SWITCH_RATIO: f32 = 1.3;
+/// Beats are at least this share of a beat apart, also when the grid moves.
+const MIN_SPACING: f64 = 0.75;
+/// Seconds of onsets the beat grid is lined up with.
+const PHASE_SECONDS: f64 = 4.0;
+/// Grid beats stop this long after the last onset (the music stopped).
+const ALIVE_SECONDS: f64 = 1.5;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Beat {
@@ -56,6 +81,7 @@ pub enum Event {
 }
 
 /// Average interleaved channels into `out` (appends).
+#[cfg(test)]
 pub fn downmix(interleaved: &[f32], channels: usize, out: &mut Vec<f32>) {
     let ch = channels.max(1);
     let scale = 1.0 / ch as f32;
@@ -71,20 +97,28 @@ pub struct Detector {
     fps: f64,
     fft: Fft,
     window: Vec<f32>,
+    /// FFT bins summed into each band (low bands are narrow: equal say per octave).
+    bands: Vec<(usize, usize)>,
     pending: Vec<f32>,
     re: Vec<f32>,
     im: Vec<f32>,
     prev: Vec<f32>,
     have_prev: bool,
     frame_no: u64,
+    /// Slow average loudness (log RMS), so quiet and loud music look alike.
+    loudness: Option<f32>,
     /// (flux, threshold) of the last 2·PEAK_RADIUS+1 frames.
     recent: VecDeque<(f32, f32)>,
     hist: VecDeque<f32>,
     hist_cap: usize,
     env: VecDeque<f32>,
     env_cap: usize,
-    last_beat_frame: Option<u64>,
+    /// Last onset that stood out (any kind), and the last beat reported.
+    last_onset_frame: Option<u64>,
+    last_beat_frame: Option<f64>,
     bpm: Option<f32>,
+    /// Once the tempo is known: the next beat on the music's grid (frame).
+    next_beat: Option<f64>,
     tempo_countdown: usize,
     level: f32,
     level_sq: f64,
@@ -107,19 +141,23 @@ impl Detector {
             fps,
             fft: Fft::new(FRAME),
             window,
+            bands: bands(sr),
             pending: Vec::with_capacity(FRAME * 2),
             re: vec![0.0; FRAME],
             im: vec![0.0; FRAME],
-            prev: vec![0.0; FRAME / 2],
+            prev: Vec::new(),
             have_prev: false,
             frame_no: 0,
+            loudness: None,
             recent: VecDeque::with_capacity(2 * PEAK_RADIUS + 2),
             hist: VecDeque::new(),
             hist_cap: (THRESH_SECONDS * fps).round() as usize,
             env: VecDeque::new(),
             env_cap: (TEMPO_SECONDS * fps).round() as usize,
+            last_onset_frame: None,
             last_beat_frame: None,
             bpm: None,
+            next_beat: None,
             tempo_countdown: 0,
             level: 0.0,
             level_sq: 0.0,
@@ -172,6 +210,18 @@ impl Detector {
     fn analyse_frame(&mut self, out: &mut Vec<Event>) {
         let frame = &self.pending[..FRAME];
         let rms = (frame.iter().map(|x| x * x).sum::<f32>() / FRAME as f32).sqrt();
+        let silent = rms < SILENCE_RMS;
+        // Automatic gain: the analysis sees every song at about the same
+        // loudness, whatever the Windows volume or the recording level.
+        if !silent {
+            let l = rms.ln();
+            self.loudness = Some(match self.loudness {
+                Some(v) if l < v => v + (l - v) * LOUDNESS_FALL,
+                Some(v) => v + (l - v) * LOUDNESS_RISE,
+                None => l,
+            });
+        }
+        let gain = self.loudness.map_or(1.0, |v| (TARGET_RMS / v.exp()).clamp(0.5, MAX_GAIN));
         for (((re, im), x), w) in self
             .re
             .iter_mut()
@@ -179,22 +229,28 @@ impl Detector {
             .zip(frame)
             .zip(&self.window)
         {
-            *re = x * w;
+            *re = x * w * gain;
             *im = 0.0;
         }
         self.fft.run(&mut self.re, &mut self.im);
         let norm = 2.0 / FRAME as f32;
+        if self.prev.len() != self.bands.len() {
+            self.prev = vec![0.0; self.bands.len()];
+        }
         let mut flux = 0.0f32;
-        // Bins 1..FRAME/2 (DC left out).
-        for (k, prev) in self.prev.iter_mut().enumerate() {
-            let (r, i) = (self.re[k + 1], self.im[k + 1]);
-            let mag = (r * r + i * i).sqrt() * norm;
+        for (&(lo, hi), prev) in self.bands.iter().zip(self.prev.iter_mut()) {
+            let mut sum = 0.0f32;
+            for k in lo..hi {
+                let (r, i) = (self.re[k], self.im[k]);
+                sum += (r * r + i * i).sqrt();
+            }
+            let mag = sum / (hi - lo) as f32 * norm;
             let lm = (1.0 + LOG_GAMMA * mag).ln();
             flux += (lm - *prev).max(0.0);
             *prev = lm;
         }
-        flux /= self.prev.len() as f32;
-        if !self.have_prev || rms < SILENCE_RMS {
+        flux /= self.bands.len().max(1) as f32;
+        if !self.have_prev || silent {
             flux = 0.0;
         }
         self.have_prev = true;
@@ -218,37 +274,42 @@ impl Detector {
         } else {
             self.tempo_countdown -= 1;
         }
+        self.follow_grid(silent, out);
         self.frame_no += 1;
     }
 
+    fn t_ms(&self, frame: f64) -> u64 {
+        let sample = frame * HOP as f64 + FRAME as f64 / 2.0;
+        (sample / self.sr * 1000.0).max(0.0).round() as u64
+    }
+
+    /// Onsets: a flux peak above the adaptive threshold. Reported as beats
+    /// only until the tempo is known; after that they just show the music is
+    /// still going (the beats then come from the grid, `follow_grid`).
     fn pick_peak(&mut self, out: &mut Vec<Event>) {
         let (v, thr) = self.recent[PEAK_RADIUS];
-        if v <= thr {
+        // Not before the threshold has half a second of history to go on.
+        if v <= thr || self.hist.len() < self.hist_cap / 2 {
             return;
         }
         let earlier_lower = self.recent.iter().take(PEAK_RADIUS).all(|&(x, _)| x < v);
-        let later_not_higher = self
-            .recent
-            .iter()
-            .skip(PEAK_RADIUS + 1)
-            .all(|&(x, _)| x <= v);
+        let later_not_higher = self.recent.iter().skip(PEAK_RADIUS + 1).all(|&(x, _)| x <= v);
         if !earlier_lower || !later_not_higher {
             return;
         }
         let center = self.frame_no - PEAK_RADIUS as u64;
-        let mut gap_ms = MIN_GAP_MS;
-        if let Some(bpm) = self.bpm {
-            gap_ms = gap_ms.max(GAP_SHARE_OF_BEAT * 60_000.0 / f64::from(bpm));
+        self.last_onset_frame = Some(center);
+        if self.next_beat.is_some() {
+            return;
         }
         if let Some(last) = self.last_beat_frame
-            && ((center - last) as f64 / self.fps) * 1000.0 < gap_ms
+            && ((center as f64 - last) / self.fps) * 1000.0 < MIN_GAP_MS
         {
             return;
         }
-        self.last_beat_frame = Some(center);
-        let center_sample = center as f64 * HOP as f64 + FRAME as f64 / 2.0;
+        self.last_beat_frame = Some(center as f64);
         out.push(Event::Beat(Beat {
-            t_ms: (center_sample / self.sr * 1000.0).round() as u64,
+            t_ms: self.t_ms(center as f64),
             strength: (1.0 - thr / v).clamp(0.0, 1.0),
             bpm: self.bpm,
         }));
@@ -257,16 +318,122 @@ impl Detector {
     fn update_tempo(&mut self) {
         if (self.env.len() as f64) < TEMPO_MIN_SECONDS * self.fps {
             self.bpm = None;
+            self.next_beat = None;
             return;
         }
         let env: Vec<f32> = self.env.iter().copied().collect();
-        self.bpm = match (estimate_bpm(&env, self.fps), self.bpm) {
-            (Some(new), Some(old)) if ((new - old) / old).abs() < 0.06 => {
-                Some(old * 0.7 + new * 0.3)
+        self.bpm = match (estimate_bpm_near(&env, self.fps, self.bpm), self.bpm) {
+            (Some(new), Some(old)) if ((new - old) / old).abs() < 0.06 => Some(old * 0.7 + new * 0.3),
+            (new, _) => {
+                // Another tempo: the grid starts afresh.
+                self.next_beat = None;
+                new
             }
-            (new, _) => new,
         };
+        match self.bpm {
+            Some(bpm) => self.place_grid(&env, f64::from(bpm)),
+            None => self.next_beat = None,
+        }
     }
+
+    /// Find where the beats fall (the phase of the tempo grid that lines up
+    /// best with the onsets of the last few seconds) and aim `next_beat` at
+    /// the next one.
+    fn place_grid(&mut self, env: &[f32], bpm: f64) {
+        let period = self.fps * 60.0 / bpm;
+        let span = (PHASE_SECONDS * self.fps) as usize;
+        let mean = env.iter().sum::<f32>() / env.len().max(1) as f32;
+        let (back, contrast) = best_phase(env, period, span, mean);
+        let now = self.frame_no as f64; // env's newest value is this frame
+        if contrast <= 0.0 {
+            self.next_beat = None;
+            return;
+        }
+        // The first grid point that is still to come (and not soon after the
+        // last beat reported).
+        let floor = self.last_beat_frame.map_or(now, |b| (b + MIN_SPACING * period).max(now));
+        let first_from = |latest: f64| {
+            let mut g = latest;
+            while g < floor - 0.5 {
+                g += period;
+            }
+            g
+        };
+        let Some(cur) = self.next_beat else {
+            self.next_beat = Some(first_from(now - back));
+            return;
+        };
+        // Already following a grid: stay with it (only drifting with the
+        // music) unless another phase is clearly better, so the beat doesn't
+        // flip between, say, kick and snare.
+        let cur_back = (now - cur).rem_euclid(period);
+        let reach = (0.15 * period).round() as i64;
+        let (mut local_back, mut local) = (cur_back, f32::MIN);
+        for d in -reach..=reach {
+            let b = (cur_back + d as f64).rem_euclid(period);
+            let v = pulse_score(env, period, b, span);
+            if v > local {
+                (local_back, local) = (b, v);
+            }
+        }
+        let best = pulse_score(env, period, back, span);
+        if best > SWITCH_RATIO * local.max(1e-9) {
+            self.next_beat = Some(first_from(now - back));
+        } else {
+            let mut shift = cur_back - local_back;
+            if shift > period / 2.0 {
+                shift -= period;
+            } else if shift < -period / 2.0 {
+                shift += period;
+            }
+            self.next_beat = Some(cur + 0.5 * shift);
+        }
+    }
+
+    /// Report the beats of the grid as their time comes, while the music
+    /// still has onsets (so beats stop soon after it does).
+    fn follow_grid(&mut self, silent: bool, out: &mut Vec<Event>) {
+        let (Some(bpm), Some(mut next)) = (self.bpm, self.next_beat) else {
+            return;
+        };
+        let period = self.fps * 60.0 / f64::from(bpm);
+        let now = self.frame_no as f64;
+        let alive = !silent
+            && self
+                .last_onset_frame
+                .is_some_and(|f| (now - f as f64) / self.fps < ALIVE_SECONDS);
+        while next <= now + 0.5 {
+            if alive && self.last_beat_frame.is_none_or(|b| next - b >= MIN_SPACING * period) {
+                self.last_beat_frame = Some(next);
+                let strength = self.env.iter().rev().take(3).fold(0.0f32, |m, &v| m.max(v));
+                let (median, std) = median_std(&self.hist);
+                out.push(Event::Beat(Beat {
+                    t_ms: self.t_ms(next),
+                    strength: (strength / (median + 2.0 * std + THRESH_DELTA)).clamp(0.0, 1.0),
+                    bpm: Some(bpm),
+                }));
+            }
+            next += period;
+        }
+        self.next_beat = Some(next);
+    }
+}
+
+/// Band edges (FFT bins) for `sr`: about a third of an octave each from
+/// 40 Hz up, at least one bin wide.
+fn bands(sr: f64) -> Vec<(usize, usize)> {
+    let hz_per_bin = sr / FRAME as f64;
+    let top = FRAME / 2;
+    let mut out = Vec::new();
+    let mut lo = 1usize;
+    let mut f = 40.0f64;
+    while lo < top {
+        f *= 2f64.powf(1.0 / 3.0);
+        let hi = ((f / hz_per_bin).round() as usize).clamp(lo + 1, top);
+        out.push((lo, hi));
+        lo = hi;
+    }
+    out
 }
 
 fn push_capped(q: &mut VecDeque<f32>, v: f32, cap: usize) {
@@ -288,68 +455,90 @@ fn median_std(q: &VecDeque<f32>) -> (f32, f32) {
     (median, var.sqrt())
 }
 
-/// Tempo of an onset envelope sampled `fps` times a second, by
-/// autocorrelation. `None` when there is no clear, steady pulse.
-pub fn estimate_bpm(env: &[f32], fps: f64) -> Option<f32> {
+/// How strongly the onsets of `env` (newest last) repeat every `period`
+/// frames, with the latest pulse `phase` frames back: the average onset at
+/// those points, looking back `span` frames. Each point takes the biggest
+/// value within a frame either side (a beat rarely starts exactly on a frame).
+fn pulse_score(env: &[f32], period: f64, phase: f64, span: usize) -> f32 {
     let n = env.len();
-    let lag_min = ((fps * 60.0 / MAX_BPM).floor() as usize).max(2);
-    let lag_max = ((fps * 60.0 / MIN_BPM).ceil() as usize).min(n / 2);
-    if lag_max <= lag_min + 2 {
+    let span = span.min(n);
+    let (mut sum, mut count) = (0.0f32, 0u32);
+    let mut back = phase;
+    while back.round() < span as f64 {
+        let i = n - 1 - back.round() as usize;
+        let lo = i.saturating_sub(1);
+        let hi = (i + 1).min(n - 1);
+        sum += env[lo..=hi].iter().copied().fold(0.0f32, f32::max);
+        count += 1;
+        back += period;
+    }
+    if count == 0 { 0.0 } else { sum / count as f32 }
+}
+
+/// The strongest pulse at `period`: (how many frames back its latest beat
+/// is, how much it stands out from the other phases relative to the
+/// average onset).
+fn best_phase(env: &[f32], period: f64, span: usize, mean: f32) -> (f64, f32) {
+    let steps = (period.ceil() as usize).max(1);
+    let (mut best, mut best_at, mut total) = (0.0f32, 0usize, 0.0f32);
+    for phase in 0..steps {
+        let v = pulse_score(env, period, phase as f64, span);
+        total += v;
+        if v > best {
+            best = v;
+            best_at = phase;
+        }
+    }
+    let contrast = (best - total / steps as f32) / mean.max(1e-9);
+    (best_at as f64, contrast)
+}
+
+/// Tempo of an onset envelope sampled `fps` times a second: the period
+/// whose pulse train lines up best with the onsets (in 0.5 BPM steps,
+/// 60–200 BPM), with a soft preference for tempos near 120 BPM. `None`
+/// when there is no clear, steady pulse.
+#[cfg(test)]
+pub fn estimate_bpm(env: &[f32], fps: f64) -> Option<f32> {
+    estimate_bpm_near(env, fps, None)
+}
+
+/// Like `estimate_bpm`, a little in favour of the tempo found before (so it
+/// doesn't hop between two readings of the same music).
+///
+/// Each tempo is judged together with its neighbours in the metre: a real
+/// beat also shows at twice the tempo (the off-beats, eighth notes) and at
+/// half of it (bars), where a tempo that merely fits some of the onsets
+/// (say, 3 against 2) doesn't.
+fn estimate_bpm_near(env: &[f32], fps: f64, previous: Option<f32>) -> Option<f32> {
+    let n = env.len();
+    if (n as f64) < 2.5 * fps * 60.0 / MIN_BPM {
         return None;
     }
-    // Light smoothing, so beats that fall between frames still line up.
-    let smooth: Vec<f32> = (0..n)
-        .map(|i| {
-            const K: [f32; 5] = [1.0, 2.0, 3.0, 2.0, 1.0];
-            let (mut s, mut w) = (0.0, 0.0);
-            for (j, k) in K.iter().enumerate() {
-                if let Some(v) = (i + j).checked_sub(2).and_then(|p| env.get(p)) {
-                    s += v * k;
-                    w += k;
-                }
-            }
-            s / w
-        })
-        .collect();
-    let mean = smooth.iter().sum::<f32>() / n as f32;
-    let x: Vec<f32> = smooth.iter().map(|v| v - mean).collect();
-    let ac0 = x.iter().map(|v| v * v).sum::<f32>() / n as f32;
-    if ac0 <= 1e-12 {
+    let mean = env.iter().sum::<f32>() / n as f32;
+    if mean <= 1e-9 {
         return None;
     }
-    // Normalised (unbiased) autocorrelation for 0 ..= 2·lag_max+1.
-    let ac: Vec<f32> = (0..=2 * lag_max + 1)
-        .map(|l| {
-            if l >= n {
-                return 0.0;
-            }
-            let s: f32 = x[..n - l].iter().zip(&x[l..]).map(|(a, b)| a * b).sum();
-            s / (n - l) as f32 / ac0
-        })
-        .collect();
-    let weight = |lag: f64| {
-        let bpm = 60.0 * fps / lag;
-        let oct = (bpm / 120.0).log2();
-        (-0.5 * oct * oct).exp() as f32
-    };
-    // A real beat period also repeats at twice the lag; counting that in
-    // keeps a fast tempo from being read as half its speed.
-    let (best, _) = (lag_min..=lag_max)
-        .map(|l| (l, (ac[l] + 0.5 * ac[2 * l]) * weight(l as f64)))
-        .max_by(|a, b| a.1.total_cmp(&b.1))?;
-    let peak = ac[best];
-    if peak < 0.15 {
-        return None;
+    let contrast = |bpm: f64| best_phase(env, fps * 60.0 / bpm, n, mean).1;
+    let mut best: Option<(f32, f64)> = None;
+    let mut half_bpm = 2.0 * MIN_BPM;
+    while half_bpm <= 2.0 * MAX_BPM {
+        let bpm = half_bpm / 2.0;
+        half_bpm += 1.0;
+        let c = contrast(bpm);
+        if c < MIN_CONTRAST {
+            continue;
+        }
+        let metre = c + 0.5 * contrast(bpm * 2.0).max(0.0) + 0.5 * contrast(bpm / 2.0).max(0.0);
+        let z = (bpm / 120.0).log2() / TEMPO_SPREAD;
+        let mut score = metre * (-0.5 * z * z).exp() as f32;
+        if previous.is_some_and(|p| (bpm as f32 - p).abs() <= p * 0.04) {
+            score *= 1.15;
+        }
+        if best.is_none_or(|(s, _)| score > s) {
+            best = Some((score, bpm));
+        }
     }
-    let (a, b, c) = (ac[best - 1], peak, ac[best + 1]);
-    let denom = a - 2.0 * b + c;
-    let shift = if denom.abs() > 1e-9 {
-        (0.5 * (a - c) / denom).clamp(-0.5, 0.5)
-    } else {
-        0.0
-    };
-    let lag = best as f64 + f64::from(shift);
-    Some((60.0 * fps / lag) as f32)
+    best.map(|(_, bpm)| bpm as f32)
 }
 
 /// Small in-place radix-2 FFT (power-of-two sizes only).
@@ -575,7 +764,9 @@ mod tests {
         let (beats, _, bpm) = run(&s);
         let bpm = bpm.expect("a tempo");
         assert!((bpm - 128.0).abs() < 3.0, "bpm {bpm}");
-        let late: Vec<&Beat> = beats.iter().filter(|b| b.t_ms > 6000).collect();
+        // (Once the drums stop, the beat may run on for a moment: not judged.)
+        let last_kick = kicks.last().copied().unwrap_or(0.0);
+        let late: Vec<&Beat> = beats.iter().filter(|b| b.t_ms > 6000 && (b.t_ms as f64) < last_kick + 100.0).collect();
         let late_kicks = kicks.iter().filter(|&&k| k > 6000.0).count();
         assert!(
             late.len() * 10 >= late_kicks * 8,

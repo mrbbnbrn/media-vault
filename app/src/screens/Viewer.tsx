@@ -4,6 +4,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, type Named } from '../api';
 import type { Nav } from '../App';
+import { BeatStatusLine } from '../components/BeatStatus';
 import { Dropdown, PromptDialog } from '../components/Dialogs';
 import { BackIcon } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
@@ -335,6 +336,12 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
               <span className="row">
                 <label className="check"><input type="checkbox" checked={s.beatSync} onChange={(e) => set({ beatSync: e.target.checked })} /> Change on the beat</label>
               </span>
+              {s.beatSync && (
+                <>
+                  <span />
+                  <BeatStatusLine on={s.beatSync} />
+                </>
+              )}
               {s.beatSync && (
                 <>
                   <span>Change every</span>

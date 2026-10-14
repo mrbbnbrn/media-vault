@@ -2,7 +2,9 @@
 // Real-ESRGAN / GFPGAN switch next to it. The result is shown in place of the
 // picture (zoom and pan still work), with a badge, "hold O" to compare with
 // the original, and "Save upscaled" to keep it as a new item next to the
-// original. Nothing is saved until asked; results are kept in memory while
+// original. While a result shows, a line follows the mouse with the
+// original on its left and the upscaled picture on its right (Compare,
+// UpscaleCompare.tsx). Nothing is saved until asked; results are kept in memory while
 // the viewer is open (per item and model) and forgotten when it closes.
 //
 // The window decodes the picture exactly as it shows it and, for GFPGAN,
@@ -18,6 +20,7 @@ import { kickThumbnails, type PlayItem } from '../media';
 import { facePoints } from '../ml/facescan';
 import { pushUndo } from '../undo';
 import { factorText, fivePoints, MODELS, modelLabel, NO_PACK, savedModel, saveModel, upscaleFactor } from '../upscale';
+import { mockUpscaled } from '../upscalecompare';
 import { CloseIcon, SparkleIcon } from './Icons';
 
 interface Result {
@@ -37,8 +40,12 @@ type Phase =
 export interface UpscaleView {
   /** The upscaled picture to draw over the original, or null. */
   src: string | null;
-  /** Comparing: the original shows instead. */
+  /** Holding O: the original shows instead. */
   hidden: boolean;
+  /** Before/after line over the picture (UpscaleCompare). */
+  compare: boolean;
+  /** Its label for the upscaled side, e.g. "Upscaled ×4 · Real-ESRGAN". */
+  label: string;
   /** Call when the upscaled picture is on screen / couldn't be shown. */
   onShown: () => void;
   onFailed: () => void;
@@ -66,7 +73,8 @@ export function useUpscale(o: {
   const [model, setModel] = useState<UpscaleModel>(savedModel);
   const [phase, setPhase] = useState<Phase>({ kind: 'idle' });
   const [holding, setHolding] = useState(false);
-  const [compare, setCompare] = useState(false);
+  // Before/after line: on by default whenever a result shows.
+  const [compare, setCompare] = useState(true);
   const cache = useRef(new Map<string, Result>());
   const job = useRef<number | null>(null);
   const early = useRef(new Map<number, UpscaleDone>());
@@ -131,7 +139,7 @@ export function useUpscale(o: {
     stop();
     current.current = null;
     setPhase({ kind: 'idle' });
-    setCompare(false);
+    setCompare(true);
     setHolding(false);
   }, [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -140,7 +148,7 @@ export function useUpscale(o: {
     if (!it || it.itemId == null || !oRef.current.enabled) return;
     stop();
     const mine = run.current;
-    setCompare(false);
+    setCompare(true);
     current.current = { key: it.key, model: m };
     const hit = cache.current.get(`${it.key}:${m}`);
     if (hit) return setPhase({ kind: 'done', model: m, result: hit, shown: false });
@@ -197,7 +205,7 @@ export function useUpscale(o: {
     stop();
     current.current = null;
     setPhase({ kind: 'idle' });
-    setCompare(false);
+    setCompare(true);
   };
 
   const toggle = () => {
@@ -254,11 +262,28 @@ export function useUpscale(o: {
 
   const done = phase.kind === 'done' ? phase : null;
   const busy = phase.kind === 'busy' ? phase : null;
-  const src = done && item ? (inTauri ? upscaledUrl(done.result.token) : item.src) : null;
-  const hidden = holding || compare;
+  // Browser preview: a made-up, visibly different "upscaled" picture.
+  const [mock, setMock] = useState<{ key: string; url: string } | null>(null);
+  const mockFor = !inTauri && done && item ? item.src : null;
+  useEffect(() => {
+    if (!mockFor) return;
+    let alive = true;
+    let url = '';
+    mockUpscaled(mockFor).then((u) => {
+      url = u;
+      if (alive) setMock({ key: mockFor, url: u });
+      else URL.revokeObjectURL(u);
+    }).catch(() => {});
+    return () => {
+      alive = false;
+      if (url) URL.revokeObjectURL(url);
+    };
+  }, [mockFor]);
+  const src = done && item ? (inTauri ? upscaledUrl(done.result.token) : mock?.key === item.src ? mock.url : null) : null;
+  const hidden = holding;
 
   if (!enabled) {
-    return { src: null, hidden: false, onShown: () => {}, onFailed: () => {}, button: null, bar: null };
+    return { src: null, hidden: false, compare: false, label: '', onShown: () => {}, onFailed: () => {}, button: null, bar: null };
   }
 
   const missing = info != null && !info.available;
@@ -306,8 +331,10 @@ export function useUpscale(o: {
         <b>{hidden ? 'Showing the original' : `Upscaled ${factorText(r.factor)} · ${modelLabel(done.model)}`}</b>
         {!hidden && extra && <span className="faint">{extra}</span>}
         {!done.shown && <span className="faint">Opening…</span>}
-        <button type="button" className={`btn btn-sm glass${compare ? ' accent-soft' : ''}`} aria-pressed={compare} title="Show the original (or hold O)"
-          onClick={() => setCompare((c) => !c)}>Original</button>
+        {!hidden && compare && <span className="faint up-hint">Click to hold the line · [ ] to nudge</span>}
+        <button type="button" className={`btn btn-sm glass${compare ? ' accent-soft' : ''}`} aria-pressed={compare}
+          title={compare ? 'Show the whole upscaled picture (hold O for the original)' : 'Compare with the original: a line follows the mouse (hold O for the whole original)'}
+          onClick={() => setCompare((c) => !c)}>Compare</button>
         <button type="button" className="btn btn-sm btn-primary" disabled={!!r.saved} onClick={save}
           title="Keep it as a new item next to the original">{r.saved ? 'Saved' : 'Save upscaled'}</button>
         <button type="button" className="btn btn-icon btn-sm glass" aria-label="Back to the normal picture" title="Back to the normal picture (U)" onClick={off}><CloseIcon size={12} /></button>
@@ -326,6 +353,8 @@ export function useUpscale(o: {
   return {
     src,
     hidden,
+    compare: !!done && compare && !holding,
+    label: done ? `Upscaled ${factorText(done.result.factor)} · ${modelLabel(done.model)}` : '',
     onShown: () => setPhase((p) => (p.kind === 'done' && !p.shown ? { ...p, shown: true } : p)),
     onFailed: () => {
       // No longer in memory (only the last few are kept): forget it.
