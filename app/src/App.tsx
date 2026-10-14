@@ -15,6 +15,8 @@ import { Library, type LibView } from './screens/Library';
 import { Settings } from './screens/Settings';
 import { Viewer, type TitleCard } from './screens/Viewer';
 import { MiniFrame } from './components/MiniFrame';
+import { TitleBar } from './components/TitleBar';
+import { useLibraryTabs, useTabKeys } from './tabs/useTabs';
 import type { Box } from './flip';
 import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
@@ -78,42 +80,25 @@ export function App() {
   const [screen, setScreen] = useState<Screen>({ name: 'start' });
   const [toast, setToast] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
-  const [libView, setLibView] = useState<LibView>({ kind: 'folders' });
   /** The viewer shrunk into the mini player (it keeps playing over the library). */
   const [mini, setMini] = useState<ViewerRoute | null>(null);
   /** A new number for each viewer opened, so expanding the mini player keeps the same one. */
   const viewerIds = useRef(new WeakMap<ViewerRoute, number>());
   const nextViewerId = useRef(1);
-  // Back / forward through library views, like a web browser.
-  const viewRef = useRef<LibView>(libView);
-  viewRef.current = libView;
-  const hist = useRef<{ back: LibView[]; fwd: LibView[] }>({ back: [], fwd: [] });
-  const [, setHistTick] = useState(0);
+  // Library tabs, each with its own back / forward through views, like a web browser.
+  const tabs = useLibraryTabs(app?.session && !app.session.needsNewPassword ? app.session.path : null);
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  /** The tab the viewer (or multi-screen) was opened from: going back returns there. */
+  const viewerTab = useRef<number | null>(null);
   /** An item to scroll to and highlight when the library shows again. */
   const [reveal, setReveal] = useState<{ id: number; n: number } | null>(null);
   const showItem = useCallback((id: number | null | undefined) => {
     if (id != null) setReveal({ id, n: Date.now() });
   }, []);
-  const goView = useCallback((v: LibView) => {
-    if (JSON.stringify(v) === JSON.stringify(viewRef.current)) return;
-    const h = hist.current;
-    h.back.push(viewRef.current);
-    if (h.back.length > 100) h.back.shift();
-    h.fwd = [];
-    setLibView(v);
-    setHistTick((t) => t + 1);
-  }, []);
+  const goView = tabs.navigate;
   const goBackRef = useRef<() => boolean>(() => false);
   const goForwardRef = useRef<() => boolean>(() => false);
-  const goBack = useCallback(() => {
-    const h = hist.current;
-    const v = h.back.pop();
-    if (!v) return false;
-    h.fwd.push(viewRef.current);
-    setLibView(v);
-    setHistTick((t) => t + 1);
-    return true;
-  }, []);
   // The mouse's back / forward side buttons.
   const screenRef = useRef(screen);
   screenRef.current = screen;
@@ -135,17 +120,9 @@ export function App() {
       window.removeEventListener('mouseup', up);
     };
   }, []);
-  const goForward = useCallback(() => {
-    const h = hist.current;
-    const v = h.fwd.pop();
-    if (!v) return false;
-    h.back.push(viewRef.current);
-    setLibView(v);
-    setHistTick((t) => t + 1);
-    return true;
-  }, []);
-  goBackRef.current = goBack;
-  goForwardRef.current = goForward;
+  goBackRef.current = tabs.back;
+  goForwardRef.current = tabs.forward;
+  useTabKeys(tabs, screen.name === 'library' && tabs.ready);
 
   const lookConfig = useRef<AppState['config'] | null>(null);
   // Interface size: Ctrl+plus / Ctrl+minus, Ctrl+0 or Ctrl+* resets. Remembered.
@@ -204,8 +181,8 @@ export function App() {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       setScreen((cur) => (cur.name === 'player' ? cur : { name: 'start' }));
       setMini(null);
-      setLibView({ kind: 'folders' });
-      hist.current = { back: [], fwd: [] };
+      tabsRef.current.reset();
+      viewerTab.current = null;
       clearViewMemory();
       setToast(LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
@@ -245,6 +222,7 @@ export function App() {
     // Opening something else full screen replaces the mini player; the
     // library and settings keep it.
     if (s.name !== 'library' && s.name !== 'settings') setMini(null);
+    if (s.name === 'viewer' || s.name === 'multi') viewerTab.current = tabs.activeId;
     setScreen(s);
   };
   const nav: Nav = { app, go, refresh };
@@ -263,7 +241,13 @@ export function App() {
     setMini(null);
     setScreen(mini);
   };
+  const withTabs = !!app.session && !app.session.needsNewPassword && tabs.ready
+    && ['library', 'settings', 'viewer', 'multi'].includes(screen.name);
   return (
+    <>
+    <TitleBar tabs={withTabs ? tabs : null} onTab={() => {
+      if (screen.name !== 'library') go({ name: 'library' });
+    }} />
     <div className="app">
       {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
@@ -276,10 +260,10 @@ export function App() {
       {screen.name === 'recover' && <Recover nav={nav} path={screen.path} />}
       {screen.name === 'newPassword' && <NewPassword nav={nav} />}
       {screen.name === 'words' && <RecoveryWords nav={nav} words={screen.words} context={screen.context} />}
-      {screen.name === 'library' && app.session && (
-        <Library nav={nav} view={libView} setView={goView}
-          history={{ back: goBack, forward: goForward, canBack: hist.current.back.length > 0, canForward: hist.current.fwd.length > 0 }}
-          reveal={reveal} />
+      {screen.name === 'library' && app.session && tabs.ready && (
+        <Library nav={nav} view={tabs.view} setView={goView}
+          history={{ back: tabs.back, forward: tabs.forward, canBack: tabs.canBack, canForward: tabs.canForward }}
+          reveal={reveal} tabs={{ open: (v) => tabs.open(v), onFolders: tabs.onFolders }} />
       )}
       {screen.name === 'settings' && <Settings nav={nav} />}
       {viewerRoute && (
@@ -289,7 +273,7 @@ export function App() {
             mini={isMini}
             onBack={(last) => {
               setMini(null);
-              setLibView(viewerRoute.back);
+              tabs.returnTo(viewerTab.current, viewerRoute.back);
               showItem(last?.itemId);
               setScreen(app.session ? { name: 'library' } : { name: 'start' });
             }}
@@ -307,7 +291,7 @@ export function App() {
             onMinimize={app.session && !viewerRoute.speedRound ? () => {
               // Keep this viewer (same object, same component) and show the library under it.
               setMini(viewerRoute);
-              setLibView(viewerRoute.back);
+              tabs.returnTo(viewerTab.current, viewerRoute.back);
               setScreen({ name: 'library' });
             } : undefined}
             onExpand={expandMini}
@@ -315,7 +299,7 @@ export function App() {
         </MiniFrame>
       )}
       {screen.name === 'multi' && app.session && (
-        <MultiScreen nav={nav} vault onBack={() => { setLibView(screen.back); setScreen({ name: 'library' }); }} />
+        <MultiScreen nav={nav} vault onBack={() => { tabs.returnTo(viewerTab.current, screen.back); setScreen({ name: 'library' }); }} />
       )}
       {screen.name === 'player' && (
         <MultiScreen nav={nav} vault={false} onBack={() => setScreen(app.session ? { name: 'library' } : { name: 'start' })} />
@@ -327,5 +311,6 @@ export function App() {
         </div>
       )}
     </div>
+    </>
   );
 }

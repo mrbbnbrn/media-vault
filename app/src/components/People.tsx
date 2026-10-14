@@ -8,6 +8,7 @@ import { faceScanPaused, kickFaceScanner, onFaceProgress, setFaceScanPaused } fr
 import { plural } from '../undo';
 import { Dropdown, Modal, PromptDialog } from './Dialogs';
 import { CloseIcon, FaceIcon } from './Icons';
+import type { LibView } from '../screens/Library';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
@@ -56,7 +57,11 @@ function useScanStatus() {
   return { review, err, load };
 }
 
-export function PeopleView(props: { folders: FolderCard[]; onChanged: () => void; onOpenItem: (it: Item) => void; onTimeline?: (person: number) => void }) {
+export function PeopleView(props: {
+  folders: FolderCard[]; onChanged: () => void; onOpenItem: (it: Item) => void; onTimeline?: (person: number) => void;
+  /** Middle-click a person: open their folder (or timeline) in a new tab. */
+  onOpenTab?: (v: LibView) => void;
+}) {
   const { review, err, load } = useScanStatus();
   const [paused, setPaused] = useState(faceScanPaused());
   const [msg, setMsg] = useState<string | null>(null);
@@ -126,7 +131,8 @@ export function PeopleView(props: { folders: FolderCard[]; onChanged: () => void
         <PersonCard key={g.person.folder} g={g} onTeach={() => setTeach({ folder: g.person.folder, name: g.person.name })}
           onAccept={(ids) => done(api.facesAccept(ids, g.person.folder), `${plural(ids.length, 'picture')} added to ${g.person.name}.`)}
           onReject={(ids) => done(api.facesReject(ids, g.person.folder), `Got it — ${plural(ids.length, 'face')} marked as not ${g.person.name}.`)}
-          onOpenItem={props.onOpenItem} onTimeline={props.onTimeline ? () => props.onTimeline!(g.person.folder) : undefined} />
+          onOpenItem={props.onOpenItem} onTimeline={props.onTimeline ? () => props.onTimeline!(g.person.folder) : undefined}
+          onOpenTab={props.onOpenTab} />
       ))}
 
       {review && review.unknown.length > 0 && (
@@ -179,8 +185,17 @@ function PersonCard(props: {
   onTeach: () => void;
   onOpenItem: (it: Item) => void;
   onTimeline?: () => void;
+  onOpenTab?: (v: LibView) => void;
 }) {
   const { person, suggestions } = props.g;
+  const middle = (v: LibView) => (props.onOpenTab ? {
+    onMouseDown: (e: React.MouseEvent) => { if (e.button === 1) e.preventDefault(); },
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button !== 1) return;
+      e.preventDefault();
+      props.onOpenTab!(v);
+    },
+  } : {});
   const [ticked, setTicked] = useState<Set<number>>(new Set());
   useEffect(() => setTicked(new Set(suggestions.filter((s) => s.sure).map((s) => s.faceId))), [suggestions]);
   const unticked = useMemo(() => suggestions.filter((s) => !ticked.has(s.faceId)).map((s) => s.faceId), [suggestions, ticked]);
@@ -193,12 +208,12 @@ function PersonCard(props: {
   return (
     <section className="person">
       <div className="person-head">
-        <h2><FaceIcon /> {person.name}</h2>
+        <h2 {...middle({ kind: 'folder', id: person.folder })} title={props.onOpenTab ? 'Middle-click to open this person’s folder in a new tab' : undefined}><FaceIcon /> {person.name}</h2>
         <span className="faint">
           learned from {plural(person.known, 'face')}
           {person.known < 3 && ' — add a few more clear pictures for better suggestions'}
         </span>
-        {props.onTimeline && <button type="button" className="btn btn-sm" onClick={props.onTimeline}>Timeline</button>}
+        {props.onTimeline && <button type="button" className="btn btn-sm" onClick={props.onTimeline} {...middle({ kind: 'timeline', person: person.folder })}>Timeline</button>}
         {person.unsure > 0 && (
           <button type="button" className="link" onClick={props.onTeach}>
             {plural(person.unsure, 'picture')} with several people — show which one is {person.name}

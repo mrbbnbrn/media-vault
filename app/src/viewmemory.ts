@@ -12,13 +12,40 @@ export const viewKey = (v: LibView) => JSON.stringify(v);
 
 const scrolls = new Map<string, number>();
 let sideScroll = 0;
+/** Each library tab keeps its own scroll positions and selections. */
+let scope = '';
+export const setMemoryScope = (s: string) => {
+  scope = s;
+};
+const scoped = (key: string) => `${scope}\u0000${key}`;
 
-export const getScroll = (key: string) => scrolls.get(key) ?? 0;
-export const setScroll = (key: string, top: number) => void scrolls.set(key, top);
+export const getScroll = (key: string) => scrolls.get(scoped(key)) ?? 0;
+export const setScroll = (key: string, top: number) => void scrolls.set(scoped(key), top);
 export const getSideScroll = () => sideScroll;
 export const setSideScroll = (top: number) => {
   sideScroll = top;
 };
+
+// ---- selection per tab (this unlock only) ----------------------------------------------------
+
+const selections = new Map<string, { items: number[]; folders: number[] }>();
+let selectionArmed = false;
+export function rememberSelection(key: string, items: Iterable<number>, folders: Iterable<number>) {
+  const it = [...items];
+  const fs = [...folders];
+  if (!it.length && !fs.length) selections.delete(scoped(key));
+  else selections.set(scoped(key), { items: it, folders: fs });
+}
+/** The next view load puts back the selection it had (switching to another tab). */
+export function armSelectionRestore() {
+  selectionArmed = true;
+}
+/** The selection to put back for this view, once after armSelectionRestore(); otherwise null. */
+export function takeSelection(key: string): { items: number[]; folders: number[] } | null {
+  if (!selectionArmed) return null;
+  selectionArmed = false;
+  return selections.get(scoped(key)) ?? null;
+}
 
 // ---- per-view settings (kept in the vault) -----------------------------------------------------
 
@@ -87,6 +114,9 @@ export async function lastPlace(): Promise<LastPlace | null> {
 export function clearViewMemory() {
   scrolls.clear();
   sideScroll = 0;
+  selections.clear();
+  selectionArmed = false;
+  scope = '';
   prefs = {};
   loadedFor = null;
 }

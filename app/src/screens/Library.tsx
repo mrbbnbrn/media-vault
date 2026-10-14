@@ -45,7 +45,7 @@ import { startMoveDrag, targetFolder } from '../dragmove';
 import { QuickLook } from '../components/QuickLook';
 import {
   getScroll, getSideScroll, lastPlace, loadViewPrefs, prefsKey, rememberPlace, setScroll, setSideScroll, setViewPrefs, viewKey, viewPrefsFor,
-  type LastPlace,
+  rememberSelection, takeSelection, type LastPlace,
 } from '../viewmemory';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
@@ -188,12 +188,30 @@ function saveColsLater(n: number) {
 
 let resumeOfferedFor: string | null = null;
 
-export function Library({ nav, view, setView, history, reveal }: {
+export function Library({ nav, view, setView, history, reveal, tabs }: {
   nav: Nav; view: LibView; setView: (v: LibView) => void;
   history: { back: () => boolean; forward: () => boolean; canBack: boolean; canForward: boolean };
   /** Scroll to and highlight this item (after coming back from the viewer, "show in folder"). */
   reveal: { id: number; n: number } | null;
+  /** Tabs (tabs/TabHost): open a view in a new background tab; the folder list for tab names. */
+  tabs?: { open: (v: LibView) => void; onFolders: (f: FolderCard[]) => void };
 }) {
+  // ---- tabs: hooks used by the tab host ----
+  const tabsRef = useRef(tabs);
+  tabsRef.current = tabs;
+  /** Middle-click opens a view in a new tab (in the background). */
+  const middleView = (v: LibView) => ({
+    onMouseDown: (e: React.MouseEvent) => {
+      if (e.button === 1) e.preventDefault(); // no auto-scroll
+    },
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button === 1 && tabs) {
+        e.preventDefault();
+        tabs.open(v);
+      }
+    },
+  });
+  // ---- end tabs ----
   const s = nav.app.session!;
   const cfg = nav.app.config;
   const [folders, setFolders] = useState<FolderCard[]>([]);
@@ -401,6 +419,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     try {
       const [f, t] = await Promise.all([api.folders(), api.allTags()]);
       setFolders(f);
+      tabsRef.current?.onFolders(f);
       setTags(t);
       setTrash(null);
       if (view.kind === 'folder') {
@@ -445,13 +464,15 @@ export function Library({ nav, view, setView, history, reveal }: {
 
   useEffect(() => {
     let live = true;
-    setSelected(new Set());
+    // Switching tabs puts back that tab's selection.
+    const kept = takeSelection(viewKRef.current);
+    setSelected(new Set(kept?.items));
     setAnchor(null);
     setCursor(null);
     setQuick(null);
     // The folder you are in is the selected folder (so the sidebar shows one thing, and Delete works on it).
     const here = view.kind === 'folder' && view.id != null ? view.id : null;
-    setSelFolders(here != null ? new Set([here]) : new Set());
+    setSelFolders(kept ? new Set(kept.folders) : here != null ? new Set([here]) : new Set());
     setFolderAnchor(here);
     reload().then(() => {
       if (live) restoreScroll();
@@ -460,6 +481,8 @@ export function Library({ nav, view, setView, history, reveal }: {
       live = false;
     };
   }, [reload, restoreScroll]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => rememberSelection(viewKRef.current, selected, selFolders), [selected, selFolders]);
 
   // Folder covers appear as soon as their first thumbnail is made.
   useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
@@ -871,7 +894,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     setView({ kind: 'folder', id: it.folderId });
     showItem(it.id);
   };
-  /** Middle-click a folder: play it as a slideshow. */
+  /** Shift + middle-click a folder: play it as a slideshow. */
   const playFolder = async (f: FolderCard) => {
     const list = await api.queryItems({ folder: f.id, recursive: true });
     if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
@@ -884,7 +907,9 @@ export function Library({ nav, view, setView, history, reveal }: {
     onAuxClick: (e: React.MouseEvent) => {
       if (e.button === 1) {
         e.preventDefault();
-        playFolder(f);
+        // Middle-click opens it in a new tab; Shift + middle-click plays it.
+        if (e.shiftKey || !tabs) playFolder(f);
+        else tabs.open({ kind: 'folder', id: f.id });
       }
     },
   });
@@ -916,6 +941,7 @@ export function Library({ nav, view, setView, history, reveal }: {
   };
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
+    ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
     { label: 'Slideshow', onSelect: async () => {
       const list = await api.queryItems({ folder: f.id, recursive: true });
       if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
@@ -1634,7 +1660,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     const on = !onClick && v.kind === view.kind && (v.kind !== 'folder' || (view.kind === 'folder' && view.id === v.id))
       && !(view.kind === 'timeline' && view.person != null);
     return (
-      <button type="button" className={`side-row${on ? ' on' : ''}`} onClick={onClick ?? (() => setView(v))} title={rail ? label : undefined} aria-label={label}>
+      <button type="button" className={`side-row${on ? ' on' : ''}`} onClick={onClick ?? (() => setView(v))} title={rail ? label : undefined} aria-label={label} {...(onClick ? {} : middleView(v))}>
         {icon}{!rail && label}
         {!rail && count != null && count > 0 && <span className="count">{count.toLocaleString()}</span>}
       </button>
@@ -1757,7 +1783,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           ))}
           <div className="side-head">Folders</div>
           <button type="button" data-drop="folder:top" className={`side-row${view.kind === 'folder' && view.id === null ? ' on' : ''}`}
-            onClick={() => openFolder(null)}>
+            onClick={() => openFolder(null)} {...middleView({ kind: 'folder', id: null })}>
             <FolderIcon size={15} /> Top level
           </button>
           {visibleTree.map((f) => (
@@ -1773,7 +1799,7 @@ export function Library({ nav, view, setView, history, reveal }: {
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
               <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, visibleTree, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
-                title="Click to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move it, onto its top or bottom edge to put it before or after">
+                title="Click to open · Ctrl/Shift + click to select several · middle-click: new tab · Shift + middle-click to play · drag onto a folder to move it, onto its top or bottom edge to put it before or after">
                 {folderPic(f, 18)}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -1827,11 +1853,11 @@ export function Library({ nav, view, setView, history, reveal }: {
             </div>
             {view.kind === 'folder' && (
               <span className="crumbs">
-                <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })}>All folders</button>
+                <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })} {...middleView({ kind: 'folders' })}>All folders</button>
                 <button type="button" className="crumb-jump" aria-label="Folders at the top level" title="Jump to another folder at this level" onClick={(e) => crumbJump(e, null)}>›</button>
                 {folder?.path.map((c) => (
                   <span key={c.id}>
-                    <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)}>{c.name}</button>
+                    <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)} {...middleView({ kind: 'folder', id: c.id })}>{c.name}</button>
                     <button type="button" className="crumb-jump" aria-label={`Folders in ${c.name}`} title="Jump to another folder at this level" onClick={(e) => crumbJump(e, c.id)}>›</button>
                   </span>
                 ))}
@@ -1911,7 +1937,8 @@ export function Library({ nav, view, setView, history, reveal }: {
           )}
 
           {view.kind === 'people' && (
-            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} onTimeline={(id) => setView({ kind: 'timeline', person: id })} />
+            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
+              onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
           )}
           {smart && clip && clip.done + clip.failed < clip.total && (
             <div className="info" style={{ marginBottom: 12 }}>
@@ -1975,7 +2002,7 @@ export function Library({ nav, view, setView, history, reveal }: {
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
                     onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={f.name}
-                    title="Click to select · double-click (or Enter) to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move">
+                    title="Click to select · double-click (or Enter) to open · Ctrl/Shift + click to select several · middle-click: new tab · Shift + middle-click to play · drag onto a folder to move">
                     {coverView(f)}
                     {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>

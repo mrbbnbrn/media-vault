@@ -31,6 +31,7 @@ mod similar;
 mod storage;
 mod videotool;
 mod winshell;
+mod windowstate;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1676,6 +1677,8 @@ pub fn run() {
             });
         })
         .setup(move |app| {
+            // The window starts hidden: put it back where it was, then show it.
+            windowstate::restore(app.handle(), &inner.config_dir);
             // The panic key is a convenience; if another program owns the
             // shortcut the app still works.
             let _ = app.global_shortcut().register(panic_shortcut());
@@ -1703,6 +1706,9 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Remember the window's size, place and maximised state.
+            let dir = window.app_handle().state::<Shared>().inner().config_dir.clone();
+            windowstate::on_event(window, event, &dir);
             // Closing the window: save the library first.
             if let WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed = event {
                 let inner = window.app_handle().state::<Shared>().inner().clone();

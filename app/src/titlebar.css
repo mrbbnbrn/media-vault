@@ -1,0 +1,55 @@
+/* ---- our own title bar with the library tabs (components/TitleBar.tsx) ---- */
+
+:root { --titlebar-h: 36px; --titlebar: color-mix(in srgb, var(--ground) 55%, #000); }
+body.clean-fs { --titlebar-h: 0px; }
+body.clean-fs .titlebar { display: none; }
+
+#root { display: flex; flex-direction: column; }
+#root > .app { flex: 1 1 auto; min-height: 0; height: auto; }
+
+.titlebar { position: relative; z-index: 66; flex: 0 0 var(--titlebar-h); height: var(--titlebar-h); display: flex; align-items: stretch; background: var(--titlebar); border-bottom: 1px solid var(--line); min-width: 0; }
+.titlebar:has(.wt-tab) { border-bottom: none; }
+.wt-mark { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 14px; color: var(--accent); font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; }
+.wt-drag { flex: 1 1 0; min-width: 48px; }
+
+/* Tabs: shrink as more open, then scroll (with a list of all of them). */
+.wt-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding: 0 8px 0 4px; }
+.wt-tabs::-webkit-scrollbar { display: none; }
+.wt-tab { position: relative; container-type: inline-size; flex: 0 1 210px; min-width: 58px; height: calc(var(--titlebar-h) - 6px); display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--faint); font-size: 12.5px; cursor: default; }
+.wt-tab:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text-2); }
+.wt-tab.on { background: var(--panel); color: var(--text); z-index: 1; }
+/* The active tab flows into the toolbar below (little curved feet, like a browser). */
+.wt-tab.on::before, .wt-tab.on::after { content: ''; position: absolute; bottom: 0; width: 8px; height: 8px; pointer-events: none; }
+.wt-tab.on::before { left: -8px; background: radial-gradient(circle at 0 0, transparent 7.5px, var(--panel) 8px); }
+.wt-tab.on::after { right: -8px; background: radial-gradient(circle at 100% 0, transparent 7.5px, var(--panel) 8px); }
+/* A thin line between inactive tabs. */
+.wt-tab:not(.on):not(:hover) + .wt-tab:not(.on):not(:hover)::before { content: ''; position: absolute; left: -1px; top: 8px; bottom: 8px; width: 1px; background: var(--line-2); }
+.wt-tab.dragging { background: var(--raised); color: var(--text); box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5); z-index: 2; }
+.wt-icon { display: inline-flex; flex: none; }
+.wt-tab.on .wt-icon { color: var(--accent); }
+.wt-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.wt-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: none; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; visibility: hidden; }
+.wt-tab:hover .wt-x, .wt-tab.on .wt-x { visibility: visible; }
+.wt-x:hover { background: var(--line-2); color: var(--text); }
+/* Narrow tabs: only the active one keeps its ✕; very narrow ones show just the icon. */
+@container (max-width: 110px) { .wt-tab:not(.on) .wt-x { display: none; } }
+@container (max-width: 72px) { .wt-title { display: none; } }
+.wt-btn { flex: none; align-self: center; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 26px; margin-right: 2px; padding: 0; border: none; border-radius: 7px; background: transparent; color: var(--faint); cursor: pointer; }
+.wt-btn:hover { background: var(--raised); color: var(--text); }
+
+/* Windows caption buttons. */
+.wt-caption { display: flex; flex: none; }
+.wt-cap { width: 46px; height: 100%; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: none; background: transparent; color: var(--text-2); cursor: default; }
+.wt-cap:hover { background: rgba(255, 255, 255, 0.08); color: var(--text); }
+.wt-cap:active { background: rgba(255, 255, 255, 0.05); }
+.wt-cap.close:hover { background: #c42b1c; color: #fff; }
+.wt-cap.close:active { background: #b22a1d; }
+.wt-cap:focus-visible { outline-offset: -2px; }
+
+/* The toolbar right under the tabs has no gap to the active tab. */
+.titlebar + .app .lib-top, .titlebar + .app .topbar { border-top: none; }
+
+/* Full-window layers start under the title bar (it stays usable above them). */
+.viewer, .multi, .modal-back, .sheet-back, .qlook, .duel, .qsort { top: var(--titlebar-h); }
+.toast { top: calc(var(--titlebar-h) + 18px); }
+.notes { top: calc(var(--titlebar-h) + var(--top-h, 64px) + 12px); }
