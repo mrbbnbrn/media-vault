@@ -29,6 +29,7 @@ import { ShareDialog } from '../components/ShareDialog';
 import { ConvertDialog } from '../components/ConvertDialog';
 import { AnimationDialog } from '../components/AnimationDialog';
 import { Duel } from '../components/Duel';
+import { MuseumHost, openFolderMuseum, openMuseum } from '../components/museum/launch';
 import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
 import { tileRect } from '../flip';
@@ -920,6 +921,7 @@ export function Library({ nav, view, setView, history, reveal }: {
       const list = await api.queryItems({ folder: f.id, recursive: true });
       if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
     } },
+    { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
@@ -1620,6 +1622,8 @@ export function Library({ nav, view, setView, history, reveal }: {
     }) });
     actions.push({ key: 'speed', label: 'Speed round', title: 'Pictures flash by; press F to favourite', onClick: onMedia((list) => startSpeedRound(nF === 1 && !nI ? fs[0] : null, list)) });
     actions.push({ key: 'duel', label: 'Duel', title: 'Pick the better of two; sets the weights', onClick: onMedia((list) => startDuel(null, list)) });
+    actions.push({ key: 'museum', label: 'Walk through as a museum', title: 'A 3D gallery of these pictures',
+      onClick: onMedia((list) => openMuseum(nF === 1 && !nI ? fs[0].name : 'Selection', list, (text) => setNote({ text, at: 0 }))) });
     actions.push({ key: 'faces', label: 'Scan for faces', onClick: onMedia((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) });
     actions.push({ key: 'delete', label: 'Delete', icon: <TrashIcon />, danger: true, pinned: true, title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
       onClick: () => (itemsOnly ? trashItems(selIds) : askDeleteMany()) });
@@ -2223,6 +2227,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           onClose={(changed) => { setDialog(null); if (changed) { reload(); nav.refresh().catch(() => {}); } }} />
       )}
       {dialog?.t === 'duel' && <Duel items={dialog.items} onClose={() => { setDialog(null); reload(); }} />}
+      <MuseumHost nav={nav} view={view} />
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (
         <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />

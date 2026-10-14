@@ -1,0 +1,45 @@
+/* The museum walk-through (loaded with the museum chunk). */
+.museum { position: fixed; inset: 0; z-index: 45; background: #0b0705; color: #f3ead8; overflow: hidden; user-select: none; }
+.museum-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.museum-canvas:active { cursor: grabbing; }
+.museum-canvas.locked { cursor: none; }
+.museum-fade { position: absolute; inset: 0; background: #0b0705; opacity: 0; pointer-events: none; transition: opacity 0.35s ease; }
+.museum-fade.on { opacity: 1; }
+.museum-loading { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); font-family: Georgia, 'Times New Roman', serif; font-style: italic; font-size: 18px; color: #d8b56d; letter-spacing: 0.02em; }
+
+.museum-top { position: absolute; left: 16px; right: 16px; top: 14px; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; pointer-events: none; }
+.museum-title { display: flex; flex-direction: column; gap: 2px; padding: 8px 14px; border-radius: 10px; background: rgba(12, 8, 6, 0.55); backdrop-filter: blur(6px); min-width: 0; }
+.museum-title b { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; font-size: 18px; color: #f0d48f; letter-spacing: 0.02em; }
+.museum-kicker { font-size: 11px; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(243, 234, 216, 0.7); }
+.museum-actions { display: flex; align-items: center; gap: 8px; pointer-events: auto; }
+.museum-seg { display: flex; padding: 2px; border-radius: 9px; background: rgba(12, 8, 6, 0.65); border: 1px solid rgba(255, 255, 255, 0.08); }
+.museum-seg button { border: 0; background: transparent; color: rgba(243, 234, 216, 0.75); font: inherit; font-size: 12px; padding: 5px 10px; border-radius: 7px; cursor: pointer; }
+.museum-seg button.on { background: var(--accent); color: var(--on-accent); }
+.museum-leave { background: rgba(12, 8, 6, 0.65); }
+
+.museum-dot { position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px; border-radius: 50%; background: rgba(255, 255, 255, 0.9); box-shadow: 0 0 0 1.5px rgba(0, 0, 0, 0.55); pointer-events: none; }
+.museum-aim { position: absolute; left: 50%; top: calc(50% + 22px); transform: translateX(-50%); display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 7px 14px; border-radius: 9px; background: rgba(12, 8, 6, 0.62); backdrop-filter: blur(4px); pointer-events: none; max-width: min(520px, 80vw); text-align: center; animation: museum-in 0.15s ease-out; }
+.museum-aim b { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; font-size: 16px; color: #f6e2ae; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.museum-aim span { font-size: 11px; color: rgba(243, 234, 216, 0.75); }
+
+.museum-map { position: absolute; right: 16px; bottom: 16px; width: 200px; height: 200px; border-radius: 12px; background: rgba(12, 8, 6, 0.6); border: 1px solid rgba(222, 182, 98, 0.25); backdrop-filter: blur(4px); pointer-events: none; }
+
+.museum-card { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: min(420px, calc(100% - 32px)); display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 30px 28px 24px; border-radius: 16px; text-align: center;
+  background: linear-gradient(180deg, rgba(40, 10, 14, 0.92), rgba(18, 8, 8, 0.94)); border: 1px solid rgba(222, 182, 98, 0.45); box-shadow: 0 0 0 4px rgba(18, 8, 8, 0.6), 0 0 0 5px rgba(222, 182, 98, 0.25), 0 30px 60px rgba(0, 0, 0, 0.6); animation: museum-in 0.2s ease-out; }
+.museum-card.small { padding: 22px 24px 18px; gap: 10px; }
+.museum-card h2, .museum-card h3 { margin: 0; font-family: Georgia, 'Times New Roman', serif; font-weight: 600; color: #f0d48f; letter-spacing: 0.02em; }
+.museum-card h2 { font-size: 28px; line-height: 1.2; overflow-wrap: anywhere; }
+.museum-card h3 { font-size: 20px; }
+.museum-card p { margin: 0; color: rgba(243, 234, 216, 0.85); font-size: 14px; }
+.museum-card .btn { min-width: 180px; justify-content: center; }
+.museum-crest { color: #e2b85e; font-size: 20px; }
+.museum-keys { font-size: 12px; color: rgba(243, 234, 216, 0.6); }
+
+.museum-hint { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: rgba(12, 8, 6, 0.6); backdrop-filter: blur(4px); font-size: 12.5px; color: rgba(243, 234, 216, 0.85); white-space: nowrap; max-width: calc(100% - 260px); overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 1.2s ease; pointer-events: none; }
+.museum-hint.on { opacity: 1; transition-duration: 0.3s; }
+
+@keyframes museum-in { from { opacity: 0; transform: translate(-50%, -46%); } }
+.museum-aim { animation-name: museum-aim-in; }
+@keyframes museum-aim-in { from { opacity: 0; } }
+@media (max-width: 640px) { .museum-map { width: 130px; height: 130px; } .museum-hint { display: none; } }
+@media (prefers-reduced-motion: reduce) { .museum-card, .museum-aim { animation: none; } .museum-fade { transition: none; } }
