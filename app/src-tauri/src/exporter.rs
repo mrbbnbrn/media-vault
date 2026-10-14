@@ -146,7 +146,7 @@ fn plan(s: &Session, req: &ExportRequest) -> Result<(String, Vec<(Row, PathBuf)>
 }
 
 /// Today's date as YYYY-MM-DD (UTC is fine for a folder name).
-fn chrono_like_today() -> String {
+pub(crate) fn chrono_like_today() -> String {
     let days = crate::library::now_secs().div_euclid(86_400);
     // Civil-from-days (Howard Hinnant).
     let z = days + 719_468;

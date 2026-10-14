@@ -26,6 +26,10 @@ What's in the full package
   models\     Offline smart-search models (find pictures by describing
               them, in 50+ languages). Without this folder smart search is
               simply turned off; everything else works.
+  tools\      The video tool (ffmpeg, LGPL build; licence and source in the
+              folder) for converting items and making animations. It works
+              in memory: nothing decrypted is written to disk. Without this
+              folder those two options are simply not available.
   Face recognition is built into MediaVault.exe and also works offline.
 
 Requirements
