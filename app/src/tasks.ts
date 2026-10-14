@@ -2,7 +2,7 @@
 // their progress and result live here so any screen can show them.
 
 import { useSyncExternalStore } from 'react';
-import { api, onEvent, type DamageReport, type ExportDone, type ExportProgress } from './api';
+import { api, onEvent, type DamageReport, type ExportDone, type ExportProgress, type ShareDone, type ShareProgress, type ShareRequest } from './api';
 
 export interface TaskState {
   check: { done: number; total: number } | null;
@@ -10,9 +10,19 @@ export interface TaskState {
   exporting: ExportProgress | null;
   exportStarting: boolean;
   exportDone: ExportDone | null;
+  // share as encrypted .7z
+  sharing: ShareProgress | null;
+  shareStarting: boolean;
+  shareDone: ShareDone | null;
+  /** The share window is open and shows the progress itself (the corner card stays hidden). */
+  shareWatched: boolean;
 }
 
-let state: TaskState = { check: null, checkResult: null, exporting: null, exportStarting: false, exportDone: null };
+const idle: TaskState = {
+  check: null, checkResult: null, exporting: null, exportStarting: false, exportDone: null,
+  sharing: null, shareStarting: false, shareDone: null, shareWatched: false,
+};
+let state: TaskState = idle;
 const subs = new Set<() => void>();
 const set = (patch: Partial<TaskState>) => {
   state = { ...state, ...patch };
@@ -29,6 +39,8 @@ function listen() {
   );
   onEvent<ExportProgress>('export-progress', (p) => set({ exporting: p, exportStarting: false }));
   onEvent<ExportDone>('export-done', (d) => set({ exporting: null, exportStarting: false, exportDone: d }));
+  onEvent<ShareProgress>('share-progress', (p) => set({ sharing: p, shareStarting: false }));
+  onEvent<ShareDone>('share-done', (d) => set({ sharing: null, shareStarting: false, shareDone: d }));
 }
 
 export function useTasks(): TaskState {
@@ -63,6 +75,25 @@ export async function startExport(req: Parameters<typeof api.exportStart>[0]) {
   }
 }
 
+export async function startShare(req: ShareRequest) {
+  listen();
+  set({ shareStarting: true, shareDone: null, sharing: null });
+  try {
+    await api.share7zStart(req);
+  } catch (e) {
+    set({ shareStarting: false });
+    throw e;
+  }
+}
+
+export function dismissShare() {
+  set({ shareDone: null });
+}
+
+export function watchShare(on: boolean) {
+  set({ shareWatched: on });
+}
+
 export function dismissCheck() {
   set({ checkResult: null });
 }
@@ -72,5 +103,5 @@ export function dismissExport() {
 }
 
 export function clearTasks() {
-  set({ check: null, checkResult: null, exporting: null, exportStarting: false, exportDone: null });
+  set(idle);
 }

@@ -7,6 +7,7 @@ import { formatBytes } from '../theme';
 import { plural } from '../undo';
 import { Modal } from './Dialogs';
 import { ExportIcon, ShieldIcon, WarnIcon } from './Icons';
+import { ShareTaskCards } from './ShareDialog';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -148,6 +149,7 @@ export function TaskCards() {
           </span>
         </div>
       )}
+      {!t.shareWatched && <ShareTaskCards />}
       {showReport && t.checkResult && 'report' in t.checkResult && (
         <Modal title="Check for damage" wide onClose={() => setShowReport(false)}>
           <DamageReportView report={t.checkResult.report} />
@@ -158,7 +160,8 @@ export function TaskCards() {
 }
 
 export function hasTaskCards(t: ReturnType<typeof useTasks>) {
-  return !!(t.check || t.checkResult || t.exporting || t.exportStarting || t.exportDone);
+  return !!(t.check || t.checkResult || t.exporting || t.exportStarting || t.exportDone ||
+    (!t.shareWatched && (t.sharing || t.shareStarting || t.shareDone)));
 }
 
 function when(sec: number) {

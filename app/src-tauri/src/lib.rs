@@ -16,6 +16,7 @@ mod meta;
 mod protocol;
 mod selftest;
 mod session;
+mod share7z;
 mod similar;
 mod storage;
 
@@ -1112,6 +1113,29 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, request: exporter::Exp
     Ok(())
 }
 
+// ---- share as encrypted .7z --------------------------------------------------------
+
+/// Put items and folders into a password-protected .7z. "share-progress"
+/// (same shape as export progress), then "share-done". Cancel with task "share".
+#[tauri::command]
+fn share_7z_start(app: AppHandle, state: State<'_, Shared>, request: share7z::ShareRequest) -> Result<(), String> {
+    let s = sess(&state)?;
+    let inner = state.inner().clone();
+    let cancel = begin_task(&inner, "share")?;
+    std::thread::spawn(move || {
+        let mut last = Instant::now();
+        let done = share7z::run(&s, &request, &cancel, &mut |p| {
+            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
+                last = Instant::now();
+                let _ = app.emit("share-progress", p);
+            }
+        });
+        inner.tasks.lock().unwrap().remove("share");
+        let _ = app.emit("share-done", done);
+    });
+    Ok(())
+}
+
 // ---- web engine --------------------------------------------------------------------
 
 #[tauri::command]
@@ -1535,6 +1559,7 @@ pub fn run() {
             check_damage,
             cancel_task,
             export_start,
+            share_7z_start,
             engine_info,
             engine_started,
             engine_retry,

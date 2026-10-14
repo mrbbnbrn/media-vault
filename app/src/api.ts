@@ -3,7 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { open } from '@tauri-apps/plugin-dialog';
+import { open, save } from '@tauri-apps/plugin-dialog';
 
 export interface LockSettings {
   idleMinutes: number;
@@ -111,6 +111,37 @@ export interface ExportDone {
   cancelled: boolean;
   error: string | null;
 }
+
+// ---- share as encrypted .7z ----
+
+export interface ShareRequest {
+  ids: number[];
+  folders: number[];
+  /** Full path of the .7z to create (".7z" is added if missing). */
+  dest: string;
+  password: string;
+  encryptNames: boolean;
+  /** 0 = store (no compression), 1–9 = LZMA2 level. */
+  level: number;
+  /** Split into parts of this many bytes (name.7z.001, .002, …); null = one file. */
+  splitBytes: number | null;
+  keepStructure: boolean;
+}
+
+/** Same shape as ExportProgress. */
+export type ShareProgress = ExportProgress;
+
+export interface ShareDone {
+  files: number;
+  bytes: number;
+  archiveBytes: number;
+  parts: string[];
+  failed: [string, string][];
+  cancelled: boolean;
+  error: string | null;
+}
+
+// ---- end share ----
 
 export interface EngineInfo {
   mode: 'builtin' | 'system' | 'fallback';
@@ -535,8 +566,10 @@ export const api = {
 
   // safety
   checkDamage: () => call<void>('check_damage'),
-  cancelTask: (task: 'check' | 'export') => call<void>('cancel_task', { task }),
+  cancelTask: (task: 'check' | 'export' | 'share') => call<void>('cancel_task', { task }),
   exportStart: (request: ExportRequest) => call<void>('export_start', { request }),
+  // share as encrypted .7z: "share-progress" (ShareProgress), then "share-done" (ShareDone)
+  share7zStart: (request: ShareRequest) => call<void>('share_7z_start', { request }),
   engineInfo: () => call<EngineInfo>('engine_info'),
   engineStarted: () => call<void>('engine_started'),
   engineRetry: () => call<void>('engine_retry'),
@@ -596,6 +629,13 @@ export const modelUrl = (name: string) => proto('models', name);
 export async function pickFolder(title: string): Promise<string | null> {
   if (!inTauri) return mock.pickFolder();
   const r = await open({ directory: true, multiple: false, title });
+  return typeof r === 'string' ? r : null;
+}
+
+/** Save dialog for the shared archive. */
+export async function pickSave7z(title: string, defaultPath: string): Promise<string | null> {
+  if (!inTauri) return `D:\\Shared\\${defaultPath}`;
+  const r = await save({ title, defaultPath, filters: [{ name: '7-Zip archive', extensions: ['7z'] }] });
   return typeof r === 'string' ? r : null;
 }
 
