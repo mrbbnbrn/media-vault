@@ -18,6 +18,7 @@ mod selftest;
 mod session;
 mod similar;
 mod storage;
+mod winshell;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -72,6 +73,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     }
     if was_open {
         let _ = app.emit("vault-locked", reason.as_str());
+        winshell::on_lock(app);
     }
     if reason == LockReason::PanicKey
         && let Some(w) = app.get_webview_window("main")
@@ -1561,11 +1563,19 @@ pub fn run() {
             similar_groups,
             similar_to,
             smart_search,
+            // Windows Explorer: drag out, copy/paste (winshell.rs)
+            winshell::drag_out,
+            winshell::clipboard_put_files,
+            winshell::clipboard_clear_ours,
+            winshell::clipboard_read,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")
         .run(|app, event| {
             // However the app ends, unsaved library changes are written first.
+            if let tauri::RunEvent::Exit = event {
+                winshell::on_exit();
+            }
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 let inner = app.state::<Shared>().inner().clone();
                 let open = inner.session.lock().unwrap().clone();
