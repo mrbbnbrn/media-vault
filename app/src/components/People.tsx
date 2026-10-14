@@ -198,15 +198,15 @@ function PersonCard(props: {
       props.onOpenTab!(v);
     },
   } : {});
-  const [ticked, setTicked] = useState<Set<number>>(new Set());
-  useEffect(() => setTicked(new Set(suggestions.filter((s) => s.sure).map((s) => s.faceId))), [suggestions]);
+  // Your own ticks and unticks win: the list refreshes while faces are being
+  // scanned, and that must not undo what you clicked.
+  const [choices, setChoices] = useState<Map<number, boolean>>(() => new Map());
+  const ticked = useMemo(
+    () => new Set(suggestions.filter((s) => choices.get(s.faceId) ?? s.sure).map((s) => s.faceId)),
+    [suggestions, choices],
+  );
   const unticked = useMemo(() => suggestions.filter((s) => !ticked.has(s.faceId)).map((s) => s.faceId), [suggestions, ticked]);
-  const toggle = (id: number) => setTicked((t) => {
-    const n = new Set(t);
-    if (n.has(id)) n.delete(id);
-    else n.add(id);
-    return n;
-  });
+  const toggle = (id: number) => setChoices((c) => new Map(c).set(id, !ticked.has(id)));
   return (
     <section className="person">
       <div className="person-head">

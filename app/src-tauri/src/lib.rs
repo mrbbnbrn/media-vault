@@ -764,7 +764,11 @@ async fn save_thumb(
     width: Option<i64>,
     height: Option<i64>,
     duration_ms: Option<i64>,
+    sharper: Option<bool>,
 ) -> Result<(), String> {
+    // A sharper copy of the same picture: its analysis (smart search, look-alike
+    // fingerprint) stays valid.
+    let same_picture = sharper.unwrap_or(false);
     let s = sess(state.inner())?;
     blocking(move || {
         let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, &data[..]).map_err(|e| e.to_string())?;
@@ -779,10 +783,12 @@ async fn save_thumb(
             )
             .map_err(|e| e.to_string())?;
             // A replaced thumbnail may show something else: analyse it again.
-            if old.as_deref().is_some_and(|o: &str| !o.is_empty()) {
-                let _ = clip::reset(&db, id);
+            if !same_picture {
+                if old.as_deref().is_some_and(|o: &str| !o.is_empty()) {
+                    let _ = clip::reset(&db, id);
+                }
+                let _ = similar::reset(&db, id);
             }
-            let _ = similar::reset(&db, id);
             old
         };
         if let Some(o) = old.filter(|o| !o.is_empty())
@@ -794,6 +800,48 @@ async fn save_thumb(
         Ok(())
     })
     .await
+}
+
+/// Older thumbnails (made smaller, before sharper thumbnails) still to remake:
+/// items with a thumbnail and an id in `after < id <= upto`, oldest first.
+#[tauri::command]
+async fn thumbs_to_sharpen(state: State<'_, Shared>, after: i64, upto: i64, limit: i64) -> Result<Vec<ThumbTask>, String> {
+    read_db(state.inner(), move |c| {
+        let mut st = c
+            .prepare(
+                "SELECT id, kind FROM media WHERE id > ?1 AND id <= ?2 AND thumb_object_id IS NOT NULL AND thumb_object_id != '' \
+                 AND kind IN ('image', 'gif', 'video') AND (copy_of IS NULL) ORDER BY id LIMIT ?3",
+            )
+            .map_err(|e| e.to_string())?;
+        let v = st
+            .query_map([after, upto, limit], |r| Ok(ThumbTask { id: r.get(0)?, kind: r.get(1)? }))
+            .map_err(|e| e.to_string())?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(|e| e.to_string())?;
+        Ok(v)
+    })
+    .await
+}
+
+/// How many older thumbnails are still to remake.
+#[tauri::command]
+async fn count_to_sharpen(state: State<'_, Shared>, after: i64, upto: i64) -> Result<i64, String> {
+    read_db(state.inner(), move |c| {
+        c.query_row(
+            "SELECT COUNT(*) FROM media WHERE id > ?1 AND id <= ?2 AND thumb_object_id IS NOT NULL AND thumb_object_id != '' \
+             AND kind IN ('image', 'gif', 'video') AND (copy_of IS NULL)",
+            [after, upto],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+/// The newest item id (where remaking older thumbnails stops).
+#[tauri::command]
+async fn newest_item_id(state: State<'_, Shared>) -> Result<i64, String> {
+    read_db(state.inner(), |c| c.query_row("SELECT COALESCE(MAX(id), 0) FROM media", [], |r| r.get(0)).map_err(|e| e.to_string())).await
 }
 
 /// The window couldn't decode this file (e.g. an unsupported video codec).
@@ -1832,6 +1880,9 @@ pub fn run() {
             save_named,
             delete_named,
             thumbs_needed,
+            thumbs_to_sharpen,
+            count_to_sharpen,
+            newest_item_id,
             save_thumb,
             thumb_failed,
             previews_needed,

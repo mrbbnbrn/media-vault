@@ -53,6 +53,7 @@ function data() {
   const card = (id: number, name: string, person: boolean, cover: number, samples: number[], count: number): FolderCard => ({
     id, name, parentId: null, path: [], depth: 0, items: count, directItems: count, subfolders: 0, cover, coverKind: 'image', tags: [], pinned: false,
     color: null, emoji: null, person, samples, note: null,
+    createdAt: 1_700_000_000 + id * 86400, bytes: count * 2_000_000,
     coverFace: person ? (() => { const f = demoFace(cover); return [f.x, f.y, f.w, f.h] as [number, number, number, number]; })() : null,
   });
   const folders = [

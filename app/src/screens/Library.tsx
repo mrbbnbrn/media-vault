@@ -51,9 +51,10 @@ import { setDropHandler } from '../drop';
 import { startMoveDrag, targetFolder } from '../dragmove';
 import { QuickLook } from '../components/QuickLook';
 import {
-  getScroll, getSideScroll, lastPlace, loadViewPrefs, prefsKey, rememberPlace, setScroll, setSideScroll, setViewPrefs, viewKey, viewPrefsFor,
+  getAnchor, getScroll, getSideScroll, lastPlace, setAnchor as setScrollAnchor, loadViewPrefs, prefsKey, rememberPlace, setScroll, setSideScroll, setViewPrefs, viewKey, viewPrefsFor,
   rememberSelection, takeSelection, type LastPlace,
 } from '../viewmemory';
+import type { ScrollAnchor } from '../viewmemory';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
@@ -208,6 +209,20 @@ function saveColsLater(n: number) {
 
 let resumeOfferedFor: string | null = null;
 
+/** The first tile or folder card at the top of the scroller, and its distance from the top edge. */
+function findAnchor(sc: HTMLElement): ScrollAnchor | null {
+  const top = sc.getBoundingClientRect().top;
+  let best: { el: HTMLElement; y: number } | null = null;
+  for (const el of sc.querySelectorAll<HTMLElement>('[data-item], [data-card]')) {
+    const r = el.getBoundingClientRect();
+    if (r.bottom <= top + 1) continue;
+    if (!best || r.top < best.y - 1 || (Math.abs(r.top - best.y) <= 1 && r.left < best.el.getBoundingClientRect().left)) best = { el, y: r.top };
+  }
+  if (!best) return null;
+  const sel = best.el.dataset.item != null ? `[data-item="${best.el.dataset.item}"]` : `[data-card="${best.el.dataset.card}"]`;
+  return { sel, offset: best.y - top };
+}
+
 export function Library({ nav, view, setView, history, reveal, tabs }: {
   nav: Nav; view: LibView; setView: (v: LibView) => void;
   history: { back: () => boolean; forward: () => boolean; canBack: boolean; canForward: boolean };
@@ -356,13 +371,28 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     const onSide = () => sd && setSideScroll(sd.scrollTop);
     sd?.addEventListener('scroll', onSide, { passive: true });
     const sc = scroller.current;
+    let frame = 0;
     const onMain = () => {
-      if (sc && !restoring.current) setScroll(viewKRef.current, sc.scrollTop);
+      if (!sc || restoring.current) return;
+      setScroll(viewKRef.current, sc.scrollTop);
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        if (!restoring.current) setScrollAnchor(viewKRef.current, findAnchor(sc));
+      });
+    };
+    // Scrolling by hand ends any restoring still going on.
+    const byHand = () => {
+      userScrolled.current = true;
     };
     sc?.addEventListener('scroll', onMain, { passive: true });
+    sc?.addEventListener('wheel', byHand, { passive: true });
+    sc?.addEventListener('pointerdown', byHand, { passive: true });
     return () => {
+      cancelAnimationFrame(frame);
       sd?.removeEventListener('scroll', onSide);
       sc?.removeEventListener('scroll', onMain);
+      sc?.removeEventListener('wheel', byHand);
+      sc?.removeEventListener('pointerdown', byHand);
     };
   }, []);
   // The sidebar's content arrives a moment later; put it back where it was then.
@@ -373,13 +403,22 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     sideRestored.current = true;
     sd.scrollTop = getSideScroll();
   }, [folders.length]);
+  const userScrolled = useRef(false);
   const restoreScroll = useCallback(() => {
     const sc = scroller.current;
     if (!sc) return;
-    const top = getScroll(viewKRef.current);
+    const key = viewKRef.current;
+    const top = getScroll(key);
+    const anchor = getAnchor(key);
     restoring.current = true;
+    userScrolled.current = false;
+    // Put the remembered tile back at the same height on screen; things above it
+    // (notices, folder cards, notes) may have appeared or gone since.
     const apply = () => {
-      sc.scrollTop = top;
+      if (userScrolled.current || viewKRef.current !== key) return;
+      const el = anchor ? sc.querySelector<HTMLElement>(anchor.sel) : null;
+      if (el) sc.scrollTop += el.getBoundingClientRect().top - sc.getBoundingClientRect().top - anchor!.offset;
+      else sc.scrollTop = top;
     };
     apply();
     requestAnimationFrame(() => {
@@ -390,6 +429,16 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
       apply();
       restoring.current = false;
     }, 150);
+    // Late arrivals (subfolder cards, covers) can still shift things a little.
+    for (const ms of [400, 900]) setTimeout(() => {
+      if (!restoring.current && !userScrolled.current) {
+        restoring.current = true;
+        apply();
+        requestAnimationFrame(() => {
+          restoring.current = false;
+        });
+      }
+    }, ms);
   }, []);
 
   // Where you left off: remembered as you go, offered once after unlocking.
@@ -1829,6 +1878,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
       )}
 
       <div className="lib-body">
+        <div className="side-col">
         <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
           <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
             aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
@@ -1908,8 +1958,12 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
           </>}
           <div className="side-spacer" />
           {sideView({ kind: 'trash' }, 'Trash', undefined, <TrashIcon size={rail ? 16 : 14} />)}
-          <ActivityRing rail={rail} notify={cfg.notifyDone !== false} />
         </aside>
+        {/* Its own strip under the folder list, so it never covers a folder. */}
+        <div className={`side-foot${rail ? ' rail' : ''}`}>
+          <ActivityRing rail={rail} notify={cfg.notifyDone !== false} />
+        </div>
+        </div>
 
         <main className="lib-main" ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
           {login && <LoginBanner login={login} onClose={() => setLogin(null)} />}

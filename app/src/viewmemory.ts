@@ -22,6 +22,12 @@ const scoped = (key: string) => `${scope}\u0000${key}`;
 
 export const getScroll = (key: string) => scrolls.get(scoped(key)) ?? 0;
 export const setScroll = (key: string, top: number) => void scrolls.set(scoped(key), top);
+/** The tile at the top of the screen and how far below the top edge it was, so the
+ *  same spot comes back even when things above it (notices, folder cards) changed size. */
+export interface ScrollAnchor { sel: string; offset: number }
+const anchors = new Map<string, ScrollAnchor>();
+export const getAnchor = (key: string) => anchors.get(scoped(key)) ?? null;
+export const setAnchor = (key: string, a: ScrollAnchor | null) => void (a ? anchors.set(scoped(key), a) : anchors.delete(scoped(key)));
 export const getSideScroll = () => sideScroll;
 export const setSideScroll = (top: number) => {
   sideScroll = top;

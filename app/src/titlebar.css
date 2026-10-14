@@ -15,7 +15,7 @@ body.clean-fs .titlebar { display: none; }
 /* Tabs: shrink as more open, then scroll (with a list of all of them). */
 .wt-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding: 0 8px 0 4px; }
 .wt-tabs::-webkit-scrollbar { display: none; }
-.wt-tab { position: relative; container-type: inline-size; flex: 0 1 210px; min-width: 58px; height: calc(var(--titlebar-h) - 6px); display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--faint); font-size: 12.5px; cursor: default; }
+.wt-tab { position: relative; container-type: inline-size; flex: 0 1 210px; width: 210px; min-width: 58px; height: calc(var(--titlebar-h) - 6px); display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--faint); font-size: 12.5px; cursor: default; }
 .wt-tab:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text-2); }
 .wt-tab.on { background: var(--panel); color: var(--text); z-index: 1; }
 /* The active tab flows into the toolbar below (little curved feet, like a browser). */
@@ -50,6 +50,6 @@ body.clean-fs .titlebar { display: none; }
 .titlebar + .app .lib-top, .titlebar + .app .topbar { border-top: none; }
 
 /* Full-window layers start under the title bar (it stays usable above them). */
-.viewer, .multi, .modal-back, .sheet-back, .qlook, .duel, .qsort { top: var(--titlebar-h); }
+.viewer, .multi, .modal-back, .sheet-back, .qlook, .duel, .qsort, .slots, .museum { top: var(--titlebar-h); }
 .toast { top: calc(var(--titlebar-h) + 18px); }
 .notes { top: calc(var(--titlebar-h) + var(--top-h, 64px) + 12px); }

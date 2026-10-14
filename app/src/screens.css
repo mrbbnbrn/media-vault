@@ -811,7 +811,12 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .player .align-ghost.fading { animation: align-out ease-in-out forwards; }
 @keyframes align-out { to { opacity: 0; } }
 /* ---- background jobs: the ring at the bottom of the sidebar and its list (ActivityRing.tsx) ---- */
-.jobring-wrap { position: sticky; bottom: -40px; margin: 6px 0 -40px; padding: 6px 0 40px; background: linear-gradient(to bottom, transparent, var(--panel) 14px); z-index: 2; animation: fadein 0.25s; }
+.side-col { display: flex; flex-direction: column; flex-shrink: 0; min-height: 0; }
+.side-col > .side { flex: 1; min-height: 0; }
+.side-foot { flex: none; width: 260px; box-sizing: border-box; padding: 0 10px; background: var(--panel); border-right: 1px solid var(--line); }
+.side-foot:empty { display: none; }
+.side-foot.rail { width: 72px; display: flex; justify-content: center; padding: 0 4px; }
+.jobring-wrap { padding: 6px 0 8px; border-top: 1px solid var(--line); animation: fadein 0.25s; }
 .jobring-wrap.rail { align-self: center; }
 .jobring-wrap.fading { animation: jobring-out 4s ease-in forwards; }
 @keyframes jobring-out { 0%, 50% { opacity: 1; } 100% { opacity: 0; } }
@@ -884,3 +889,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .upscale-bar.note { padding-right: 8px; line-height: 1.45; }
 .upscale-bar .up-progress { width: 120px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); overflow: hidden; flex-shrink: 0; }
 .upscale-bar .up-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.25s; }
+
+/* Tiles show where you are with the selection ring; no separate focus outline. */
+.tile:focus-visible { outline: none; }
+.who-pop > .input { width: 100%; }

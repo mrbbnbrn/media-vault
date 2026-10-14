@@ -604,8 +604,12 @@ export const api = {
 
   // thumbnails
   thumbsNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_needed', { limit }),
-  saveThumb: (id: number, data: number[], width: number | null, height: number | null, durationMs: number | null) =>
-    call<void>('save_thumb', { id, data, width, height, durationMs }),
+  saveThumb: (id: number, data: number[], width: number | null, height: number | null, durationMs: number | null, sharper = false) =>
+    call<void>('save_thumb', { id, data, width, height, durationMs, sharper }),
+  /** Older, smaller thumbnails still to remake sharper (ids after..upto). */
+  thumbsToSharpen: (after: number, upto: number, limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_to_sharpen', { after, upto, limit }),
+  newestItemId: () => call<number>('newest_item_id'),
+  countToSharpen: (after: number, upto: number) => call<number>('count_to_sharpen', { after, upto }),
   thumbFailed: (id: number) => call<void>('thumb_failed', { id }),
 
   // import
@@ -1005,7 +1009,11 @@ const mock = {
       case 'faces_review':
         return { people: [], unknown: [], status: { queued: 0, scanned: 0, faces: 0, failed: 0 } };
       case 'previews_needed':
+      case 'thumbs_to_sharpen':
         return [];
+      case 'newest_item_id':
+      case 'count_to_sharpen':
+        return 0;
       case 'ui_get':
         return null;
       case 'data_info':

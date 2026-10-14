@@ -211,6 +211,12 @@ export function MediaGrid(props: {
         p.onSelect(new Set([id]), id, false);
       }
       bringIntoView(next);
+      // Keyboard focus follows the selection, so no second outline stays behind
+      // on the tile that was clicked before.
+      requestAnimationFrame(() => {
+        const el = ref.current?.querySelector<HTMLElement>(`[data-item="${id}"]`);
+        if (el && el !== document.activeElement) el.focus({ preventScroll: true });
+      });
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);

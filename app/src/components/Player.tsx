@@ -133,6 +133,8 @@ export function Player(props: PlayerProps) {
   const [resumed, setResumed] = useState<number | null>(null);
   const [faces, setFaces] = useState<FaceBox[]>([]);
   const [faceFlash, setFaceFlash] = useState(false);
+  // While you're saying who a face is, the shown faces stay.
+  const [faceAsking, setFaceAsking] = useState(false);
   const [faceReload, setFaceReload] = useState(0);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const panMoved = useRef(false);
@@ -598,10 +600,10 @@ export function Player(props: PlayerProps) {
     };
   }, [showFaces, item?.key, faceReload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
-    if (!faceFlash) return;
+    if (!faceFlash || faceAsking) return;
     const t = setTimeout(() => setFaceFlash(false), 3000);
     return () => clearTimeout(t);
-  }, [faceFlash, faceReload]);
+  }, [faceFlash, faceReload, faceAsking]);
   const what = isVideo ? 'video' : 'picture';
   const flashFaces = async () => {
     if (item?.itemId == null) return;
@@ -973,7 +975,7 @@ export function Player(props: PlayerProps) {
             )}
             {drawn && shownFaces.length > 0 && (
               <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
-                onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} />
+                onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />
             )}
           </div>
         )}

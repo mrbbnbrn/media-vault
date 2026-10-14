@@ -1,5 +1,5 @@
 /* The museum walk-through (loaded with the museum chunk). */
-.museum { position: fixed; inset: 0; z-index: 45; background: #0b0705; color: #f3ead8; overflow: hidden; user-select: none; }
+.museum { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 45; background: #0b0705; color: #f3ead8; overflow: hidden; user-select: none; }
 .museum-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .museum-canvas:active { cursor: grabbing; }
 .museum-canvas.locked { cursor: none; }

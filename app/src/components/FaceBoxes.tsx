@@ -28,9 +28,19 @@ export function FaceLayer(props: {
   /** A face was named: load the boxes again. */
   onChanged: () => void;
   onMessage: (text: string) => void;
+  /** "Who is it?" is open (shown faces must stay while you answer). */
+  onAsking?: (asking: boolean) => void;
 }) {
   const [names, setNames] = useState<Map<number, string>>(new Map());
   const [ask, setAsk] = useState<{ face: FaceBox; left: number; top: number } | null>(null);
+  // Pointing at a box or answering "Who is it?" keeps the boxes on screen.
+  const [over, setOver] = useState(false);
+  const onAsking = props.onAsking;
+  const holding = ask != null || over;
+  useEffect(() => {
+    onAsking?.(holding);
+  }, [holding, onAsking]);
+  useEffect(() => () => onAsking?.(false), [onAsking]);
   useEffect(() => {
     let alive = true;
     personFolders().then((f) => alive && setNames(new Map(f.map((x) => [x.id, x.name])))).catch(() => {});
@@ -53,6 +63,7 @@ export function FaceLayer(props: {
             title={known ? `See everything of ${name}` : 'Say who this is'}
             aria-label={known ? `${name} — see everything of this person` : 'Unknown face — say who this is'}
             onPointerDown={(e) => e.stopPropagation()}
+            onPointerEnter={() => setOver(true)} onPointerLeave={() => setOver(false)}
             onClick={(e) => {
               e.stopPropagation();
               if (known) props.onShowPerson?.(f.person!);
@@ -66,7 +77,7 @@ export function FaceLayer(props: {
         );
       })}
       {ask && (
-        <WhoIsIt face={ask.face} left={ask.left} top={ask.top} onClose={() => setAsk(null)}
+        <WhoIsIt face={ask.face} left={ask.left} top={ask.top} onClose={() => { setAsk(null); setOver(false); }}
           onDone={(msg) => {
             setAsk(null);
             props.onMessage(msg);

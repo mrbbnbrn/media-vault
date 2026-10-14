@@ -135,7 +135,9 @@ export function animationMs(bytes: Uint8Array): number {
 
 // ---- thumbnails -------------------------------------------------------------------------
 
-const THUMB_MAX = 360;
+// Big enough to stay sharp on large tiles, scaled Windows screens (125–150 %)
+// and face-centred crops. Thumbnails made by older versions were 360.
+const THUMB_MAX = 640;
 
 function canvasToBytes(c: HTMLCanvasElement): Promise<number[]> {
   return new Promise((resolve, reject) =>
@@ -145,20 +147,40 @@ function canvasToBytes(c: HTMLCanvasElement): Promise<number[]> {
         blob.arrayBuffer().then((a) => resolve(Array.from(new Uint8Array(a))), reject);
       },
       'image/jpeg',
-      0.82,
+      0.86,
     ),
   );
 }
 
 function draw(src: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
   const scale = Math.min(1, THUMB_MAX / Math.max(w, h));
+  const tw = Math.max(1, Math.round(w * scale));
+  const th = Math.max(1, Math.round(h * scale));
+  // Shrink in halves: one big jump makes a grainy, aliased thumbnail.
+  let cur: CanvasImageSource = src;
+  let cw = w;
+  let ch = h;
+  while (cw / 2 >= tw * 1.0001 && ch / 2 >= th) {
+    const half = document.createElement('canvas');
+    half.width = Math.round(cw / 2);
+    half.height = Math.round(ch / 2);
+    const hx = half.getContext('2d')!;
+    hx.imageSmoothingEnabled = true;
+    hx.imageSmoothingQuality = 'high';
+    hx.drawImage(cur, 0, 0, half.width, half.height);
+    cur = half;
+    cw = half.width;
+    ch = half.height;
+  }
   const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(w * scale));
-  c.height = Math.max(1, Math.round(h * scale));
+  c.width = tw;
+  c.height = th;
   const ctx = c.getContext('2d')!;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
   ctx.fillStyle = '#000';
   ctx.fillRect(0, 0, c.width, c.height);
-  ctx.drawImage(src, 0, 0, c.width, c.height);
+  ctx.drawImage(cur, 0, 0, c.width, c.height);
   return c;
 }
 
@@ -241,6 +263,60 @@ export function makeThumb(id: number, kind: Kind) {
   }
 }
 
+// ---- remaking older thumbnails sharper (made at 360 px before) -----------------------------
+// Where it got to is kept in the vault: { after, upto } = item ids still to do.
+const SHARPEN_KEY = 'thumbSharpen';
+let sharpenState: { after: number; upto: number } | null = null;
+
+const sharpenJob = loopJob('sharpen', {
+  label: 'Sharpening older thumbnails',
+  unit: '',
+  left: () => (sharpenState ? api.countToSharpen(sharpenState.after, sharpenState.upto) : Promise.resolve(0)),
+});
+
+async function sharpenSome(stopped: () => boolean): Promise<boolean> {
+  if (!sharpenState) {
+    const saved = await api.uiGet(SHARPEN_KEY).catch(() => null);
+    try {
+      sharpenState = saved ? JSON.parse(saved) : null;
+    } catch {
+      sharpenState = null;
+    }
+    if (!sharpenState) {
+      sharpenState = { after: 0, upto: await api.newestItemId().catch(() => 0) };
+      await api.uiSet(SHARPEN_KEY, JSON.stringify(sharpenState)).catch(() => {});
+    }
+  }
+  const st = sharpenState;
+  if (st.after >= st.upto) {
+    sharpenJob.idle();
+    return false;
+  }
+  const tasks = await api.thumbsToSharpen(st.after, st.upto, 4).catch(() => []);
+  if (!tasks.length) {
+    sharpenJob.idle();
+    st.after = st.upto;
+    await api.uiSet(SHARPEN_KEY, JSON.stringify(st)).catch(() => {});
+    return false;
+  }
+  sharpenJob.batch();
+  for (const t of tasks) {
+    if (stopped()) return false;
+    try {
+      const r = await makeThumb(t.id, t.kind);
+      if (stopped()) return false;
+      await api.saveThumb(t.id, r.bytes, r.w, r.h, r.ms, true);
+      listeners.forEach((l) => l(t.id));
+    } catch {
+      // Keep the old thumbnail.
+    }
+    st.after = t.id;
+    sharpenJob.step();
+  }
+  await api.uiSet(SHARPEN_KEY, JSON.stringify(st)).catch(() => {});
+  return true;
+}
+
 let running = false;
 let wake: (() => void) | null = null;
 const listeners = new Set<(id: number) => void>();
@@ -294,6 +370,8 @@ export function startThumbnailer(): () => void {
       }
       if (!tasks.length) {
         job.idle();
+        // Nothing new: quietly remake a few older, smaller thumbnails.
+        if (await sharpenSome(() => stopped)) continue;
         await sleep(4000);
         continue;
       }
@@ -310,6 +388,7 @@ export function startThumbnailer(): () => void {
   return () => {
     stopped = true;
     running = false;
+    sharpenState = null;
     wake?.();
   };
 }
