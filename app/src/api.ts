@@ -866,3 +866,29 @@ const mock = {
     }
   },
 };
+
+// ---- Windows Explorer: drag out, copy/paste (Rust: winshell) ----------------------
+// Kept apart from `api` above. Off Windows every call fails with "This only
+// works on Windows.". See dragout.ts and winclip.ts for how to use them.
+
+export interface ClipboardContent {
+  /** Files and folders copied in Explorer (full paths): import them like a drop. */
+  files: string[];
+  /** A copied picture (screenshot, image from a browser…) as PNG bytes. */
+  imagePng: number[] | null;
+  /** The clipboard holds items Ctrl+C'd in this app. */
+  ours: boolean;
+}
+
+export const winshell = {
+  /** Start a real Windows drag of these items/folders (the mouse button must still be held). */
+  dragOut: (ids: number[], folders: number[]) => call<'copied' | 'cancelled'>('drag_out', { ids, folders }),
+  /** Ctrl+C: offer these items/folders to Explorer. Explorer asks before copying. Returns the file count. */
+  clipboardPutFiles: (ids: number[], folders: number[]) => call<number>('clipboard_put_files', { ids, folders }),
+  /** Take our items off the clipboard, if they are still on it. */
+  clipboardClearOurs: () => call<void>('clipboard_clear_ours'),
+  /** What is on the clipboard (undefined in the browser preview). */
+  clipboardRead: () => call<ClipboardContent | undefined>('clipboard_read'),
+  /** Save a pasted picture as a new item (the same path as saving a video frame). */
+  importImageBytes: (folder: number | null, name: string, bytes: Uint8Array) => api.addFileBytes(folder, name, bytes),
+};

@@ -2220,6 +2220,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "hex",
+ "png 0.18.1",
  "rusqlite",
  "serde",
  "serde_json",
@@ -2230,6 +2231,8 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tempfile",
  "vault-core",
+ "windows",
+ "windows-core",
  "windows-sys 0.61.2",
  "zeroize",
 ]

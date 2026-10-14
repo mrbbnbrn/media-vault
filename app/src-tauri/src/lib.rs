@@ -27,6 +27,7 @@ mod share7z;
 mod similar;
 mod storage;
 mod videotool;
+mod winshell;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -81,6 +82,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     }
     if was_open {
         let _ = app.emit("vault-locked", reason.as_str());
+        winshell::on_lock(app);
     }
     beatlisten::stop(app);
     if reason == LockReason::PanicKey
@@ -1665,11 +1667,19 @@ pub fn run() {
             beatlisten::beats_supported,
             beatlisten::beats_start,
             beatlisten::beats_stop,
+            // Windows Explorer: drag out, copy/paste (winshell.rs)
+            winshell::drag_out,
+            winshell::clipboard_put_files,
+            winshell::clipboard_clear_ours,
+            winshell::clipboard_read,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")
         .run(|app, event| {
             // However the app ends, unsaved library changes are written first.
+            if let tauri::RunEvent::Exit = event {
+                winshell::on_exit();
+            }
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 beatlisten::stop(app);
                 let inner = app.state::<Shared>().inner().clone();

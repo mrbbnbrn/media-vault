@@ -19,6 +19,8 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 hex = "0.4.3"
+# Clipboard pictures -> PNG (winshell). Same version Tauri already uses.
+png = "0.18.1"
 rusqlite = "=0.40.2"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
@@ -33,6 +35,22 @@ zeroize = "1.9.1"
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
 # Beat detection: listens to the computer's own sound (WASAPI loopback).
 cpal = "=0.18.2"
+# Drag out / copy to Explorer and reading the clipboard (winshell). The same
+# versions Tauri (tao, wry) already pull in, so nothing new is built.
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Com",
+  "Win32_System_Com_StructuredStorage",
+  "Win32_System_DataExchange",
+  "Win32_System_Memory",
+  "Win32_System_Ole",
+  "Win32_System_SystemServices",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+windows-core = "0.62.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"
