@@ -10,7 +10,8 @@ export interface MoveDrag {
   canDrop?: (target: string) => boolean;
   /** Targets with data-order: the top/bottom edge means "put it before/after" instead of "into". */
   edges?: boolean;
-  onDrop: (target: string, edge: 'before' | 'after' | null) => void;
+  /** `order` is the target's data-order (sidebar tree: the folder id; pinned list: "pin:<id>"). */
+  onDrop: (target: string, edge: 'before' | 'after' | null, order: string | null) => void;
 }
 
 export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
@@ -58,7 +59,7 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
     over?.classList.remove('drop-over', 'drop-before', 'drop-after');
     ghost?.remove();
     document.body.classList.remove('dragging');
-    if (active && over?.dataset.drop) opts.onDrop(over.dataset.drop, edge);
+    if (active && over?.dataset.drop) opts.onDrop(over.dataset.drop, edge, over.dataset.order ?? null);
     if (active) {
       // The end of a drag is not a click.
       const block = (ce: MouseEvent) => {

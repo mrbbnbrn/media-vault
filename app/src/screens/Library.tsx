@@ -29,6 +29,10 @@ import { ShareDialog } from '../components/ShareDialog';
 import { ConvertDialog } from '../components/ConvertDialog';
 import { AnimationDialog } from '../components/AnimationDialog';
 import { Duel } from '../components/Duel';
+import { SlotMachine } from '../components/SlotMachine';
+import { WhyHere, type WhyQuery } from '../components/WhyHere';
+import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortTree, type FolderSort } from '../foldersort';
+import { useFolderPrefs } from '../folderprefs';
 import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
 import { tileRect } from '../flip';
@@ -108,7 +112,9 @@ type Dialog =
   | { t: 'convert'; items: Item[]; target?: 'mp4' }
   | { t: 'animation'; items: Item[] }
   | { t: 'dragOut'; resolve: (ok: boolean) => void }
-  | { t: 'extracted'; folder: FolderCard; x: Extracted };
+  | { t: 'extracted'; folder: FolderCard; x: Extracted }
+  | { t: 'slots'; folder: FolderCard | null }
+  | { t: 'why'; item: Item; query: WhyQuery };
 
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
@@ -237,6 +243,11 @@ export function Library({ nav, view, setView, history, reveal }: {
   const [resume, setResume] = useState<LastPlace | null>(null);
   const [everyFolder, setEveryFolder] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  // Folder sorting: the sidebar (every level and the pinned list) and the folder cards (foldersort.ts).
+  const fprefs = useFolderPrefs(s.path);
+  const sideSort = fprefs.side;
+  const cardSort: FolderSort = vp.folderSort ?? sideSort;
+  const setCardSort = (o: FolderSort) => { setViewPrefs(vKey, { folderSort: o }); setPrefsTick((t) => t + 1); };
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -460,6 +471,13 @@ export function Library({ nav, view, setView, history, reveal }: {
       live = false;
     };
   }, [reload, restoreScroll]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Remember when each folder was opened (the "Recently opened" sort).
+  const openedId = view.kind === 'folder' ? view.id : null;
+  const markOpened = fprefs.markOpened;
+  useEffect(() => {
+    if (openedId != null) markOpened(openedId);
+  }, [openedId, markOpened]);
 
   // Folder covers appear as soon as their first thumbnail is made.
   useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
@@ -804,8 +822,14 @@ export function Library({ nav, view, setView, history, reveal }: {
     };
   }, [faceKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
-  const pinned = folders.filter((f) => f.pinned);
+  // The sidebar tree, every level sorted the same way; folder cards sorted by the Sort menu.
+  const tree = useMemo(() => sortTree(folders, sideSort, fprefs.opened), [folders, sideSort, fprefs.opened]);
+  const cards = useMemo(() => {
+    if (view.kind !== 'folders') return sortFolders(subfolders, cardSort, fprefs.opened);
+    if (!everyFolder) return sortFolders(folders.filter((f) => f.parentId === null), cardSort, fprefs.opened);
+    return cardSort === 'own' ? folders : sortFolders(folders, cardSort, fprefs.opened);
+  }, [view.kind, subfolders, folders, everyFolder, cardSort, fprefs.opened]);
+  const pinned = useMemo(() => sortPinned(folders.filter((f) => f.pinned), sideSort, fprefs.pins, fprefs.opened), [folders, sideSort, fprefs.pins, fprefs.opened]);
   const selIds = [...selected];
   const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
   /** Everything shown here: the folder cards and the items (not the folder you are in). */
@@ -931,6 +955,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
     { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
     { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },
+    { label: 'Slot machine', hint: 'feeling lucky?', onSelect: () => setDialog({ t: 'slots', folder: f }) },
     { label: 'Note…', hint: f.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: true, id: f.id, name: f.name, note: f.note }) },
     { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
     { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
@@ -1333,10 +1358,10 @@ export function Library({ nav, view, setView, history, reveal }: {
         return !!target && group.every((g) => g.id !== to && !target.path.some((c) => c.id === g.id));
       },
       edges: true,
-      onDrop: (t, edge) => {
+      onDrop: (t, edge, order) => {
         const to = targetFolder(t);
         if (edge && to != null) {
-          reorderFolders(group, to, edge).catch((err) => setError(errText(err)));
+          (order?.startsWith('pin:') ? reorderPins(group, to, edge) : reorderFolders(group, to, edge)).catch((err) => setError(errText(err)));
           return;
         }
         if (group.length === 1) moveFolder(f, to).catch((err) => setError(errText(err)));
@@ -1345,6 +1370,24 @@ export function Library({ nav, view, setView, history, reveal }: {
     });
     dragOut(e, [], group.map((g) => g.id));
   };
+  /**
+   * Dragging to arrange only makes sense in your own order: while another sort is on,
+   * switch to your own order, starting from what you see now. Returns how to undo that.
+   */
+  const ownOrderFirst = async (): Promise<(() => Promise<void>) | null> => {
+    if (sideSort === 'own') return null;
+    const was = sideSort;
+    const wasPins = fprefs.pins;
+    const before = await api.setFolderOrder(tree.map((f) => f.id));
+    fprefs.setPins(pinned.map((f) => f.id));
+    fprefs.setSide('own');
+    return async () => {
+      await api.restoreFolderOrder(before);
+      fprefs.setPins(wasPins);
+      fprefs.setSide(was);
+    };
+  };
+  const switchedText = (what: string, switched: boolean) => (switched ? `${what} · switched to your own order` : what);
   /** Drop on a folder's top or bottom edge: put the dragged folders before / after it. */
   const reorderFolders = async (group: FolderCard[], targetId: number, edge: 'before' | 'after') => {
     const target = folders.find((x) => x.id === targetId);
@@ -1353,19 +1396,39 @@ export function Library({ nav, view, setView, history, reveal }: {
       setError("A folder can't be moved into itself.");
       return;
     }
+    const unseed = await ownOrderFirst();
     const parent = target.parentId;
     const moving = group.filter((g) => g.parentId !== parent);
     for (const g of moving) await api.moveFolder(g.id, parent);
-    const siblings = folders.filter((x) => x.parentId === parent && !group.some((g) => g.id === x.id));
-    const at = siblings.findIndex((x) => x.id === targetId) + (edge === 'after' ? 1 : 0);
-    const order = [...siblings.slice(0, at), ...group, ...siblings.slice(at)].map((x) => x.id);
+    // Siblings as you see them (after switching, your own order is what you saw).
+    const siblings = tree.filter((x) => x.parentId === parent).map((x) => x.id);
+    const order = placeIds(siblings, group.map((g) => g.id), targetId, edge);
     const before = await api.setFolderOrder(order);
-    did(group.length === 1 ? `Moved “${group[0].name}”` : `Moved ${plural(group.length, 'folder')}`, async () => {
+    const label = group.length === 1 ? `Moved “${group[0].name}”` : `Moved ${plural(group.length, 'folder')}`;
+    did(switchedText(label, !!unseed), async () => {
       await api.restoreFolderOrder(before);
       for (const g of moving) await api.moveFolder(g.id, g.parentId);
+      if (unseed) await unseed();
     });
     await reload();
     nav.refresh().catch(() => {});
+  };
+  /** Drop on a pinned folder's edge: arrange the pinned list (pinning what wasn't pinned yet). */
+  const reorderPins = async (group: FolderCard[], targetId: number, edge: 'before' | 'after') => {
+    if (group.some((g) => g.id === targetId)) return;
+    const unseed = await ownOrderFirst();
+    const wasPins = unseed ? pinned.map((f) => f.id) : fprefs.pins;
+    const current = pinned.map((f) => f.id);
+    const newlyPinned = group.filter((g) => !g.pinned);
+    for (const g of newlyPinned) await api.setPinned(g.id, true);
+    fprefs.setPins(placeIds(current, group.map((g) => g.id), targetId, edge));
+    const label = newlyPinned.length ? `Pinned ${group.length === 1 ? `“${group[0].name}”` : plural(group.length, 'folder')}` : 'Arranged the pinned folders';
+    did(switchedText(label, !!unseed), async () => {
+      for (const g of newlyPinned) await api.setPinned(g.id, false);
+      fprefs.setPins(wasPins);
+      if (unseed) await unseed();
+    });
+    if (newlyPinned.length) await reload();
   };
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
@@ -1415,6 +1478,9 @@ export function Library({ nav, view, setView, history, reveal }: {
         { label: 'Open', onSelect: () => playItems(false, it.id) },
         { label: many ? 'Play these as a slideshow' : 'Slideshow from here', onSelect: () => playItems(true, it.id, many) },
         ...(!many && !(view.kind === 'folder' && view.id === it.folderId) ? [{ label: 'Show in its folder', onSelect: () => showInFolder(it) }] : []),
+        ...(!many && (view.kind === 'search' || view.kind === 'smart') ? [{ label: 'Why is this here?', hint: 'what matched', onSelect: () => setDialog({
+          t: 'why', item: it, query: view.kind === 'smart' ? { kind: 'smart', q: view.q } : { kind: 'search', tags: view.tags, names: view.names, people: view.people ?? [] },
+        }) }] : []),
         ...(!many && ['image', 'gif', 'video'].includes(it.kind) ? [{ label: 'Find similar', hint: smartOn ? 'smart search' : undefined, onSelect: () => { setView({ kind: 'similar', id: it.id, name: it.name }); showItem(it.id); } }] : []),
         { label: allFav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => setFav(ids, !allFav) },
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
@@ -1620,6 +1686,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     }) });
     actions.push({ key: 'speed', label: 'Speed round', title: 'Pictures flash by; press F to favourite', onClick: onMedia((list) => startSpeedRound(nF === 1 && !nI ? fs[0] : null, list)) });
     actions.push({ key: 'duel', label: 'Duel', title: 'Pick the better of two; sets the weights', onClick: onMedia((list) => startDuel(null, list)) });
+    if (nF === 1 && !nI) actions.push({ key: 'slots', label: 'Slot machine', title: 'Spin three reels of pictures from this folder', onClick: () => setDialog({ t: 'slots', folder: fs[0] }) });
     actions.push({ key: 'faces', label: 'Scan for faces', onClick: onMedia((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) });
     actions.push({ key: 'delete', label: 'Delete', icon: <TrashIcon />, danger: true, pinned: true, title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
       onClick: () => (itemsOnly ? trashItems(selIds) : askDeleteMany()) });
@@ -1628,8 +1695,21 @@ export function Library({ nav, view, setView, history, reveal }: {
 
   // ---- render ---------------------------------------------------------------------------
 
-  const visibleTree = folders.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
+  const visibleTree = tree.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
   const rail = !!cfg.look?.sidebarRail;
+  const sideSortInfo = FOLDER_SORTS.find((o) => o.id === sideSort) ?? FOLDER_SORTS[0];
+  /** The sidebar's sort button: a small menu (works in the narrow sidebar too). */
+  const sideSortButton = (cls: string) => (
+    <button type="button" className={cls} aria-label={`Sort folders: ${sideSortInfo.label}`} aria-haspopup="menu"
+      title={`Sort the folders: ${sideSortInfo.label}`}
+      onClick={(e) => {
+        const r = e.currentTarget.getBoundingClientRect();
+        setCtx({ x: rail ? r.right + 6 : r.left, y: rail ? r.top : r.bottom + 4, title: 'Sort folders',
+          items: FOLDER_SORTS.map((o) => ({ label: o.label, hint: o.hint, checked: o.id === sideSort, onSelect: () => fprefs.setSide(o.id) })) });
+      }}>
+      <SortIcon size={13} />{!rail && sideSort !== 'own' && <span>{sideSortInfo.short}</span>}
+    </button>
+  );
   const sideView = (v: LibView, label: string, count?: number, icon?: React.ReactNode, onClick?: () => void) => {
     const on = !onClick && v.kind === view.kind && (v.kind !== 'folder' || (view.kind === 'folder' && view.id === v.id))
       && !(view.kind === 'timeline' && view.person != null);
@@ -1726,13 +1806,14 @@ export function Library({ nav, view, setView, history, reveal }: {
           {sideView({ kind: 'folders' }, 'Tags', undefined, <TagIcon size={rail ? 16 : 14} />, () => setDialog({ t: 'tags' }))}
           {rail && (
             <div className="rail-folders">
-              {folders.map((f) => {
+              {sideSortButton(`rail-sort${sideSort !== 'own' ? ' on' : ''}`)}
+              {tree.map((f) => {
                 const parent = f.subfolders > 0;
                 return (
-                  <button key={f.id} type="button" data-drop={`folder:${f.id}`}
+                  <button key={f.id} type="button" data-drop={`folder:${f.id}`} data-order={f.id}
                     className={`rail-folder${parent ? ' parent' : ''}${f.depth > 0 ? ' sub' : ''}${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`}
                     title={f.path.map((c) => c.name).concat(f.name).join(' › ')} aria-label={f.name}
-                    onClick={(e) => folderClick(e, f, folders, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
+                    onClick={(e) => folderClick(e, f, tree, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
                     {parent && <span className="rail-shape" aria-hidden="true" />}
                     {f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
                     {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
@@ -1745,17 +1826,17 @@ export function Library({ nav, view, setView, history, reveal }: {
           {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
           {pinned.map((f) => (
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
-              onContextMenu={(e) => folderContext(e, f)}>
+              data-order={`pin:${f.id}`} onContextMenu={(e) => folderContext(e, f)}>
               <span className="twisty" />
               <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, pinned, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
-                title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
+                title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it, onto a pinned folder's top or bottom edge to arrange the pinned list`}>
                 {folderPic(f, 18)}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
             </div>
           ))}
-          <div className="side-head">Folders</div>
+          <div className="side-head side-head-row">Folders {sideSortButton(`side-sort${sideSort !== 'own' ? ' on' : ''}`)}</div>
           <button type="button" data-drop="folder:top" className={`side-row${view.kind === 'folder' && view.id === null ? ' on' : ''}`}
             onClick={() => openFolder(null)}>
             <FolderIcon size={15} /> Top level
@@ -1861,6 +1942,10 @@ export function Library({ nav, view, setView, history, reveal }: {
               </div>
             )}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+              {view.kind === 'folders' && folders.length > 0 && (
+                <Dropdown title="Sort the folders" label={`${FOLDER_SORTS.find((o) => o.id === cardSort)?.label} ▾`}
+                  items={FOLDER_SORTS.map((o) => ({ label: o.label, checked: o.id === cardSort, onSelect: () => setCardSort(o.id) }))} />
+              )}
               {view.kind === 'folders' && (
                 <div role="group" aria-label="Show" className="seg">
                   <button type="button" className={!everyFolder ? 'on' : ''} onClick={() => setEveryFolder(false)}>Top level</button>
@@ -1881,7 +1966,13 @@ export function Library({ nav, view, setView, history, reveal }: {
                     </button>
                   )}
                   {!smart && view.kind !== 'similar' && <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
-                    items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />}
+                    items={[
+                      ...(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) })),
+                      // Inside a folder the same menu sorts its subfolder cards.
+                      ...(view.kind === 'folder' && cards.length > 0 ? FOLDER_SORTS.map((o, k) => ({
+                        label: `Folders: ${o.label.charAt(0).toLowerCase()}${o.label.slice(1)}`, sepBefore: k === 0, checked: o.id === cardSort, onSelect: () => setCardSort(o.id),
+                      })) : []),
+                    ]} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
                   <div role="group" aria-label="Tile shape" className="seg">
                     <button type="button" className={!shape && !scrollMode ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => { setScrollMode(false); saveCfg({ gridShape: false }); }}>Tiles</button>
@@ -2223,6 +2314,11 @@ export function Library({ nav, view, setView, history, reveal }: {
           onClose={(changed) => { setDialog(null); if (changed) { reload(); nav.refresh().catch(() => {}); } }} />
       )}
       {dialog?.t === 'duel' && <Duel items={dialog.items} onClose={() => { setDialog(null); reload(); }} />}
+      {dialog?.t === 'slots' && (
+        <SlotMachine folder={dialog.folder} onClose={() => setDialog(null)}
+          onPlay={(list, title) => { setDialog(null); playList(list, true, undefined, title); }} />
+      )}
+      {dialog?.t === 'why' && <WhyHere item={dialog.item} query={dialog.query} kind={kind} onClose={() => setDialog(null)} />}
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (
         <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />
