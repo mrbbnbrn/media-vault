@@ -1644,6 +1644,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   };
 
   // Living folder cards: hovering a card cycles through a few items inside.
+  const cardIndex = useMemo(() => new Map(cards.map((c, i) => [c.id, i])), [cards]);
   useEffect(() => {
     if (hoverCard == null) return;
     const id = hoverCard;
@@ -1659,9 +1660,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [hoverCard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const coverView = (f: FolderCard) => {
-    // Person folders: a round cover centred on the face.
-    if (f.person && f.cover) return <span className="pcard"><RoundCover folder={f} bump={coverBump} /></span>;
     const hovered = hoverCard === f.id;
+    // Person folders: a round cover centred on the face; hovering opens it
+    // into the card's square, and holding there cycles pictures from inside.
+    if (f.person && f.cover) {
+      const others = samples[f.id]?.filter((x) => x !== f.cover) ?? [];
+      const cycling = hovered && others.length > 0 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
+      const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
+      return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} bump={coverBump} open={hovered} cycle={cycling} before={before} /></span>;
+    }
     const playing = preview === 'all' || (preview === 'hover' && hovered);
     const animated = f.coverKind === 'video' || f.coverKind === 'gif';
     if (f.cover && playing && animated) {
@@ -1671,17 +1678,24 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     }
     const list = samples[f.id];
     // Stacked card: two more pictures from inside peek out behind the cover;
-    // hovering fans them out and the front card cycles through the folder.
+    // hovering fans them out over the neighbouring cards (the mouse passes
+    // through them), the front card grows a little and then cycles through
+    // the folder. Cards in the first or last column fan less towards the edge.
     const behind = f.cover ? f.samples.filter((x) => x !== f.cover).slice(0, 2) : [];
     if (behind.length) {
       const others = list?.filter((x) => !behind.includes(x)) ?? [];
       const cycling = hovered && others.length > 1 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
+      // The picture before stays underneath while the next one fades in.
+      const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
+      const per = Math.max(1, cols - 1);
+      const at = (cardIndex.get(f.id) ?? 0) % per;
+      const edge = `${at === 0 ? ' edge-l' : ''}${at === per - 1 ? ' edge-r' : ''}`;
       return (
-        <span className="fstack">
+        <span className={`fstack${edge}`}>
           {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
-          {cycling != null
-            ? <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />
-            : <img key="cover" className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />}
+          <img className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />
+          {before != null && <img key={`b${before}`} className="fstack-top" src={thumbUrl(before)} alt="" draggable={false} />}
+          {cycling != null && <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />}
         </span>
       );
     }

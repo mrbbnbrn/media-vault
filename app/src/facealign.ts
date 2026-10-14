@@ -40,7 +40,7 @@ export const COVER_FACE_SHARE = 0.5;
  * far as the picture allows, it always covers the whole circle); without
  * one, the picture is centred like `object-fit: cover`.
  */
-export function coverFit(aspect: number, face?: FaceRect | null): { w: number; h: number; left: number; top: number } {
+export function coverFit(aspect: number, face?: FaceRect | null, zoom = true): { w: number; h: number; left: number; top: number } {
   const a = aspect > 0 && Number.isFinite(aspect) ? aspect : 1;
   // Smallest height that still covers the square.
   const minH = Math.max(1, 1 / a);
@@ -49,7 +49,9 @@ export function coverFit(aspect: number, face?: FaceRect | null): { w: number; h
   let cy = 0.5;
   if (face && face.w > 0 && face.h > 0) {
     const side = Math.max(face.w * a, face.h); // in picture heights
-    h = Math.max(minH, Math.min(minH * 8, COVER_FACE_SHARE / side));
+    // `zoom: false` (a hovered person card opening into a square): the whole
+    // picture like `object-fit: cover`, only shifted towards the face.
+    if (zoom) h = Math.max(minH, Math.min(minH * 8, COVER_FACE_SHARE / side));
     cx = face.x + face.w / 2;
     cy = face.y + face.h / 2;
   }

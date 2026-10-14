@@ -149,7 +149,7 @@ pub struct LookSettings {
     pub tile_radius: u32,
     /// Top-bar buttons in your order; hidden ones are left out. Empty = the default bar.
     pub top_bar: Vec<String>,
-    /// The thumbnail minimap beside the grid's scrollbar (long grids only).
+    /// The scroll preview strip beside the grid's scrollbar (long grids only).
     pub minimap: bool,
 }
 
