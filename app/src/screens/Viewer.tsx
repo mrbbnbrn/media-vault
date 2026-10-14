@@ -12,7 +12,7 @@ import { drawnRect, FLIP_MS, invert, reducedMotion, shrinkToTile, type Box } fro
 import type { PlayItem } from '../media';
 import type { Order } from '../playlist';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
-import { withSound } from '../prefs';
+import { saveViewerPrefs, useViewerPrefs, withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
 
 let lastSettings: PlaybackSettings = DEFAULT_PLAYBACK;
@@ -46,6 +46,8 @@ export function Viewer(props: {
   titleCard?: TitleCard;
   /** Speed round: pictures and GIFs flash by; F to favourite. */
   speedRound?: boolean;
+  /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
+  person?: number | null;
 }) {
   const current = useRef<PlayItem | null>(null);
   const player = useRef<PlayerHandle>(null);
@@ -180,6 +182,7 @@ export function Viewer(props: {
         mini={mini ? { onExpand: () => props.onExpand?.(), onClose: () => props.onCloseMini?.() } : undefined}
         onMinimize={props.onMinimize && vault ? minimize : undefined}
         onShowPerson={props.onShowPerson}
+        person={props.person}
         onCurrent={(it) => { current.current = it; }}
         onClose={() => (clean ? toggleClean() : back())}
         subtitle={(it) => it.itemId != null && props.onShowFolder ? (
@@ -245,6 +248,7 @@ let beatsOk: Promise<boolean> | null = null;
 function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; onClose: () => void }) {
   const num = (v: string) => (v === '' ? 0 : Number(v));
   const [beats, setBeats] = useState(false);
+  const prefs = useViewerPrefs();
   useEffect(() => {
     let alive = true;
     beatsOk ??= api.beatsSupported().catch(() => false);
@@ -265,6 +269,15 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           <span>Pictures</span>
           <span className="row">
             <label className="check"><input type="checkbox" checked={s.kenBurns} onChange={(e) => set({ kenBurns: e.target.checked })} /> Slow pan and zoom</label>
+          </span>
+
+          <span>Faces</span>
+          <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+            <label className="check"><input type="checkbox" checked={!!prefs.alignFaces} onChange={(e) => saveViewerPrefs({ alignFaces: e.target.checked })} /> Line up faces</label>
+            <span className="faint" style={{ fontSize: 12 }}>
+              Each picture is moved so the main face stays at the same place and size, with a crossfade{s.kenBurns ? ' and a gentle zoom' : ''}.
+              Pictures without a found face show as usual.
+            </span>
           </span>
 
           <label htmlFor="ps-vmax">Videos play for at most</label>

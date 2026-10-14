@@ -27,11 +27,13 @@ export interface ViewerSettings {
   ambient: boolean;
   /** Boxes around found faces in the viewer (also switched from the library). */
   faceBoxes: boolean;
+  /** Slideshow "Line up faces": the main face stays at the same place and size. */
+  alignFaces?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
-  ambient: false, faceBoxes: false,
+  ambient: false, faceBoxes: false, alignFaces: false,
 };
 
 export interface AppConfig {
@@ -61,7 +63,7 @@ export interface AppConfig {
 }
 
 export const DEFAULT_LOOK: LookSettings = {
-  sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [],
+  sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [], minimap: true,
 };
 
 export interface LookSettings {
@@ -75,6 +77,8 @@ export interface LookSettings {
   tileRadius: number;
   /** Top-bar buttons in order; empty = default. */
   topBar: string[];
+  /** The thumbnail minimap beside the grid's scrollbar (long grids only). */
+  minimap?: boolean;
 }
 
 export interface VaultEntry {
@@ -308,6 +312,8 @@ export interface FolderCard {
   /** Up to three pictures from inside (stacked cards). */
   samples: number[];
   note: string | null;
+  /** Person folders: the face in the cover picture [x, y, w, h] (parts of its size), for the round cover. */
+  coverFace?: [number, number, number, number] | null;
 }
 
 export interface FolderView {
@@ -866,6 +872,8 @@ const mock = {
   pickFolder: async () => 'D:\\Vaults',
   async call(cmd: string, a: Record<string, unknown>): Promise<unknown> {
     await new Promise((r) => setTimeout(r, cmd.startsWith('unlock') || cmd === 'create_vault' ? 600 : 50));
+    const demo = (await import('./mockdemo')).demoAnswer(cmd, a);
+    if (demo !== undefined) return demo;
     const s = this.state;
     const session = (path: string, needsNewPassword = false): SessionInfo => ({
       path,

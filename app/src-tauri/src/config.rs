@@ -59,6 +59,8 @@ pub struct ViewerSettings {
     pub ambient: bool,
     /// Draw boxes around found faces in the viewer (also switched from the library).
     pub face_boxes: bool,
+    /// Slideshow "Line up faces": the main face stays at the same place and size.
+    pub align_faces: bool,
 }
 
 impl Default for ViewerSettings {
@@ -74,6 +76,7 @@ impl Default for ViewerSettings {
             grid_columns: 0,
             ambient: false,
             face_boxes: false,
+            align_faces: false,
         }
     }
 }
@@ -137,6 +140,8 @@ pub struct LookSettings {
     pub tile_radius: u32,
     /// Top-bar buttons in your order; hidden ones are left out. Empty = the default bar.
     pub top_bar: Vec<String>,
+    /// The thumbnail minimap beside the grid's scrollbar (long grids only).
+    pub minimap: bool,
 }
 
 impl Default for LookSettings {
@@ -150,6 +155,7 @@ impl Default for LookSettings {
             tile_gap: 10,
             tile_radius: 8,
             top_bar: Vec::new(),
+            minimap: true,
         }
     }
 }

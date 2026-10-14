@@ -130,6 +130,9 @@ pub struct FolderCard {
     pub samples: Vec<i64>,
     /// Your note.
     pub note: Option<String>,
+    /// Person folders: the face in the cover picture ([x, y, w, h] as parts of
+    /// its width and height), so the round cover can be centred on it.
+    pub cover_face: Option<[f32; 4]>,
 }
 
 struct FolderRow {
@@ -314,7 +317,12 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 .cover
                 .or_else(|| if r.person { person_covers.get(&id).copied() } else { None })
                 .or_else(|| cover_below.get(&id).copied());
+            let cover_face = match cover {
+                Some(c) if r.person && matches!(kinds.get(&c).map(String::as_str), Some("image") | Some("gif")) => cover_face(conn, c, id),
+                _ => None,
+            };
             FolderCard {
+                cover_face,
                 cover_kind: cover.and_then(|c| kinds.get(&c).cloned()),
                 id,
                 name: r.name.clone(),
@@ -335,6 +343,17 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             }
         })
         .collect())
+}
+
+/// The face to centre a person's round cover on: theirs, else the biggest one.
+fn cover_face(conn: &Connection, media: i64, person: i64) -> Option<[f32; 4]> {
+    conn.query_row(
+        "SELECT x, y, w, h FROM faces WHERE media_id = ?1 AND w > 0 AND h > 0 \
+         ORDER BY IFNULL(person_id = ?2, 0) DESC, w * h DESC LIMIT 1",
+        [media, person],
+        |r| Ok([r.get::<_, f64>(0)? as f32, r.get::<_, f64>(1)? as f32, r.get::<_, f64>(2)? as f32, r.get::<_, f64>(3)? as f32]),
+    )
+    .ok()
 }
 
 /// For each person folder: the picture whose face is closest to that
@@ -1670,6 +1689,31 @@ mod tests {
         assert!(v.items.is_empty());
         assert_eq!(folder_view(&c, None).unwrap().items.len(), 1);
         let _ = trips;
+    }
+
+    #[test]
+    fn person_covers_carry_the_face() {
+        let c = db::create_empty().unwrap();
+        let alex = create_folder(&c, None, "Alex").unwrap();
+        let trips = create_folder(&c, None, "Trips").unwrap();
+        let p = add(&c, "p", Some(alex), "image");
+        add(&c, "t", Some(trips), "image");
+        let face = |media: i64, x: f64, w: f64, person: Option<i64>| {
+            c.execute(
+                "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id) VALUES (?1, 0, ?2, 0.25, ?3, ?3, 0.9, ?4, ?5)",
+                params![media, x, w, vec![0u8; 512], person],
+            )
+            .unwrap();
+        };
+        face(p, 0.1, 0.4, None); // a bigger stranger
+        face(p, 0.6, 0.2, Some(alex));
+        let card = |id: i64| all_folders(&c).unwrap().into_iter().find(|f| f.id == id).unwrap();
+        // Not a person folder yet: no face.
+        assert_eq!(card(alex).cover_face, None);
+        crate::faces::set_person(&c, alex, true).unwrap();
+        let f = card(alex).cover_face.expect("face of the cover");
+        assert!((f[0] - 0.6).abs() < 1e-6 && (f[2] - 0.2).abs() < 1e-6, "their own face, not the biggest: {f:?}");
+        assert_eq!(card(trips).cover_face, None);
     }
 
     #[test]

@@ -121,6 +121,8 @@ export function Settings({ nav }: { nav: Nav }) {
                   on={look.hoverInfo} set={(v) => setLook({ hoverInfo: v })} />
                 <Toggle title="Crop square tiles around faces" desc="Uses face recognition: tiles keep faces in view instead of the middle of the picture."
                   on={look.faceCrop} set={(v) => setLook({ faceCrop: v })} />
+                <Toggle title="Minimap beside the scrollbar" desc="A slim overview of the whole grid next to the scrollbar, for long folders. Click or drag on it to jump; point at it for a closer look."
+                  on={look.minimap !== false} set={(v) => setLook({ minimap: v })} />
                 <Toggle title="Compact sidebar" desc="Only icons and folder pictures; names show when you point at them. The button at the top of the sidebar switches it too."
                   on={look.sidebarRail} set={(v) => setLook({ sidebarRail: v })} />
                 <div className="setting">
