@@ -1,13 +1,17 @@
-// Opening the museum from the library, and coming back to it from the viewer.
+// Opening the museum from the library, and the viewer over it.
 // Kept free of three.js: the museum itself is loaded only when opened.
+//
+// A picture opened from the museum shows in the viewer right here, on top of
+// the museum, which stays loaded and holds still underneath: closing the
+// viewer is instant and you stand exactly where you were.
 
-import { lazy, Suspense, useEffect, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useMemo, useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, thumbUrl, type FolderCard, type Item } from '../../api';
 import { fromItem } from '../../media';
 import type { Nav } from '../../App';
 import type { LibView } from '../../screens/Library';
+import { Viewer } from '../../screens/Viewer';
 import type { MuseumItem } from './layout';
-import type { Pose } from './engine';
 
 const Museum = lazy(() => import('./Museum'));
 
@@ -16,9 +20,10 @@ interface Session {
   items: Item[];
   /** The same items as the museum sees them (made once, so the halls aren't rebuilt). */
   pieces: MuseumItem[];
-  /** Set while the viewer is open on one of the museum's pictures. */
-  away: { view: string; wing: number; pose: Pose } | null;
-  resume: { wing: number; pose: Pose } | null;
+  /** The viewer open over the museum, on this item. */
+  viewing: number | null;
+  /** The item the viewer ended on, to look at closely when it closes. */
+  returnTo: { id: number; n: number } | null;
 }
 
 let session: Session | null = null;
@@ -28,6 +33,9 @@ const set = (s: Session | null) => {
   listeners.forEach((l) => l());
 };
 let lockHooked = false;
+
+/** True while a museum is open (the library underneath leaves the keyboard alone). */
+export const museumOpen = () => session !== null;
 
 const visual = (i: Item) => i.kind === 'image' || i.kind === 'gif' || i.kind === 'video';
 
@@ -47,7 +55,7 @@ export function openMuseum(title: string, items: Item[], note?: (text: string) =
     // Locking the vault closes the museum.
     onLocked(() => set(null)).catch(() => {});
   }
-  set({ title, items: list, pieces: list.map(toMuseum), away: null, resume: null });
+  set({ title, items: list, pieces: list.map(toMuseum), viewing: null, returnTo: null });
 }
 
 /** A folder's museum (everything inside it; a person: everyone tagged too). */
@@ -63,7 +71,7 @@ export async function openFolderMuseum(f: FolderCard, note?: (text: string) => v
 const sources = { thumb: thumbUrl, full: mediaUrl };
 
 /** Rendered once by the library; shows the museum while one is open. */
-export function MuseumHost({ nav, view }: { nav: Nav; view: LibView }) {
+export function MuseumHost({ nav }: { nav: Nav; view?: LibView }) {
   const s = useSyncExternalStore(
     (l) => {
       listeners.add(l);
@@ -71,28 +79,31 @@ export function MuseumHost({ nav, view }: { nav: Nav; view: LibView }) {
     },
     () => session,
   );
-  // Back from the viewer: walk on from where you stood (only to the same place in the library).
-  useEffect(() => {
-    if (!session?.away) return;
-    const a = session.away;
-    if (a.view === JSON.stringify(view)) set({ ...session, away: null, resume: { wing: a.wing, pose: a.pose } });
-    else set(null);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  const items = s?.items;
+  const play = useMemo(() => (items ? items.map(fromItem) : []), [items]);
 
-  if (!s || s.away) return null;
+  if (!s) return null;
   return (
     <Suspense fallback={<div style={{ position: 'fixed', inset: 0, zIndex: 45, background: '#0b0705' }} />}>
       <Museum
         title={s.title}
         items={s.pieces}
         sources={sources}
-        resume={s.resume}
+        covered={s.viewing != null}
+        returnTo={s.returnTo}
         onClose={() => set(null)}
-        onOpenItem={(id, at) => {
-          set({ ...s, away: { view: JSON.stringify(view), ...at } });
-          nav.go({ name: 'viewer', items: s.items.map(fromItem), startKey: `v${id}`, title: s.title, auto: false, back: view });
+        onOpenItem={(id) => {
+          if (session) set({ ...session, viewing: id });
         }}
       />
+      {s.viewing != null && (
+        <div className="museum-viewer">
+          <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
+            onBack={(last) => {
+              if (session) set({ ...session, viewing: null, returnTo: last?.itemId != null ? { id: last.itemId, n: Date.now() } : session.returnTo });
+            }} />
+        </div>
+      )}
     </Suspense>
   );
 }

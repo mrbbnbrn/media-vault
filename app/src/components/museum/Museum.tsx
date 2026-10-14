@@ -2,8 +2,10 @@
 // pictures. Loaded lazily (three.js is big), see launch.tsx.
 //
 // Click to start (the mouse is captured), W A S D / arrows walk, Shift hurries,
-// the mouse looks around, clicking a picture opens it in the viewer. Esc frees
-// the mouse; Esc again (or "Leave museum") leaves.
+// the mouse looks around, Q / E glide from picture to picture. Clicking a
+// picture glides up for a close look (arrows move along, Enter opens the full
+// viewer over the museum, Esc steps back). Esc frees the mouse; Esc again (or
+// "Leave museum") leaves.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WebGLRenderer } from 'three';
@@ -19,6 +21,10 @@ export interface MuseumProps {
   resume?: { wing: number; pose: Pose } | null;
   onClose: () => void;
   onOpenItem?: (id: number, at: { wing: number; pose: Pose }) => void;
+  /** The viewer is open on top: the museum holds still (and leaves the keys alone). */
+  covered?: boolean;
+  /** Back from the viewer on this item: look at it closely (if it hangs in this wing). */
+  returnTo?: { id: number; n: number } | null;
 }
 
 const QKEY = 'mv-museum-quality';
@@ -33,6 +39,19 @@ function savedQuality(): Quality {
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 const bare = (name: string) => name.replace(/\.[a-z0-9]{2,5}$/i, '');
 const MOVE = new Set(['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ShiftLeft', 'ShiftRight']);
+
+function frameInfo(f: Frame): string {
+  const it = f.item;
+  const parts: string[] = [];
+  if (it.kind === 'video') parts.push('Film');
+  else if (it.kind === 'gif') parts.push('Moving picture');
+  if (it.favourite) parts.push('Favourite');
+  if (it.takenAt) {
+    const d = new Date(it.takenAt * 1000);
+    parts.push(`${MONTHS[d.getMonth()]} ${d.getFullYear()}`);
+  }
+  return parts.join(' · ');
+}
 
 export default function Museum(props: MuseumProps) {
   const plan = useMemo(() => planWings(props.items), [props.items]);
@@ -64,12 +83,26 @@ export default function Museum(props: MuseumProps) {
   const [failed, setFailed] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
   const [entered, setEntered] = useState(!!props.resume);
+  const entered_ = useRef(entered);
+  entered_.current = entered;
   const [dragMode, setDragMode] = useState(false);
   const [aim, setAim] = useState<Aim>(null);
   const [hall, setHall] = useState<string>('');
   const [hint, setHint] = useState(false);
   const [fading, setFading] = useState(false);
   const [showMap, setShowMap] = useState(true);
+  /** The picture being looked at closely. */
+  const [closeOn, setCloseOn] = useState<Frame | null>(null);
+  const closeRef = useRef<Frame | null>(null);
+  closeRef.current = closeOn;
+  /** Esc freed the mouse while walking: the "Paused" card shows. */
+  const [userPaused, setUserPaused] = useState(false);
+  const userPausedRef = useRef(false);
+  userPausedRef.current = userPaused;
+  /** Set when the museum lets go of the mouse itself (close look, viewer): that isn't a pause. */
+  const selfUnlock = useRef(false);
+  const coveredRef = useRef(!!props.covered);
+  coveredRef.current = !!props.covered;
   const lockedRef = useRef(false);
   const everLocked = useRef(false);
   const unlockedAt = useRef(0);
@@ -105,24 +138,24 @@ export default function Museum(props: MuseumProps) {
           onAim: setAim,
           onOpen: (f: Frame) => open(f),
           onDoor: (d: Door) => throughDoor(d),
+          onCloseLook: (f: Frame | null) => {
+            setCloseOn(f);
+            // Free the mouse for the close look's buttons (that isn't a pause).
+            if (f && document.pointerLockElement) {
+              selfUnlock.current = true;
+              document.exitPointerLock();
+            }
+          },
           doorText: (d: Door) => {
             const k = d.kind === 'next' ? wing + 1 : wing - 1;
             const r = ranges[k];
             return [d.kind === 'next' ? 'Next wing' : 'Previous wing', r ? `Wing ${roman(k + 1)} · pictures ${r[0].toLocaleString()}–${r[1].toLocaleString()}` : ''];
           },
-          plaqueText: (f: Frame) => {
-            const it = f.item;
-            const parts: string[] = [];
-            if (it.kind === 'video') parts.push('Film');
-            if (it.favourite) parts.push('Favourite');
-            if (it.takenAt) {
-              const d = new Date(it.takenAt * 1000);
-              parts.push(`${MONTHS[d.getMonth()]} ${d.getFullYear()}`);
-            }
-            return [bare(it.name), parts.join(' · ')];
-          },
+          plaqueText: (f: Frame) => [bare(f.item.name), frameInfo(f)],
         });
         engine.current = eng;
+        eng.setPaused(coveredRef.current);
+        setCloseOn(null);
         // The browser preview's test page drives the camera from outside.
         if (import.meta.env.DEV) (window as unknown as { __museum?: MuseumEngine }).__museum = eng;
         setReady(true);
@@ -147,8 +180,35 @@ export default function Museum(props: MuseumProps) {
   const open = (f: Frame) => {
     const eng = engine.current;
     if (!eng || !props_.current.onOpenItem) return;
-    if (document.pointerLockElement) document.exitPointerLock();
+    if (document.pointerLockElement) {
+      selfUnlock.current = true;
+      document.exitPointerLock();
+    }
+    eng.clearKeys();
     props_.current.onOpenItem(f.item.id, { wing, pose: eng.getPose() });
+  };
+
+  const openRef = useRef(open);
+  openRef.current = open;
+
+  // The viewer on top: hold still (nothing is rebuilt; closing it carries on from here).
+  useEffect(() => {
+    engine.current?.setPaused(!!props.covered);
+  }, [props.covered]);
+
+  // Back from the viewer: look closely at the picture it ended on (if it hangs in this wing).
+  const returnN = props.returnTo?.n;
+  useEffect(() => {
+    const r = props_.current.returnTo;
+    const eng = engine.current;
+    if (!r || !eng) return;
+    const f = layout.frames.find((x) => x.item.id === r.id);
+    if (f && eng.closeFrame() !== f) eng.closeLook(f, true);
+  }, [returnN]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const stepBack = (relock: boolean) => {
+    engine.current?.stepBack();
+    if (relock) lock();
   };
 
   const throughDoor = (d: Door) => {
@@ -170,8 +230,14 @@ export default function Museum(props: MuseumProps) {
     const onChange = () => {
       const on = document.pointerLockElement === canvasRef.current;
       lockedRef.current = on;
-      if (on) everLocked.current = true;
-      else unlockedAt.current = performance.now();
+      if (on) {
+        everLocked.current = true;
+        setUserPaused(false);
+      } else {
+        unlockedAt.current = performance.now();
+        if (selfUnlock.current) selfUnlock.current = false;
+        else setUserPaused(true);
+      }
       setLocked(on);
       if (!on) engine.current?.clearKeys();
     };
@@ -191,6 +257,7 @@ export default function Museum(props: MuseumProps) {
     const c = canvasRef.current;
     if (!c) return;
     setEntered(true);
+    setUserPaused(false);
     if (!c.requestPointerLock) return setDragMode(true);
     try {
       // unadjustedMovement isn't everywhere; fall back to the plain call.
@@ -239,31 +306,63 @@ export default function Museum(props: MuseumProps) {
     drag.current = null;
     if (!d || locked) return;
     if (d.moved < 5) {
-      if (dragMode) {
-        const r = (e.target as HTMLElement).getBoundingClientRect();
-        engine.current?.click({ x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -(((e.clientY - r.top) / r.height) * 2 - 1) });
-      } else lock();
+      const r = (e.target as HTMLElement).getBoundingClientRect();
+      const at = { x: ((e.clientX - r.left) / r.width) * 2 - 1, y: -(((e.clientY - r.top) / r.height) * 2 - 1) };
+      if (closeRef.current) {
+        // On the picture: the full viewer; anywhere else: step back (and look around again).
+        engine.current?.click(at);
+        if (!engine.current?.closeFrame() && !dragMode) lock();
+      } else if (dragMode) engine.current?.click(at);
+      else lock();
     }
   };
 
   // ---- keyboard (captured so the library underneath doesn't react) ------------------------
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
+      // Under the viewer the keys are the viewer's.
+      if (coveredRef.current) return;
       if (e.ctrlKey && e.shiftKey) return; // the panic key and friends
       e.stopPropagation();
+      const eng = engine.current;
+      const close = closeRef.current;
+      if (close) {
+        // A close look: move along, open, or step back.
+        if (['ArrowLeft', 'KeyA', 'KeyQ', 'PageUp'].includes(e.code) || (e.code === 'Tab' && e.shiftKey)) eng?.step(-1);
+        else if (['ArrowRight', 'KeyD', 'KeyE', 'PageDown', 'Tab'].includes(e.code)) eng?.step(1);
+        else if (['Enter', 'NumpadEnter', 'Space', 'KeyF'].includes(e.code)) openRef.current(close);
+        else if (e.code === 'Escape') stepBack(false);
+        else if (['Backspace', 'KeyS', 'ArrowDown', 'ArrowUp', 'KeyW'].includes(e.code)) stepBack(true);
+        else if (e.code === 'KeyM') setShowMap((v) => !v);
+        else return;
+        e.preventDefault();
+        return;
+      }
       if (e.code === 'Escape') {
         e.preventDefault();
         // The Esc that freed the mouse must not also close the museum.
-        if (!lockedRef.current && performance.now() - unlockedAt.current > 300) props_.current.onClose();
+        if (lockedRef.current || performance.now() - unlockedAt.current < 300) return;
+        if (userPausedRef.current || !entered_.current) props_.current.onClose();
+        else setUserPaused(true);
         return;
       }
       if (MOVE.has(e.code)) {
         e.preventDefault();
-        engine.current?.setKey(e.code, true);
+        eng?.setKey(e.code, true);
       } else if (e.code === 'KeyM') setShowMap((v) => !v);
-      else if (e.code === 'Enter' || e.code === 'KeyE') engine.current?.click();
+      else if (e.code === 'KeyE' || (e.code === 'Tab' && !e.shiftKey)) {
+        e.preventDefault();
+        eng?.step(1);
+      } else if (e.code === 'KeyQ' || e.code === 'Tab') {
+        e.preventDefault();
+        eng?.step(-1);
+      } else if (e.code === 'Enter' || e.code === 'NumpadEnter' || e.code === 'Space') {
+        e.preventDefault();
+        eng?.click();
+      }
     };
     const up = (e: KeyboardEvent) => {
+      if (coveredRef.current) return;
       if (e.ctrlKey && e.shiftKey) return;
       e.stopPropagation();
       if (MOVE.has(e.code)) engine.current?.setKey(e.code, false);
@@ -277,7 +376,7 @@ export default function Museum(props: MuseumProps) {
       window.removeEventListener('keyup', up, true);
       window.removeEventListener('blur', blur);
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- minimap and the hall name ----------------------------------------------------------
   useEffect(() => {
@@ -304,11 +403,13 @@ export default function Museum(props: MuseumProps) {
 
   const count = props.items.length;
   const aimLabel = aim?.kind === 'frame'
-    ? { name: bare(aim.frame.item.name), sub: aim.frame.item.kind === 'video' ? 'Click to watch' : 'Click to open' }
+    ? { name: bare(aim.frame.item.name), sub: 'Click for a close look' }
     : aim?.kind === 'door'
       ? { name: aim.door.kind === 'next' ? 'Next wing' : 'Previous wing', sub: 'Click or walk through' }
       : null;
-  const paused = entered && !locked && !dragMode;
+  const paused = entered && !locked && !dragMode && userPaused && !closeOn;
+  /** Walking with the mouse free (after a close look): click or drag to look around. */
+  const relaxed = entered && !locked && !dragMode && !userPaused && !closeOn;
 
   return (
     <div className="museum" role="application" aria-label={`Museum of ${props.title}`}>
@@ -345,7 +446,7 @@ export default function Museum(props: MuseumProps) {
         </div>
       )}
 
-      {ready && showMap && <canvas ref={mapRef} className="museum-map" width={200} height={200} aria-label="Map" />}
+      {ready && showMap && !closeOn && <canvas ref={mapRef} className="museum-map" width={200} height={200} aria-label="Map" />}
 
       {ready && !entered && (
         <div className="museum-card">
@@ -353,7 +454,7 @@ export default function Museum(props: MuseumProps) {
           <h2>{props.title}</h2>
           <p>A museum of {count.toLocaleString()} {count === 1 ? 'piece' : 'pieces'}{plan.wings.length > 1 ? ` in ${plan.wings.length} wings` : ''}.</p>
           <button type="button" className="btn btn-primary" onClick={lock} autoFocus>Click to enter</button>
-          <span className="museum-keys">W A S D to walk · mouse to look · Shift to hurry</span>
+          <span className="museum-keys">W A S D to walk · mouse to look · Shift to hurry · Q / E from picture to picture</span>
         </div>
       )}
       {ready && paused && (
@@ -373,11 +474,32 @@ export default function Museum(props: MuseumProps) {
         </div>
       )}
 
-      {ready && (locked || dragMode) && (
-        <div className={`museum-hint${hint || dragMode ? ' on' : ''}`}>
+      {ready && (locked || dragMode || relaxed) && !closeOn && (
+        <div className={`museum-hint${hint || dragMode || relaxed ? ' on' : ''}`}>
           {dragMode
-            ? 'Drag to look · W A S D to walk · Shift to hurry · click a picture to open it · Esc to leave'
-            : 'W A S D to walk · Shift to hurry · click a picture to open it · M for the map · Esc to pause'}
+            ? 'Drag to look · W A S D to walk · Shift to hurry · Q / E next picture · click a picture for a close look · Esc to leave'
+            : relaxed
+              ? 'Click to look around · W A S D to walk · Q / E from picture to picture · Esc to pause'
+              : 'W A S D to walk · Shift to hurry · Q / E from picture to picture · click a picture for a close look · M map · Esc to pause'}
+        </div>
+      )}
+
+      {ready && closeOn && (
+        <div className="museum-close" role="group" aria-label="Close look">
+          <button type="button" className="museum-close-nav" onClick={() => engine.current?.step(-1)} title="Previous picture (←)" aria-label="Previous picture">‹</button>
+          <div className="museum-close-title">
+            <b>{bare(closeOn.item.name)}</b>
+            <span>{frameInfo(closeOn) || 'Close look'}</span>
+          </div>
+          <div className="museum-close-actions">
+            {props.onOpenItem && (
+              <button type="button" className="btn btn-sm btn-primary" onClick={() => open(closeOn)} title="Enter, or click the picture">
+                {closeOn.item.kind === 'video' ? 'Watch with sound' : 'Open in viewer'}
+              </button>
+            )}
+            <button type="button" className="btn btn-sm museum-back" onClick={() => stepBack(true)} title="Esc">Step back</button>
+          </div>
+          <button type="button" className="museum-close-nav" onClick={() => engine.current?.step(1)} title="Next picture (→)" aria-label="Next picture">›</button>
         </div>
       )}
     </div>

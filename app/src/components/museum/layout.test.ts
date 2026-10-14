@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { collide, hallAt, layoutWing, pictureSize, planWings, yawOf, type MuseumItem, type Rect, type WingLayout } from './layout';
+import {
+  collide, GRAND_W, hallAt, layoutWing, nearestHall, pictureSize, planWings, route, standSpot, tourOrder, WALL_T, yawOf, type MuseumItem, type Rect, type Vec2, type WingLayout,
+} from './layout';
 
 const item = (id: number, extra: Partial<MuseumItem> = {}): MuseumItem => ({
   id, name: `pic ${id}`, kind: 'image', width: id % 3 ? 1600 : 900, height: id % 3 ? 1000 : 1400, favourite: false, weight: 1, ...extra,
@@ -40,7 +42,8 @@ describe('museum layout', () => {
     const grand = l.frames.filter((f) => f.hall === 0);
     expect(grand.length).toBe(4);
     expect(grand.every((f) => f.item.favourite && f.featured && f.rope)).toBe(true);
-    expect(l.ropes.length).toBe(4);
+    // Neighbouring ropes on a long wall join into one.
+    expect(l.ropes.length).toBe(2);
     expect(l.halls[0].grand).toBe(true);
   });
 
@@ -119,8 +122,9 @@ describe('museum layout', () => {
   it('collision keeps the visitor out of walls but lets them through doors', () => {
     const l = wing(40);
     // Walking into the west wall of the grand hall.
-    const p = collide({ x: -7.95, y: -10 }, 0.35, l);
-    expect(p.x).toBeGreaterThanOrEqual(-8 + 0.15 + 0.35 - 1e-6);
+    const west = -GRAND_W / 2;
+    const p = collide({ x: west + 0.05, y: -13 }, 0.35, l);
+    expect(p.x).toBeGreaterThanOrEqual(west + 0.15 + 0.35 - 1e-6);
     // Standing in the north doorway is fine.
     const door = l.doors.find((d) => d.kind === 'pass')!;
     const q = collide({ x: door.at.x, y: door.at.y }, 0.35, l);
@@ -130,4 +134,100 @@ describe('museum layout', () => {
     const r = collide({ x: c.x + 0.1, y: c.y }, 0.35, l);
     expect(Math.hypot(r.x - c.x, r.y - c.y)).toBeGreaterThanOrEqual(c.r + 0.35 - 1e-6);
   });
+
+  it('hangs neighbours close together with no column between them', () => {
+    const l = wing(119);
+    const key = (f: (typeof l.frames)[number]) => `${f.normal.x},${f.normal.y},${f.normal.x ? f.at.x.toFixed(2) : f.at.y.toFixed(2)}`;
+    const groups = new Map<string, typeof l.frames>();
+    for (const f of l.frames) groups.set(key(f), [...(groups.get(key(f)) ?? []), f]);
+    for (const list of groups.values()) {
+      const along = (f: (typeof list)[number]) => (f.normal.x ? f.at.y : f.at.x);
+      const sorted = [...list].sort((a, b) => along(a) - along(b));
+      for (let i = 1; i < sorted.length; i++) {
+        const p = sorted[i - 1];
+        const q = sorted[i];
+        const gap = along(q) - along(p) - (q.w / 2 + q.border + p.w / 2 + p.border);
+        if (p.hall === q.hall && !p.featured) expect(gap).toBeLessThanOrEqual(1.31);
+        if (p.hall !== q.hall) continue;
+        const lo = Math.min(along(p), along(q));
+        const hi = Math.max(along(p), along(q));
+        // (Columns may flank a door between two pictures.)
+        const doorBetween = l.doors.some((d) => {
+          const dt = p.normal.x ? d.at.y : d.at.x;
+          const off = (d.at.x - p.at.x) * p.normal.x + (d.at.y - p.at.y) * p.normal.y;
+          return Math.abs(off) < 0.3 && dt > lo && dt < hi;
+        });
+        if (doorBetween) continue;
+        // Nothing stands in the strip of floor in front of the gap between them.
+        for (const c of l.columns) {
+          const out = (c.x - p.at.x) * p.normal.x + (c.y - p.at.y) * p.normal.y;
+          const t = p.normal.x ? c.y : c.x;
+          expect(out > 0 && out < 3 && t > lo && t < hi).toBe(false);
+        }
+      }
+    }
+  });
+
+  it('is roomy: tall wide halls', () => {
+    const l = wing(60);
+    expect(l.halls[0].height).toBeGreaterThanOrEqual(10);
+    for (const h of l.halls.slice(1)) {
+      expect(h.width).toBeGreaterThanOrEqual(10);
+      expect(h.height).toBeGreaterThanOrEqual(8);
+    }
+  });
+
+  it('tours every picture once, hall by hall', () => {
+    const l = wing(119);
+    const t = tourOrder(l);
+    expect(t.length).toBe(l.frames.length);
+    expect(new Set(t).size).toBe(l.frames.length);
+    for (let i = 1; i < t.length; i++) expect(t[i].hall).toBeGreaterThanOrEqual(t[i - 1].hall);
+  });
+
+  it('finds a place to stand in front of each picture', () => {
+    const l = wing(119, { hasNext: true });
+    for (const f of l.frames) {
+      const s = standSpot(l, f);
+      expect(hallAt(l, s)?.index).toBe(f.hall);
+      expect(s.dist).toBeGreaterThan(1.5);
+      // Standing there you face the picture.
+      expect(s.yaw).toBeCloseTo(yawOf({ x: -f.normal.x, y: -f.normal.y }), 6);
+      // Not inside a wall or column (walls might nudge you a little near corners).
+      const c = collide(s, 0.32, l);
+      expect(Math.hypot(c.x - s.x, c.y - s.y)).toBeLessThan(0.6);
+    }
+  });
+
+  it('routes between halls through the doors, never through a wall', () => {
+    const l = wing(119);
+    const first = l.frames.find((f) => f.hall === 0)!;
+    const last = l.frames.find((f) => f.hall === l.halls.length - 1)!;
+    const a = standSpot(l, first);
+    const b = standSpot(l, last);
+    for (const [from, to] of [[a, b], [b, a]] as [Vec2, Vec2][]) {
+      const pts = [from, ...route(l, from, to)];
+      expect(pts[pts.length - 1]).toEqual(to);
+      for (let i = 1; i < pts.length; i++) {
+        for (const w of l.walls) expect(crosses(pts[i - 1], pts[i], w.a, w.b, WALL_T / 2)).toBe(false);
+      }
+    }
+    // In the same hall it's a straight line.
+    expect(route(l, a, standSpot(l, l.frames.find((f) => f.hall === 0 && f !== first)!)).length).toBe(1);
+    expect(nearestHall(l, { x: 1000, y: 0 })).not.toBeNull();
+  });
 });
+
+/** Does segment pq come within `r` of segment ab (sampled)? */
+function crosses(p: Vec2, q: Vec2, a: Vec2, b: Vec2, r: number): boolean {
+  const n = Math.ceil(Math.hypot(q.x - p.x, q.y - p.y) / 0.05) + 1;
+  for (let i = 0; i <= n; i++) {
+    const x = p.x + ((q.x - p.x) * i) / n;
+    const y = p.y + ((q.y - p.y) * i) / n;
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const t = Math.max(0, Math.min(1, ((x - a.x) * dx + (y - a.y) * dy) / (dx * dx + dy * dy || 1)));
+    if (Math.hypot(x - (a.x + dx * t), y - (a.y + dy * t)) < r) return true;
+  }
+  return false;
+}

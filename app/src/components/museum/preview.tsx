@@ -2,6 +2,7 @@
 // look can be checked in a plain browser (vite dev → /museum-preview.html).
 // Query: ?n=60 items, &fav=6 favourites, &video=1 / &gif=1 add a generated clip / GIF, &clean=1 hides the cards.
 
+import { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import '../../styles.css';
 import '../../screens.css';
@@ -181,10 +182,43 @@ async function main() {
     document.head.appendChild(st);
   }
   const src = (id: number) => urls.get(id) ?? '';
-  createRoot(document.getElementById('root')!).render(
-    <Museum title="Preview gallery" items={items} sources={{ thumb: src, full: src }}
-      resume={q.get('clean') ? { wing: 0, pose: { x: 0, y: -2.6, yaw: 0, pitch: 0 } } : null}
-      onClose={() => console.log('close')} onOpenItem={(id) => console.log('open', id)} />,
+  createRoot(document.getElementById('root')!).render(<Host items={items} src={src} />);
+}
+
+/** The museum with a stand-in viewer over it (as launch.tsx does with the real one). */
+function Host({ items, src }: { items: MuseumItem[]; src: (id: number) => string }) {
+  const [viewing, setViewing] = useState<number | null>(null);
+  const [returnTo, setReturnTo] = useState<{ id: number; n: number } | null>(null);
+  const close = (id: number) => {
+    setViewing(null);
+    setReturnTo({ id, n: Date.now() });
+  };
+  useEffect(() => {
+    if (viewing == null) return;
+    const key = (e: KeyboardEvent) => {
+      const i = items.findIndex((x) => x.id === viewing);
+      if (e.key === 'Escape') close(viewing);
+      else if (e.key === 'ArrowRight') setViewing(items[Math.min(items.length - 1, i + 1)].id);
+      else if (e.key === 'ArrowLeft') setViewing(items[Math.max(0, i - 1)].id);
+    };
+    window.addEventListener('keydown', key);
+    return () => window.removeEventListener('keydown', key);
+  });
+  return (
+    <>
+      <Museum title="Preview gallery" items={items} sources={{ thumb: src, full: src }}
+        resume={q.get('clean') ? { wing: 0, pose: { x: 0, y: -2.6, yaw: 0, pitch: 0 } } : null}
+        covered={viewing != null} returnTo={returnTo}
+        onClose={() => console.log('close')} onOpenItem={(id) => setViewing(id)} />
+      {viewing != null && (
+        <div className="museum-viewer preview-viewer" style={{ background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+          {items.find((x) => x.id === viewing)?.kind === 'video'
+            ? <video src={src(viewing)} autoPlay loop controls style={{ maxWidth: '100%', maxHeight: '100%' }} />
+            : <img src={src(viewing)} alt="" style={{ maxWidth: '100%', maxHeight: '100%' }} />}
+          <button type="button" className="btn" style={{ position: 'absolute', top: 16, left: 16 }} onClick={() => close(viewing)}>Back (Esc)</button>
+        </div>
+      )}
+    </>
   );
 }
 main();

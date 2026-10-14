@@ -38,8 +38,25 @@
 .museum-hint { position: absolute; left: 50%; bottom: 22px; transform: translateX(-50%); padding: 8px 16px; border-radius: 999px; background: rgba(12, 8, 6, 0.6); backdrop-filter: blur(4px); font-size: 12.5px; color: rgba(243, 234, 216, 0.85); white-space: nowrap; max-width: calc(100% - 260px); overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 1.2s ease; pointer-events: none; }
 .museum-hint.on { opacity: 1; transition-duration: 0.3s; }
 
+/* Close look: the picture fills the view; a slim gilded bar below it. */
+.museum-close { position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%); display: flex; align-items: center; gap: 12px; padding: 7px 8px; border-radius: 999px; max-width: calc(100% - 32px);
+  background: linear-gradient(180deg, rgba(40, 10, 14, 0.82), rgba(18, 8, 8, 0.88)); border: 1px solid rgba(222, 182, 98, 0.4); box-shadow: 0 0 0 3px rgba(18, 8, 8, 0.45), 0 14px 34px rgba(0, 0, 0, 0.5); backdrop-filter: blur(6px); animation: museum-close-in 0.25s ease-out; }
+.museum-close-title { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 0 4px; }
+.museum-close-title b { font-family: Georgia, 'Times New Roman', serif; font-weight: 600; font-size: 16px; color: #f6e2ae; letter-spacing: 0.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: min(420px, 40vw); }
+.museum-close-title span { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.1em; color: rgba(243, 234, 216, 0.66); white-space: nowrap; }
+.museum-close-actions { display: flex; gap: 6px; flex: none; }
+.museum-close-actions .btn:not(.btn-primary) { background: rgba(12, 8, 6, 0.65); }
+.museum-close-nav { flex: none; width: 34px; height: 34px; border-radius: 50%; border: 1px solid rgba(222, 182, 98, 0.45); background: rgba(12, 8, 6, 0.6); color: #f0d48f; font: 600 20px/1 Georgia, 'Times New Roman', serif; cursor: pointer; display: flex; align-items: center; justify-content: center; padding: 0 0 2px; }
+.museum-close-nav:hover { background: rgba(222, 182, 98, 0.18); }
+.museum-close-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@keyframes museum-close-in { from { opacity: 0; transform: translate(-50%, 8px); } }
+/* The viewer over the museum (the museum stays loaded underneath). */
+.museum-viewer { position: fixed; inset: 0; z-index: 46; }
+/* The viewer's "shrink back into the grid tile" has no tile to go to here. */
+body:has(.museum) .flip-ghost { display: none !important; }
+
 @keyframes museum-in { from { opacity: 0; transform: translate(-50%, -46%); } }
 .museum-aim { animation-name: museum-aim-in; }
 @keyframes museum-aim-in { from { opacity: 0; } }
-@media (max-width: 640px) { .museum-map { width: 130px; height: 130px; } .museum-hint { display: none; } }
-@media (prefers-reduced-motion: reduce) { .museum-card, .museum-aim { animation: none; } .museum-fade { transition: none; } }
+@media (max-width: 640px) { .museum-map { width: 130px; height: 130px; } .museum-hint { display: none; } .museum-close-title { display: none; } }
+@media (prefers-reduced-motion: reduce) { .museum-card, .museum-aim, .museum-close { animation: none; } .museum-fade { transition: none; } }

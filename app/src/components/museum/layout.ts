@@ -109,16 +109,21 @@ export interface WingLayout {
 }
 
 export const WALL_T = 0.3;
-export const GALLERY_W = 8;
-export const GALLERY_H = 6.5;
-export const GRAND_W = 16;
-export const GRAND_L = 20;
-export const GRAND_H = 8;
-export const DOOR_W = 3.2;
-export const DOOR_H = 4.4;
-const MARGIN = 1.7;
-const GAP = 1.5;
-const PER_HALL = 12;
+export const GALLERY_W = 10;
+export const GALLERY_H = 8;
+export const GRAND_W = 20;
+export const GRAND_L = 26;
+export const GRAND_H = 10.5;
+export const DOOR_W = 3.8;
+export const DOOR_H = 5.2;
+const MARGIN = 1.5;
+/** Space between neighbouring pictures: close enough to stroll from one to the next. */
+const GAP = 0.9;
+/** On a wall with room to spare the pictures stay a group (centred) instead of drifting apart. */
+const MAX_GAP = 1.3;
+const PER_HALL = 14;
+/** Distance between the centres of the grand hall's pictures on a long wall. */
+const GRAND_PITCH = 5;
 const FEATURED_MAX = 8;
 /** Up to this many items: everything hangs in the grand hall. */
 const SMALL = 8;
@@ -193,17 +198,40 @@ export function wingContent(plan: { featured: MuseumItem[]; wings: MuseumItem[][
   return { featured, gallery: chunk.filter((i) => !set.has(i.id)) };
 }
 
-/** Evenly spread frames over a stretch of wall (positions of their centres). */
+/** Hangs frames as one group centred on a stretch of wall (positions of their centres). */
 function spread(widths: number[], from: number, to: number): number[] {
   const total = widths.reduce((s, w) => s + w, 0);
-  const gap = Math.max(0, (to - from - total) / widths.length);
+  const n = widths.length;
+  const gap = n > 1 ? Math.min(MAX_GAP, Math.max(GAP * 0.6, (to - from - total) / (n - 1))) : 0;
   const out: number[] = [];
-  let t = from + gap / 2;
+  let t = (from + to) / 2 - (total + gap * (n - 1)) / 2;
   for (const w of widths) {
     out.push(t + w / 2);
     t += w + gap;
   }
   return out;
+}
+
+/** Joins velvet ropes that run on in a line with only a short break between them. */
+function mergeRopes(ropes: { a: Vec2; b: Vec2 }[]) {
+  for (let i = 0; i < ropes.length; i++) {
+    for (let j = i + 1; j < ropes.length; j++) {
+      const p = ropes[i];
+      const q = ropes[j];
+      const horiz = Math.abs(p.a.y - p.b.y) < 1e-6 && Math.abs(q.a.y - q.b.y) < 1e-6 && Math.abs(p.a.y - q.a.y) < 1e-6;
+      const vert = Math.abs(p.a.x - p.b.x) < 1e-6 && Math.abs(q.a.x - q.b.x) < 1e-6 && Math.abs(p.a.x - q.a.x) < 1e-6;
+      if (!horiz && !vert) continue;
+      const k = horiz ? 'x' : 'y';
+      const [p0, p1] = [Math.min(p.a[k], p.b[k]), Math.max(p.a[k], p.b[k])];
+      const [q0, q1] = [Math.min(q.a[k], q.b[k]), Math.max(q.a[k], q.b[k])];
+      if (q0 - p1 > 2 || p0 - q1 > 2) continue;
+      const lo = Math.min(p0, q0);
+      const hi = Math.max(p1, q1);
+      ropes[i] = horiz ? { a: { x: lo, y: p.a.y }, b: { x: hi, y: p.a.y } } : { a: { x: p.a.x, y: lo }, b: { x: p.a.x, y: hi } };
+      ropes.splice(j, 1);
+      j = i;
+    }
+  }
 }
 
 export function layoutWing(
@@ -253,7 +281,7 @@ export function layoutWing(
   const gW = GRAND_W;
   // A small folder lives entirely in the grand hall; make it fit.
   const sideSlots = small ? Math.max(2, Math.ceil(Math.max(0, featured.length - 4) / 2)) : 2;
-  const gL = small ? Math.max(14, sideSlots * 6.5) : GRAND_L;
+  const gL = small ? Math.max(18, sideSlots * GRAND_PITCH + 8) : GRAND_L;
   const g: Hall = {
     index: 0,
     name: wingNo === 0 ? 'The Grand Hall' : `Grand Hall, wing ${roman(wingNo + 1)}`,
@@ -266,8 +294,8 @@ export function layoutWing(
     length: gL,
     chandeliers: [],
   };
-  const nCh = Math.max(1, Math.round(gL / 9));
-  for (let i = 0; i < nCh; i++) g.chandeliers.push({ x: 0, y: -gL * ((i + 0.5) / nCh), scale: 1.45 });
+  const nCh = Math.max(1, Math.round(gL / 10));
+  for (let i = 0; i < nCh; i++) g.chandeliers.push({ x: 0, y: -gL * ((i + 0.5) / nCh), scale: 1.75 });
   halls.push(g);
 
   const hasGallery = gallery.length > 0;
@@ -278,7 +306,7 @@ export function layoutWing(
   // South wall (entrance side), west to east; north wall, west to east.
   wall(sw, se, GRAND_H, opts.hasPrev ? [{ t: gW / 2, kind: 'prev', inward: { x: 0, y: -1 }, hall: 0 }] : []);
   const northKind: DoorKind | null = hasGallery ? 'pass' : opts.hasNext ? 'next' : null;
-  wall(nw, ne, GRAND_H, northKind ? [{ t: gW / 2, kind: northKind, inward: { x: 0, y: 1 }, hall: 0, h: northKind === 'pass' ? 5 : DOOR_H }] : []);
+  wall(nw, ne, GRAND_H, northKind ? [{ t: gW / 2, kind: northKind, inward: { x: 0, y: 1 }, hall: 0, h: northKind === 'pass' ? 6.2 : DOOR_H }] : []);
   wall(nw, sw, GRAND_H, []); // west, north to south
   wall(ne, se, GRAND_H, []); // east
 
@@ -287,11 +315,12 @@ export function layoutWing(
   const west = { a: { x: -gW / 2, y: 0 }, along: { x: 0, y: -1 }, normal: { x: 1, y: 0 } };
   const east = { a: { x: gW / 2, y: 0 }, along: { x: 0, y: -1 }, normal: { x: -1, y: 0 } };
   const bySlot: { side: typeof west; ts: number[] }[] = [];
-  const sideTs = Array.from({ length: sideSlots }, (_, i) => (gL * (i + 0.5)) / sideSlots);
+  // The pictures on the long walls hang as a close group in the middle.
+  const sideTs = Array.from({ length: sideSlots }, (_, i) => gL / 2 + (i - (sideSlots - 1) / 2) * GRAND_PITCH);
   bySlot.push({ side: west, ts: sideTs }, { side: east, ts: sideTs });
   const northWall = { a: nw, along: { x: 1, y: 0 }, normal: { x: 0, y: 1 } };
   const southWall = { a: sw, along: { x: 1, y: 0 }, normal: { x: 0, y: -1 } };
-  const flank = [gW / 2 - 5.2, gW / 2 + 5.2];
+  const flank = [gW / 2 - 5.6, gW / 2 + 5.6];
   let k = 0;
   // Interleave west/east so pairs face each other.
   for (let s = 0; s < sideSlots && k < fFrames.length; s++) {
@@ -304,10 +333,15 @@ export function layoutWing(
     const ts = (wl === northWall ? northKind : opts.hasPrev) ? flank : [flank[0], gW / 2, flank[1]];
     for (const t of ts) if (k < fFrames.length) hang(fFrames[k++], wl.a, wl.along, t, wl.normal);
   }
-  // Columns stand between the pictures along the long walls and flank the doors.
-  for (let i = 1; i < sideSlots; i++) for (const x of [-gW / 2 + 2.3, gW / 2 - 2.3]) columns.push({ x, y: -(gL * i) / sideSlots, r: 0.42 });
-  if (northKind) for (const x of [-2.4, 2.4]) columns.push({ x, y: -gL + 0.9, r: 0.42 });
-  if (opts.hasPrev) for (const x of [-2.4, 2.4]) columns.push({ x, y: -0.9, r: 0.42 });
+  // Columns frame the group on each long wall and stand in the corners and by
+  // the doors: never between two pictures.
+  const groupHalf = (sideSlots * GRAND_PITCH) / 2 + 0.7;
+  for (const x of [-gW / 2 + 1.3, gW / 2 - 1.3]) for (const t of [gL / 2 - groupHalf, gL / 2 + groupHalf]) columns.push({ x, y: -t, r: 0.42 });
+  for (const x of [-gW / 2 + 1.9, gW / 2 - 1.9]) for (const y of [-1.9, -gL + 1.9]) columns.push({ x, y, r: 0.42 });
+  const doorCol = DOOR_W / 2 + 0.85;
+  if (northKind) for (const x of [-doorCol, doorCol]) columns.push({ x, y: -gL + 0.9, r: 0.42 });
+  if (opts.hasPrev) for (const x of [-doorCol, doorCol]) columns.push({ x, y: -0.9, r: 0.42 });
+  mergeRopes(ropes);
 
   // ---- galleries ---------------------------------------------------------------
   let origin: Vec2 = { x: 0, y: -gL };
@@ -360,10 +394,10 @@ export function layoutWing(
       length: len,
       chandeliers: [],
     };
-    const nc = Math.max(1, Math.round(len / 9));
+    const nc = Math.max(1, Math.round(len / 10));
     for (let i = 0; i < nc; i++) {
       const p = add(origin, forward, (len * (i + 0.5)) / nc);
-      hall.chandeliers.push({ x: p.x, y: p.y, scale: 1 });
+      hall.chandeliers.push({ x: p.x, y: p.y, scale: 1.2 });
     }
     halls.push(hall);
 
@@ -459,4 +493,80 @@ export function collide(p: Vec2, r: number, layout: Pick<WingLayout, 'walls' | '
 export function hallAt(layout: Pick<WingLayout, 'halls'>, p: Vec2): Hall | null {
   for (const h of layout.halls) if (p.x >= h.rect.x0 && p.x <= h.rect.x1 && p.y >= h.rect.y0 && p.y <= h.rect.y1) return h;
   return null;
+}
+
+// ---- getting about: the tour order, where to stand, the way between halls ---------------
+
+/** Where along its hall a frame hangs (metres from the hall's entry). */
+function tourKey(l: Pick<WingLayout, 'halls'>, f: Frame): number {
+  const h = l.halls[f.hall];
+  if (!h) return 0;
+  const t = (f.at.x - h.origin.x) * h.forward.x + (f.at.y - h.origin.y) * h.forward.y;
+  // Pictures on the entrance wall face the way you walk in: they come last.
+  if (f.normal.x === h.forward.x && f.normal.y === h.forward.y && t < 1) {
+    return h.length + 1 + ((f.at.x - h.origin.x) * h.forward.y - (f.at.y - h.origin.y) * h.forward.x) * 0.01;
+  }
+  // Left wall before right at the same distance.
+  const side = (f.at.x - h.origin.x) * h.forward.y - (f.at.y - h.origin.y) * h.forward.x;
+  return t + (side > 0 ? 0 : 0.001);
+}
+
+/** Every frame in walking order: hall by hall, from the entrance onwards. */
+export function tourOrder(l: Pick<WingLayout, 'halls' | 'frames'>): Frame[] {
+  return [...l.frames].sort((a, b) => a.hall - b.hall || tourKey(l, a) - tourKey(l, b));
+}
+
+/** Distance at which a picture with its frame fills `fill` of the view. */
+export function fillDistance(f: Pick<Frame, 'w' | 'h' | 'border'>, vfovDeg: number, aspect: number, fill = 0.86): number {
+  const t = Math.tan(((vfovDeg / 2) * Math.PI) / 180);
+  const ow = f.w + f.border * 2;
+  const oh = f.h + f.border * 2;
+  return Math.max(oh / 2 / (t * fill), ow / 2 / (t * aspect * fill));
+}
+
+/** A comfortable place to stand in front of a picture: inside its hall and behind any rope. */
+export function standSpot(l: Pick<WingLayout, 'halls'>, f: Frame, vfovDeg = 68, aspect = 16 / 9): { x: number; y: number; yaw: number; dist: number } {
+  const h = l.halls[f.hall];
+  const across = h ? (f.normal.x ? h.rect.x1 - h.rect.x0 : h.rect.y1 - h.rect.y0) : GALLERY_W;
+  const want = Math.max(f.rope ? 2.7 : 2.2, fillDistance(f, vfovDeg, aspect, 0.6));
+  const dist = Math.min(want, Math.max(1.6, across - 1.4));
+  return { x: f.at.x + f.normal.x * dist, y: f.at.y + f.normal.y * dist, yaw: yawOf({ x: -f.normal.x, y: -f.normal.y }), dist };
+}
+
+/** The hall a point is in, else the closest one. */
+export function nearestHall(l: Pick<WingLayout, 'halls'>, p: Vec2): Hall | null {
+  const inside = hallAt(l, p);
+  if (inside) return inside;
+  let best: Hall | null = null;
+  let bd = Infinity;
+  for (const h of l.halls) {
+    const dx = Math.max(h.rect.x0 - p.x, 0, p.x - h.rect.x1);
+    const dy = Math.max(h.rect.y0 - p.y, 0, p.y - h.rect.y1);
+    const d = dx * dx + dy * dy;
+    if (d < bd) {
+      bd = d;
+      best = h;
+    }
+  }
+  return best;
+}
+
+/**
+ * Waypoints from one point to another through the doors between their halls
+ * (the halls form a chain: the `pass` door of hall i leads into hall i + 1).
+ * Doesn't include `from`; ends with `to`.
+ */
+export function route(l: Pick<WingLayout, 'halls' | 'doors'>, from: Vec2, to: Vec2): Vec2[] {
+  const a = nearestHall(l, from)?.index ?? 0;
+  const b = nearestHall(l, to)?.index ?? 0;
+  const out: Vec2[] = [];
+  const step = a < b ? 1 : -1;
+  for (let i = a; i !== b; i += step) {
+    const d = l.doors.find((x) => x.kind === 'pass' && x.hall === (step > 0 ? i : i - 1));
+    if (!d) continue;
+    // A door's inward points into its own (the earlier) hall.
+    out.push(add(d.at, d.inward, 1.4 * step), add(d.at, d.inward, -1.4 * step));
+  }
+  out.push(to);
+  return out;
 }

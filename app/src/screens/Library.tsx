@@ -33,7 +33,7 @@ import { SlotMachine } from '../components/SlotMachine';
 import { WhyHere, type WhyQuery } from '../components/WhyHere';
 import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortTree, type FolderSort } from '../foldersort';
 import { useFolderPrefs } from '../folderprefs';
-import { MuseumHost, openFolderMuseum, openMuseum } from '../components/museum/launch';
+import { MuseumHost, museumOpen, openFolderMuseum, openMuseum } from '../components/museum/launch';
 import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
 import { tileRect } from '../flip';
@@ -592,7 +592,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]') || museumOpen()) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
