@@ -59,6 +59,8 @@ export interface PlayerProps {
   onWeight?: (item: PlayItem, weight: number) => void;
   onFullscreen?: () => void;
   onClose?: () => void;
+  /** Extra line under the file name (e.g. its folder, as a link). */
+  subtitle?: (item: PlayItem) => React.ReactNode;
   onCurrent?: (item: PlayItem | null) => void;
   ref?: Ref<PlayerHandle>;
 }
@@ -570,7 +572,7 @@ export function Player(props: PlayerProps) {
       else if (k === 'escape' && (rect || zoomed)) {
         setRect(null);
         setZoom({ s: 1, x: 0, y: 0 });
-      } else if (k === 'escape') props.onClose?.();
+      } else if (k === 'escape' || k === 'backspace') props.onClose?.();
       else return;
       poke();
     };
@@ -695,6 +697,7 @@ export function Player(props: PlayerProps) {
               <>
                 <span className="p-name">{item.name}</span>
                 <span className="faint">{index >= 0 ? `${index + 1} of ${total}` : `${orderLabel} · ${total} files`}</span>
+                {props.subtitle?.(item)}
               </>
             )}
           </div>

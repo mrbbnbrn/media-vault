@@ -12,6 +12,15 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Double-click', 'Open'],
       ['Ctrl / Shift + click', 'Select several'],
       ['Ctrl+A', 'Select everything shown (Esc clears)'],
+      ['Arrow keys', 'Move the highlight (Shift: extend the selection, Ctrl: move without selecting)'],
+      ['Enter', 'Open the highlighted item'],
+      ['Space', 'Quick look (Space or Esc closes, ←/→ next and previous)'],
+      ['Ctrl+Space', 'Select or unselect the highlighted item'],
+      ['Type letters', 'Jump to the first folder or item starting with them'],
+      ['Backspace / Alt+←', 'Back (also the mouse back button)'],
+      ['Alt+→', 'Forward (also the mouse forward button)'],
+      ['Ctrl+F', 'Search (Esc clears, Esc again leaves the search)'],
+      ['Middle-click a folder', 'Play it as a slideshow'],
       ['Ctrl + mouse wheel', 'More or fewer items per row'],
       ['Delete', 'Move the selected items to the trash'],
       ['Right-click', 'Options for an item or folder'],
@@ -22,6 +31,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
   {
     group: 'Viewer — all media',
     keys: [
+      ['Esc / Backspace', 'Back to where you were in the library (also the mouse back button)'],
       ['Mouse wheel', 'Next / previous item (scrolls inside text and PDF)'],
       ['Ctrl + wheel', 'Zoom at the mouse'],
       ['Drag', 'Draw a rectangle — click inside to zoom to it'],

@@ -297,3 +297,9 @@ export const ExportIcon = ({ size = 16 }: P) => (
     <path d="M5 13v6a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-6" />
   </svg>
 );
+export const ArrowIcon = ({ size = 15, dir = 'left' }: P & { dir?: 'left' | 'right' }) => (
+  <svg {...base(size)} style={{ transform: dir === 'right' ? 'scaleX(-1)' : undefined }}>
+    <path d="M19 12H5" />
+    <path d="M11 6l-6 6 6 6" />
+  </svg>
+);

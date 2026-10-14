@@ -2,7 +2,7 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
@@ -15,7 +15,7 @@ import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
   ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
-  ExportIcon, FaceIcon, PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
+  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { PeopleView } from '../components/People';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
@@ -28,6 +28,11 @@ import { StatsView } from '../components/StatsView';
 import { TodaysPickCard, useTodaysPick } from '../components/TodaysPick';
 import { setDropHandler } from '../drop';
 import { startMoveDrag, targetFolder } from '../dragmove';
+import { QuickLook } from '../components/QuickLook';
+import {
+  getScroll, getSideScroll, lastPlace, loadViewPrefs, prefsKey, rememberPlace, setScroll, setSideScroll, setViewPrefs, viewKey, viewPrefsFor,
+  type LastPlace,
+} from '../viewmemory';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
@@ -110,6 +115,9 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
 type SearchValue = { tags: string[]; names: string[]; people: number[] };
 const NO_SEARCH: SearchValue = { tags: [], names: [], people: [] };
 
+/** Lower-case for matching names: Turkish İ/I/ı/i all match. */
+const foldName = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '');
+
 function searchTitle(v: SearchValue, folders: FolderCard[]) {
   const parts = [
     ...v.people.map((p) => folders.find((f) => f.id === p)?.name ?? 'person'),
@@ -135,7 +143,14 @@ function saveColsLater(n: number) {
   colsTimer = setTimeout(() => saveViewerPrefs({ gridColumns: n }), 700);
 }
 
-export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setView: (v: LibView) => void }) {
+let resumeOfferedFor: string | null = null;
+
+export function Library({ nav, view, setView, history, reveal }: {
+  nav: Nav; view: LibView; setView: (v: LibView) => void;
+  history: { back: () => boolean; forward: () => boolean; canBack: boolean; canForward: boolean };
+  /** Scroll to and highlight this item (after coming back from the viewer, "show in folder"). */
+  reveal: { id: number; n: number } | null;
+}) {
   const s = nav.app.session!;
   const cfg = nav.app.config;
   const [folders, setFolders] = useState<FolderCard[]>([]);
@@ -146,16 +161,32 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [anchor, setAnchor] = useState<number | null>(null);
-  const [sort, setSort] = useState<Order>('newest');
-  const [kind, setKind] = useState<Kind | 'any'>('any');
-  // Items per row (Ctrl + mouse wheel or the slider); remembered.
+  // Each view remembers its own sort, type filter and items per row (kept in the vault).
   const viewerPrefs = useViewerPrefs();
-  const [cols, setColsNow] = useState(() => viewerPrefs.gridColumns || 5);
+  const vKey = prefsKey(view);
+  const vp = viewPrefsFor(vKey);
+  const [, setPrefsTick] = useState(0);
+  const sort: Order = vp.sort ?? 'newest';
+  const kind: Kind | 'any' = vp.kind ?? 'any';
+  const cols = vp.cols ?? (viewerPrefs.gridColumns || 5);
+  const setSort = (o: Order) => { setViewPrefs(vKey, { sort: o }); setPrefsTick((t) => t + 1); };
+  const setKind = (k: Kind | 'any') => { setViewPrefs(vKey, { kind: k }); setPrefsTick((t) => t + 1); };
+  const vKeyRef = useRef(vKey);
+  vKeyRef.current = vKey;
   const setCols = useCallback((n: number) => {
     const c = Math.min(12, Math.max(2, Math.round(n)));
-    setColsNow(c);
-    saveColsLater(c);
+    setViewPrefs(vKeyRef.current, { cols: c });
+    saveColsLater(c); // also the default for views without their own
+    setPrefsTick((t) => t + 1);
   }, []);
+  useEffect(() => {
+    loadViewPrefs(s.path).then(() => setPrefsTick((t) => t + 1));
+  }, [s.path]);
+  // Keyboard cursor in the grid, quick look, and the item to show.
+  const [cursor, setCursor] = useState<number | null>(null);
+  const [quick, setQuick] = useState<number | null>(null);
+  const [revealHere, setRevealHere] = useState<{ id: number; n: number } | null>(null);
+  const [resume, setResume] = useState<LastPlace | null>(null);
   const [everyFolder, setEveryFolder] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -181,6 +212,87 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const preview = cfg.preview ?? 'hover';
   const shape = !!cfg.gridShape;
   const scroller = useRef<HTMLElement>(null);
+  const side = useRef<HTMLElement>(null);
+  const header = useRef<HTMLElement>(null);
+  const root = useRef<HTMLDivElement>(null);
+  const showItem = (id: number) => setRevealHere({ id, n: Date.now() });
+  useEffect(() => {
+    if (reveal) setRevealHere(reveal);
+  }, [reveal]);
+
+  // Pop-up messages sit just under the top bar (its height changes when it wraps).
+  useLayoutEffect(() => {
+    const h = header.current;
+    if (!h) return;
+    const set = () => root.current?.style.setProperty('--top-h', `${h.offsetHeight}px`);
+    const ro = new ResizeObserver(set);
+    ro.observe(h);
+    set();
+    return () => ro.disconnect();
+  }, []);
+
+  // Scroll positions: each view keeps its own; the sidebar keeps its place.
+  const viewK = viewKey(view);
+  const viewKRef = useRef(viewK);
+  viewKRef.current = viewK;
+  const restoring = useRef(false);
+  // While a new view loads, scroll changes are not that view's position.
+  useLayoutEffect(() => {
+    restoring.current = true;
+  }, [viewK]);
+  useLayoutEffect(() => {
+    const sd = side.current;
+    if (sd) sd.scrollTop = getSideScroll();
+    const onSide = () => sd && setSideScroll(sd.scrollTop);
+    sd?.addEventListener('scroll', onSide, { passive: true });
+    const sc = scroller.current;
+    const onMain = () => {
+      if (sc && !restoring.current) setScroll(viewKRef.current, sc.scrollTop);
+    };
+    sc?.addEventListener('scroll', onMain, { passive: true });
+    return () => {
+      sd?.removeEventListener('scroll', onSide);
+      sc?.removeEventListener('scroll', onMain);
+    };
+  }, []);
+  // The sidebar's content arrives a moment later; put it back where it was then.
+  const sideRestored = useRef(false);
+  useEffect(() => {
+    const sd = side.current;
+    if (!sd || sideRestored.current || !folders.length) return;
+    sideRestored.current = true;
+    sd.scrollTop = getSideScroll();
+  }, [folders.length]);
+  const restoreScroll = useCallback(() => {
+    const sc = scroller.current;
+    if (!sc) return;
+    const top = getScroll(viewKRef.current);
+    restoring.current = true;
+    const apply = () => {
+      sc.scrollTop = top;
+    };
+    apply();
+    requestAnimationFrame(() => {
+      apply();
+      requestAnimationFrame(apply);
+    });
+    setTimeout(() => {
+      apply();
+      restoring.current = false;
+    }, 150);
+  }, []);
+
+  // Where you left off: remembered as you go, offered once after unlocking.
+  useEffect(() => {
+    rememberPlace({ view, item: revealHere?.id ?? null });
+  }, [viewK, revealHere?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (resumeOfferedFor === s.path) return;
+    resumeOfferedFor = s.path;
+    lastPlace().then((p) => {
+      if (p && p.view && viewKey(p.view) !== viewKey(view) && !['folders', 'stats'].includes(p.view.kind)) setResume(p);
+    });
+  }, [s.path]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     api.storageInfo().then(setStorage).catch(() => {});
@@ -256,11 +368,18 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   }, [view]);
 
   useEffect(() => {
-    reload();
+    let live = true;
     setSelected(new Set());
     setAnchor(null);
-    scroller.current?.scrollTo({ top: 0 });
-  }, [reload]);
+    setCursor(null);
+    setQuick(null);
+    reload().then(() => {
+      if (live) restoreScroll();
+    });
+    return () => {
+      live = false;
+    };
+  }, [reload, restoreScroll]);
 
   // Folder covers appear as soon as their first thumbnail is made.
   useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
@@ -303,17 +422,32 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         keyActions.current.selectAll();
       } else if (e.key === 'Escape' && keyActions.current.selected.size) {
         keyActions.current.selectNone();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        document.getElementById('lib-search')?.focus();
+      } else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
+        e.preventDefault();
+        if (e.key === 'ArrowLeft') keyActions.current.back();
+        else keyActions.current.forward();
+      } else if (e.key === 'Backspace' && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        keyActions.current.back();
+      } else if (e.key.length === 1 && /[\p{L}\p{N}]/u.test(e.key) && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        keyActions.current.typeJump(e.key);
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [undo]);
+  const [noteHover, setNoteHover] = useState(false);
   useEffect(() => {
-    if (!note) return;
+    if (!note || noteHover) return;
     const t = setTimeout(() => setNote(null), 8000);
     return () => clearTimeout(t);
-  }, [note]);
+  }, [note, noteHover]);
 
+  const colsRef = useRef(cols);
+  colsRef.current = cols;
   // Ctrl + mouse wheel: fewer (bigger) or more (smaller) items per row.
   useEffect(() => {
     const el = scroller.current;
@@ -326,15 +460,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       if (Math.abs(acc) < 40) return;
       const step = acc > 0 ? 1 : -1;
       acc = 0;
-      setColsNow((c) => {
-        const n = Math.min(12, Math.max(2, c + step));
-        saveColsLater(n);
-        return n;
-      });
+      setCols(colsRef.current + step);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
-  }, []);
+  }, [setCols]);
 
   const showHelp = useCallback(() => setDialog({ t: 'shortcuts' }), []);
   useHelpKey(showHelp);
@@ -433,9 +563,16 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   });
 
   // The Delete key acts on the current selection.
-  const keyActions = useRef({ selected, del: () => {}, selectAll: () => {}, selectNone: () => {} });
+  const keyActions = useRef({
+    selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
+  });
   keyActions.current = {
     selected,
+    back: () => {
+      if (!history.back() && view.kind === 'folder') setView(view.id == null ? { kind: 'folders' } : { kind: 'folder', id: folder?.parentId ?? null });
+    },
+    forward: () => void history.forward(),
+    typeJump: (k: string) => typeJump(k),
     selectAll: () => selectAll(),
     selectNone: () => setSelected(new Set()),
     del: () => {
@@ -568,6 +705,53 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   };
 
   const openFolder = (id: number | null) => setView({ kind: 'folder', id });
+  /** Open an item's folder with the item highlighted. */
+  const showInFolder = (it: Item) => {
+    setView({ kind: 'folder', id: it.folderId });
+    showItem(it.id);
+  };
+  /** Middle-click a folder: play it as a slideshow. */
+  const playFolder = async (f: FolderCard) => {
+    const list = await api.queryItems({ folder: f.id, recursive: true });
+    if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
+    else setNote({ text: `“${f.name}” is empty`, at: 0 });
+  };
+  const middle = (f: FolderCard) => ({
+    onMouseDown: (e: React.MouseEvent) => {
+      if (e.button === 1) e.preventDefault(); // no auto-scroll
+    },
+    onAuxClick: (e: React.MouseEvent) => {
+      if (e.button === 1) {
+        e.preventDefault();
+        playFolder(f);
+      }
+    },
+  });
+  // Type to jump: the first folder card or item whose name starts with what you type.
+  const jumpBuf = useRef({ text: '', at: 0 });
+  const typeJump = (k: string) => {
+    const now = Date.now();
+    const b = jumpBuf.current;
+    b.text = now - b.at > 900 ? k : b.text + k;
+    b.at = now;
+    const q = foldName(b.text);
+    const card = cards.find((f) => foldName(f.name).startsWith(q));
+    if (card) {
+      const el = document.querySelector<HTMLElement>(`[data-card="${card.id}"]`);
+      el?.scrollIntoView({ block: 'nearest' });
+      el?.classList.remove('flash');
+      void el?.offsetWidth;
+      el?.classList.add('flash');
+      return;
+    }
+    const it = shown.find((i) => foldName(i.name).startsWith(q));
+    if (it) {
+      setSelected(new Set([it.id]));
+      setAnchor(it.id);
+      setCursor(it.id);
+      showItem(it.id);
+    }
+  };
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     { label: 'Slideshow', onSelect: async () => {
@@ -660,7 +844,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       items: [
         { label: 'Open', onSelect: () => playItems(false, it.id) },
         { label: many ? 'Play these as a slideshow' : 'Slideshow from here', onSelect: () => playItems(true, it.id, many) },
-        ...(view.kind !== 'folder' && !many ? [{ label: 'Show in its folder', onSelect: () => openFolder(it.folderId) }] : []),
+        ...(!many && !(view.kind === 'folder' && view.id === it.folderId) ? [{ label: 'Show in its folder', onSelect: () => showInFolder(it) }] : []),
         { label: allFav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => setFav(ids, !allFav) },
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
@@ -721,10 +905,10 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}` : viewTitle(view, folder);
   const totalImporting = Object.values(jobs);
-  const showNote = note && (Date.now() - note.at < 8000 || note.at === 0);
+  const showNote = !!note;
   return (
-    <div className="library">
-      <header className="lib-top">
+    <div className="library" ref={root}>
+      <header className="lib-top" ref={header}>
         <div className="brand">
           <LockIcon size={18} />
           <span>{s.name}</span>
@@ -732,6 +916,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         <SearchBar tags={tags} folders={folders} value={view.kind === 'search' ? { ...view, people: view.people ?? [] } : NO_SEARCH}
           onChange={(v) => setView(v.tags.length || v.names.length || v.people.length ? { kind: 'search', ...v } : { kind: 'folders' })}
           onOpenFolder={openFolder}
+          onEscape={() => {
+            if (view.kind === 'search' || view.kind === 'smart') {
+              if (!history.back()) setView({ kind: 'folders' });
+            }
+          }}
           smart={smartOk && !!cfg.smartSearch} smartQuery={smart ? view.q : ''}
           onSmart={(q) => setView(q ? { kind: 'smart', q } : { kind: 'folders' })} />
         <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
@@ -765,7 +954,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       </header>
 
       <div className="lib-body">
-        <aside className="side" aria-label="Library">
+        <aside className="side" aria-label="Library" ref={side}>
           {sideView({ kind: 'folders' }, 'All folders', folders.length)}
           {sideView({ kind: 'all' }, 'All media', s.items)}
           {sideView({ kind: 'favourites' }, 'Favourites')}
@@ -777,7 +966,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
               onContextMenu={(e) => folderContext(e, f)}>
               <span className="twisty" />
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)}
+              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
                 title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
@@ -801,7 +990,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                   return n;
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)}>
+              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
+                title="Middle-click to play this folder">
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -832,7 +1022,26 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
               </button>
             </div>
           )}
+          {resume && (
+            <div className="info row-between" role="status">
+              <span>Continue where you left off: <b>{resume.view.kind === 'folder' ? (resume.view.id == null ? 'Top level' : folders.find((f) => f.id === (resume.view as { id: number }).id)?.name ?? 'a folder') : viewTitle(resume.view, null)}</b></span>
+              <span className="row" style={{ gap: 12 }}>
+                <button type="button" className="btn btn-sm btn-primary" onClick={() => {
+                  setView(resume.view);
+                  if (resume.item != null) showItem(resume.item);
+                  setResume(null);
+                }}>Go there</button>
+                <button type="button" className="link" onClick={() => setResume(null)}>Dismiss</button>
+              </span>
+            </div>
+          )}
           <div className="lib-head">
+            <div role="group" aria-label="History" className="row" style={{ gap: 4 }}>
+              <button type="button" className="btn btn-icon btn-sm ghost" aria-label="Back" title="Back (Alt+← or Backspace)" disabled={!history.canBack}
+                onClick={() => history.back()}><ArrowIcon dir="left" /></button>
+              <button type="button" className="btn btn-icon btn-sm ghost" aria-label="Forward" title="Forward (Alt+→)" disabled={!history.canForward}
+                onClick={() => history.forward()}><ArrowIcon dir="right" /></button>
+            </div>
             {view.kind === 'folder' && (
               <span className="crumbs">
                 <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })}>All folders</button>
@@ -955,11 +1164,12 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           {!inTrash && cards.length > 0 && (
             <div className="fgrid" style={{ gridTemplateColumns: `repeat(${Math.max(1, cols - 1)}, minmax(0, 1fr))` }}>
               {cards.map((f) => (
-                <div key={f.id} className="fcard" data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
+                <div key={f.id} className="fcard" data-card={f.id} data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
-                    onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} aria-label={`Open ${f.name}`}>
+                    onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={`Open ${f.name}`}
+                    title="Click to open · middle-click to play · drag onto a folder to move">
                     {coverView(f)}
                     {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>
@@ -981,7 +1191,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 
           {gridView && (
             shown.length ? (
-              <MediaGrid items={shown} columns={cols} selected={selected} anchor={anchor} scroller={scroller}
+              <MediaGrid items={shown} columns={cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
+                keyboard={quick == null && !dialog && !ctx} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a) => { setSelected(sel); setAnchor(a); }}
                 onOpen={(it) => playItems(false, it.id)}
                 onContext={itemContext}
@@ -1047,6 +1258,16 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         </div>
       )}
 
+      <div className="notes" onPointerEnter={() => setNoteHover(true)} onPointerLeave={() => setNoteHover(false)}>
+      {showNote && note && (
+        <div className="undo-toast" role="status">
+          <span className="ellipsis">{note.text}</span>
+          {note.at !== 0 && undoTop && undoTop.label === note.text && (
+            <button type="button" className="btn btn-sm" onClick={undo}><UndoIcon /> Undo <kbd>Ctrl+Z</kbd></button>
+          )}
+          <button type="button" className="link" aria-label="Dismiss" onClick={() => setNote(null)}><CloseIcon size={12} /></button>
+        </div>
+      )}
       {(totalImporting.length > 0 || reports.length > 0 || storageJob || storageMsg || hasTaskCards(tasks)) && (
         <section className="imports" aria-label="Import progress">
           <TaskCards />
@@ -1072,19 +1293,16 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           ))}
         </section>
       )}
-
-      {showNote && note && (
-        <div className="undo-toast" role="status">
-          <span className="ellipsis">{note.text}</span>
-          {note.at !== 0 && undoTop && undoTop.label === note.text && (
-            <button type="button" className="btn btn-sm" onClick={undo}><UndoIcon /> Undo <kbd>Ctrl+Z</kbd></button>
-          )}
-          <button type="button" className="link" aria-label="Dismiss" onClick={() => setNote(null)}><CloseIcon size={12} /></button>
-        </div>
-      )}
-
       {pick && !dialog && (
         <TodaysPickCard item={pick} onClose={dismissPick} onOpen={() => { dismissPick(); openInFolder(pick); }} />
+      )}
+      </div>
+
+      {quick != null && (
+        <QuickLook items={shown} id={quick} onClose={() => setQuick(null)}
+          onMove={(id) => { setQuick(id); setCursor(id); setSelected(new Set([id])); setAnchor(id); }}
+          onOpen={(it) => { setQuick(null); playItems(false, it.id); }}
+          onShowFolder={view.kind === 'folder' ? undefined : (it) => { setQuick(null); showInFolder(it); }} />
       )}
 
       {dialog?.t === 'newFolder' && (
@@ -1170,14 +1388,14 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 
 function SearchBar(props: {
   tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void;
-  smart: boolean; smartQuery: string; onSmart: (q: string) => void;
+  smart: boolean; smartQuery: string; onSmart: (q: string) => void; onEscape: () => void;
 }) {
-  if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} />;
+  if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} onEscape={props.onEscape} />;
   return <TagNameBar {...props} />;
 }
 
 /** Smart search: type a description, Enter to search. */
-function SmartBar(props: { query: string; onSearch: (q: string) => void }) {
+function SmartBar(props: { query: string; onSearch: (q: string) => void; onEscape: () => void }) {
   const [text, setText] = useState(props.query);
   useEffect(() => setText(props.query), [props.query]);
   return (
@@ -1188,7 +1406,14 @@ function SmartBar(props: { query: string; onSearch: (q: string) => void }) {
         onChange={(e) => setText(e.target.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { e.preventDefault(); props.onSearch(text.trim()); }
-          else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
+          else if (e.key === 'Escape') {
+            // Esc clears the box; Esc on an empty box leaves the search.
+            if (text) setText('');
+            else {
+              (e.target as HTMLInputElement).blur();
+              props.onEscape();
+            }
+          }
         }} />
       {text && (
         <button type="button" className="link" aria-label="Clear" onClick={() => { setText(''); props.onSearch(''); }}><CloseIcon size={12} /></button>
@@ -1197,7 +1422,7 @@ function SmartBar(props: { query: string; onSearch: (q: string) => void }) {
   );
 }
 
-function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void }) {
+function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void; onEscape: () => void }) {
   const [text, setText] = useState('');
   const [focus, setFocus] = useState(false);
   const [hi, setHi] = useState(0);
@@ -1273,7 +1498,14 @@ function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: Sea
             if (names.length) props.onChange({ tags, names: names.slice(0, -1), people });
             else if (tags.length) props.onChange({ tags: tags.slice(0, -1), names, people });
             else props.onChange({ tags, names, people: people.slice(0, -1) });
-          } else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
+          } else if (e.key === 'Escape') {
+            // Esc clears what you typed; Esc again leaves the search.
+            if (text) setText('');
+            else {
+              (e.target as HTMLInputElement).blur();
+              props.onEscape();
+            }
+          }
         }} />
       {focus && opts.length > 0 && (
         <div className="menu suggest" role="listbox">

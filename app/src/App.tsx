@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, onLocked, type AppState, type LockReason } from './api';
 import { applyAccent } from './theme';
 import { setPrefsConfig } from './prefs';
 import { clearUndo } from './undo';
+import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
 import { Start } from './screens/Start';
 import { CreateVault } from './screens/CreateVault';
@@ -56,6 +57,68 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [libView, setLibView] = useState<LibView>({ kind: 'folders' });
+  // Back / forward through library views, like a web browser.
+  const viewRef = useRef<LibView>(libView);
+  viewRef.current = libView;
+  const hist = useRef<{ back: LibView[]; fwd: LibView[] }>({ back: [], fwd: [] });
+  const [, setHistTick] = useState(0);
+  /** An item to scroll to and highlight when the library shows again. */
+  const [reveal, setReveal] = useState<{ id: number; n: number } | null>(null);
+  const showItem = useCallback((id: number | null | undefined) => {
+    if (id != null) setReveal({ id, n: Date.now() });
+  }, []);
+  const goView = useCallback((v: LibView) => {
+    if (JSON.stringify(v) === JSON.stringify(viewRef.current)) return;
+    const h = hist.current;
+    h.back.push(viewRef.current);
+    if (h.back.length > 100) h.back.shift();
+    h.fwd = [];
+    setLibView(v);
+    setHistTick((t) => t + 1);
+  }, []);
+  const goBackRef = useRef<() => boolean>(() => false);
+  const goForwardRef = useRef<() => boolean>(() => false);
+  const goBack = useCallback(() => {
+    const h = hist.current;
+    const v = h.back.pop();
+    if (!v) return false;
+    h.fwd.push(viewRef.current);
+    setLibView(v);
+    setHistTick((t) => t + 1);
+    return true;
+  }, []);
+  // The mouse's back / forward side buttons.
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+  useEffect(() => {
+    const down = (e: MouseEvent) => {
+      if (e.button === 3 || e.button === 4) e.preventDefault();
+    };
+    const up = (e: MouseEvent) => {
+      if (e.button !== 3 && e.button !== 4) return;
+      e.preventDefault();
+      if (screenRef.current.name !== 'library' || document.querySelector('[aria-modal="true"]')) return;
+      if (e.button === 3) goBackRef.current();
+      else goForwardRef.current();
+    };
+    window.addEventListener('mousedown', down);
+    window.addEventListener('mouseup', up);
+    return () => {
+      window.removeEventListener('mousedown', down);
+      window.removeEventListener('mouseup', up);
+    };
+  }, []);
+  const goForward = useCallback(() => {
+    const h = hist.current;
+    const v = h.fwd.pop();
+    if (!v) return false;
+    h.back.push(viewRef.current);
+    setLibView(v);
+    setHistTick((t) => t + 1);
+    return true;
+  }, []);
+  goBackRef.current = goBack;
+  goForwardRef.current = goForward;
 
   const refresh = useCallback(async () => {
     const s = await api.getState();
@@ -82,6 +145,8 @@ export function App() {
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       setScreen((cur) => (cur.name === 'player' ? cur : { name: 'start' }));
       setLibView({ kind: 'folders' });
+      hist.current = { back: [], fwd: [] };
+      clearViewMemory();
       setToast(LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });
@@ -125,11 +190,24 @@ export function App() {
       {screen.name === 'recover' && <Recover nav={nav} path={screen.path} />}
       {screen.name === 'newPassword' && <NewPassword nav={nav} />}
       {screen.name === 'words' && <RecoveryWords nav={nav} words={screen.words} context={screen.context} />}
-      {screen.name === 'library' && app.session && <Library nav={nav} view={libView} setView={setLibView} />}
+      {screen.name === 'library' && app.session && (
+        <Library nav={nav} view={libView} setView={goView}
+          history={{ back: goBack, forward: goForward, canBack: hist.current.back.length > 0, canForward: hist.current.fwd.length > 0 }}
+          reveal={reveal} />
+      )}
       {screen.name === 'settings' && <Settings nav={nav} />}
       {screen.name === 'viewer' && (
         <Viewer nav={nav} items={screen.items} startKey={screen.startKey} title={screen.title} auto={screen.auto} order={screen.order}
-          onBack={() => { setLibView(screen.back); setScreen(app.session ? { name: 'library' } : { name: 'start' }); }} />
+          onBack={(last) => {
+            setLibView(screen.back);
+            showItem(last?.itemId);
+            setScreen(app.session ? { name: 'library' } : { name: 'start' });
+          }}
+          onShowFolder={(it) => {
+            goView({ kind: 'folder', id: it.folderId });
+            showItem(it.itemId);
+            setScreen({ name: 'library' });
+          }} />
       )}
       {screen.name === 'multi' && app.session && (
         <MultiScreen nav={nav} vault onBack={() => { setLibView(screen.back); setScreen({ name: 'library' }); }} />

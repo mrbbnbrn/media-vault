@@ -831,6 +831,34 @@ async fn cache_info(state: State<'_, Shared>) -> Result<storage::CacheInfo, Stri
     blocking(move || storage::cache_info(&s)).await
 }
 
+// ---- small remembered UI state (per vault, encrypted) -------------------------------------
+
+/// Remembered UI state for this vault: per-folder view settings, where you
+/// left off. Kept in the library's settings table (encrypted like the rest).
+#[tauri::command]
+async fn ui_get(state: State<'_, Shared>, key: String) -> Result<Option<String>, String> {
+    read_db(state.inner(), move |c| {
+        Ok(c.query_row("SELECT value FROM settings WHERE key = ?", [format!("ui:{key}")], |r| r.get(0)).ok())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn ui_set(state: State<'_, Shared>, key: String, value: String) -> Result<(), String> {
+    if key.len() > 64 || value.len() > 512 * 1024 {
+        return Err("Too large.".into());
+    }
+    edit_db(state.inner(), move |c| {
+        c.execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [format!("ui:{key}"), value],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
 // ---- import ------------------------------------------------------------------------------
 
 #[tauri::command]
@@ -1366,6 +1394,8 @@ pub fn run() {
             save_preview,
             preview_failed,
             cache_info,
+            ui_get,
+            ui_set,
             inspect_drop,
             check_archive_password,
             start_import,

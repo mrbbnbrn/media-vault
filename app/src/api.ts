@@ -492,6 +492,9 @@ export const api = {
   storageInfo: () => call<StorageInfo>('storage_info'),
   storageTask: (task: StorageTask) => call<void>('storage_task', { task }),
   cacheInfo: () => call<CacheInfo>('cache_info'),
+  /** Small remembered UI state for this vault (JSON text). */
+  uiGet: (key: string) => call<string | null>('ui_get', { key }),
+  uiSet: (key: string, value: string) => call<void>('ui_set', { key, value }),
 
   // preview clips
   previewsNeeded: (limit: number, prefer: number[]) => call<{ id: number; durationMs: number | null }[]>('previews_needed', { limit, prefer }),
@@ -675,6 +678,8 @@ const mock = {
         return { people: [], unknown: [], status: { queued: 0, scanned: 0, faces: 0, failed: 0 } };
       case 'previews_needed':
         return [];
+      case 'ui_get':
+        return null;
       case 'cache_info':
         return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
       case 'clip_status':

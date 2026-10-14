@@ -38,6 +38,14 @@ export function MediaGrid(props: {
   layout?: 'grid' | 'shape';
   groups?: Group[];
   scroller: React.RefObject<HTMLElement | null>;
+  /** Keyboard highlight (arrow keys); Enter opens it, Space = quick look. */
+  cursor?: number | null;
+  onCursor?: (id: number | null) => void;
+  onQuickLook?: (item: Item) => void;
+  /** Arrow keys etc. are on (off while a dialog or quick look is open). */
+  keyboard?: boolean;
+  /** Scroll this item into view and flash it. */
+  reveal?: { id: number; n: number } | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -83,6 +91,110 @@ export function MediaGrid(props: {
       window.removeEventListener('resize', update);
     };
   }, [props.scroller, layout]);
+
+  // Bring an item into view (only scrolls if it isn't already visible).
+  const bringIntoView = (i: number, centre = false) => {
+    const sc = props.scroller.current;
+    const el = ref.current;
+    const b = layout.boxes[i];
+    if (!sc || !el || !b) return;
+    const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
+    const y0 = top + b.y;
+    const y1 = y0 + b.h;
+    if (y0 < sc.scrollTop + 8) sc.scrollTop = centre ? y0 - sc.clientHeight / 3 : y0 - 8;
+    else if (y1 > sc.scrollTop + sc.clientHeight - 8) sc.scrollTop = centre ? y0 - sc.clientHeight / 3 : y1 - sc.clientHeight + 8;
+  };
+  const [flashId, setFlashId] = useState<number | null>(null);
+  useEffect(() => {
+    if (!props.reveal) return;
+    const i = props.items.findIndex((x) => x.id === props.reveal!.id);
+    if (i < 0) return;
+    // After the scroll position has been restored.
+    const t = setTimeout(() => {
+      bringIntoView(i, true);
+      setFlashId(props.reveal!.id);
+      props.onCursor?.(props.reveal!.id);
+    }, 200);
+    const t2 = setTimeout(() => setFlashId(null), 2200);
+    return () => {
+      clearTimeout(t);
+      clearTimeout(t2);
+    };
+  }, [props.reveal?.n, props.items.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keyboard: arrows move the highlight (Shift extends the selection, Ctrl
+  // moves without selecting), Enter opens, Space = quick look, Ctrl+Space
+  // selects or unselects the highlighted item.
+  const keyState = useRef({ props, layout });
+  keyState.current = { props, layout };
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const { props: p, layout: L } = keyState.current;
+      if (!p.keyboard || !p.items.length) return;
+      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]') || document.querySelector('[aria-modal="true"]')) return;
+      const k = e.key;
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(k) || e.altKey) return;
+      const cur = p.cursor != null ? p.items.findIndex((x) => x.id === p.cursor) : -1;
+      if (k === 'Enter') {
+        if (cur >= 0) {
+          e.preventDefault();
+          p.onOpen(p.items[cur]);
+        }
+        return;
+      }
+      if (k === ' ') {
+        e.preventDefault();
+        const i = cur >= 0 ? cur : p.items.findIndex((x) => p.selected.has(x.id));
+        if (i < 0) return;
+        if (e.ctrlKey || e.metaKey) {
+          const sel = new Set(p.selected);
+          if (sel.has(p.items[i].id)) sel.delete(p.items[i].id);
+          else sel.add(p.items[i].id);
+          p.onSelect(sel, p.items[i].id);
+        } else p.onQuickLook?.(p.items[i]);
+        return;
+      }
+      e.preventDefault();
+      let next = cur;
+      if (cur < 0) next = 0;
+      else if (k === 'ArrowLeft') next = Math.max(0, cur - 1);
+      else if (k === 'ArrowRight') next = Math.min(p.items.length - 1, cur + 1);
+      else {
+        // Up / down: the nearest item in the row above / below.
+        const b = L.boxes[cur];
+        const cx = b.x + b.w / 2;
+        let best = -1;
+        let bestRow = k === 'ArrowUp' ? -Infinity : Infinity;
+        let bestDx = Infinity;
+        L.boxes.forEach((o, j) => {
+          const below = o.y > b.y + 1;
+          const above = o.y < b.y - 1;
+          if ((k === 'ArrowDown' && !below) || (k === 'ArrowUp' && !above)) return;
+          const dx = Math.abs(o.x + o.w / 2 - cx);
+          const closerRow = k === 'ArrowDown' ? o.y < bestRow - 1 : o.y > bestRow + 1;
+          const sameRow = Math.abs(o.y - bestRow) <= 1;
+          if (closerRow || (sameRow && dx < bestDx)) {
+            best = j;
+            bestRow = o.y;
+            bestDx = dx;
+          }
+        });
+        if (best >= 0) next = best;
+      }
+      const id = p.items[next].id;
+      p.onCursor?.(id);
+      if (e.shiftKey && p.anchor != null) {
+        const a = p.items.findIndex((x) => x.id === p.anchor);
+        const [lo, hi] = a < next ? [a, next] : [next, a];
+        p.onSelect(new Set(p.items.slice(lo, hi + 1).map((x) => x.id)), p.anchor);
+      } else if (!(e.ctrlKey || e.metaKey)) {
+        p.onSelect(new Set([id]), id);
+      }
+      bringIntoView(next);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [from, to] = visibleRange(layout.boxes, view.top - 600, view.bottom + 600);
   // Only tiles really on screen play; the rest just show their thumbnail.
@@ -173,9 +285,9 @@ export function MediaGrid(props: {
         const asClip = playing && it.kind === 'video' && clipMode.clips;
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.name}
-            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`}
+            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.cursor === it.id ? ' cursor' : ''}${flashId === it.id ? ' flash' : ''}`}
             style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
-            onClick={(e) => click(e, it, i)} onDoubleClick={() => props.onOpen(it)}
+            onClick={(e) => { click(e, it, i); props.onCursor?.(it.id); }} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
             onContextMenu={(e) => {
               e.preventDefault();

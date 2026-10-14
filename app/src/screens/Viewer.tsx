@@ -1,6 +1,6 @@
 // Full viewer / slideshow for a list of items.
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, type Named } from '../api';
 import type { Nav } from '../App';
 import { Dropdown, PromptDialog } from '../components/Dialogs';
@@ -14,7 +14,26 @@ import { setCleanFullscreen } from '../fullscreen';
 
 let lastSettings: PlaybackSettings = DEFAULT_PLAYBACK;
 
-export function Viewer(props: { nav: Nav; items: PlayItem[]; startKey?: string; title: string; auto: boolean; order?: Order; onBack: () => void }) {
+export function Viewer(props: {
+  nav: Nav; items: PlayItem[]; startKey?: string; title: string; auto: boolean; order?: Order;
+  /** Back to the library; `last` = the item that was showing. */
+  onBack: (last: PlayItem | null) => void;
+  onShowFolder?: (item: PlayItem) => void;
+}) {
+  const current = useRef<PlayItem | null>(null);
+  const [folderNames, setFolderNames] = useState<Map<number, string>>(new Map());
+  useEffect(() => {
+    if (props.nav.app.session) api.folders().then((f) => setFolderNames(new Map(f.map((x) => [x.id, x.name])))).catch(() => {});
+  }, [props.nav.app.session]);
+  const back = () => props.onBack(current.current);
+  // The mouse's back button leaves the viewer.
+  useEffect(() => {
+    const up = (e: MouseEvent) => {
+      if (e.button === 3) back();
+    };
+    window.addEventListener('mouseup', up);
+    return () => window.removeEventListener('mouseup', up);
+  });
   const [settings, setSettings] = useState<PlaybackSettings>(() => {
     // Follow the library's sort order, unless a random order was chosen before.
     const random = ['shuffle', 'random', 'weighted'].includes(lastSettings.order);
@@ -70,9 +89,16 @@ export function Viewer(props: { nav: Nav; items: PlayItem[]; startKey?: string; 
         clean={clean}
         controlsOnMouse={props.nav.app.config.fullscreenControlsOnMouse}
         keys
+        onCurrent={(it) => { current.current = it; }}
+        onClose={() => (clean ? toggleClean() : back())}
+        subtitle={(it) => it.itemId != null && props.onShowFolder ? (
+          <button type="button" className="link p-folder" title="Show this item in its folder" onClick={() => props.onShowFolder?.(it)}>
+            in {it.folderId == null ? 'Top level' : folderNames.get(it.folderId) ?? 'its folder'}
+          </button>
+        ) : null}
         activityId="viewer"
         title={
-          <button type="button" className="btn btn-icon btn-sm glass" aria-label="Back" onClick={() => (clean ? toggleClean() : props.onBack())}>
+          <button type="button" className="btn btn-icon btn-sm glass" aria-label="Back" onClick={() => (clean ? toggleClean() : back())}>
             <BackIcon />
           </button>
         }
@@ -85,7 +111,6 @@ export function Viewer(props: { nav: Nav; items: PlayItem[]; startKey?: string; 
         onFavourite={vault ? (it, on) => it.itemId != null && api.setFavourite([it.itemId], on) : undefined}
         onWeight={vault ? (it, w) => it.itemId != null && api.setWeight([it.itemId], w) : undefined}
         onFullscreen={toggleClean}
-        onClose={() => (clean ? toggleClean() : props.onBack())}
       />
       {saving && (
         <PromptDialog title="Save preset" label="Name" confirm="Save" onClose={() => setSaving(false)}
