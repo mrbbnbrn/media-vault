@@ -14,7 +14,9 @@ export function Modal(props: { title: string; children: ReactNode; onClose: () =
       }
     };
     window.addEventListener('keydown', onKey, true);
-    ref.current?.querySelector<HTMLElement>('[data-autofocus], input, select, button.btn-primary')?.focus();
+    // The marked button first (e.g. Delete in a confirmation), else the first field, else the main button.
+    const r = ref.current;
+    (r?.querySelector<HTMLElement>('[data-autofocus]') ?? r?.querySelector<HTMLElement>('input, select, button.btn-primary'))?.focus();
     return () => window.removeEventListener('keydown', onKey, true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (

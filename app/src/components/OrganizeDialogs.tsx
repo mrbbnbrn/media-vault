@@ -111,6 +111,7 @@ export function MergeDialog(props: { folders: FolderCard[]; onClose: () => void;
 /** Deleting originals that have free copies: delete them too, or make one the new original. */
 export function DeleteOriginalDialog(props: {
   groups: [Item, Item[]][];
+  folderName?: (id: number | null) => string;
   onCancel: () => void;
   onChoice: (choice: { mode: 'all' } | { mode: 'promote'; picks: Map<number, number> }) => void;
 }) {
@@ -128,7 +129,7 @@ export function DeleteOriginalDialog(props: {
             {!one && <span className="ellipsis faint" style={{ maxWidth: 180, fontSize: 13 }}>{o.name}:</span>}
             <select className="input" style={{ minHeight: 34 }} value={picks.get(o.id)} aria-label={`New original for ${o.name}`}
               onChange={(e) => setPicks((p) => new Map(p).set(o.id, Number(e.target.value)))}>
-              {cs.map((c) => <option key={c.id} value={c.id}>{c.name} — in {c.folderId == null ? 'Top level' : 'a folder'}</option>)}
+              {cs.map((c) => <option key={c.id} value={c.id}>{c.name} — in {props.folderName ? props.folderName(c.folderId) : c.folderId == null ? 'Top level' : 'a folder'}</option>)}
             </select>
           </div>
         ))}

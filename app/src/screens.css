@@ -504,7 +504,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 
 /* Face boxes */
 .face-layer { position: absolute; inset: 0; z-index: 2; pointer-events: none; }
-.face-box { position: absolute; padding: 0; margin: 0; border: 2px solid #2EC4B6; border-radius: 4px; background: transparent; cursor: pointer; pointer-events: auto; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); animation: fadein 0.15s ease; }
+.face-box { position: absolute; padding: 0; margin: 0; border: 2px solid #2EC4B6; border-radius: 4px; background: transparent; cursor: pointer; pointer-events: auto; animation: fadein 0.15s ease; }
 .face-box.unknown { border: 2px dashed #EF9F27; }
 .face-box:hover { background: rgba(255, 255, 255, 0.06); }
 .face-tag { position: absolute; left: -2px; top: calc(100% + 4px); padding: 2px 8px; border-radius: 6px; background: #2EC4B6; color: #04211e; font-size: 12px; font-weight: 600; white-space: nowrap; line-height: 1.5; }
@@ -600,7 +600,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .tile .tile-info { position: absolute; left: 0; right: 0; bottom: 0; display: flex; flex-direction: column; gap: 1px; padding: 5px 8px; background: rgba(0, 0, 0, 0.72); color: #e9e7e3; font-size: 11.5px; text-align: left; line-height: 1.3; opacity: 0; transition: opacity 0.12s; pointer-events: none; }
 .tile.hinfo:hover .tile-info { opacity: 1; }
 .tile.hinfo:hover .badge, .tile.hinfo:hover .wt { bottom: 44px; }
-.tile .tile-face { position: absolute; border: 2px solid #2EC4B6; border-radius: 3px; pointer-events: none; box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35); }
+.tile .tile-face { position: absolute; border: 2px solid #2EC4B6; border-radius: 3px; pointer-events: none; background: transparent; }
 .tile .tile-face.unknown { border: 2px dashed #EF9F27; }
 .tile .tile-face.small { border-color: transparent; box-shadow: none; }
 .tile .tile-face-tag { position: absolute; left: -2px; bottom: 100%; margin-bottom: 2px; padding: 0 5px; border-radius: 3px; background: #2EC4B6; color: #04342C; font-size: 10.5px; font-weight: 600; white-space: nowrap; max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
@@ -637,3 +637,35 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .topbar.editing .tb-inner { pointer-events: none; display: inline-flex; }
 .tb-x { position: absolute; top: -7px; right: -7px; width: 18px; height: 18px; border-radius: 50%; border: none; background: var(--danger); color: #fff; font-size: 12px; line-height: 18px; padding: 0; cursor: pointer; }
 .tb-tray { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 18px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 13px; }
+/* Quick sort */
+.qsort { position: fixed; inset: 0; z-index: 55; display: flex; flex-direction: column; gap: 10px; padding: 14px 22px 12px; background: var(--ground); }
+.qsort-head { display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
+.qsort-head .check { min-height: 32px; font-size: 13px; gap: 8px; }
+.qsort-head .faint { font-size: 13px; }
+.qsort-chips { display: flex; flex-wrap: wrap; gap: 6px; min-height: 32px; align-items: center; }
+.qchip { display: inline-flex; align-items: center; gap: 6px; min-height: 30px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-2); background: transparent; color: var(--text-2); font-size: 13px; cursor: pointer; }
+.qchip:hover { background: #171a1f; color: var(--text); }
+.qchip.suggest { background: var(--accent-soft-2); border-color: var(--accent-border); color: var(--accent-text); }
+.qsort-search { position: relative; }
+.qsort-search .input { width: 100%; min-height: 44px; font-size: 15px; border-color: var(--accent); }
+.qsort-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; max-height: 50vh; }
+.qsort-stage { position: relative; flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #08090a; border-radius: 12px; overflow: hidden; }
+.qsort-stage img, .qsort-stage video { max-width: 100%; max-height: 100%; object-fit: contain; }
+.qsort-name { position: absolute; left: 12px; bottom: 10px; max-width: 60%; padding: 3px 9px; border-radius: 6px; background: rgba(0, 0, 0, 0.6); color: #e9e7e3; font-size: 12.5px; }
+.qsort-note { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 6px 14px; border-radius: 8px; background: var(--raised); border: 1px solid var(--accent-border); color: var(--accent-text); font-size: 13px; }
+.qsort-keys { display: flex; flex-wrap: wrap; gap: 16px; font-size: 12px; align-items: center; }
+.qsort-keys .link { font-size: 12px; display: inline-flex; gap: 4px; align-items: center; }
+/* Tag manager */
+.tagman { display: flex; flex-direction: column; gap: 2px; max-height: 56vh; overflow: auto; padding: 4px; border: 1px solid var(--line); border-radius: 10px; }
+.tagman-row { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto auto auto; align-items: center; gap: 10px; min-height: 38px; padding: 0 8px; border-radius: 8px; }
+.tagman-row:hover { background: #15181c; }
+.tagman-name { justify-self: start; display: inline-flex; align-items: center; gap: 6px; font-size: 14px; color: var(--text); }
+.tagman-count { font-size: 12.5px; white-space: nowrap; }
+.tagman-input { min-height: 30px; padding: 0 8px; font-size: 14px; }
+.tagman-color-wrap { position: relative; }
+.tagman-color { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--line-2); cursor: pointer; padding: 0; }
+.tagman-palette { position: absolute; left: 0; top: 24px; z-index: 5; display: flex; gap: 6px; padding: 8px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5); }
+.tagman-palette button { width: 20px; height: 20px; border-radius: 50%; border: none; cursor: pointer; padding: 0; display: flex; align-items: center; justify-content: center; }
+.tagman-palette button.none { background: transparent; border: 1px solid var(--line-2); color: var(--faint); }
+.btn.ghost.danger-text { color: var(--danger); }
+.look-tile.small { width: 120px; height: 120px; }

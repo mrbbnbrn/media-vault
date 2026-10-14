@@ -1836,7 +1836,7 @@ export function Library({ nav, view, setView, history, reveal }: {
             {folder?.note && <span className="folder-note" title={folder.note}><NoteIcon size={13} /> {folder.note}</span>}
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
-                : view.kind === 'stats' || view.kind === 'people' || looks ? ''
+                : view.kind === 'stats' || view.kind === 'people' || looks || view.kind === 'memories' ? ''
                 : inTrash && trash ? (trash.totalItems ? `${plural(trash.totalItems, 'item')} · ${formatBytes(trash.totalBytes)}` : 'empty')
                 : `${shown.length.toLocaleString()} items`}
               {loading && ' · loading…'}
@@ -2174,6 +2174,7 @@ export function Library({ nav, view, setView, history, reveal }: {
       )}
       {dialog?.t === 'deleteOriginal' && (
         <DeleteOriginalDialog groups={dialog.groups} onCancel={() => setDialog(null)}
+          folderName={(id) => (id == null ? 'Top level' : folders.find((f) => f.id === id)?.name ?? 'a folder')}
           onChoice={async (c) => {
             const d = dialog;
             setDialog(null);
