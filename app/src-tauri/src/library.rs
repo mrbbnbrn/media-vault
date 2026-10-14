@@ -394,8 +394,9 @@ fn person_covers(conn: &Connection) -> R<HashMap<i64, i64>> {
     }
     let mut out = HashMap::new();
     for (p, faces) in by_person {
-        let dim = faces[0].3.len();
-        let n = faces.len() as f32;
+        // Faces from the newer model (longer fingerprints) win while both exist.
+        let dim = faces.iter().map(|f| f.3.len()).max().unwrap_or(0);
+        let n = faces.iter().filter(|f| f.3.len() == dim).count() as f32;
         let mut avg = vec![0f32; dim];
         for f in faces.iter().filter(|f| f.3.len() == dim) {
             for (a, b) in avg.iter_mut().zip(&f.3) {
@@ -631,6 +632,20 @@ pub fn get_item(conn: &Connection, id: i64) -> R<Item> {
     .optional()
     .map_err(e)?
     .ok_or_else(|| "That item no longer exists.".into())
+}
+
+/// Items (not in the trash) by id, in no particular order (face recognition).
+pub fn items_by_ids(conn: &Connection, ids: &[i64]) -> R<Vec<Item>> {
+    let mut out = Vec::with_capacity(ids.len());
+    for chunk in ids.chunks(500) {
+        let sql = format!("SELECT {ITEM_COLS} FROM media m WHERE m.deleted_at IS NULL AND m.id IN ({})", vec!["?"; chunk.len()].join(","));
+        let mut st = conn.prepare(&sql).map_err(e)?;
+        let rows = st.query_map(params_from_iter(chunk.iter()), item_row).map_err(e)?;
+        for r in rows {
+            out.push(r.map_err(e)?);
+        }
+    }
+    Ok(out)
 }
 
 // ---- folders ------------------------------------------------------------------------

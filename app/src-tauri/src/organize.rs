@@ -48,8 +48,8 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         let orig = original_of(&tx, id)?;
         tx.execute(
             &format!(
-                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, folder_id, original_name, copy_of, clip_state, faces_state, {COPY_COLS}) \
-                 SELECT object_id, thumb_object_id, preview_object_id, ?2, original_name, ?3, clip_state, faces_state, {COPY_COLS} FROM media WHERE id = ?1"
+                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, folder_id, original_name, copy_of, clip_state, faces_state, faces_model, {COPY_COLS}) \
+                 SELECT object_id, thumb_object_id, preview_object_id, ?2, original_name, ?3, clip_state, faces_state, faces_model, {COPY_COLS} FROM media WHERE id = ?1"
             ),
             params![id, folder, orig],
         )
@@ -59,8 +59,8 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         // What the app already found out about the picture applies to the copy too.
         tx.execute("INSERT INTO clip(media_id, vec) SELECT ?2, vec FROM clip WHERE media_id = ?1", params![id, new_id]).map_err(e)?;
         tx.execute(
-            "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id) \
-             SELECT ?2, frame_ms, x, y, w, h, score, descriptor, person_id FROM faces WHERE media_id = ?1",
+            "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden) \
+             SELECT ?2, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden FROM faces WHERE media_id = ?1",
             params![id, new_id],
         )
         .map_err(e)?;
@@ -669,41 +669,9 @@ fn vectors(conn: &Connection, sql: &str, arg: i64) -> R<Vec<(i64, Vec<f32>)>> {
 pub fn suggest(conn: &Connection, item: i64) -> R<Vec<Suggestion>> {
     let here: Option<i64> = conn.query_row("SELECT folder_id FROM media WHERE id = ?", [item], |r| r.get(0)).map_err(e)?;
     let mut out: Vec<Suggestion> = Vec::new();
-    // Faces: confirmed ones, else the nearest person (average of their confirmed faces).
-    let my_faces = vectors(conn, "SELECT IFNULL(person_id, -1), descriptor FROM faces WHERE media_id = ?", item)?;
-    if !my_faces.is_empty() {
-        let mut people: HashMap<i64, Vec<Vec<f32>>> = HashMap::new();
-        for (p, d) in vectors(
-            conn,
-            "SELECT f.person_id, f.descriptor FROM faces f JOIN folders d ON d.id = f.person_id WHERE f.person_id IS NOT NULL AND d.deleted_at IS NULL AND f.media_id <> ?",
-            item,
-        )? {
-            people.entry(p).or_default().push(d);
-        }
-        let centres: Vec<(i64, Vec<f32>)> = people.into_iter().filter_map(|(p, v)| {
-            // Face fingerprints aren't unit length; average them as they are.
-            let n = v.len() as f32;
-            let first = v.first()?;
-            let mut m = vec![0f32; first.len()];
-            for d in &v {
-                for (a, b) in m.iter_mut().zip(d) {
-                    *a += b / n;
-                }
-            }
-            Some((p, m))
-        }).collect();
-        for (p, d) in my_faces {
-            if p >= 0 {
-                out.push(Suggestion { folder: p, reason: "face".into(), score: 1.0 });
-            } else if let Some((best, dist)) = centres
-                .iter()
-                .map(|(pid, c)| (*pid, faces::distance(&d, c)))
-                .min_by(|a, b| a.1.total_cmp(&b.1))
-                && dist < 0.5
-            {
-                out.push(Suggestion { folder: best, reason: "face".into(), score: 1.0 - dist });
-            }
-        }
+    // Faces: people recognised in it, else the person its faces are most like.
+    for (p, score) in faces::person_matches(conn, item)? {
+        out.push(Suggestion { folder: p, reason: "face".into(), score });
     }
     // Looks: compare with the average picture of each folder.
     let mine = vectors(conn, "SELECT media_id, vec FROM clip WHERE media_id = ?", item)?;
