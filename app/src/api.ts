@@ -453,6 +453,8 @@ export const api = {
   getItem: (id: number) => call<Item>('get_item', { id }),
   createFolder: (parent: number | null, name: string) => call<number>('create_folder', { parent, name }),
   renameFolder: (id: number, name: string) => call<void>('rename_folder', { id, name }),
+  /** All or nothing; folders can swap names. */
+  renameMany: (folders: [number, string][], items: [number, string][]) => call<void>('rename_many', { folders, items }),
   moveFolder: (id: number, parent: number | null) => call<void>('move_folder', { id, parent }),
   /** Moves to the trash. */
   deleteFolder: (id: number) => call<number>('delete_folder', { id }),

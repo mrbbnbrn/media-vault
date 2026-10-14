@@ -445,3 +445,10 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .look-fav { position: absolute; top: 6px; right: 8px; color: #ff6b8b; font-size: 14px; }
 .look-mark { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 3px 10px; border-radius: 6px; background: #c4554a; color: #fff; font-size: 12px; font-weight: 600; }
 .look-meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; background: rgba(0, 0, 0, 0.6); color: #cfd3d8; font-size: 11px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Rename */
+.rename-list { max-height: 46vh; overflow: auto; display: flex; flex-direction: column; gap: 2px; padding: 6px; border: 1px solid var(--line); border-radius: 10px; background: var(--ground, #0b0d10); }
+.rename-row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 10px; min-height: 30px; padding: 0 6px; font-size: 13px; }
+.rename-old { color: var(--text-2); display: flex; align-items: center; gap: 6px; }
+.rename-new { color: var(--accent-text); }
+.rename-input { min-height: 30px; padding: 0 8px; font-size: 13px; flex: 1; min-width: 0; }

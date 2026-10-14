@@ -24,6 +24,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Middle-click a folder', 'Play it as a slideshow'],
       ['Folders and items together', 'Select both (Ctrl + click); the bar at the bottom acts on all of them — favourite, tag, play… apply to everything inside the folders'],
       ['Ctrl + mouse wheel', 'More or fewer items per row'],
+      ['F2', 'Rename what is selected (several at once: numbered, find and replace, add text, or one by one)'],
       ['Delete', 'Move what is selected to the trash (asks first for folders; Enter confirms)'],
       ['Right-click', 'Options for an item or folder'],
       ['Right-click › Find similar', 'Pictures that look like this one (by meaning when smart search is on)'],

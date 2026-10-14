@@ -576,6 +576,51 @@ pub fn rename_folder(conn: &Connection, id: i64, name: &str) -> R<()> {
     Ok(())
 }
 
+/// Characters Windows doesn't allow in file names (exports use these names).
+const BAD_CHARS: &[char] = &['\\', '/', ':', '*', '?', '"', '<', '>', '|'];
+
+/// Check an item's new name (including its extension).
+pub fn check_item_name(name: &str) -> R<String> {
+    let n = name.trim();
+    // Empty, or only an extension (".jpg").
+    if n.is_empty() || (n.starts_with('.') && !n[1..].contains('.')) {
+        return Err("Give it a name.".into());
+    }
+    if n.chars().count() > 200 {
+        return Err(format!("“{n}” is too long."));
+    }
+    if let Some(c) = n.chars().find(|c| BAD_CHARS.contains(c) || c.is_control()) {
+        return Err(format!("A name can't contain {c}"));
+    }
+    Ok(n.to_string())
+}
+
+/// Rename several folders and items at once. All or nothing: if one name
+/// doesn't work, nothing is renamed. Folders can swap names with each other.
+pub fn rename_many(conn: &Connection, folders: &[(i64, String)], items: &[(i64, String)]) -> R<()> {
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    // Out of the way first, so A → B and B → A works.
+    for (id, _) in folders {
+        tx.execute("UPDATE folders SET name = ?1 WHERE id = ?2", params![format!("\u{1}rename{id}"), id]).map_err(e)?;
+    }
+    for (id, name) in folders {
+        let name = check_name(name).map_err(|_| "Every folder needs a name.".to_string())?;
+        if let Some(c) = name.chars().find(|c| BAD_CHARS.contains(c) || c.is_control()) {
+            return Err(format!("A folder name can't contain {c}"));
+        }
+        rename_folder(&tx, *id, &name)?;
+    }
+    for (id, name) in items {
+        let name = check_item_name(name)?;
+        let n = tx.execute("UPDATE media SET original_name = ?1 WHERE id = ?2", params![name, id]).map_err(e)?;
+        if n == 0 {
+            return Err("One of the items no longer exists.".into());
+        }
+    }
+    tx.commit().map_err(e)?;
+    Ok(())
+}
+
 pub fn move_folder(conn: &Connection, id: i64, new_parent: Option<i64>) -> R<()> {
     if let Some(p) = new_parent {
         if descendants(conn, &[id])?.contains(&p) {
@@ -1770,6 +1815,25 @@ mod tests {
         assert!(list_named(&c, "preset").unwrap().is_empty());
         assert!(list_named(&c, "bogus").is_err());
     }
+    #[test]
+    fn renames_many_at_once_all_or_nothing() {
+        let c = vault_core::db::create_empty().unwrap();
+        let a = create_folder(&c, None, "A").unwrap();
+        let b = create_folder(&c, None, "B").unwrap();
+        let p = add(&c, "p.jpg", None, "image");
+        // Swapping names works.
+        rename_many(&c, &[(a, "B".into()), (b, "A".into())], &[(p, " Beach 01.jpg ".into())]).unwrap();
+        assert_eq!(find_child(&c, None, "B").unwrap(), Some(a));
+        assert_eq!(get_item(&c, p).unwrap().name, "Beach 01.jpg");
+        // A bad name changes nothing.
+        assert!(rename_many(&c, &[(a, "C".into())], &[(p, "x?.jpg".into())]).is_err());
+        assert_eq!(find_child(&c, None, "B").unwrap(), Some(a));
+        assert!(rename_many(&c, &[], &[(p, ".jpg".into())]).is_err());
+        // Two folders can't end up with the same name.
+        assert!(rename_many(&c, &[(a, "Same".into()), (b, "Same".into())], &[]).is_err());
+        assert_eq!(find_child(&c, None, "A").unwrap(), Some(b));
+    }
+
     #[test]
     fn extract_moves_everything_up_and_renames_clashes() {
         let c = vault_core::db::create_empty().unwrap();

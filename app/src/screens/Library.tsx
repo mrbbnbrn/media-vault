@@ -20,6 +20,7 @@ import {
 } from '../components/Icons';
 import { LookAlikes } from '../components/LookAlikes';
 import { PeopleView } from '../components/People';
+import { RenameDialog, type RenameEntry } from '../components/RenameDialog';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
@@ -61,7 +62,6 @@ export type LibView =
 
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
-  | { t: 'rename'; folder: FolderCard }
   | { t: 'moveFolder'; folder: FolderCard }
   | { t: 'deleteFolder'; folder: FolderCard }
   | { t: 'folderTag'; folder: FolderCard }
@@ -79,6 +79,7 @@ type Dialog =
   | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
   | { t: 'moveFolders'; folders: FolderCard[] }
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
+  | { t: 'renameMany'; entries: RenameEntry[] }
   | { t: 'extracted'; folder: FolderCard; x: Extracted };
 
 const SORTS: { id: Order; label: string }[] = [
@@ -445,6 +446,9 @@ export function Library({ nav, view, setView, history, reveal }: {
       } else if (e.key === 'Delete' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.del();
+      } else if (e.key === 'F2' && keyActions.current.anySelected()) {
+        e.preventDefault();
+        keyActions.current.rename();
       } else if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && keyActions.current.openFolder()) {
         e.preventDefault();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !e.shiftKey) {
@@ -552,11 +556,6 @@ export function Library({ nav, view, setView, history, reveal }: {
     if (!leaveDeleted([f])) await reload();
     nav.refresh().catch(() => {});
   };
-  const renameFolder = async (f: FolderCard, name: string) => {
-    await api.renameFolder(f.id, name);
-    did(`Renamed “${f.name}”`, () => api.renameFolder(f.id, f.name));
-    await reload();
-  };
   const moveFolder = async (f: FolderCard, parent: number | null) => {
     await api.moveFolder(f.id, parent);
     did(`Moved “${f.name}”`, () => api.moveFolder(f.id, f.parentId));
@@ -596,11 +595,12 @@ export function Library({ nav, view, setView, history, reveal }: {
   // The Delete key acts on the current selection.
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
-    anySelected: () => false as boolean, openFolder: () => false as boolean,
+    anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {},
   });
   keyActions.current = {
     selected,
     anySelected: () => selected.size > 0 || selFolders.size > 0,
+    rename: () => askRename(),
     openFolder: () => {
       if (selected.size || selFolders.size !== 1) return false;
       const [id] = selFolders;
@@ -820,7 +820,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
     { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
-    { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
+    { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
     { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
@@ -889,6 +889,28 @@ export function Library({ nav, view, setView, history, reveal }: {
     setSelFolders(new Set());
     setSelected(new Set());
     await reload();
+  };
+
+  /** F2: rename what is selected (folders in tree order, then items as shown). */
+  const askRename = () => {
+    if (inTrash || looks) return;
+    const fs = folders.filter((f) => selFolders.has(f.id));
+    const its = [...shown.filter((i) => selected.has(i.id)), ...[...selected].filter((id) => !shown.some((i) => i.id === id)).map(itemById).filter((i): i is Item => !!i)];
+    const entries: RenameEntry[] = [
+      ...fs.map((f): RenameEntry => ({ kind: 'folder', id: f.id, name: f.name })),
+      ...its.map((i): RenameEntry => ({ kind: 'item', id: i.id, name: i.name, ext: i.ext })),
+    ];
+    if (entries.length) setDialog({ t: 'renameMany', entries });
+  };
+  const renameFolderAsk = (f: FolderCard) => setDialog({ t: 'renameMany', entries: [{ kind: 'folder', id: f.id, name: f.name }] });
+  const doRename = async (changes: { entry: RenameEntry; name: string }[]) => {
+    const pick = (k: 'folder' | 'item', fromNew: boolean) =>
+      changes.filter((c) => c.entry.kind === k).map((c): [number, string] => [c.entry.id, fromNew ? c.name : c.entry.name]);
+    await api.renameMany(pick('folder', true), pick('item', true));
+    did(changes.length === 1 ? `Renamed “${changes[0].entry.name}” to “${changes[0].name}”` : `Renamed ${plural(changes.length, 'thing')}`,
+      () => api.renameMany(pick('folder', false), pick('item', false)));
+    await reload();
+    nav.refresh().catch(() => {});
   };
 
   // ---- several folders ----------------------------------------------------------------
@@ -1025,6 +1047,7 @@ export function Library({ nav, view, setView, history, reveal }: {
       const fs = topMost(selFolders);
       setCtx({ x: e.clientX, y: e.clientY, title: plural(fs.length, 'folder'), items: [
         { label: `Move ${plural(fs.length, 'folder')} to…`, onSelect: () => setDialog({ t: 'moveFolders', folders: fs }) },
+        { label: `Rename ${plural(selFolders.size, 'folder')}…`, hint: 'F2', onSelect: askRename },
         { label: `Delete ${plural(fs.length, 'folder')}…`, danger: true, sepBefore: true, onSelect: askDeleteMany },
       ] });
       return;
@@ -1067,6 +1090,10 @@ export function Library({ nav, view, setView, history, reveal }: {
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
         { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }) },
+        { label: 'Rename…', hint: 'F2', onSelect: () => {
+          const list = shown.filter((x) => sel.has(x.id));
+          setDialog({ t: 'renameMany', entries: list.map((x): RenameEntry => ({ kind: 'item', id: x.id, name: x.name, ext: x.ext })) });
+        } },
         { label: 'Scan for faces', sepBefore: true, onSelect: () => scanFaces({ ids }, many ? `${ids.length} items` : `“${it.name}”`) },
         { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { ids }, what: many ? `${ids.length} items` : `“${it.name}”` }) },
         ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
@@ -1179,9 +1206,9 @@ export function Library({ nav, view, setView, history, reveal }: {
     );
     if (folder && itemsOnly && nI === 1) actions.push({ key: 'cover', label: 'Set as folder cover', onClick: () => act(() => api.setCover(folder.id, selIds[0])) });
     if (nF === 1 && !nI) {
-      actions.push({ key: 'rename', label: 'Rename…', onClick: () => setDialog({ t: 'rename', folder: fs[0] }) });
       actions.push({ key: 'look', label: 'Colour and emoji…', onClick: () => setDialog({ t: 'look', folder: fs[0] }) });
     }
+    actions.push({ key: 'rename', label: 'Rename…', title: 'F2', onClick: askRename });
     actions.push({ key: 'faces', label: 'Scan for faces', onClick: onMedia((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) });
     actions.push({ key: 'delete', label: 'Delete', icon: <TrashIcon />, danger: true, pinned: true, title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
       onClick: () => (itemsOnly ? trashItems(selIds) : askDeleteMany()) });
@@ -1590,10 +1617,6 @@ export function Library({ nav, view, setView, history, reveal }: {
         <PromptDialog title="New folder" label="Name" confirm="Create" onClose={() => setDialog(null)}
           onSubmit={async (name) => { await api.createFolder(dialog.parent, name); await reload(); }} />
       )}
-      {dialog?.t === 'rename' && (
-        <PromptDialog title="Rename folder" label="Name" initial={dialog.folder.name} confirm="Rename" onClose={() => setDialog(null)}
-          onSubmit={(name) => renameFolder(dialog.folder, name)} />
-      )}
       {dialog?.t === 'folderTag' && (
         <PromptDialog title={`Tag “${dialog.folder.name}”`} label="Tags (separate with commas)" confirm="Add"
           hint="Everything inside this folder, including subfolders, counts as tagged." onClose={() => setDialog(null)}
@@ -1671,6 +1694,9 @@ export function Library({ nav, view, setView, history, reveal }: {
       {dialog?.t === 'moveFolders' && (
         <FolderPicker title={`Move ${plural(dialog.folders.length, 'folder')} into…`} folders={folders} exclude={dialog.folders.map((f) => f.id)} confirm="Move"
           onClose={() => setDialog(null)} onPick={(p) => moveFolders(dialog.folders, p)} />
+      )}
+      {dialog?.t === 'renameMany' && (
+        <RenameDialog entries={dialog.entries} onClose={() => setDialog(null)} onRename={doRename} />
       )}
       {dialog?.t === 'moveMixed' && (
         <FolderPicker title={`Move ${[plural(dialog.folders.length, 'folder'), dialog.ids.length ? plural(dialog.ids.length, 'item') : ''].filter(Boolean).join(' and ')} to…`}

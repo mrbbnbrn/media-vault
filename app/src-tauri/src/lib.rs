@@ -430,6 +430,11 @@ async fn rename_folder(state: State<'_, Shared>, id: i64, name: String) -> Resul
 }
 
 #[tauri::command]
+async fn rename_many(state: State<'_, Shared>, folders: Vec<(i64, String)>, items: Vec<(i64, String)>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| library::rename_many(c, &folders, &items)).await
+}
+
+#[tauri::command]
 async fn move_folder(state: State<'_, Shared>, id: i64, parent: Option<i64>) -> Result<(), String> {
     edit_db(state.inner(), move |c| library::move_folder(c, id, parent)).await
 }
@@ -1469,6 +1474,7 @@ pub fn run() {
             get_item,
             create_folder,
             rename_folder,
+            rename_many,
             move_folder,
             delete_folder,
             delete_items,
