@@ -452,6 +452,15 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
   return (
     <>
       <section className="section">
+        <h2>Privacy</h2>
+        <Toggle title="Hide this window from screenshots and screen sharing"
+          desc="Screenshots, screen recordings and screen sharing (Discord, Zoom…) show a black window instead. Turn off when you want to share your screen."
+          on={cfg.blockCapture !== false} set={(v) => update({ ...cfg, blockCapture: v })} />
+      </section>
+
+      <div className="divider" />
+
+      <section className="section">
         <h2>Check for damage</h2>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
           Reads every item, thumbnail and library backup in full and checks it against its encryption seal, so even a single

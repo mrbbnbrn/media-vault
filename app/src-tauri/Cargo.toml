@@ -30,7 +30,9 @@ vault-core = { version = "0.1.0", path = "../../crates/vault-core" }
 zeroize = "1.9.1"
 
 [target."cfg(windows)".dependencies]
-windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation"] }
+windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+# Beat detection: listens to the computer's own sound (WASAPI loopback).
+cpal = "=0.18.2"
 
 [dev-dependencies]
 tempfile = "3.27.0"

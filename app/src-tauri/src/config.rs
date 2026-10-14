@@ -102,6 +102,9 @@ pub struct AppConfig {
     pub make_previews: bool,
     /// Analyse pictures for smart search in the background.
     pub smart_index: bool,
+    /// Hide the app's windows from screenshots, screen recording and screen
+    /// sharing (on Windows they show up black).
+    pub block_capture: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -122,6 +125,7 @@ impl Default for AppConfig {
             smart_search: false,
             make_previews: true,
             smart_index: true,
+            block_capture: true,
             vaults: Vec::new(),
             last_vault: None,
         }
@@ -249,6 +253,15 @@ mod tests {
         assert!(!c.lock.on_minimize);
         assert_eq!(c.lock.safety_net_minutes, 0);
         assert!(c.fullscreen_controls_on_mouse);
+        assert!(c.block_capture);
+    }
+
+    #[test]
+    fn block_capture_is_on_for_older_config_files() {
+        let c: AppConfig = serde_json::from_str(r##"{"accent":"#2ec4b6"}"##).unwrap();
+        assert!(c.block_capture);
+        let c: AppConfig = serde_json::from_str(r#"{"blockCapture":false}"#).unwrap();
+        assert!(!c.block_capture);
     }
 
     #[test]

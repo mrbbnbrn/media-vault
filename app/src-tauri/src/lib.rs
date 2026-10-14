@@ -3,6 +3,13 @@
 
 mod access;
 mod activity;
+// Beat detection from the computer's own sound (analysis is plain Rust; the
+// capture side is Windows-only).
+#[cfg_attr(not(windows), allow(dead_code))]
+mod beats;
+mod beatlisten;
+// Hiding the windows from screenshots and screen sharing.
+mod nocapture;
 mod clip;
 mod config;
 mod engine;
@@ -73,6 +80,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     if was_open {
         let _ = app.emit("vault-locked", reason.as_str());
     }
+    beatlisten::stop(app);
     if reason == LockReason::PanicKey
         && let Some(w) = app.get_webview_window("main")
     {
@@ -175,12 +183,17 @@ async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
 }
 
 #[tauri::command]
-fn save_config(state: State<'_, Shared>, config: AppConfig) -> Result<AppConfig, String> {
+fn save_config(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    config: AppConfig,
+) -> Result<AppConfig, String> {
     let mut cfg = state.config.lock().unwrap();
     let mut next = config.sanitized();
     next.vaults = cfg.vaults.clone(); // vault list is only changed through its own commands
     next.last_vault = cfg.last_vault.clone();
     config::save(&state.config_dir, &next).map_err(|e| format!("Couldn't save settings: {e}"))?;
+    nocapture::apply_all(&app, next.block_capture);
     *cfg = next.clone();
     Ok(next)
 }
@@ -1394,6 +1407,13 @@ pub fn run() {
                 .build(),
         )
         .manage(inner.clone())
+        .manage(beatlisten::BeatListener::default())
+        // Every window (the main one and any opened later) is hidden from
+        // screenshots and screen sharing when the setting is on.
+        .on_page_load(|webview, _| {
+            let app = webview.app_handle();
+            nocapture::apply(&webview.window(), nocapture::enabled(app));
+        })
         .register_asynchronous_uri_scheme_protocol("vault", |ctx, req, responder| {
             let inner = ctx.app_handle().state::<Shared>().inner().clone();
             std::thread::spawn(move || {
@@ -1433,6 +1453,8 @@ pub fn run() {
                 });
             }
             start_watcher(app.handle().clone(), inner.clone());
+            let block = inner.config.lock().unwrap().block_capture;
+            nocapture::apply_all(app.handle(), block);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -1561,12 +1583,16 @@ pub fn run() {
             similar_groups,
             similar_to,
             smart_search,
+            beatlisten::beats_supported,
+            beatlisten::beats_start,
+            beatlisten::beats_stop,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")
         .run(|app, event| {
             // However the app ends, unsaved library changes are written first.
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                beatlisten::stop(app);
                 let inner = app.state::<Shared>().inner().clone();
                 let open = inner.session.lock().unwrap().clone();
                 if let Some(s) = open
