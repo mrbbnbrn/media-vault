@@ -604,7 +604,73 @@ export const api = {
   similarGroups: (level: SimilarLevel, smart: boolean, folder: number | null, videos: boolean) =>
     call<Item[][]>('similar_groups', { level, smart, folder, videos }),
   similarTo: (id: number, smart: boolean) => call<{ item: Item; score: number }[]>('similar_to', { id, smart }),
+
+  // video tool (ffmpeg): convert, animation from pictures
+  videoToolInfo: () => call<VideoToolInfo | undefined>('video_tool_info'),
+  /** Runs in the background: 'convert-progress' events, then 'convert-done'. */
+  convertStart: (request: ConvertRequest) => call<void>('convert_start', { request }),
+  /** Runs in the background: 'animation-progress' events, then 'animation-done'. */
+  animationStart: (request: AnimationRequest) => call<void>('animation_start', { request }),
+  cancelVideoTask: (task: VideoTask) => call<void>('cancel_task', { task }),
 };
+
+// ---- video tool (ffmpeg) -----------------------------------------------------
+
+export interface VideoToolInfo {
+  available: boolean;
+  version: string | null;
+}
+
+export type ConvertTarget = 'mp4' | 'webm' | 'gif' | 'jpg' | 'png' | 'webp';
+export type VideoTask = 'convert' | 'animation';
+
+export interface ConvertRequest {
+  ids: number[];
+  target: ConvertTarget;
+  /** Put the originals in the trash once the new items are saved. */
+  replace: boolean;
+}
+
+/** Payload of 'convert-progress' and 'animation-progress'. */
+export interface VideoToolProgress {
+  task: VideoTask;
+  done: number;
+  total: number;
+  name: string;
+  /** Everything together, 0…1. */
+  fraction: number;
+}
+
+/** Payload of 'convert-done'. */
+export interface ConvertDone {
+  converted: number;
+  created: number[];
+  replaced: number;
+  failed: [string, string][];
+  cancelled: boolean;
+  error: string | null;
+}
+
+export interface AnimationRequest {
+  /** In the order they should appear. */
+  ids: number[];
+  format: 'gif' | 'mp4';
+  secondsPerImage: number;
+  /** 0 = the first picture's own width. */
+  width: number;
+  quality: 'low' | 'medium' | 'high';
+  loopForever: boolean;
+  fit: 'bars' | 'crop';
+}
+
+/** Payload of 'animation-done'. */
+export interface AnimationDone {
+  id: number | null;
+  name: string;
+  skipped: [string, string][];
+  cancelled: boolean;
+  error: string | null;
+}
 
 export type SimilarLevel = 'strict' | 'normal' | 'loose';
 

@@ -19,6 +19,7 @@ mod session;
 mod share7z;
 mod similar;
 mod storage;
+mod videotool;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1136,6 +1137,55 @@ fn share_7z_start(app: AppHandle, state: State<'_, Shared>, request: share7z::Sh
     Ok(())
 }
 
+// ---- video tool (ffmpeg): convert, animation from pictures ---------------------------
+
+#[tauri::command]
+async fn video_tool_info() -> Result<videotool::ToolInfo, String> {
+    blocking(|| Ok(videotool::info())).await
+}
+
+/// Run a video-tool job in the background: "<task>-progress", then "<task>-done".
+fn video_task<D: Serialize + Clone + 'static>(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    task: &'static str,
+    job: impl FnOnce(&Arc<Session>, &std::path::Path, &AtomicBool, &mut dyn FnMut(&videotool::ToolProgress)) -> D + Send + 'static,
+) -> Result<(), String> {
+    let tool = videotool::tool_path()
+        .ok_or("The video tool isn't here. It comes with the full Media Vault package (tools\\ffmpeg.exe next to the app).")?;
+    let s = sess(&state)?;
+    let inner = state.inner().clone();
+    let cancel = begin_task(&inner, task)?;
+    std::thread::spawn(move || {
+        let mut last = Instant::now() - Duration::from_secs(1);
+        let done = job(&s, &tool, &cancel, &mut |p| {
+            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
+                last = Instant::now();
+                let _ = app.emit(&format!("{task}-progress"), p);
+            }
+        });
+        inner.tasks.lock().unwrap().remove(task);
+        let _ = app.emit(&format!("{task}-done"), done);
+    });
+    Ok(())
+}
+
+/// Convert items into new items. "convert-progress", then "convert-done".
+#[tauri::command]
+fn convert_start(app: AppHandle, state: State<'_, Shared>, request: videotool::ConvertRequest) -> Result<(), String> {
+    video_task(app, state, "convert", move |s, tool, cancel, progress| {
+        videotool::run_convert(s, tool, &request, cancel, progress)
+    })
+}
+
+/// Make a GIF or MP4 from pictures. "animation-progress", then "animation-done".
+#[tauri::command]
+fn animation_start(app: AppHandle, state: State<'_, Shared>, request: videotool::AnimationRequest) -> Result<(), String> {
+    video_task(app, state, "animation", move |s, tool, cancel, progress| {
+        videotool::run_animation(s, tool, &request, cancel, progress)
+    })
+}
+
 // ---- web engine --------------------------------------------------------------------
 
 #[tauri::command]
@@ -1586,6 +1636,10 @@ pub fn run() {
             similar_groups,
             similar_to,
             smart_search,
+            // video tool
+            video_tool_info,
+            convert_start,
+            animation_start,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

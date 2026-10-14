@@ -88,6 +88,33 @@ jobs:
           mkdir -p target/release/models
           gh release download models-v1 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
           ls -la target/release/models
+      - name: Video tool (ffmpeg, LGPL build pinned to one BtbN/FFmpeg-Builds release)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # The last build of each month is kept there for two years.
+          FFMPEG_RELEASE: autobuild-2026-09-30-13-08
+          FFMPEG_ASSET: ffmpeg-N-*-win64-lgpl.zip
+        run: |
+          set -eu
+          rm -rf ffdl && mkdir ffdl && cd ffdl
+          gh release download "$FFMPEG_RELEASE" --repo BtbN/FFmpeg-Builds --pattern "$FFMPEG_ASSET" --pattern checksums.sha256
+          zips=(ffmpeg-*.zip)
+          [ "${#zips[@]}" = 1 ] || { echo "Expected one ffmpeg zip, found ${#zips[@]}: ${zips[*]}"; exit 1; }
+          zip="${zips[0]}"
+          awk -v f="$zip" '$2 == f || $2 == "*" f { print $1 "  " f }' checksums.sha256 > want.sha256
+          [ -s want.sha256 ] || { echo "No checksum listed for $zip"; exit 1; }
+          sha256sum -c want.sha256
+          7z x -y "$zip" > /dev/null
+          mkdir -p ../target/release/tools
+          cp "${zip%.zip}/bin/ffmpeg.exe" ../target/release/tools/ffmpeg.exe
+          cp "${zip%.zip}/LICENSE.txt" ../target/release/tools/ffmpeg-LICENSE.txt
+          printf '%s\n' "ffmpeg ($zip) from https://github.com/BtbN/FFmpeg-Builds/releases/tag/$FFMPEG_RELEASE" \
+            "LGPL build. Its source code: https://github.com/FFmpeg/FFmpeg (version in the file name above)." \
+            "Media Vault uses it to convert items and make animations." > ../target/release/tools/ffmpeg-README.txt
+          echo "$FFMPEG_RELEASE/$zip" > ../target/release/tools/VERSION.txt
+          ../target/release/tools/ffmpeg.exe -hide_banner -version | head -1
+          ../target/release/tools/ffmpeg.exe -hide_banner -encoders | grep -E " (libx264|libopenh264|h264_mf|libvpx-vp9|libopus|libwebp|aac) " || true
       - name: Built-in web engine (a copy of this runner's WebView2)
         shell: pwsh
         run: |
@@ -145,6 +172,14 @@ jobs:
             gh release create "$etag" MediaVault-engine-windows.zip --prerelease --title "Web engine $ver (download once)" \
               --notes "The built-in web engine (Microsoft WebView2 $ver). Unzip into the same place as the app; it adds a WebView2 folder inside MediaVault."
           fi
+          # The video tool (ffmpeg) is big and rarely changes: its own download, made once per pinned version.
+          ttag="videotool-$(cut -d/ -f1 ../target/release/tools/VERSION.txt | sed 's/^autobuild-//')"
+          if ! gh release view "$ttag" >/dev/null 2>&1; then
+            mkdir -p t/MediaVault && cp -r ../target/release/tools t/MediaVault/
+            (cd t && 7z a -tzip -mx=9 ../MediaVault-videotool-windows.zip MediaVault > /dev/null)
+            gh release create "$ttag" MediaVault-videotool-windows.zip --prerelease --title "Video tool $ttag (download once)" \
+              --notes "The video tool (ffmpeg, LGPL build) for converting and making animations. Unzip into the same place as the app; it adds a tools folder inside MediaVault."
+          fi
           repo="https://github.com/$GITHUB_REPOSITORY/releases"
           tag="build-${GITHUB_RUN_NUMBER}"
           printf '%s\n' \
@@ -154,8 +189,9 @@ jobs:
             "- the web engine: $repo/tag/$etag (MediaVault-engine-windows.zip)" \
             "- the smart-search models: $repo/tag/models-v1 (MediaVault-models-windows.zip)" \
             "  (already have the models from before? just add MediaVault-models-english-addon.zip from the same page)" \
+            "- the video tool, for converting and animations: $repo/tag/$ttag (MediaVault-videotool-windows.zip)" \
             "" \
-            "Without them the app still works: it then uses the web engine that comes with Windows, and smart search is off." > notes.md
+            "Without them the app still works: it then uses the web engine that comes with Windows, smart search is off, and converting isn't available." > notes.md
           gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --draft --notes-file notes.md
 
   # Publish the draft release only when the tests passed as well; otherwise remove it.
