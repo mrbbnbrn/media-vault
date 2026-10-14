@@ -8,6 +8,12 @@ mod activity;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod beats;
 mod beatlisten;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod beatloop;
+#[cfg(test)]
+mod beats_music_tests;
+#[cfg(windows)]
+mod loopback_win;
 // Hiding the windows from screenshots and screen sharing.
 mod nocapture;
 mod clip;
@@ -1965,6 +1971,7 @@ pub fn run() {
             beatlisten::beats_supported,
             beatlisten::beats_start,
             beatlisten::beats_stop,
+            beatlisten::beats_status,
             // Windows Explorer: drag out, copy/paste (winshell.rs)
             winshell::drag_out,
             winshell::clipboard_put_files,

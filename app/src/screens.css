@@ -910,3 +910,26 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .cmp-tag.right::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
 .upscale-bar .up-hint { font-size: 12px; }
 @media (max-width: 760px) { .upscale-bar .up-hint { display: none; } }
+
+/* ---- Beat sync status line (components/BeatStatus.tsx) --------------------------- */
+.beat-status { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-2); min-width: 0; }
+.beat-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.beat-status-text { overflow-wrap: anywhere; }
+.beat-status.problem .beat-status-text { color: #f2b8a0; }
+.beat-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.beat-bars span { width: 3px; border-radius: 1px; background: rgba(255, 255, 255, 0.16); }
+.beat-bars span:nth-child(1) { height: 4px; }
+.beat-bars span:nth-child(2) { height: 6px; }
+.beat-bars span:nth-child(3) { height: 8px; }
+.beat-bars span:nth-child(4) { height: 10px; }
+.beat-bars span:nth-child(5) { height: 12px; }
+.beat-bars span.on { background: var(--accent); }
+.beat-dot-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); }
+.beat-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); }
+.beat-dot.hit { animation: beat-hit 0.35s ease-out; }
+@keyframes beat-hit { 0% { background: var(--accent); transform: scale(1.5); box-shadow: 0 0 8px var(--accent); } 100% { background: rgba(255, 255, 255, 0.18); transform: scale(1); box-shadow: none; } }
+.beat-status .linkish { background: none; border: 0; padding: 0; margin-left: 2px; color: var(--accent); font: inherit; cursor: pointer; }
+.beat-status .linkish:hover { text-decoration: underline; }
+.beat-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); font-size: 11.5px; line-height: 1.45; max-height: 150px; overflow: auto; user-select: text; }
+.beat-tip { font-size: 12px; }
+.beat-badge.problem { color: #f2b8a0; }

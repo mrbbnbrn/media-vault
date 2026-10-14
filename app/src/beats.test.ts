@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BeatCounter } from './beats';
+import { BeatCounter, beatStatusText } from './beats';
 
 /** Beats every `ms` from `from`; returns the times the counter advanced. */
 function run(c: BeatCounter, beats: number, ms: number, every: number, minSeconds: number, from = 0): number[] {
@@ -32,5 +32,23 @@ describe('BeatCounter', () => {
     c.reset(600);
     expect(c.beat(1000, 2, 0)).toBe(false);
     expect(c.beat(1500, 2, 0)).toBe(true);
+  });
+});
+
+describe('beat sync status line', () => {
+  const base = { state: 'listening' as const, device: 'Speakers (Realtek(R) Audio)', format: '48 kHz · stereo · 32-bit float', error: null, receiving: true, volume: 0.5, muted: false, log: [] };
+
+  it('names the output it listens to', () => {
+    expect(beatStatusText({ listening: true, error: null, status: base })).toEqual({ text: 'Listening to: Speakers (Realtek(R) Audio)', problem: false });
+    expect(beatStatusText({ listening: true, error: null, status: { ...base, receiving: false } }).text).toMatch(/nothing is playing/);
+  });
+
+  it('says plainly why it hears nothing', () => {
+    const err = beatStatusText({ listening: true, error: null, status: { ...base, state: 'error', error: "Couldn't open the sound output: No speakers or headphones are set as the default output (0x80070490)" } });
+    expect(err.problem).toBe(true);
+    expect(err.text).toMatch(/^Couldn't open the sound output/);
+    expect(beatStatusText({ listening: true, error: null, status: { ...base, muted: true } }).text).toMatch(/muted in Windows/);
+    expect(beatStatusText({ listening: false, error: "Listening to the computer's sound only works on Windows.", status: null }).problem).toBe(true);
+    expect(beatStatusText({ listening: false, error: null, status: null }).text).toBe('Starting to listen…');
   });
 });

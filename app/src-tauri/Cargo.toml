@@ -41,21 +41,25 @@ jpeg-encoder = "0.7.1"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
-# Beat detection: listens to the computer's own sound (WASAPI loopback).
-cpal = "=0.18.2"
-# Drag out / copy to Explorer and reading the clipboard (winshell). The same
-# versions Tauri (tao, wry) already pull in, so nothing new is built.
+# Drag out / copy to Explorer and reading the clipboard (winshell), and
+# listening to the computer's own sound for beat sync (loopback_win: WASAPI
+# loopback). The same versions Tauri (tao, wry) already pull in.
 windows = { version = "0.62.2", features = [
+  "Win32_Devices_FunctionDiscovery",
   "Win32_Foundation",
   "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
   "Win32_System_Com",
   "Win32_System_Com_StructuredStorage",
   "Win32_System_DataExchange",
   "Win32_System_Memory",
   "Win32_System_Ole",
   "Win32_System_SystemServices",
+  "Win32_System_Variant",
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_Shell",
+  "Win32_UI_Shell_PropertiesSystem",
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62.2"
