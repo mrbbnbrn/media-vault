@@ -174,7 +174,8 @@ export function App() {
   // Faces are found only in what the user asked to scan; pictures are analysed
   // for smart search whenever its models are there (full package).
   useEffect(() => (open ? startFaceScanner() : undefined), [open]);
-  useEffect(() => (open ? startClipIndexer() : undefined), [open]);
+  const smartIndex = open && app?.config.smartIndex !== false;
+  useEffect(() => (smartIndex ? startClipIndexer() : undefined), [smartIndex]);
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
   useEffect(() => (makePreviews ? startPreviewMaker() : undefined), [makePreviews]);

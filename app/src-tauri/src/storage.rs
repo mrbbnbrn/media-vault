@@ -123,6 +123,81 @@ pub fn delete_cache(s: &Session, thumbs: bool) -> Result<String, String> {
     ))
 }
 
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct DataInfo {
+    /// Faces found by face recognition and the space their data takes.
+    pub faces: i64,
+    pub face_bytes: u64,
+    /// Items analysed for smart search.
+    pub clip_items: i64,
+    pub clip_bytes: u64,
+    /// Copies of the library kept in meta-backups/.
+    pub backups: usize,
+    pub backup_bytes: u64,
+    /// The library itself (unencrypted size).
+    pub library_bytes: u64,
+}
+
+pub fn data_info(s: &Session) -> Result<DataInfo, String> {
+    let e = |x: rusqlite::Error| x.to_string();
+    let mut d = DataInfo::default();
+    {
+        let db = s.db();
+        (d.faces, d.face_bytes) = db
+            .query_row("SELECT COUNT(*), IFNULL(SUM(length(descriptor)) + COUNT(*) * 64, 0) FROM faces", [], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
+            })
+            .map_err(e)?;
+        (d.clip_items, d.clip_bytes) = db
+            .query_row("SELECT COUNT(*), IFNULL(SUM(length(vec)) + COUNT(*) * 16, 0) FROM clip", [], |r| {
+                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
+            })
+            .map_err(e)?;
+        let pages: i64 = db.query_row("PRAGMA page_count", [], |r| r.get(0)).map_err(e)?;
+        let size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).map_err(e)?;
+        d.library_bytes = (pages * size).max(0) as u64;
+    }
+    let backups = s.vault().db_backups().map_err(|x| x.to_string())?;
+    d.backups = backups.len();
+    d.backup_bytes = backups.iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum();
+    Ok(d)
+}
+
+/// Delete face-recognition data, smart-search data or the library backups.
+/// Your folders, person folders and files are not touched.
+pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
+    let e = |x: rusqlite::Error| x.to_string();
+    let msg = match what {
+        "faces" => {
+            let db = s.db();
+            let n: i64 = db.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0)).map_err(e)?;
+            db.execute_batch("DELETE FROM face_rejects; DELETE FROM faces; UPDATE media SET faces_state = 0; VACUUM;")
+                .map_err(e)?;
+            format!("Deleted {n} faces. Person folders stay; scan again to find faces.")
+        }
+        "clip" => {
+            let db = s.db();
+            let n: i64 = db.query_row("SELECT COUNT(*) FROM clip", [], |r| r.get(0)).map_err(e)?;
+            db.execute_batch("DELETE FROM clip; UPDATE media SET clip_state = 0; VACUUM;").map_err(e)?;
+            format!("Deleted smart-search data for {n} items.")
+        }
+        "backups" => {
+            let list = s.vault().db_backups().map_err(|x| x.to_string())?;
+            let mut freed = 0u64;
+            for p in &list {
+                freed += std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+                let _ = std::fs::remove_file(p);
+            }
+            return Ok(format!("Deleted {} library backups ({:.1} MB). A new one is made with the next change.", list.len(), freed as f64 / 1e6));
+        }
+        _ => return Err("Unknown data.".into()),
+    };
+    s.mark_dirty();
+    s.save()?;
+    Ok(msg)
+}
+
 /// Move items stored as separate files into packs. Safe to interrupt: the
 /// separate files are only deleted after the packed copies are verified and
 /// the library recording them has been saved.
@@ -249,6 +324,38 @@ mod tests {
         delete_cache(&s, true).unwrap();
         assert_eq!(cache_info(&s).unwrap().thumbs, 0);
         check_all_present(&s).unwrap();
+    }
+
+    #[test]
+    fn face_and_smart_search_data_and_backups_can_be_deleted() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        s.db()
+            .execute_batch(
+                "INSERT INTO folders(id, name, created_at, person) VALUES (1, 'Ayşe', 0, 1);
+                 INSERT INTO media(id, object_id, kind, original_name, ext, size, sha256, imported_at, faces_state, clip_state)
+                   VALUES (1, 'aa', 'image', 'a.jpg', 'jpg', 1, 'h', 0, 1, 1);",
+            )
+            .unwrap();
+        s.db().execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor, person_id) VALUES (1, 0, 0, 1, 1, 0.9, ?, 1)", [vec![0u8; 512]]).unwrap();
+        s.db().execute("INSERT INTO clip(media_id, vec) VALUES (1, ?)", [vec![0u8; 2048]]).unwrap();
+        s.save().unwrap();
+        s.save().unwrap(); // a backup copy exists now
+        let d = data_info(&s).unwrap();
+        assert_eq!((d.faces, d.clip_items), (1, 1));
+        assert!(d.face_bytes >= 512 && d.clip_bytes >= 2048 && d.backups >= 1 && d.library_bytes > 0);
+
+        delete_data(&s, "faces").unwrap();
+        delete_data(&s, "clip").unwrap();
+        delete_data(&s, "backups").unwrap();
+        let d = data_info(&s).unwrap();
+        assert_eq!((d.faces, d.clip_items, d.backups), (0, 0, 0));
+        let (person, fs, cs): (i64, i64, i64) = s
+            .db()
+            .query_row("SELECT f.person, m.faces_state, m.clip_state FROM folders f, media m", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap();
+        assert_eq!((person, fs, cs), (1, 0, 0), "person folders stay; items can be scanned again");
+        assert!(delete_data(&s, "everything").is_err());
     }
 
     #[test]

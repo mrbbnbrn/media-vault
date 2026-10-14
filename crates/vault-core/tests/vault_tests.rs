@@ -424,7 +424,7 @@ fn database_round_trip_and_rotating_backups() {
             .unwrap();
         v.save_db(&db::serialize(&conn).unwrap()).unwrap();
     }
-    assert_eq!(v.db_backups().unwrap().len(), 10);
+    assert_eq!(v.db_backups().unwrap().len(), vault_core::vault::DB_BACKUPS_KEPT);
 
     // Saving often with a minimum gap keeps just one fresh backup.
     let before = v.db_backups().unwrap().len();

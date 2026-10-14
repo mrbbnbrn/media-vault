@@ -100,6 +100,8 @@ pub struct AppConfig {
     pub smart_search: bool,
     /// Make small preview clips of videos in the background (smooth grids).
     pub make_previews: bool,
+    /// Analyse pictures for smart search in the background.
+    pub smart_index: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -119,6 +121,7 @@ impl Default for AppConfig {
             builtin_engine: true,
             smart_search: false,
             make_previews: true,
+            smart_index: true,
             vaults: Vec::new(),
             last_vault: None,
         }

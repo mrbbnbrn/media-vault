@@ -27,7 +27,7 @@ pub const MEDIA_DIR: &str = "media";
 pub const THUMB_DIR: &str = "thumbs";
 pub const FORMAT_DOC_FILE: &str = "FORMAT.md";
 pub const LOCK_FILE: &str = ".lock";
-pub const DB_BACKUPS_KEPT: usize = 10;
+pub const DB_BACKUPS_KEPT: usize = 5;
 
 /// The database always uses this fixed object id.
 pub const DB_OBJECT_ID: ObjectId = ObjectId(*b"media-vault-db\0\0");

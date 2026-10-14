@@ -7,7 +7,7 @@ import { DamageReportView, ExportDialog } from '../components/Safety';
 import { faceBackend } from '../ml/facescan';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import type { CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTask } from '../api';
+import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 
@@ -283,12 +283,17 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [cache, setCache] = useState<CacheInfo | null>(null);
   const [confirm, setConfirm] = useState<'deleteThumbs' | 'deletePreviews' | null>(null);
+  const [data, setData] = useState<DataInfo | null>(null);
+  const [dataConfirm, setDataConfirm] = useState<'faces' | 'clip' | 'backups' | null>(null);
+  const [dataMsg, setDataMsg] = useState<string | null>(null);
+  const loadData = () => api.dataInfo().then(setData).catch(() => {});
   const [job, setJob] = useState<StorageProgress | null>(null);
   const [done, setDone] = useState<StorageDone | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     api.storageInfo().then(setInfo).catch((e) => setErr(String(e)));
     api.cacheInfo().then(setCache).catch(() => {});
+    loadData();
     const a = onEvent<StorageProgress>('storage-progress', setJob);
     const b = onEvent<StorageDone>('storage-done', (d) => {
       setJob(null);
@@ -370,6 +375,54 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
         </div>
         <button type="button" className="btn" disabled={!!job || !cache?.thumbs} onClick={() => setConfirm('deleteThumbs')}>Delete</button>
       </div>
+      <h2 style={{ marginTop: 18 }}>Other data the app made</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        Kept encrypted inside the vault. Deleting any of it never touches your files, folders or person folders.
+      </p>
+      {data && (
+        <div className="stats" style={{ flexWrap: 'wrap' }}>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Face recognition</span><b>{data.faces.toLocaleString()} faces · {formatBytes(data.faceBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Smart search</span><b>{data.clipItems.toLocaleString()} items · {formatBytes(data.clipBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Library backups</span><b>{data.backups} of 5 · {formatBytes(data.backupBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Library</span><b>{formatBytes(data.libraryBytes)}</b></div>
+        </div>
+      )}
+      <div className="setting">
+        <div className="text">
+          <span className="title">Delete face recognition data</span>
+          <span className="desc">Removes every face found and every “yes, that's them / not them” answer. Person folders and the pictures in them stay. Scan again to find faces.</span>
+        </div>
+        <button type="button" className="btn" disabled={!data?.faces} onClick={() => setDataConfirm('faces')}>Delete</button>
+      </div>
+      <Toggle title="Analyse pictures for smart search" on={cfg.smartIndex !== false} set={(v) => update({ ...cfg, smartIndex: v })}
+        desc="Done in the background when the smart-search models are installed. Turn off first if you delete the data and want it to stay deleted." />
+      <div className="setting">
+        <div className="text">
+          <span className="title">Delete smart-search data</span>
+          <span className="desc">{cfg.smartIndex !== false ? 'It is made again in the background while analysing is on.' : 'Smart search finds nothing until pictures are analysed again.'}</span>
+        </div>
+        <button type="button" className="btn" disabled={!data?.clipItems} onClick={() => setDataConfirm('clip')}>Delete</button>
+      </div>
+      <div className="setting">
+        <div className="text">
+          <span className="title">Delete library backups</span>
+          <span className="desc">The vault keeps up to 5 earlier copies of the library (your folders, tags, people… not your files), at most one every 10 minutes, in case the main copy gets damaged. A new one is made with the next change.</span>
+        </div>
+        <button type="button" className="btn" disabled={!data?.backups} onClick={() => setDataConfirm('backups')}>Delete</button>
+      </div>
+      {dataMsg && <div className="info">{dataMsg}</div>}
+      {dataConfirm && (
+        <ConfirmDialog danger confirm="Delete" onClose={() => setDataConfirm(null)}
+          title={dataConfirm === 'faces' ? 'Delete face recognition data?' : dataConfirm === 'clip' ? 'Delete smart-search data?' : 'Delete the library backups?'}
+          onConfirm={async () => {
+            setDataMsg(await api.deleteData(dataConfirm));
+            await loadData();
+          }}>
+          {dataConfirm === 'faces' && `${data?.faces.toLocaleString()} faces (${formatBytes(data?.faceBytes ?? 0)}) and your answers about them are deleted. This can't be undone, but scanning again finds the faces again.`}
+          {dataConfirm === 'clip' && `The analysis of ${data?.clipItems.toLocaleString()} items (${formatBytes(data?.clipBytes ?? 0)}) is deleted.`}
+          {dataConfirm === 'backups' && `${data?.backups} earlier copies of the library (${formatBytes(data?.backupBytes ?? 0)}) are deleted. Your current library is not affected.`}
+        </ConfirmDialog>
+      )}
       {confirm && (
         <ConfirmDialog title={confirm === 'deleteThumbs' ? 'Delete all thumbnails?' : 'Delete all preview clips?'} confirm="Delete" danger
           onClose={() => setConfirm(null)} onConfirm={() => run(confirm)}>

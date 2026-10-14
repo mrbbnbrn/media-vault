@@ -46,6 +46,8 @@ export interface AppConfig {
   smartSearch: boolean;
   /** Make small preview clips of videos in the background. */
   makePreviews: boolean;
+  /** Analyse pictures for smart search in the background. */
+  smartIndex: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -389,6 +391,16 @@ export interface CacheInfo {
   previewBytes: number;
 }
 
+export interface DataInfo {
+  faces: number;
+  faceBytes: number;
+  clipItems: number;
+  clipBytes: number;
+  backups: number;
+  backupBytes: number;
+  libraryBytes: number;
+}
+
 export type StorageTask = 'convert' | 'reclaim' | 'deleteThumbs' | 'deletePreviews';
 
 export interface StorageProgress {
@@ -502,6 +514,9 @@ export const api = {
   storageInfo: () => call<StorageInfo>('storage_info'),
   storageTask: (task: StorageTask) => call<void>('storage_task', { task }),
   cacheInfo: () => call<CacheInfo>('cache_info'),
+  dataInfo: () => call<DataInfo>('data_info'),
+  /** Delete face data, smart-search data or library backups; returns what happened. */
+  deleteData: (what: 'faces' | 'clip' | 'backups') => call<string>('delete_data', { what }),
   /** Ctrl+S: write everything to disk now. */
   saveNow: () => call<void>('save_now'),
   /** Small remembered UI state for this vault (JSON text). */
@@ -610,6 +625,7 @@ const mock = {
       builtinEngine: true,
       smartSearch: false,
       makePreviews: true,
+      smartIndex: true,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -692,6 +708,8 @@ const mock = {
         return [];
       case 'ui_get':
         return null;
+      case 'data_info':
+        return { faces: 0, faceBytes: 0, clipItems: 0, clipBytes: 0, backups: 0, backupBytes: 0, libraryBytes: 0 };
       case 'cache_info':
         return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
       case 'clip_status':

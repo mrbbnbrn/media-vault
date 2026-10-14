@@ -897,6 +897,18 @@ async fn unextract_folder(state: State<'_, Shared>, id: i64, extracted: library:
     edit_db(state.inner(), move |c| library::unextract_folder(c, id, &extracted)).await
 }
 
+#[tauri::command]
+async fn data_info(state: State<'_, Shared>) -> Result<storage::DataInfo, String> {
+    let s = sess(state.inner())?;
+    blocking(move || storage::data_info(&s)).await
+}
+
+#[tauri::command]
+async fn delete_data(state: State<'_, Shared>, what: String) -> Result<String, String> {
+    let s = sess(state.inner())?;
+    blocking(move || storage::delete_data(&s, &what)).await
+}
+
 // ---- import ------------------------------------------------------------------------------
 
 #[tauri::command]
@@ -1455,6 +1467,8 @@ pub fn run() {
             cache_info,
             ui_get,
             save_now,
+            data_info,
+            delete_data,
             extract_folder,
             unextract_folder,
             ui_set,

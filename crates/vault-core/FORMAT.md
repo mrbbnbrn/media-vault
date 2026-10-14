@@ -19,7 +19,7 @@ app). This document is the fallback if that tool is ever unavailable.
 vault.json                header (not secret): salts, settings, encrypted master key
 vault.json.bak            identical copy of vault.json
 meta.db.enc               the library database (encrypted object, kind 3)
-meta-backups/             previous versions of meta.db.enc (same format)
+meta-backups/             up to 5 previous versions of meta.db.enc (same format)
 packs/media-NNNNNN.pack   encrypted media files, many per pack (about 1 GiB each)
 packs/thumbs-NNNNNN.pack  encrypted thumbnails
 FORMAT.md                 this file
