@@ -8,7 +8,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::c_void;
-use std::io::{Read, Seek, SeekFrom};
+use std::io::{Seek, SeekFrom};
 use std::mem::ManuallyDrop;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, Ordering};
