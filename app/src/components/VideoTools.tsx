@@ -9,6 +9,8 @@ import { formatTime } from '../media';
 import { saveViewerPrefs } from '../prefs';
 import { Dropdown, Modal } from './Dialogs';
 import { CloseIcon } from './Icons';
+import { COLS, framePosition, ROWS } from '../previews';
+import { nearestFrame } from '../viewerlogic';
 
 /** Seconds with tenths: 83.46 → "1:23.4" */
 export function preciseTime(s: number): string {
@@ -27,15 +29,38 @@ export function PositionBar(props: {
   suffix?: string;
   /** Show frames instead of time (GIFs). */
   frames?: { index: number; count: number };
+  /** Videos: hovering shows the time, and a frame from this preview clip strip when there is one. */
+  hover?: { strip: string | null; aspect: number };
 }) {
   const { at, dur } = props;
+  const [tip, setTip] = useState<{ x: number; t: number } | null>(null);
+  const onHover = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!props.hover || !(dur > 0)) return;
+    const r = e.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(r.width, e.clientX - r.left));
+    setTip({ x, t: (x / Math.max(1, r.width)) * dur });
+  };
   const pct = (t: number) => `${Math.max(0, Math.min(100, (t / Math.max(dur, 0.001)) * 100))}%`;
   const a = props.loop.a;
   const b = props.loop.b;
   return (
     <div className="timeline">
       <span>{props.frames ? `${props.frames.index + 1}` : formatTime(at * 1000)}</span>
-      <div className="track-wrap">
+      <div className="track-wrap" onMouseMove={onHover} onMouseLeave={() => setTip(null)}>
+        {tip && props.hover && (
+          <div className="seek-tip" style={{ left: tip.x }} aria-hidden="true">
+            {props.hover.strip && (
+              <div className="seek-frame" style={{
+                width: Math.round(Math.min(180, 110 * Math.max(0.6, props.hover.aspect))),
+                aspectRatio: String(props.hover.aspect || 16 / 9),
+                backgroundImage: `url("${props.hover.strip}")`,
+                backgroundSize: `${COLS * 100}% ${ROWS * 100}%`,
+                backgroundPosition: framePosition(nearestFrame(tip.t, dur)),
+              }} />
+            )}
+            <span className="seek-time">{formatTime(tip.t * 1000)}</span>
+          </div>
+        )}
         {a != null && (
           <div className={`ab-region${b == null ? ' open' : ''}`}
             style={{ left: pct(Math.min(a, b ?? a)), width: b != null ? `calc(${pct(Math.abs(b - a))})` : '2px' }} />

@@ -19,6 +19,14 @@ export interface PlaybackSettings {
   transition: 'none' | 'fade';
   volume: number;
   muted: boolean;
+  /** Move on with the music heard on the computer (falls back to the timer when silent). */
+  beatSync: boolean;
+  /** …on every 1st, 2nd or 4th beat… */
+  beatEvery: 1 | 2 | 4;
+  /** …but never sooner than this many seconds per item. */
+  beatMinSeconds: number;
+  /** Pictures slowly pan and zoom while they show. */
+  kenBurns: boolean;
 }
 
 export const DEFAULT_PLAYBACK: PlaybackSettings = {
@@ -34,6 +42,10 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   transition: 'fade',
   volume: 0.8,
   muted: false,
+  beatSync: false,
+  beatEvery: 1,
+  beatMinSeconds: 2,
+  kenBurns: false,
 };
 
 export const SPEEDS = [0.5, 1, 2];
@@ -50,6 +62,10 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     gifMaxSeconds: num(s.gifMaxSeconds, 20, 0, 3600),
     speed: SPEEDS.includes(s.speed) ? s.speed : 1,
     volume: num(s.volume, 0.8, 0, 1),
+    beatSync: s.beatSync === true,
+    beatEvery: s.beatEvery === 2 || s.beatEvery === 4 ? s.beatEvery : 1,
+    beatMinSeconds: num(s.beatMinSeconds, 2, 0.5, 60),
+    kenBurns: s.kenBurns === true,
   };
 }
 

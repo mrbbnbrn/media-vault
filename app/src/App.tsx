@@ -12,7 +12,9 @@ import { Recover } from './screens/Recover';
 import { NewPassword } from './screens/NewPassword';
 import { Library, type LibView } from './screens/Library';
 import { Settings } from './screens/Settings';
-import { Viewer } from './screens/Viewer';
+import { Viewer, type TitleCard } from './screens/Viewer';
+import { MiniFrame } from './components/MiniFrame';
+import type { Box } from './flip';
 import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
@@ -32,9 +34,27 @@ export type Screen =
   | { name: 'words'; words: string[]; context: 'create' | 'reset' }
   | { name: 'library' }
   | { name: 'settings' }
-  | { name: 'viewer'; items: PlayItem[]; startKey?: string; title: string; auto: boolean; back: LibView; order?: Order }
+  | ViewerRoute
   | { name: 'multi'; back: LibView }
   | { name: 'player' };
+
+export interface ViewerRoute {
+  name: 'viewer';
+  items: PlayItem[];
+  startKey?: string;
+  title: string;
+  auto: boolean;
+  back: LibView;
+  order?: Order;
+  /** The grid tile it was opened from (tileRect(id) from flip.ts): the picture grows from there. */
+  fromRect?: Box | null;
+  /** Pictures slowly pan and zoom (Memories). */
+  kenBurns?: boolean;
+  /** A big title shown for a moment before the first item. */
+  titleCard?: TitleCard;
+  /** Speed round: pictures and GIFs only, F to favourite, summary at the end. */
+  speedRound?: boolean;
+}
 
 export interface Nav {
   app: AppState;
@@ -58,6 +78,11 @@ export function App() {
   const [toast, setToast] = useState<string | null>(null);
   const [fatal, setFatal] = useState<string | null>(null);
   const [libView, setLibView] = useState<LibView>({ kind: 'folders' });
+  /** The viewer shrunk into the mini player (it keeps playing over the library). */
+  const [mini, setMini] = useState<ViewerRoute | null>(null);
+  /** A new number for each viewer opened, so expanding the mini player keeps the same one. */
+  const viewerIds = useRef(new WeakMap<ViewerRoute, number>());
+  const nextViewerId = useRef(1);
   // Back / forward through library views, like a web browser.
   const viewRef = useRef<LibView>(libView);
   viewRef.current = libView;
@@ -155,6 +180,7 @@ export function App() {
       clearUndo();
       if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
       setScreen((cur) => (cur.name === 'player' ? cur : { name: 'start' }));
+      setMini(null);
       setLibView({ kind: 'folders' });
       hist.current = { back: [], fwd: [] };
       clearViewMemory();
@@ -192,7 +218,28 @@ export function App() {
   if (fatal) return <div className="empty"><h1>Media Vault couldn't start</h1><p className="muted">{fatal}</p></div>;
   if (!app) return <div className="app" />;
 
-  const nav: Nav = { app, go: setScreen, refresh };
+  const go = (s: Screen) => {
+    // Opening something else full screen replaces the mini player; the
+    // library and settings keep it.
+    if (s.name !== 'library' && s.name !== 'settings') setMini(null);
+    setScreen(s);
+  };
+  const nav: Nav = { app, go, refresh };
+  const viewerRoute: ViewerRoute | null = screen.name === 'viewer' ? screen : mini && app.session && (screen.name === 'library' || screen.name === 'settings') ? mini : null;
+  let viewerId = 0;
+  if (viewerRoute) {
+    viewerId = viewerIds.current.get(viewerRoute) ?? 0;
+    if (!viewerId) {
+      viewerId = nextViewerId.current++;
+      viewerIds.current.set(viewerRoute, viewerId);
+    }
+  }
+  const isMini = !!viewerRoute && screen.name !== 'viewer';
+  const expandMini = () => {
+    if (!mini) return;
+    setMini(null);
+    setScreen(mini);
+  };
   return (
     <div className="app">
       {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
@@ -212,18 +259,37 @@ export function App() {
           reveal={reveal} />
       )}
       {screen.name === 'settings' && <Settings nav={nav} />}
-      {screen.name === 'viewer' && (
-        <Viewer nav={nav} items={screen.items} startKey={screen.startKey} title={screen.title} auto={screen.auto} order={screen.order}
-          onBack={(last) => {
-            setLibView(screen.back);
-            showItem(last?.itemId);
-            setScreen(app.session ? { name: 'library' } : { name: 'start' });
-          }}
-          onShowFolder={(it) => {
-            goView({ kind: 'folder', id: it.folderId });
-            showItem(it.itemId);
-            setScreen({ name: 'library' });
-          }} />
+      {viewerRoute && (
+        <MiniFrame key={viewerId} mini={isMini} onExpand={expandMini}>
+          <Viewer nav={nav} items={viewerRoute.items} startKey={viewerRoute.startKey} title={viewerRoute.title} auto={viewerRoute.auto} order={viewerRoute.order}
+            fromRect={viewerRoute.fromRect} kenBurns={viewerRoute.kenBurns} titleCard={viewerRoute.titleCard} speedRound={viewerRoute.speedRound}
+            mini={isMini}
+            onBack={(last) => {
+              setMini(null);
+              setLibView(viewerRoute.back);
+              showItem(last?.itemId);
+              setScreen(app.session ? { name: 'library' } : { name: 'start' });
+            }}
+            onShowFolder={(it) => {
+              setMini(null);
+              goView({ kind: 'folder', id: it.folderId });
+              showItem(it.itemId);
+              setScreen({ name: 'library' });
+            }}
+            onShowPerson={app.session ? (person) => {
+              setMini(null);
+              goView({ kind: 'search', tags: [], names: [], people: [person] });
+              setScreen({ name: 'library' });
+            } : undefined}
+            onMinimize={app.session && !viewerRoute.speedRound ? () => {
+              // Keep this viewer (same object, same component) and show the library under it.
+              setMini(viewerRoute);
+              setLibView(viewerRoute.back);
+              setScreen({ name: 'library' });
+            } : undefined}
+            onExpand={expandMini}
+            onCloseMini={() => setMini(null)} />
+        </MiniFrame>
       )}
       {screen.name === 'multi' && app.session && (
         <MultiScreen nav={nav} vault onBack={() => { setLibView(screen.back); setScreen({ name: 'library' }); }} />

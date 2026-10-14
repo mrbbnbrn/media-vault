@@ -12,6 +12,8 @@ mod beatlisten;
 mod nocapture;
 mod clip;
 mod config;
+// Duel mode: pick the better of two; Elo ratings set the slideshow weights.
+mod duel;
 mod engine;
 mod exporter;
 mod extras;
@@ -1316,6 +1318,26 @@ async fn faces_unsure(state: State<'_, Shared>, person: i64) -> Result<Vec<libra
     read_db(state.inner(), move |c| faces::unsure_items(c, person)).await
 }
 
+// ---- duel mode (duel.rs) ------------------------------------------------------------------
+
+/// Ratings (Elo, duel count, weight) of these items.
+#[tauri::command]
+async fn duel_ratings(state: State<'_, Shared>, ids: Vec<i64>) -> Result<Vec<duel::DuelState>, String> {
+    read_db(state.inner(), move |c| duel::ratings(c, &ids)).await
+}
+
+/// `winner` was picked over `loser`: new ratings and weights for both.
+#[tauri::command]
+async fn duel_result(state: State<'_, Shared>, winner: i64, loser: i64) -> Result<duel::DuelOutcome, String> {
+    edit_db(state.inner(), move |c| duel::result(c, winner, loser)).await
+}
+
+/// Undo: put items back as they were before a duel.
+#[tauri::command]
+async fn duel_restore(state: State<'_, Shared>, states: Vec<duel::DuelState>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| duel::restore(c, &states)).await
+}
+
 // ---- smart search -----------------------------------------------------------------------
 
 #[tauri::command]
@@ -1694,6 +1716,10 @@ pub fn run() {
             winshell::clipboard_put_files,
             winshell::clipboard_clear_ours,
             winshell::clipboard_read,
+            // duel mode (duel.rs)
+            duel_ratings,
+            duel_result,
+            duel_restore,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

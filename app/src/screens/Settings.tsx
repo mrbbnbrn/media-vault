@@ -143,6 +143,16 @@ export function Settings({ nav }: { nav: Nav }) {
               <div className="divider" />
 
               <section className="section">
+                <h2>Around the picture</h2>
+                <Toggle title="Soft colour glow behind pictures" desc="Instead of plain black, a blurred, darkened copy of the picture fills the space around it."
+                  on={viewer.ambient} set={(v) => setViewer({ ambient: v })} />
+                <Toggle title="Show boxes around faces" desc="Found faces get a box with the person's name. Click a box to see everything of that person, or to say who it is. The face button in the viewer switches this too."
+                  on={viewer.faceBoxes} set={(v) => setViewer({ faceBoxes: v })} />
+              </section>
+
+              <div className="divider" />
+
+              <section className="section">
                 <h2>Arrow keys in videos</h2>
                 <div className="setting">
                   <div className="text">

@@ -23,10 +23,15 @@ export interface ViewerSettings {
   soundVolume: number;
   /** Items per row in the library grid (0 = automatic). */
   gridColumns: number;
+  /** A soft, blurred colour glow of the picture behind it instead of black. */
+  ambient: boolean;
+  /** Boxes around found faces in the viewer (also switched from the library). */
+  faceBoxes: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
+  ambient: false, faceBoxes: false,
 };
 
 export interface AppConfig {
@@ -629,7 +634,32 @@ export const api = {
   /** Start listening; "beat" and "beat-level" events follow. Safe to call twice. */
   beatsStart: () => call<void>('beats_start'),
   beatsStop: () => call<void>('beats_stop'),
+
+  // duel mode: pick the better of two; Elo ratings set the slideshow weights
+  duelRatings: (ids: number[]) => call<DuelState[]>('duel_ratings', { ids }),
+  duelResult: (winner: number, loser: number) => call<DuelOutcome>('duel_result', { winner, loser }),
+  /** Undo: put items back as they were (`before` of a DuelOutcome). */
+  duelRestore: (states: DuelState[]) => call<void>('duel_restore', { states }),
 };
+
+// ---- duel mode -----------------------------------------------------------------
+
+export interface DuelState {
+  id: number;
+  /** 1000 for items that never duelled. */
+  elo: number;
+  duels: number;
+  weight: number;
+}
+
+export interface DuelOutcome {
+  winnerElo: number;
+  loserElo: number;
+  winnerWeight: number;
+  loserWeight: number;
+  /** Both items before this duel (winner first), for undo. */
+  before: DuelState[];
+}
 
 // ---- video tool (ffmpeg) -----------------------------------------------------
 

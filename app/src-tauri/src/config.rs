@@ -55,6 +55,10 @@ pub struct ViewerSettings {
     pub sound_volume: f64,
     /// Items per row in the library grid (0 = automatic from the size slider).
     pub grid_columns: u32,
+    /// A soft, blurred colour glow of the picture behind it instead of black.
+    pub ambient: bool,
+    /// Draw boxes around found faces in the viewer (also switched from the library).
+    pub face_boxes: bool,
 }
 
 impl Default for ViewerSettings {
@@ -68,6 +72,8 @@ impl Default for ViewerSettings {
             muted: true,
             sound_volume: 0.0,
             grid_columns: 0,
+            ambient: false,
+            face_boxes: false,
         }
     }
 }

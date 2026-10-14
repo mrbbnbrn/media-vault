@@ -64,3 +64,11 @@ export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
     /* keep the local change; it is saved with the next settings change */
   }
 }
+
+/** Face boxes in the viewer (the library's switch sets the same choice). */
+export function useFaceBoxes(): boolean {
+  return useViewerPrefs().faceBoxes;
+}
+export function setFaceBoxes(on: boolean) {
+  return saveViewerPrefs({ faceBoxes: on });
+}

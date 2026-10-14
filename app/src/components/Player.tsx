@@ -9,17 +9,23 @@
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
-import { api, type Bookmark } from '../api';
+import { api, previewUrl, type Bookmark, type FaceBox } from '../api';
+import { useBeatSync } from '../beats';
+import { clipBox, drawnRect, type Box } from '../flip';
+import { kickFaceScanner } from '../ml/facescan';
+import { facesAt, kenBurnsPath, resumeStart, resumeValue } from '../viewerlogic';
 import { captureVideoFrame, derivedName } from '../clips';
 import { formatTime, kickThumbnails, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
-import { rememberSound, saveViewerPrefs, unmuteVolume, useViewerPrefs } from '../prefs';
-import { Dropdown } from './Dialogs';
+import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
+import { ContextMenu, Dropdown } from './Dialogs';
+import { FaceLayer } from './FaceBoxes';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
 import {
-  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon, MuteIcon, NextIcon,
+  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
+  MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
 import { ShortcutsDialog } from './Shortcuts';
@@ -31,6 +37,8 @@ export interface PlayerHandle {
   next: () => void;
   prev: () => void;
   toggleMute: () => void;
+  /** Where the current picture / video is drawn on screen (null if unknown). */
+  mediaRect: () => Box | null;
 }
 
 export interface PlayerProps {
@@ -62,6 +70,16 @@ export interface PlayerProps {
   /** Extra line under the file name (e.g. its folder, as a link). */
   subtitle?: (item: PlayItem) => React.ReactNode;
   onCurrent?: (item: PlayItem | null) => void;
+  /** Shrink into the mini player (button and M). */
+  onMinimize?: () => void;
+  /** Shown as the small floating mini player, with its own little controls. */
+  mini?: { onExpand: () => void; onClose: () => void };
+  /** Pictures slowly pan and zoom during the slideshow (also a slideshow setting). */
+  kenBurns?: boolean;
+  /** Wait (like paused), e.g. while a title card shows. */
+  hold?: boolean;
+  /** A known face was clicked: show everything of that person (folder id). */
+  onShowPerson?: (folderId: number) => void;
   ref?: Ref<PlayerHandle>;
 }
 
@@ -103,6 +121,19 @@ export function Player(props: PlayerProps) {
   const [flash, setFlash] = useState<string | null>(null);
   const lastWheel = useRef(0);
   const zoomed = zoom.s > 1.001;
+  const halted = paused || !!props.hold;
+  const mini = !!props.mini;
+  const [vidSize, setVidSize] = useState<{ w: number; h: number } | null>(null);
+  const [stageWH, setStageWH] = useState({ w: 0, h: 0 });
+  const [resumed, setResumed] = useState<number | null>(null);
+  const [faces, setFaces] = useState<FaceBox[]>([]);
+  const [faceFlash, setFaceFlash] = useState(false);
+  const [faceReload, setFaceReload] = useState(0);
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
+  const panMoved = useRef(false);
+  const kbRef = useRef<HTMLDivElement>(null);
+  const kbAnim = useRef<Animation | null>(null);
+  const scanToken = useRef(0);
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
   const isVideo = item?.kind === 'video';
@@ -140,6 +171,12 @@ export function Player(props: PlayerProps) {
     setGifFrame({ index: 0, count: 0 });
     setBmOpen(false);
     frameDur.current = 0;
+    setVidSize(null);
+    setResumed(null);
+    setFaces([]);
+    setFaceFlash(false);
+    setMenu(null);
+    scanToken.current += 1;
   }, [item?.key]);
 
   // Counts as viewed after a couple of seconds on screen (main viewer only).
@@ -163,6 +200,7 @@ export function Player(props: PlayerProps) {
     return () => clearTimeout(t);
   }, [flash]);
 
+  const beatMark = useRef<() => void>(() => {});
   const go = useCallback((dir: 'next' | 'prev', auto = false) => {
     const p = listRef.current;
     if (!p) return;
@@ -173,6 +211,7 @@ export function Player(props: PlayerProps) {
       setSlideshow(false);
       return;
     }
+    beatMark.current();
     setFailed(false);
     if (n.key === before) {
       setTick((t) => t + 1);
@@ -185,9 +224,17 @@ export function Player(props: PlayerProps) {
     setCur(n);
   }, []);
 
+  // Beat sync: with music playing on the computer, the slideshow moves on with
+  // the beat (videos too); when it's quiet the normal timing takes over.
+  const beatOn = slideshow && !halted && s.beatSync;
+  const beat = useBeatSync({ enabled: beatOn, everyBeats: s.beatEvery, minSeconds: s.beatMinSeconds, onAdvance: () => go('next', true) });
+  beatMark.current = beat.markAdvanced;
+  const beatDriving = beatOn && !beat.silent && !zoomed;
+
   // Pictures and GIFs advance on a timer while the slideshow runs.
   useEffect(() => {
-    if (!item || !slideshow || paused || zoomed) return;
+    if (!item || !slideshow || halted || zoomed) return;
+    if (beatDriving && !failed) return;
     let ms = 0;
     if (failed) ms = 1500;
     else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf') ms = s.imageSeconds * 1000;
@@ -197,7 +244,32 @@ export function Player(props: PlayerProps) {
     } else return;
     const t = setTimeout(() => go('next', true), ms);
     return () => clearTimeout(t);
-  }, [item?.key, tick, slideshow, paused, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Slow pan and zoom over each picture during the slideshow.
+  const kenBurns = (props.kenBurns || s.kenBurns) && slideshow && item?.kind === 'image' && !zoomed && !failed;
+  useEffect(() => {
+    const el = kbRef.current;
+    if (!el || !kenBurns || typeof el.animate !== 'function') return;
+    const p = kenBurnsPath();
+    const tf = (k: { s: number; x: number; y: number }) => `translate(${k.x}%, ${k.y}%) scale(${k.s})`;
+    const a = el.animate([{ transform: tf(p.from) }, { transform: tf(p.to) }], {
+      duration: Math.max(1500, s.imageSeconds * 1000 + 800),
+      easing: 'ease-in-out',
+      fill: 'both',
+    });
+    kbAnim.current = a;
+    return () => {
+      a.cancel();
+      kbAnim.current = null;
+    };
+  }, [item?.key, tick, kenBurns]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const a = kbAnim.current;
+    if (!a) return;
+    if (halted) a.pause();
+    else if (a.playState === 'paused') a.play();
+  }, [halted, kenBurns]);
 
   // ---- zoom, rectangle zoom, panning, wheel ---------------------------------------------
 
@@ -234,6 +306,7 @@ export function Player(props: PlayerProps) {
     const el = stageRef.current;
     if (!el) return;
     const onWheel = (e: WheelEvent) => {
+      if (mini) return; // the page behind scrolls
       const doc = isDoc;
       if (e.ctrlKey) {
         e.preventDefault();
@@ -257,7 +330,7 @@ export function Player(props: PlayerProps) {
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onStagePointerDown = (e: React.PointerEvent) => {
-    if (!item || isDoc || failed) return;
+    if (!item || isDoc || failed || mini) return;
     const st = stageSize();
     const x0 = e.clientX - st.left;
     const y0 = e.clientY - st.top;
@@ -265,12 +338,14 @@ export function Player(props: PlayerProps) {
     target.setPointerCapture(e.pointerId);
     if (e.button === 2) {
       // Right button: move the zoomed picture.
+      panMoved.current = false;
       if (!zoomed) return;
       let lx = e.clientX;
       let ly = e.clientY;
       const move = (ev: PointerEvent) => {
         const dx = ev.clientX - lx;
         const dy = ev.clientY - ly;
+        if (Math.abs(dx) + Math.abs(dy) > 0) panMoved.current = true;
         lx = ev.clientX;
         ly = ev.clientY;
         setZoom((z) => clampZoom({ ...z, x: z.x + dx, y: z.y + dy }));
@@ -318,16 +393,18 @@ export function Player(props: PlayerProps) {
 
   // Video element follows play/pause, speed and volume.
   const volume = Math.max(0, Math.min(1, s.volume * (props.masterVolume ?? 1)));
-  const muted = s.muted || !!props.masterMuted;
+  // Slideshow videos stay quiet while beat sync listens (so they don't confuse it).
+  const beatQuiet = slideshow && s.beatSync;
+  const muted = s.muted || !!props.masterMuted || beatQuiet;
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
     v.volume = volume;
     v.muted = muted;
     v.playbackRate = s.speed;
-    const resumed = wasPaused.current && !paused;
-    wasPaused.current = paused;
-    if (paused) v.pause();
+    const resumed = wasPaused.current && !halted;
+    wasPaused.current = halted;
+    if (halted) v.pause();
     else if (v.paused && (!v.ended || resumed)) v.play().catch(() => {}); // play() after the end starts over
   });
 
@@ -378,18 +455,53 @@ export function Player(props: PlayerProps) {
   }, [loop, isGif]);
 
   // Tell auto-lock that something is playing.
-  const isPlaying = !!item && !paused && (slideshow || item.kind === 'video');
+  const isPlaying = !!item && !halted && (slideshow || item.kind === 'video');
   useEffect(() => {
     reportPlaying(props.activityId, isPlaying);
     return () => reportPlaying(props.activityId, false);
   }, [isPlaying, props.activityId]);
 
+  // ---- continue watching: long videos opened by hand remember where you were ----
+  const lastPos = useRef<{ id: number; at: number; dur: number; saved: number | null | undefined } | null>(null);
+  const saveResume = useCallback(() => {
+    const p = lastPos.current;
+    if (!p) return;
+    const ms = resumeValue(p.at, p.dur);
+    if (ms === p.saved) return;
+    p.saved = ms;
+    api.setResume(p.id, ms).catch(() => {});
+    // This list's copy follows, so coming back to it starts at the right place.
+    const it = props.items.find((x) => x.itemId === p.id);
+    if (it) it.resumeMs = ms;
+  }, [props.items]);
+  useEffect(() => {
+    if (!isVideo || halted || slideshow) return;
+    const t = setInterval(saveResume, 5000);
+    return () => clearInterval(t);
+  }, [isVideo, halted, slideshow, saveResume, item?.key]);
+  // On leaving the video (another item, or closing the viewer).
+  useEffect(() => () => {
+    saveResume();
+    lastPos.current = null;
+  }, [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (resumed == null) return;
+    const t = setTimeout(() => setResumed(null), 6000);
+    return () => clearTimeout(t);
+  }, [resumed]);
+
   const onVideoMeta = () => {
     const v = videoRef.current;
     if (!v) return;
     const d = Number.isFinite(v.duration) ? v.duration : 0;
+    setVidSize(v.videoWidth && v.videoHeight ? { w: v.videoWidth, h: v.videoHeight } : null);
     let start = 0;
-    if (s.videoRandomStart && d > 10) {
+    // Opened by hand (not in a slideshow): carry on where you left off.
+    const back = !slideshow && item?.itemId != null ? resumeStart(item.resumeMs, d) : 0;
+    if (back > 0) {
+      start = back;
+      setResumed(back);
+    } else if (s.videoRandomStart && d > 10) {
       const window = Math.min(s.videoMaxSeconds > 0 ? s.videoMaxSeconds : 30, d / 2);
       start = Math.random() * Math.max(0, d - window);
     }
@@ -401,11 +513,25 @@ export function Player(props: PlayerProps) {
   const onVideoTime = () => {
     const v = videoRef.current;
     if (!v) return;
-    setTime({ at: v.currentTime, dur: Number.isFinite(v.duration) ? v.duration : 0 });
-    if (slideshow && s.videoMaxSeconds > 0 && v.currentTime - videoStart.current >= s.videoMaxSeconds) go('next', true);
+    const dur = Number.isFinite(v.duration) ? v.duration : 0;
+    setTime({ at: v.currentTime, dur });
+    if (!slideshow && item?.itemId != null) {
+      const p = lastPos.current;
+      if (p && p.id === item.itemId) {
+        p.at = v.currentTime;
+        p.dur = dur;
+      } else lastPos.current = { id: item.itemId, at: v.currentTime, dur, saved: item.resumeMs };
+    }
+    // With the beat in charge, videos move on with the music instead.
+    if (slideshow && !beatDriving && s.videoMaxSeconds > 0 && v.currentTime - videoStart.current >= s.videoMaxSeconds) go('next', true);
   };
 
   const onVideoEnd = () => {
+    if (lastPos.current) {
+      // Watched to the end: nothing to continue.
+      lastPos.current.at = lastPos.current.dur;
+      saveResume();
+    }
     if (loop.a != null && loop.b != null) return; // the loop takes over
     if (slideshow) go('next', true);
     else if (s.repeat === 'one') {
@@ -416,6 +542,81 @@ export function Player(props: PlayerProps) {
       }
     }
   };
+
+  // The video element is memoised; its handlers always reach this render's state.
+  const vh = useRef({ meta: onVideoMeta, time: onVideoTime, end: onVideoEnd });
+  vh.current = { meta: onVideoMeta, time: onVideoTime, end: onVideoEnd };
+
+  // ---- where the picture is drawn (face boxes, the grow / shrink animation) ------------------
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => setStageWH({ w: el.clientWidth, h: el.clientHeight }));
+    ro.observe(el);
+    setStageWH({ w: el.clientWidth, h: el.clientHeight });
+    return () => ro.disconnect();
+  }, []);
+  const natural = isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : isVideo ? vidSize : null;
+  const drawn: Box | null = natural && stageWH.w > 0 && !failed ? drawnRect(stageWH.w, stageWH.h, natural.w, natural.h, s.fit, zoom) : null;
+
+  // ---- faces ------------------------------------------------------------------------------------
+
+  const faceCapable = inVault && !props.compact && !mini && (isPicture || isVideo) && !failed;
+  const showFaces = faceCapable && (prefs.faceBoxes || faceFlash);
+  useEffect(() => {
+    if (!showFaces || item?.itemId == null) return;
+    let alive = true;
+    api.facesOf(item.itemId).then((f) => alive && setFaces(f)).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [showFaces, item?.key, faceReload]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!faceFlash) return;
+    const t = setTimeout(() => setFaceFlash(false), 3000);
+    return () => clearTimeout(t);
+  }, [faceFlash, faceReload]);
+  const what = isVideo ? 'video' : 'picture';
+  const flashFaces = async () => {
+    if (item?.itemId == null) return;
+    const id = item.itemId;
+    const list = await api.facesOf(id).catch(() => [] as FaceBox[]);
+    if (listRef.current?.current()?.itemId !== id) return;
+    setFaces(list);
+    if (list.length) {
+      setFaceFlash(true);
+      setFaceReload((n) => n + 1);
+    } else setFlash(`No faces found in this ${what}`);
+  };
+  const scanFaces = async () => {
+    if (item?.itemId == null) return;
+    const id = item.itemId;
+    const token = ++scanToken.current;
+    try {
+      await api.facesQueue({ ids: [id], again: true });
+      kickFaceScanner();
+    } catch (e) {
+      setFlash(`Couldn't look for faces: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    setFlash(`Looking for faces in this ${what}…`);
+    for (let i = 0; i < 10; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      if (token !== scanToken.current) return; // moved on to another item
+      const list = await api.facesOf(id).catch(() => [] as FaceBox[]);
+      if (token !== scanToken.current) return;
+      if (list.length) {
+        setFaces(list);
+        setFaceFlash(true);
+        setFaceReload((n) => n + 1);
+        setFlash(list.length === 1 ? 'Found 1 face' : `Found ${list.length} faces`);
+        return;
+      }
+    }
+    if (token === scanToken.current) setFlash(`No faces found in this ${what}`);
+  };
+  const shownFaces = showFaces ? facesAt(faces, isVideo, time.at) : [];
 
   // ---- video and GIF tools ------------------------------------------------------------------
 
@@ -510,6 +711,12 @@ export function Player(props: PlayerProps) {
     next: () => go('next'),
     prev: () => go('prev'),
     toggleMute: () => set({ muted: !s.muted }),
+    mediaRect: () => {
+      const st = stageRef.current?.getBoundingClientRect();
+      if (!st || !drawn) return null;
+      const c = clipBox(drawn, st.width, st.height);
+      return c.width > 0 && c.height > 0 ? { left: st.left + c.left, top: st.top + c.top, width: c.width, height: c.height } : null;
+    },
   }));
 
   // Controls fade out while watching and come back when the mouse moves.
@@ -533,6 +740,7 @@ export function Player(props: PlayerProps) {
     if (!props.keys) return;
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if (menu) return; // the right-click menu handles its own keys
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
       if (k === ' ') {
@@ -556,6 +764,7 @@ export function Player(props: PlayerProps) {
         saveViewerPrefs({ smoothZoom: !prefs.smoothZoom });
         setFlash(prefs.smoothZoom ? 'Crisp pixels when zoomed in' : 'Smooth when zoomed in');
       } else if (k === '?') setHelp(true);
+      else if (k === 'm' && props.onMinimize && !e.shiftKey && !e.ctrlKey) props.onMinimize();
       else if (k === 'm') set({ muted: !s.muted });
       else if (k === 'f') props.onFullscreen?.();
       else if (k === '0') {
@@ -599,8 +808,8 @@ export function Player(props: PlayerProps) {
     if (item.kind === 'video')
       return (
         <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`} style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined }}
-          src={item.src} autoPlay={!paused} crossOrigin="anonymous"
-          playsInline preload="auto" onLoadedMetadata={onVideoMeta} onTimeUpdate={onVideoTime} onEnded={onVideoEnd}
+          src={item.src} autoPlay={!halted} crossOrigin="anonymous"
+          playsInline preload="auto" onLoadedMetadata={() => vh.current.meta()} onTimeUpdate={() => vh.current.time()} onEnded={() => vh.current.end()}
           onError={() => setFailed(true)} />
       );
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
@@ -615,8 +824,52 @@ export function Player(props: PlayerProps) {
       bookmarks={[]} loop={loop} frames={gifFrame} />
   ) : isVideo && time.dur > 0 ? (
     <PositionBar at={time.at} dur={time.dur} onSeek={seekTo} bookmarks={props.compact ? [] : bookmarks} loop={props.compact ? NO_LOOP : loop}
-      suffix={s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''} />
+      suffix={s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''}
+      hover={props.compact ? undefined : {
+        strip: item?.preview && item.itemId != null ? previewUrl(item.itemId) : null,
+        aspect: vidSize ? vidSize.w / vidSize.h : 16 / 9,
+      }} />
   ) : null;
+
+  const muteKey = props.onMinimize ? 'Shift+M' : 'M';
+  // Beat sync status: a tiny level meter and the tempo.
+  const beatBadge = s.beatSync && slideshow && (
+    <span className="beat-badge" title="The slideshow follows the music playing on your computer">
+      <span className="beat-meter" aria-hidden="true"><span style={{ transform: `scaleY(${Math.max(0.08, Math.min(1, beat.level))})` }} /></span>
+      {paused ? 'Beat sync paused' : beat.silent || !beat.bpm ? 'Listening… play some music on your computer' : `♪ ${Math.round(beat.bpm)} BPM`}
+    </span>
+  );
+
+  // Pictures and videos can have a soft glow of themselves around them.
+  const ambient = prefs.ambient && !props.compact && !failed && !!item?.thumb && (isPicture || isVideo);
+
+  const miniControls = props.mini && (
+    <div className="p-mini" onPointerDown={(e) => e.stopPropagation()}>
+      <div className="p-mini-row">
+        <button type="button" className="pbtn" aria-label={halted ? 'Play' : 'Pause'} title={halted ? 'Play' : 'Pause'}
+          onClick={() => setPaused((p) => !p)}>{halted ? <PlayIcon size={14} /> : <PauseIcon size={14} />}</button>
+        <button type="button" className="pbtn" aria-label="Next" title="Next" onClick={() => go('next')}><NextIcon size={14} /></button>
+        <button type="button" className="pbtn" aria-label={muted ? 'Sound on' : 'Mute'} title={muted ? 'Sound on' : 'Mute'}
+          onClick={() => set({ muted: !s.muted })}>{muted ? <MuteIcon size={14} /> : <SoundIcon size={14} />}</button>
+        <span className="p-mini-name ellipsis">{item?.name}</span>
+        <button type="button" className="pbtn" aria-label="Back to the full view" title="Back to the full view" onClick={props.mini.onExpand}><ExpandIcon size={14} /></button>
+        <button type="button" className="pbtn" aria-label="Close the mini player" title="Close" onClick={props.mini.onClose}><CloseIcon size={12} /></button>
+      </div>
+      {isVideo && time.dur > 0 ? (
+        <div className="p-mini-bar" role="slider" aria-label="Position" aria-valuemin={0} aria-valuemax={Math.round(time.dur)} aria-valuenow={Math.round(time.at)}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect();
+            seekTo(((e.clientX - r.left) / Math.max(1, r.width)) * time.dur);
+          }}>
+          <span style={{ width: `${Math.min(100, (time.at / time.dur) * 100)}%` }} />
+        </div>
+      ) : total > 1 && listRef.current && listRef.current.index() >= 0 ? (
+        <div className="p-mini-bar static" aria-hidden="true">
+          <span style={{ width: `${((listRef.current.index() + 1) / total) * 100}%` }} />
+        </div>
+      ) : null}
+    </div>
+  );
 
   const speedButton = (
     <div role="group" aria-label="Playback speed" className="seg">
@@ -662,16 +915,32 @@ export function Player(props: PlayerProps) {
   );
 
   return (
-    <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi ? '' : ' idle'}`}
+    <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi && !mini ? '' : ' idle'}${mini ? ' mini' : ''}${ambient ? ' ambient' : ''}`}
       onMouseMove={poke} onMouseDown={poke}>
+      {ambient && item?.thumb && <div key={item.key} className="ambient-glow" style={{ backgroundImage: `url("${item.thumb}")` }} aria-hidden="true" />}
       <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}`} onPointerDown={onStagePointerDown}
-        onContextMenu={(e) => e.preventDefault()}>
-        {isDoc ? media : isPicture && item && !failed ? (
-          <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom}
-            prefs={prefs} paused={paused} className={anim}
-            onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })} onError={() => setFailed(true)} />
-        ) : (
-          <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
+        onContextMenu={(e) => {
+          e.preventDefault();
+          if (panMoved.current) {
+            panMoved.current = false;
+            return;
+          }
+          if (faceCapable) setMenu({ x: e.clientX, y: e.clientY });
+        }}>
+        {isDoc ? media : (
+          <div ref={kbRef} className="kb-layer">
+            {isPicture && item && !failed ? (
+              <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom}
+                prefs={prefs} paused={halted} className={anim}
+                onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })} onError={() => setFailed(true)} />
+            ) : (
+              <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
+            )}
+            {drawn && shownFaces.length > 0 && (
+              <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
+                onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} />
+            )}
+          </div>
         )}
         {!item && <div className="media-failed">Nothing to play here.</div>}
         {drawing && <div className="zoom-rect drawing" style={{ left: drawing.x, top: drawing.y, width: drawing.w, height: drawing.h }} />}
@@ -681,15 +950,29 @@ export function Player(props: PlayerProps) {
           </div>
         )}
       </div>
-      {(zoomed || (isDoc && Math.abs(docZoom - 1) > 0.01)) && (
+      {!mini && (zoomed || (isDoc && Math.abs(docZoom - 1) > 0.01)) && (
         <button type="button" className="zoom-badge" onClick={() => { setZoom({ s: 1, x: 0, y: 0 }); setDocZoom(1); }}
           title="Reset zoom (0)">
           {Math.round((isDoc ? docZoom : zoom.s) * 100)}%{!isDoc && !prefs.smoothZoom ? ' · crisp' : ''} · Reset
         </button>
       )}
       {flash && <div className="p-flash" role="status">{flash}</div>}
+      {resumed != null && !mini && (
+        <div className="resume-chip" role="status">
+          Resumed at {formatTime(resumed * 1000)} ·{' '}
+          <button type="button" className="link" onClick={() => { seekTo(0); setResumed(null); }}>Start over</button>
+        </div>
+      )}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} title={item?.name} onClose={() => setMenu(null)} items={[
+          { label: 'Show faces', hint: 'for a moment', onSelect: () => { setMenu(null); flashFaces(); } },
+          { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
+          { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
+        ]} />
+      )}
+      {miniControls}
 
-      {!props.compact && (
+      {!props.compact && !mini && (
         <div className="p-top">
           <div className="p-title">
             {props.title}
@@ -728,7 +1011,7 @@ export function Player(props: PlayerProps) {
         </div>
       )}
 
-      {props.bare ? null : props.compact ? (
+      {props.bare || mini ? null : props.compact ? (
         <>
           <div className="p-badges">
             {props.title}
@@ -782,12 +1065,26 @@ export function Player(props: PlayerProps) {
               <RepeatIcon />{timedTools ? (s.repeat === 'one' ? ' 1' : '') : ` ${s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}`}
             </button>
             {speedButton}
+            {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
-              <button type="button" className="pbtn lg" aria-label={muted ? 'Unmute (M)' : 'Mute (M)'} title={muted ? 'Unmute (M)' : 'Mute (M)'} onClick={() => set({ muted: !s.muted })}>
+              {faceCapable && (
+                <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}
+                  aria-label="Face boxes" title={prefs.faceBoxes ? 'Hide face boxes' : 'Show boxes around faces'} onClick={() => setFaceBoxes(!prefs.faceBoxes)}>
+                  <FaceIcon size={18} />
+                </button>
+              )}
+              <button type="button" className="pbtn lg" aria-label={muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
+                title={beatQuiet ? 'Slideshow videos stay muted while the slideshow follows the beat' : muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
+                onClick={() => set({ muted: !s.muted })}>
                 {muted ? <MuteIcon /> : <SoundIcon />}
               </button>
               <input type="range" min={0} max={1} step={0.01} value={s.volume} aria-label="Volume" className="vol"
                 onChange={(e) => set({ volume: Number(e.target.value), muted: false })} />
+              {props.onMinimize && (
+                <button type="button" className="pbtn lg" aria-label="Mini player (M)" title="Mini player: keep watching in a corner while you browse (M)" onClick={props.onMinimize}>
+                  <MiniPlayerIcon />
+                </button>
+              )}
               {props.onFullscreen && (
                 <button type="button" className="pbtn lg" aria-label="Clean full screen (F)" title="Clean full screen (F)" onClick={props.onFullscreen}>
                   <FullscreenIcon />

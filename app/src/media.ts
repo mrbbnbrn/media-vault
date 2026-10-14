@@ -16,6 +16,13 @@ export interface PlayItem extends Entry {
   /** Its folder in the vault (where saved frames and GIFs go). */
   folderId: number | null;
   favourite: boolean;
+  /** Videos: where you left off last time (ms). */
+  resumeMs?: number | null;
+  /** Videos: a small preview clip (frame strip) exists. */
+  preview?: boolean;
+  /** Picture size when known (for the grow-from-the-tile animation). */
+  width?: number | null;
+  height?: number | null;
 }
 
 export function fromItem(i: Item): PlayItem {
@@ -32,6 +39,10 @@ export function fromItem(i: Item): PlayItem {
     itemId: i.id,
     folderId: i.folderId,
     favourite: i.favourite,
+    resumeMs: i.resumeMs,
+    preview: i.preview,
+    width: i.width,
+    height: i.height,
   };
 }
 

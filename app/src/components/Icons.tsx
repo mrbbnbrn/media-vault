@@ -310,3 +310,17 @@ export const TwinIcon = ({ size = 16 }: P) => (
     <path d="M9 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4" />
   </svg>
 );
+export const MiniPlayerIcon = ({ size = 18 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <rect x="12" y="12" width="7" height="6" rx="1" fill="currentColor" stroke="none" />
+  </svg>
+);
+export const ExpandIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M14 4h6v6" />
+    <path d="M10 20H4v-6" />
+    <path d="M20 4l-7 7" />
+    <path d="M4 20l7-7" />
+  </svg>
+);
