@@ -16,8 +16,9 @@ import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
   ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
-  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
+  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
+import { LookAlikes } from '../components/LookAlikes';
 import { PeopleView } from '../components/People';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { kickFaceScanner } from '../ml/facescan';
@@ -52,7 +53,11 @@ export type LibView =
   | { kind: 'stats' }
   | { kind: 'search'; tags: string[]; names: string[]; people: number[] }
   | { kind: 'smart'; q: string }
-  | { kind: 'people' };
+  | { kind: 'people' }
+  /** Groups of pictures that look the same (whole library or one folder). */
+  | { kind: 'lookalikes'; folder: number | null }
+  /** Items that look like one item, most alike first. */
+  | { kind: 'similar'; id: number; name: string };
 
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
@@ -114,6 +119,8 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
     case 'search': return 'Search';
     case 'smart': return `Smart search: “${v.q}”`;
     case 'people': return 'People';
+    case 'lookalikes': return 'Look-alikes';
+    case 'similar': return `Similar to “${v.name}”`;
   }
 }
 
@@ -213,7 +220,11 @@ export function Library({ nav, view, setView, history, reveal }: {
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
   const [smartOk, setSmartOk] = useState(false);
+  const smartOn = smartOk && !!cfg.smartSearch;
+  // "Find similar" uses smart search when it is on (only that view reloads when it changes).
+  const similarSmart = view.kind === 'similar' && smartOn;
   const [clip, setClip] = useState<ClipStatus | null>(null);
+  const [lookTick, setLookTick] = useState(0);
   const tasks = useTasks();
   const undoTop = useUndoTop();
   const [pick, dismissPick] = useTodaysPick(s.path);
@@ -352,6 +363,11 @@ export function Library({ nav, view, setView, history, reveal }: {
         setFolder(null);
         setSubfolders([]);
         if (view.kind === 'folders' || view.kind === 'stats' || view.kind === 'people') setItems([]);
+        else if (view.kind === 'lookalikes') setLookTick((t) => t + 1); // the page fetches its groups
+        else if (view.kind === 'similar') {
+          const [me, hits] = await Promise.all([api.getItem(view.id).catch(() => null), api.similarTo(view.id, similarSmart)]);
+          setItems([...(me && me.deletedAt == null ? [me] : []), ...hits.map((h) => h.item)]);
+        }
         else if (view.kind === 'smart') {
           const vec = await embedQuery(view.q);
           const hits = await api.smartSearch(Array.from(vec), null);
@@ -373,7 +389,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     } finally {
       setLoading(false);
     }
-  }, [view]);
+  }, [view, similarSmart]);
 
   useEffect(() => {
     let live = true;
@@ -609,6 +625,7 @@ export function Library({ nav, view, setView, history, reveal }: {
         return;
       }
       if (view.kind === 'trash') setDialog({ t: 'forever', ids, folder: null, what: plural(ids.length, 'item') });
+      else if (view.kind === 'lookalikes') setDialog({ t: 'deleteMany', folders: [], items: ids });
       else trashItems(ids);
     },
   };
@@ -682,9 +699,9 @@ export function Library({ nav, view, setView, history, reveal }: {
       const dir = sort === 'oldest' ? 1 : -1;
       return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     }
-    if (inTrash || smart) return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
+    if (inTrash || smart || view.kind === 'similar') return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt })), sort);
-  }, [items, kind, sort, timeline, inTrash, smart]);
+  }, [items, kind, sort, timeline, inTrash, smart, view.kind]);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
 
   const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
@@ -693,12 +710,14 @@ export function Library({ nav, view, setView, history, reveal }: {
   const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
   /** Everything shown here: the folder cards and the items (not the folder you are in). */
   function selectAll() {
+    if (view.kind === 'lookalikes') return setLookTick((t) => t + 1); // mark all but the best again
     setSelFolders(new Set(inTrash ? [] : cards.map((f) => f.id)));
     if (!gridView || !shown.length) return setSelected(new Set());
     setSelected(new Set(shown.map((i) => i.id)));
     setAnchor(shown[0].id);
   }
-  const gridView = !['folders', 'stats', 'people'].includes(view.kind);
+  const gridView = !['folders', 'stats', 'people', 'lookalikes'].includes(view.kind);
+  const looks = view.kind === 'lookalikes';
 
   const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
     if (!list.length) return;
@@ -798,6 +817,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+    { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
     { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
@@ -1042,6 +1062,7 @@ export function Library({ nav, view, setView, history, reveal }: {
         { label: 'Open', onSelect: () => playItems(false, it.id) },
         { label: many ? 'Play these as a slideshow' : 'Slideshow from here', onSelect: () => playItems(true, it.id, many) },
         ...(!many && !(view.kind === 'folder' && view.id === it.folderId) ? [{ label: 'Show in its folder', onSelect: () => showInFolder(it) }] : []),
+        ...(!many && ['image', 'gif', 'video'].includes(it.kind) ? [{ label: 'Find similar', hint: smartOn ? 'smart search' : undefined, onSelect: () => { setView({ kind: 'similar', id: it.id, name: it.name }); showItem(it.id); } }] : []),
         { label: allFav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => setFav(ids, !allFav) },
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
@@ -1095,6 +1116,17 @@ export function Library({ nav, view, setView, history, reveal }: {
     const nF = fs.length;
     const nI = selected.size;
     const here = view.kind === 'folder' ? view.id : undefined;
+    if (looks) {
+      const bytes = items.filter((i) => selected.has(i.id)).reduce((a, i) => a + i.size, 0);
+      return (
+        <ActionBar summary={nI ? <><b>{plural(nI, 'picture')} marked</b> · {formatBytes(bytes)}</> : <span className="faint">Nothing marked</span>}
+          actions={nI ? [
+            { key: 'trash', label: `Move ${plural(nI, 'marked picture')} to the trash`, icon: <TrashIcon />, danger: true, pinned: true,
+              title: 'Asks first · Ctrl+Z undoes it', onClick: () => setDialog({ t: 'deleteMany', folders: [], items: selIds }) },
+          ] : []}
+          end={<button type="button" className="link" onClick={() => setLookTick((t) => t + 1)} title="Mark everything but the best of each group again">Reset marks</button>} />
+      );
+    }
     if (!nF && !nI) {
       return (
         <ActionBar summary={<span className="faint">{gridView ? `${shown.length.toLocaleString()} items` : ''}{cards.length && !inTrash ? `${gridView ? ' · ' : ''}${plural(cards.length, 'folder')}` : ''}</span>}
@@ -1227,6 +1259,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           {sideView({ kind: 'recent' }, 'Recently added')}
           {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon />)}
           {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={14} />)}
+          {sideView({ kind: 'lookalikes', folder: null }, 'Look-alikes', undefined, <TwinIcon size={14} />)}
           {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
           {pinned.map((f) => (
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
@@ -1320,7 +1353,7 @@ export function Library({ nav, view, setView, history, reveal }: {
             <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
-                : view.kind === 'stats' || view.kind === 'people' ? ''
+                : view.kind === 'stats' || view.kind === 'people' || looks ? ''
                 : inTrash && trash ? (trash.totalItems ? `${plural(trash.totalItems, 'item')} · ${formatBytes(trash.totalBytes)}` : 'empty')
                 : `${shown.length.toLocaleString()} items`}
               {loading && ' · loading…'}
@@ -1356,7 +1389,7 @@ export function Library({ nav, view, setView, history, reveal }: {
                       <SheetIcon /> Contact sheet
                     </button>
                   )}
-                  {!smart && <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
+                  {!smart && view.kind !== 'similar' && <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
                     items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
                   <div role="group" aria-label="Tile shape" className="seg">
@@ -1368,7 +1401,7 @@ export function Library({ nav, view, setView, history, reveal }: {
               {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
                 <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
               )}
-              {view.kind !== 'stats' && view.kind !== 'people' && (
+              {view.kind !== 'stats' && view.kind !== 'people' && !looks && (
                 <>
                   <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }} title="Ctrl + mouse wheel changes this too">Size · {cols} per row</label>
                   <input id="tile-size" type="range" min={2} max={12} step={1} value={cols} style={{ direction: 'rtl' }}
@@ -1392,6 +1425,14 @@ export function Library({ nav, view, setView, history, reveal }: {
             <div className="info" style={{ marginBottom: 12 }}>
               Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
             </div>
+          )}
+
+          {view.kind === 'lookalikes' && (
+            <LookAlikes folder={view.folder} folderName={folders.find((f) => f.id === view.folder)?.name ?? null}
+              smartOk={smartOn} tick={lookTick} marked={selected} setMarked={setSelected}
+              onGroups={(g) => setItems(g.flat())}
+              onOpen={(g, id) => playList(g, false, id, 'Look-alikes')}
+              onAllFolders={() => setView({ kind: 'lookalikes', folder: null })} />
           )}
 
           {view.kind === 'stats' && (

@@ -19,6 +19,7 @@ import { startThumbnailer } from './media';
 import { startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
 import { startPreviewMaker } from './previews';
+import { startFingerprinter } from './fingerprint';
 import { runSelfTestIfRequested } from './selftest';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
@@ -179,6 +180,8 @@ export function App() {
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
   useEffect(() => (makePreviews ? startPreviewMaker() : undefined), [makePreviews]);
+  // Picture fingerprints for finding look-alikes (tiny, made from the thumbnails).
+  useEffect(() => (open ? startFingerprinter() : undefined), [open]);
 
   useEffect(() => {
     if (!toast) return;

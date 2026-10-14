@@ -16,6 +16,7 @@ mod meta;
 mod protocol;
 mod selftest;
 mod session;
+mod similar;
 mod storage;
 
 use std::collections::HashMap;
@@ -740,6 +741,7 @@ async fn save_thumb(
             if old.as_deref().is_some_and(|o: &str| !o.is_empty()) {
                 let _ = clip::reset(&db, id);
             }
+            let _ = similar::reset(&db, id);
             old
         };
         if let Some(o) = old.filter(|o| !o.is_empty())
@@ -1232,6 +1234,49 @@ async fn smart_search(
     read_db(state.inner(), move |c| clip::search(c, &vec, folder, limit.unwrap_or(300))).await
 }
 
+// ---- look-alikes -----------------------------------------------------------------------
+
+#[tauri::command]
+async fn similar_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<similar::FpTask>, String> {
+    read_db(state.inner(), move |c| similar::needed(c, limit)).await
+}
+
+#[tauri::command]
+async fn similar_save(state: State<'_, Shared>, id: i64, hash: String, sharpness: f64) -> Result<(), String> {
+    edit_db_bg(state.inner(), move |c| similar::save(c, id, &hash, sharpness)).await
+}
+
+#[tauri::command]
+async fn similar_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db_bg(state.inner(), move |c| similar::failed(c, id)).await
+}
+
+#[tauri::command]
+async fn similar_status(state: State<'_, Shared>) -> Result<similar::FpStatus, String> {
+    read_db(state.inner(), similar::status).await
+}
+
+#[tauri::command]
+async fn similar_groups(
+    state: State<'_, Shared>,
+    level: String,
+    smart: bool,
+    folder: Option<i64>,
+    videos: bool,
+) -> Result<Vec<Vec<library::Item>>, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let data = similar::load(&s.db(), smart, folder)?;
+        Ok(similar::group(data, similar::Level::parse(&level), smart, videos))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn similar_to(state: State<'_, Shared>, id: i64, smart: bool) -> Result<Vec<clip::Hit>, String> {
+    read_db(state.inner(), move |c| similar::similar_to(c, id, smart, 300)).await
+}
+
 // ---- self-test ---------------------------------------------------------------------
 
 #[tauri::command]
@@ -1503,6 +1548,12 @@ pub fn run() {
             clip_save,
             clip_failed,
             clip_status,
+            similar_needed,
+            similar_save,
+            similar_failed,
+            similar_status,
+            similar_groups,
+            similar_to,
             smart_search,
         ])
         .build(tauri::generate_context!())

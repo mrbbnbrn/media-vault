@@ -303,3 +303,10 @@ export const ArrowIcon = ({ size = 15, dir = 'left' }: P & { dir?: 'left' | 'rig
     <path d="M11 6l-6 6 6 6" />
   </svg>
 );
+/** Two overlapping pictures: look-alikes. */
+export const TwinIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="7" width="12" height="12" rx="2" />
+    <path d="M9 7V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-4" />
+  </svg>
+);

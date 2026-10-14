@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -306,6 +306,25 @@ fn migrate(conn: &Connection) -> Result<()> {
             DELETE FROM clip WHERE media_id IN (SELECT id FROM media WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '');
             UPDATE media SET clip_state = 0 WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '';
             PRAGMA user_version = 7;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
+        }
+    }
+    if v < 8 {
+        // v8: a picture fingerprint (64-bit perceptual hash) and a sharpness
+        // score per item, made from its thumbnail, for finding look-alikes.
+        // phash_state: 0 not made, 1 made, -1 couldn't be made.
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE media ADD COLUMN phash INTEGER;
+            ALTER TABLE media ADD COLUMN sharpness REAL;
+            ALTER TABLE media ADD COLUMN phash_state INTEGER NOT NULL DEFAULT 0;
+            PRAGMA user_version = 8;
             COMMIT;
             "#,
         );

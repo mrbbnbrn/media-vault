@@ -151,6 +151,9 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 - `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512
   little-endian float32 values (each unit length, CLIP ViT-B/32 space); videos have the
   thumbnail plus moments from their preview clip
+- `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
+  look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
+  above their median) and the variance of the Laplacian of a 64×64 grey copy
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings

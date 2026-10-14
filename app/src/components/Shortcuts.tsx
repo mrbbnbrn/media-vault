@@ -26,6 +26,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Ctrl + mouse wheel', 'More or fewer items per row'],
       ['Delete', 'Move what is selected to the trash (asks first for folders; Enter confirms)'],
       ['Right-click', 'Options for an item or folder'],
+      ['Right-click › Find similar', 'Pictures that look like this one (by meaning when smart search is on)'],
       ['Drag onto a folder', 'Move items or folders there (also onto “Top level” or the folder path)'],
       ['?', 'This list'],
     ],

@@ -429,3 +429,19 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .actbar .link { flex: none; font-size: 12.5px; }
 .modal .btn:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
 .modal .btn-danger-solid:focus { outline-color: #f0a49b; }
+
+/* Look-alikes */
+.looks { display: flex; flex-direction: column; gap: 14px; }
+.looks-head { display: flex; flex-wrap: wrap; align-items: center; gap: 16px; }
+.looks-head .check { min-height: 32px; font-size: 13px; gap: 8px; }
+.look-group { padding: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+.look-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.look-tile { position: relative; width: 168px; height: 168px; padding: 0; border: 2px solid transparent; border-radius: 9px; overflow: hidden; background: #0b0d10; cursor: pointer; }
+.look-tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.look-tile:first-child { border-color: var(--accent); }
+.look-tile.marked { border-color: #c4554a; }
+.look-tile.marked img { opacity: 0.45; }
+.look-best { position: absolute; top: 6px; left: 6px; padding: 1px 7px; border-radius: 6px; background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 700; }
+.look-fav { position: absolute; top: 6px; right: 8px; color: #ff6b8b; font-size: 14px; }
+.look-mark { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); padding: 3px 10px; border-radius: 6px; background: #c4554a; color: #fff; font-size: 12px; font-weight: 600; }
+.look-meta { position: absolute; left: 0; right: 0; bottom: 0; padding: 3px 6px; background: rgba(0, 0, 0, 0.6); color: #cfd3d8; font-size: 11px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

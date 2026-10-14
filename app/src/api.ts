@@ -561,7 +561,17 @@ export const api = {
   clipStatus: () => call<ClipStatus>('clip_status'),
   smartSearch: (vec: number[], folder: number | null, limit?: number) =>
     call<{ item: Item; score: number }[]>('smart_search', { vec, folder, limit }),
+  similarNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('similar_needed', { limit }),
+  similarSave: (id: number, hash: string, sharpness: number) => call<void>('similar_save', { id, hash, sharpness }),
+  similarFailed: (id: number) => call<void>('similar_failed', { id }),
+  similarStatus: () => call<{ total: number; done: number }>('similar_status'),
+  /** Groups of look-alikes, biggest first, each with its best picture first. */
+  similarGroups: (level: SimilarLevel, smart: boolean, folder: number | null, videos: boolean) =>
+    call<Item[][]>('similar_groups', { level, smart, folder, videos }),
+  similarTo: (id: number, smart: boolean) => call<{ item: Item; score: number }[]>('similar_to', { id, smart }),
 };
+
+export type SimilarLevel = 'strict' | 'normal' | 'loose';
 
 export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
   if (!inTauri) return Promise.resolve(() => {});
