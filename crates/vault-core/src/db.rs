@@ -368,25 +368,35 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
         // v9: free copies (several items sharing one stored file; copy_of =
         // the original's id), notes, tag colours, where a video was left off,
-        // and the duel ranking.
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
-            ALTER TABLE media ADD COLUMN copy_of INTEGER;
-            ALTER TABLE media ADD COLUMN note TEXT;
-            ALTER TABLE media ADD COLUMN resume_ms INTEGER;
-            ALTER TABLE media ADD COLUMN elo REAL;
-            ALTER TABLE media ADD COLUMN duels INTEGER NOT NULL DEFAULT 0;
-            ALTER TABLE folders ADD COLUMN note TEXT;
-            ALTER TABLE tags ADD COLUMN color TEXT;
-            CREATE INDEX IF NOT EXISTS media_object ON media(object_id);
-            PRAGMA user_version = 9;
-            COMMIT;
-            "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
+        // and the duel ranking. Each column only if it isn't there yet.
+        let table_exists = |t: &str| -> Result<bool> {
+            Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
+        };
+        let adds: [(&str, &str, &str); 7] = [
+            ("media", "copy_of", "INTEGER"),
+            ("media", "note", "TEXT"),
+            ("media", "resume_ms", "INTEGER"),
+            ("media", "elo", "REAL"),
+            ("media", "duels", "INTEGER NOT NULL DEFAULT 0"),
+            ("folders", "note", "TEXT"),
+            ("tags", "color", "TEXT"),
+        ];
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            for (t, c, def) in adds {
+                if table_exists(t)? && !has_column(conn, t, c)? {
+                    conn.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN {c} {def};"))?;
+                }
+            }
+            conn.execute_batch("CREATE INDEX IF NOT EXISTS media_object ON media(object_id); PRAGMA user_version = 9;")?;
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
         }
     }
     Ok(())
