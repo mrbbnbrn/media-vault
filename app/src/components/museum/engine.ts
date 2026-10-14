@@ -214,7 +214,8 @@ export class MuseumEngine {
   private pickList: THREE.Object3D[] = [];
   private frustum = new THREE.Frustum();
   private m4 = new THREE.Matrix4();
-  private sphere = new THREE.Sphere();
+  private box = new THREE.Box3();
+  private picTick = 0;
   private tmp = new THREE.Vector3();
   private doorFired = false;
   private resizeObs: ResizeObserver;
@@ -312,6 +313,11 @@ export class MuseumEngine {
     return this.close ? { ...this.close.back } : { ...this.pose };
   }
 
+  /** Where the camera is right now (also during a close look or a glide), for the map. */
+  where(): Pose {
+    return { ...this.pose };
+  }
+
   /** Draw calls and triangles of the last frame, textures and geometries alive (for tuning). */
   stats() {
     const i = this.renderer.info;
@@ -328,6 +334,7 @@ export class MuseumEngine {
     this.close = null;
     this.vel.set(0, 0);
     this.applyPose();
+    this.picTick = 0;
     this.cull();
     this.stream(true);
     this.updateLights(true);
@@ -525,18 +532,23 @@ export class MuseumEngine {
     const buckets = new Map<string, { b: Bucket; halls: number[]; list: Geo[] }>();
     const put = (halls: number | number[], b0: Bucket, g: Geo) => {
       const b = SAME[b0] ?? b0;
-      const hs = [...new Set(Array.isArray(halls) ? halls : [halls])].map((h) => Math.max(0, h)).sort((p, q) => p - q);
-      const key = `${b}@${hs.join(',')}`;
-      const e = buckets.get(key) ?? { b, halls: hs, list: [] };
-      e.list.push(g);
-      buckets.set(key, e);
+      // Something seen from two halls (a doorway, the wall around it) goes into both: a
+      // copy drawn twice now and then is cheaper than a draw call more for every hall.
+      const hs = [...new Set((Array.isArray(halls) ? halls : [halls]).map((h) => Math.max(0, h)))];
+      hs.forEach((h, i) => {
+        const key = `${b}@${h}`;
+        const e = buckets.get(key) ?? { b, halls: [h], list: [] };
+        e.list.push(i ? g.clone() : g);
+        buckets.set(key, e);
+      });
     };
     const hallOf = (x: number, y: number) => hallAt(L, { x, y })?.index ?? nearestHall(L, { x, y })?.index ?? 0;
 
     // Floors, carpets, ceilings, cornices.
     for (const h of L.halls) this.buildHall(h, put);
 
-    // Walls with panelling. A wall between two halls is drawn with either.
+    // Walls with panelling. Each wall is cut where the halls it faces change; a piece
+    // facing two halls goes into both (drawn twice at most, but no extra draw calls).
     const doorNear = (p: { x: number; y: number }) => L.doors.some((d) => Math.hypot(d.at.x - p.x, d.at.y - p.y) < d.width / 2 + 0.05);
     for (const w of L.walls) {
       const dx = w.b.x - w.a.x;
@@ -550,51 +562,57 @@ export class MuseumEngine {
       // would otherwise lie exactly on the jamb's.
       const ea = doorNear(w.a) ? -0.06 : WALL_T / 2 - 0.02;
       const eb = doorNear(w.b) ? -0.06 : WALL_T / 2 - 0.02;
-      const a = { x: w.a.x - ux * ea, y: w.a.y - uy * ea };
-      const b = { x: w.b.x + ux * eb, y: w.b.y + uy * eb };
-      const L2 = Math.hypot(b.x - a.x, b.y - a.y);
-      if (L2 < 0.02) continue;
-      const cx = (a.x + b.x) / 2;
-      const cy = (a.y + b.y) / 2;
       const alongX = Math.abs(ux) > 0.5;
-      const sz = (along: number, thick: number) => (alongX ? [along, thick] : [thick, along]);
       const H = w.height;
-      // Which halls this wall faces (sampled along both sides).
-      const sides: (number | null)[] = [null, null];
-      const halls = new Set<number>();
-      for (const [k, side] of [[0, 1], [1, -1]] as const) {
+      // The halls on either side, sampled every 20 cm.
+      const facing = (t: number, side: 1 | -1) => {
         const nx = alongX ? 0 : side;
         const ny = alongX ? side : 0;
-        for (let t = 0.3; t < len; t += 1) {
-          const hh = hallAt(L, { x: w.a.x + ux * t + nx * 0.5, y: w.a.y + uy * t + ny * 0.5 });
-          if (hh) {
-            halls.add(hh.index);
-            sides[k] = hh.index;
-          }
-        }
-      }
-      const hs = halls.size ? [...halls] : [hallOf(cx, cy)];
-      const seg = (b0: Bucket, y0: number, y1: number, t: number, uv: number) => {
-        const [sx, sz2] = sz(L2, t);
-        put(hs, b0, box(cx, (y0 + y1) / 2, cy, sx, y1 - y0, sz2, uv));
+        return hallAt(L, { x: w.a.x + ux * t + nx * 0.5, y: w.a.y + uy * t + ny * 0.5 })?.index ?? -1;
       };
-      seg('damask', 1.1, H, WALL_T, 0.75);
-      seg('wood', 0.16, 1.1, WALL_T + 0.05, 1.1);
-      seg('skirt', 0, 0.2, WALL_T + 0.08, 1);
-      seg('goldRail', 1.08, 1.16, WALL_T + 0.1, 0.3);
-      seg('marble', H - 1.05, H - 0.55, WALL_T + 0.04, 1.5);
-      seg('goldRail', H - 1.12, H - 1.04, WALL_T + 0.09, 0.3);
-      // Soft contact shadows on the floor along the faces that look into a hall.
-      for (const [k, side] of [[0, 1], [1, -1]] as const) {
-        const hall = sides[k];
-        if (hall == null) continue;
-        const nx = alongX ? 0 : side;
-        const ny = alongX ? side : 0;
-        const o = WALL_T / 2 + 0.04;
-        const p0 = v3(a.x + nx * o, 0.006, a.y + ny * o);
-        const p1 = v3(b.x + nx * o, 0.006, b.y + ny * o);
-        put(hall, 'shade', this.strip(p0, p1, v3(nx, 0, ny), 0.55));
+      const n = Math.max(1, Math.round(len / 0.2));
+      const runs: { t0: number; t1: number; l: number; r: number }[] = [];
+      for (let i = 0; i < n; i++) {
+        const t = ((i + 0.5) * len) / n;
+        const l = facing(t, 1);
+        const r = facing(t, -1);
+        const last = runs[runs.length - 1];
+        if (last && last.l === l && last.r === r) last.t1 = ((i + 1) * len) / n;
+        else runs.push({ t0: (i * len) / n, t1: ((i + 1) * len) / n, l, r });
       }
+      runs.forEach((run, i) => {
+        const hs = [run.l, run.r].filter((h) => h >= 0);
+        if (!hs.length) hs.push(hallOf(w.a.x + ux * run.t0, w.a.y + uy * run.t0));
+        // Pieces seen from two halls reach a little past their run (no gaps at the joins).
+        const pad = hs.length > 1 ? 0.2 : 0;
+        const t0 = i === 0 ? -ea : Math.max(-ea, run.t0 - pad);
+        const t1 = i === runs.length - 1 ? len + eb : Math.min(len + eb, run.t1 + pad);
+        if (t1 - t0 < 0.01) return;
+        const cx = w.a.x + ux * (t0 + t1) / 2;
+        const cy = w.a.y + uy * (t0 + t1) / 2;
+        const L2 = t1 - t0;
+        const seg = (b0: Bucket, y0: number, y1: number, th: number, uv: number) => {
+          put(hs, b0, box(cx, (y0 + y1) / 2, cy, alongX ? L2 : th, y1 - y0, alongX ? th : L2, uv));
+        };
+        seg('damask', 1.1, H, WALL_T, 0.75);
+        seg('wood', 0.16, 1.1, WALL_T + 0.05, 1.1);
+        seg('skirt', 0, 0.2, WALL_T + 0.08, 1);
+        seg('goldRail', 1.08, 1.16, WALL_T + 0.1, 0.3);
+        seg('marble', H - 1.05, H - 0.55, WALL_T + 0.04, 1.5);
+        seg('goldRail', H - 1.12, H - 1.04, WALL_T + 0.09, 0.3);
+        // Soft contact shadows on the floor along the faces that look into a hall.
+        for (const [hall, side] of [[run.l, 1], [run.r, -1]] as const) {
+          if (hall < 0) continue;
+          const nx = alongX ? 0 : side;
+          const ny = alongX ? side : 0;
+          const o = WALL_T / 2 + 0.04;
+          const s0 = i === 0 ? -ea : run.t0;
+          const s1 = i === runs.length - 1 ? len + eb : run.t1;
+          const p0 = v3(w.a.x + ux * s0 + nx * o, 0.006, w.a.y + uy * s0 + ny * o);
+          const p1 = v3(w.a.x + ux * s1 + nx * o, 0.006, w.a.y + uy * s1 + ny * o);
+          put(hall, 'shade', this.strip(p0, p1, v3(nx, 0, ny), 0.55));
+        }
+      });
     }
 
     // Doors: marble surrounds, lintels, signs, closed doors to other wings.
@@ -847,23 +865,26 @@ export class MuseumEngine {
     // Lintel wall above the opening, butting onto the wall ends (which stop inside the jambs),
     // with the wall's marble frieze and gilded rails running on across it.
     const lw = d.width + 0.12;
-    put(halls, 'damask', this.wallBox(at, along, lw, WALL_T, d.height, d.wallHeight, 0.75));
+    // (It starts inside the marble head, so its underside never meets the head's.)
+    put(halls, 'damask', this.wallBox(at, along, lw, WALL_T, d.height + 0.12, d.wallHeight, 0.75));
     if (d.wallHeight - 1.12 > d.height + 0.7) {
       const H = d.wallHeight;
       put(halls, 'marble', this.wallBox(at, along, lw, WALL_T + 0.04, H - 1.05, H - 0.55, 1.5));
       put(halls, 'goldRail', this.wallBox(at, along, lw, WALL_T + 0.09, H - 1.12, H - 1.04, 0.3));
     }
-    // Marble surround: jambs and a head, through the wall, gold inner trim (standing
-    // 1 cm proud of the marble so their faces never coincide).
+    // Marble surround: jambs and a head, through the wall. Gilded beads run round the
+    // opening on both faces, standing proud of the marble (no faces in common).
     const jw = 0.38;
     const depth = WALL_T + 0.16;
     for (const s of [-1, 1]) {
       put(halls, 'marble', this.wallBox(off(s * (hw + jw / 2)), along, jw, depth, 0, d.height + 0.46, 1));
-      put(halls, 'gold', this.wallBox(off(s * (hw + 0.025)), along, 0.07, depth + 0.04, 0.2, d.height, 0.5));
       put(halls, 'gold', this.wallBox(off(s * (hw + jw + 0.03)), along, 0.06, depth + 0.02, 0.2, d.height + 0.46, 0.5));
+      for (const n of [-1, 1]) {
+        put(halls, 'gold', this.wallBox(off(s * (hw + 0.03), n * (depth / 2 + 0.01)), along, 0.08, 0.05, 0.2, d.height + 0.02, 0.5));
+      }
     }
     put(halls, 'marble', this.wallBox(at, along, d.width + 2 * jw, depth, d.height, d.height + 0.46, 1));
-    put(halls, 'gold', this.wallBox(at, along, d.width + 0.12, depth + 0.04, d.height - 0.03, d.height + 0.05, 0.5));
+    for (const n of [-1, 1]) put(halls, 'gold', this.wallBox(off(0, n * (depth / 2 + 0.01)), along, d.width + 0.14, 0.05, d.height - 0.02, d.height + 0.06, 0.5));
     put(halls, 'goldRail', this.wallBox(at, along, d.width + 2 * jw + 0.3, depth + 0.12, d.height + 0.46, d.height + 0.6, 0.3));
     // Green marble plinths under the jambs.
     for (const sgn of [-1, 1]) put(halls, 'skirt', this.wallBox(off(sgn * (hw + jw / 2)), along, jw + 0.08, depth + 0.06, 0, 0.3, 1));
@@ -1108,7 +1129,6 @@ export class MuseumEngine {
       const hg = new THREE.BufferGeometry();
       hg.setAttribute('position', new THREE.Float32BufferAttribute(halo, 3));
       const halos = new THREE.Points(hg, hm);
-      halos.layers.enable(LAYER_REFLECT);
       group.add(halos);
       const gg = new THREE.BufferGeometry();
       gg.setAttribute('position', new THREE.Float32BufferAttribute(glint, 3));
@@ -1367,14 +1387,34 @@ export class MuseumEngine {
         const d = L.doors.find((x) => x.kind === 'pass' && x.hall === (dir > 0 ? far - 1 : far));
         if (!d) break;
         const dist = Math.hypot(d.at.x - this.pose.x, d.at.y - this.pose.y);
-        this.sphere.center.set(d.at.x, d.height / 2, d.at.y);
-        this.sphere.radius = d.width * 0.75;
-        const seen = dist < 50 && this.frustum.intersectsSphere(this.sphere);
+        // The opening itself (a thin box): behind you it's out of view however near.
+        const hx = Math.abs(d.along.x) * (d.width / 2) + Math.abs(d.inward.x) * 0.25;
+        const hz = Math.abs(d.along.y) * (d.width / 2) + Math.abs(d.inward.y) * 0.25;
+        this.box.min.set(d.at.x - hx, 0, d.at.y - hz);
+        this.box.max.set(d.at.x + hx, d.height, d.at.y + hz);
+        const seen = dist < 50 && this.frustum.intersectsBox(this.box);
         if (!seen) break;
         vis[far] = true;
       }
     }
     this.applyCull();
+    // Pictures in the other halls: only those a doorway really shows (a plan check, a few times a second).
+    if (--this.picTick <= 0) {
+      this.picTick = 6;
+      for (const s of this.slots) {
+        const h = s.frame.hall;
+        if (!vis[h]) continue;
+        if (h === cur) {
+          s.mesh.visible = true;
+          continue;
+        }
+        const f = s.frame;
+        const half = f.w / 2 + f.border;
+        const ax = -f.normal.y;
+        const ay = f.normal.x;
+        s.mesh.visible = [0, -half, half].some((k) => this.seen(f.at.x + ax * k + f.normal.x * 0.05, f.at.y + ay * k + f.normal.y * 0.05));
+      }
+    }
     // Full chandeliers only in your own hall.
     for (const l of this.lods) {
       const hi = l.hall === cur;
@@ -1397,7 +1437,7 @@ export class MuseumEngine {
     this.ray.far = far;
     const targets = this.pickList;
     targets.length = 0;
-    for (const s of this.slots) if (s.dist < far + 2 && s.group.visible) targets.push(s.mesh);
+    for (const s of this.slots) if (s.dist < far + 2 && s.group.visible && s.mesh.visible) targets.push(s.mesh);
     for (const d of this.doorMeshes) targets.push(d.mesh);
     if (!targets.length) return null;
     const hits = this.ray.intersectObjects(targets, true);
@@ -1413,8 +1453,12 @@ export class MuseumEngine {
 
   /** True if no wall stands between the camera and a point (plan check). */
   private visible(p: THREE.Vector3): boolean {
+    return this.seen(p.x, p.z);
+  }
+
+  private seen(x: number, y: number): boolean {
     const a = { x: this.pose.x, y: this.pose.y };
-    const b = { x: p.x, y: p.z };
+    const b = { x, y };
     for (const w of this.layout.walls) {
       if (segX(a, b, w.a, w.b)) {
         // Hitting the very wall the picture hangs on is fine.

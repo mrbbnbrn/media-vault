@@ -290,7 +290,7 @@ export function column(h: number, r = 0.32): { marble: Geo; gold: Geo; plinth: G
   // Volutes: four gilded scrolls under the corners of the abacus.
   const vol: Geo[] = [];
   for (let k = 0; k < 4; k++) {
-    const t = new THREE.TorusGeometry(r * 0.22, r * 0.08, 8, 16);
+    const t = new THREE.TorusGeometry(r * 0.22, r * 0.08, 6, 12);
     t.rotateY(Math.PI / 4 + (k * Math.PI) / 2);
     const a = Math.PI / 4 + (k * Math.PI) / 2;
     t.translate(Math.cos(a) * r * 1.35, top + 0.5, Math.sin(a) * r * 1.35);
@@ -318,7 +318,7 @@ export function stanchion(): Geo {
   return lathe([
     [0, 0], [0.17, 0], [0.17, 0.02], [0.14, 0.05], [0.06, 0.08], [0.03, 0.12], [0.022, 0.16], [0.022, 0.86], [0.035, 0.88], [0.03, 0.9],
     [0.05, 0.93], [0.055, 0.96], [0.04, 0.99], [0.012, 1.01], [0, 1.02],
-  ], 20);
+  ], 14);
 }
 
 /** A sagging velvet rope between two post tops. */

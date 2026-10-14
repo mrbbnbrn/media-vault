@@ -382,8 +382,8 @@ export default function Museum(props: MuseumProps) {
   useEffect(() => {
     const id = setInterval(() => {
       const eng = engine.current;
-      if (!eng) return;
-      const p = eng.getPose();
+      if (!eng || coveredRef.current) return;
+      const p = eng.where();
       const h = hallAt(layout, p);
       if (h) setHall(h.name);
       const c = mapRef.current;
