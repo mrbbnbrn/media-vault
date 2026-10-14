@@ -26,7 +26,8 @@ export function MediaGrid(props: {
   /** Items per row. */
   columns: number;
   selected: Set<number>;
-  onSelect: (sel: Set<number>, anchor: number | null) => void;
+  /** additive: Ctrl or Shift was held, so other selected things (folders) stay selected. */
+  onSelect: (sel: Set<number>, anchor: number | null, additive: boolean) => void;
   anchor: number | null;
   onOpen: (item: Item) => void;
   onDropOnFolder?: (ids: number[], target: string) => void;
@@ -38,7 +39,7 @@ export function MediaGrid(props: {
   layout?: 'grid' | 'shape';
   groups?: Group[];
   scroller: React.RefObject<HTMLElement | null>;
-  /** Keyboard highlight (arrow keys); Enter opens it, Space = quick look. */
+  /** The item the arrow keys move from (always the last one selected; not drawn separately). */
   cursor?: number | null;
   onCursor?: (id: number | null) => void;
   onQuickLook?: (item: Item) => void;
@@ -114,6 +115,7 @@ export function MediaGrid(props: {
       bringIntoView(i, true);
       setFlashId(props.reveal!.id);
       props.onCursor?.(props.reveal!.id);
+      props.onSelect(new Set([props.reveal!.id]), props.reveal!.id, false);
     }, 200);
     const t2 = setTimeout(() => setFlashId(null), 2200);
     return () => {
@@ -122,9 +124,8 @@ export function MediaGrid(props: {
     };
   }, [props.reveal?.n, props.items.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Keyboard: arrows move the highlight (Shift extends the selection, Ctrl
-  // moves without selecting), Enter opens, Space = quick look, Ctrl+Space
-  // selects or unselects the highlighted item.
+  // Keyboard: arrows move the selection (Shift extends it), Enter opens,
+  // Space = quick look. What is highlighted is always what is selected.
   const keyState = useRef({ props, layout });
   keyState.current = { props, layout };
   useEffect(() => {
@@ -134,7 +135,9 @@ export function MediaGrid(props: {
       if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]') || document.querySelector('[aria-modal="true"]')) return;
       const k = e.key;
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(k) || e.altKey) return;
-      const cur = p.cursor != null ? p.items.findIndex((x) => x.id === p.cursor) : -1;
+      // Start from the last selected item; if the selection moved elsewhere, from a selected one.
+      let cur = p.cursor != null && p.selected.has(p.cursor) ? p.items.findIndex((x) => x.id === p.cursor) : -1;
+      if (cur < 0 && p.selected.size) cur = p.items.findIndex((x) => p.selected.has(x.id));
       if (k === 'Enter') {
         if (cur >= 0) {
           e.preventDefault();
@@ -144,14 +147,7 @@ export function MediaGrid(props: {
       }
       if (k === ' ') {
         e.preventDefault();
-        const i = cur >= 0 ? cur : p.items.findIndex((x) => p.selected.has(x.id));
-        if (i < 0) return;
-        if (e.ctrlKey || e.metaKey) {
-          const sel = new Set(p.selected);
-          if (sel.has(p.items[i].id)) sel.delete(p.items[i].id);
-          else sel.add(p.items[i].id);
-          p.onSelect(sel, p.items[i].id);
-        } else p.onQuickLook?.(p.items[i]);
+        if (cur >= 0) p.onQuickLook?.(p.items[cur]);
         return;
       }
       e.preventDefault();
@@ -183,12 +179,12 @@ export function MediaGrid(props: {
       }
       const id = p.items[next].id;
       p.onCursor?.(id);
-      if (e.shiftKey && p.anchor != null) {
-        const a = p.items.findIndex((x) => x.id === p.anchor);
+      const a = e.shiftKey && p.anchor != null ? p.items.findIndex((x) => x.id === p.anchor) : -1;
+      if (a >= 0) {
         const [lo, hi] = a < next ? [a, next] : [next, a];
-        p.onSelect(new Set(p.items.slice(lo, hi + 1).map((x) => x.id)), p.anchor);
-      } else if (!(e.ctrlKey || e.metaKey)) {
-        p.onSelect(new Set([id]), id);
+        p.onSelect(new Set(p.items.slice(lo, hi + 1).map((x) => x.id)), p.anchor, true);
+      } else {
+        p.onSelect(new Set([id]), id, false);
       }
       bringIntoView(next);
     };
@@ -223,7 +219,7 @@ export function MediaGrid(props: {
         const [lo, hi] = a < i ? [a, i] : [i, a];
         if (!(e.ctrlKey || e.metaKey)) sel.clear();
         for (let k = lo; k <= hi; k++) sel.add(props.items[k].id);
-        props.onSelect(sel, props.anchor);
+        props.onSelect(sel, props.anchor, true);
         return;
       }
     }
@@ -234,7 +230,7 @@ export function MediaGrid(props: {
       sel.clear();
       sel.add(item.id);
     }
-    props.onSelect(sel, item.id);
+    props.onSelect(sel, item.id, e.ctrlKey || e.metaKey);
   };
 
   // Dragging the selection onto any folder moves it there.
@@ -285,7 +281,7 @@ export function MediaGrid(props: {
         const asClip = playing && it.kind === 'video' && clipMode.clips;
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.name}
-            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.cursor === it.id ? ' cursor' : ''}${flashId === it.id ? ' flash' : ''}`}
+            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${flashId === it.id ? ' flash' : ''}`}
             style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
             onClick={(e) => { click(e, it, i); props.onCursor?.(it.id); }} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}

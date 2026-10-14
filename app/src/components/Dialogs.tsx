@@ -14,7 +14,7 @@ export function Modal(props: { title: string; children: ReactNode; onClose: () =
       }
     };
     window.addEventListener('keydown', onKey, true);
-    ref.current?.querySelector<HTMLElement>('input, select, button.btn-primary')?.focus();
+    ref.current?.querySelector<HTMLElement>('[data-autofocus], input, select, button.btn-primary')?.focus();
     return () => window.removeEventListener('keydown', onKey, true);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
@@ -95,11 +95,22 @@ export function ConfirmDialog(props: {
     <Modal title={props.title} onClose={cancel}>
       <div className="muted" style={{ fontSize: 14, lineHeight: 1.6 }}>{props.children}</div>
       {err && <div className="error" role="alert">{err}</div>}
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
+      {/* The confirm button has the focus: Enter confirms, ← / → switch between the buttons. */}
+      <div className="row" style={{ justifyContent: 'flex-end' }} onKeyDown={(e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        const bs = [...e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')];
+        const i = bs.indexOf(document.activeElement as HTMLButtonElement);
+        const n = bs[Math.max(0, Math.min(bs.length - 1, (i < 0 ? bs.length - 1 : i) + (e.key === 'ArrowLeft' ? -1 : 1)))];
+        if (n) {
+          e.preventDefault();
+          n.focus();
+        }
+      }}>
         <button type="button" className="btn" onClick={cancel}>{props.cancel ?? 'Cancel'}</button>
         <button
           type="button"
           className={props.danger ? 'btn btn-danger-solid' : 'btn btn-primary'}
+          data-autofocus
           disabled={busy}
           onClick={async () => {
             setBusy(true);

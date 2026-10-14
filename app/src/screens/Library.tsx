@@ -10,6 +10,7 @@ import {
   takeLogin,
 } from '../api';
 import type { Nav } from '../App';
+import { ActionBar, type BarAction } from '../components/ActionBar';
 import { ContactSheet } from '../components/ContactSheet';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
@@ -72,6 +73,7 @@ type Dialog =
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
   | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
   | { t: 'moveFolders'; folders: FolderCard[] }
+  | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
   | { t: 'extracted'; folder: FolderCard; x: Extracted };
 
 const SORTS: { id: Order; label: string }[] = [
@@ -163,7 +165,7 @@ export function Library({ nav, view, setView, history, reveal }: {
   const [trash, setTrash] = useState<TrashView | null>(null);
   const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  // Folders can be selected too (Ctrl / Shift + click in the sidebar or on cards).
+  // Folders are selected like items: click (Ctrl / Shift for more). The folder you open is selected.
   const [selFolders, setSelFolders] = useState<Set<number>>(new Set());
   const [folderAnchor, setFolderAnchor] = useState<number | null>(null);
   const [anchor, setAnchor] = useState<number | null>(null);
@@ -379,13 +381,17 @@ export function Library({ nav, view, setView, history, reveal }: {
     setAnchor(null);
     setCursor(null);
     setQuick(null);
+    // The folder you are in is the selected folder (so the sidebar shows one thing, and Delete works on it).
+    const here = view.kind === 'folder' && view.id != null ? view.id : null;
+    setSelFolders(here != null ? new Set([here]) : new Set());
+    setFolderAnchor(here);
     reload().then(() => {
       if (live) restoreScroll();
     });
     return () => {
       live = false;
     };
-  }, [reload, restoreScroll]);
+  }, [reload, restoreScroll]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Folder covers appear as soon as their first thumbnail is made.
   useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
@@ -423,6 +429,8 @@ export function Library({ nav, view, setView, history, reveal }: {
       } else if (e.key === 'Delete' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.del();
+      } else if (e.key === 'Enter' && !e.ctrlKey && !e.altKey && keyActions.current.openFolder()) {
+        e.preventDefault();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !e.shiftKey) {
         e.preventDefault();
         keyActions.current.selectAll();
@@ -477,7 +485,9 @@ export function Library({ nav, view, setView, history, reveal }: {
 
   // ---- actions (all undoable) --------------------------------------------------------------
 
-  const itemById = (id: number) => items.find((i) => i.id === id);
+  // Items fetched from selected folders (so undo knows their old values).
+  const known = useRef(new Map<number, Item>());
+  const itemById = (id: number) => items.find((i) => i.id === id) ?? known.current.get(id);
 
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -523,8 +533,7 @@ export function Library({ nav, view, setView, history, reveal }: {
   const trashFolder = async (f: FolderCard) => {
     await api.deleteFolder(f.id);
     did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
-    if (view.kind === 'folder' && (view.id === f.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folders' });
-    else await reload();
+    if (!leaveDeleted([f])) await reload();
     nav.refresh().catch(() => {});
   };
   const renameFolder = async (f: FolderCard, name: string) => {
@@ -571,11 +580,18 @@ export function Library({ nav, view, setView, history, reveal }: {
   // The Delete key acts on the current selection.
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
-    anySelected: () => false as boolean,
+    anySelected: () => false as boolean, openFolder: () => false as boolean,
   });
   keyActions.current = {
     selected,
     anySelected: () => selected.size > 0 || selFolders.size > 0,
+    openFolder: () => {
+      if (selected.size || selFolders.size !== 1) return false;
+      const [id] = selFolders;
+      if (view.kind === 'folder' && view.id === id) return false;
+      openFolder(id);
+      return true;
+    },
     back: () => {
       if (!history.back() && view.kind === 'folder') setView(view.id == null ? { kind: 'folders' } : { kind: 'folder', id: folder?.parentId ?? null });
     },
@@ -588,7 +604,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     },
     del: () => {
       const ids = [...selected];
-      if (selFolders.size) {
+      if (selFolders.size && view.kind !== 'trash') {
         askDeleteMany();
         return;
       }
@@ -675,12 +691,10 @@ export function Library({ nav, view, setView, history, reveal }: {
   const pinned = folders.filter((f) => f.pinned);
   const selIds = [...selected];
   const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
+  /** Everything shown here: the folder cards and the items (not the folder you are in). */
   function selectAll() {
-    if (view.kind === 'folders') {
-      setSelFolders(new Set(cards.map((f) => f.id)));
-      return;
-    }
-    if (!gridView || !shown.length) return;
+    setSelFolders(new Set(inTrash ? [] : cards.map((f) => f.id)));
+    if (!gridView || !shown.length) return setSelected(new Set());
     setSelected(new Set(shown.map((i) => i.id)));
     setAnchor(shown[0].id);
   }
@@ -765,6 +779,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     }
     const it = shown.find((i) => foldName(i.name).startsWith(q));
     if (it) {
+      setSelFolders(new Set());
       setSelected(new Set([it.id]));
       setAnchor(it.id);
       setCursor(it.id);
@@ -810,6 +825,52 @@ export function Library({ nav, view, setView, history, reveal }: {
     }
   };
 
+  // ---- one selection of folders and items ----------------------------------------------
+
+  /**
+   * Everything a media action should touch: the selected items plus every item inside
+   * the selected folders (and their subfolders). Selected items come first, in the
+   * order shown.
+   */
+  const selectedMedia = async (): Promise<Item[]> => {
+    const out = new Map<number, Item>();
+    for (const it of shown) if (selected.has(it.id)) out.set(it.id, it);
+    for (const id of selected) if (!out.has(id)) { const it = itemById(id); if (it) out.set(id, it); }
+    for (const f of topMost(selFolders)) {
+      for (const it of await api.queryItems({ folder: f.id, recursive: true })) {
+        if (!out.has(it.id)) out.set(it.id, it);
+        known.current.set(it.id, it);
+      }
+    }
+    return [...out.values()];
+  };
+  /** Run a media action on the selection; folders count as all the items inside them. */
+  const onMedia = (fn: (list: Item[]) => unknown) => async () => {
+    try {
+      const list = await selectedMedia();
+      if (!list.length) return setNote({ text: 'There is nothing inside the selected folders.', at: 0 });
+      await fn(list);
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+  /** Move folders and items to the same place, undone together. */
+  const moveMixed = async (fs: FolderCard[], ids: number[], target: number | null) => {
+    const movedFolders = fs.filter((f) => f.parentId !== target);
+    const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
+    for (const f of movedFolders) await api.moveFolder(f.id, target);
+    if (ids.length) await api.moveItems(ids, target);
+    const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
+    const what = [movedFolders.length ? plural(movedFolders.length, 'folder') : '', ids.length ? plural(ids.length, 'item') : ''].filter(Boolean).join(' and ');
+    did(`Moved ${what} to “${name}”`, async () => {
+      for (const f of movedFolders) await api.moveFolder(f.id, f.parentId);
+      for (const [f, g] of before) await api.moveItems(g, f);
+    });
+    setSelFolders(new Set());
+    setSelected(new Set());
+    await reload();
+  };
+
   // ---- several folders ----------------------------------------------------------------
 
   /** Only the outermost of the selected folders (a subfolder goes along with its parent). */
@@ -817,8 +878,11 @@ export function Library({ nav, view, setView, history, reveal }: {
     const set = new Set(ids);
     return folders.filter((f) => set.has(f.id) && !f.path.some((c) => set.has(c.id)));
   };
-  /** Click on a folder: open it; Ctrl adds/removes it from the selection, Shift selects a range. */
-  const folderClick = (e: React.MouseEvent, f: FolderCard, list: FolderCard[]) => {
+  /**
+   * Click on a folder: select it (and, in the sidebar, open it). Ctrl adds or removes it,
+   * Shift selects a range. A plain click starts a new selection, like a plain click on an item.
+   */
+  const folderClick = (e: React.MouseEvent, f: FolderCard, list: FolderCard[], openIt: boolean) => {
     if (e.ctrlKey || e.metaKey) {
       setSelFolders((s0) => {
         const n = new Set(s0);
@@ -838,8 +902,18 @@ export function Library({ nav, view, setView, history, reveal }: {
         return;
       }
     }
-    setSelFolders(new Set());
-    openFolder(f.id);
+    setSelFolders(new Set([f.id]));
+    setFolderAnchor(f.id);
+    setSelected(new Set());
+    if (openIt) openFolder(f.id);
+  };
+  /** Where to go when the folder on screen (or one above it) is deleted: the deleted folder's parent. */
+  const leaveDeleted = (fs: FolderCard[]): boolean => {
+    if (view.kind !== 'folder') return false;
+    const gone = fs.find((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id));
+    if (!gone) return false;
+    setView(gone.parentId == null ? { kind: 'folders' } : { kind: 'folder', id: gone.parentId });
+    return true;
   };
   const askDeleteMany = () => {
     const fs = topMost(selFolders);
@@ -856,8 +930,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     });
     setSelFolders(new Set());
     setSelected(new Set());
-    if (view.kind === 'folder' && fs.some((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folders' });
-    else await reload();
+    if (!leaveDeleted(fs)) await reload();
     nav.refresh().catch(() => {});
   };
   const moveFolders = async (fs: FolderCard[], parent: number | null) => {
@@ -946,6 +1019,8 @@ export function Library({ nav, view, setView, history, reveal }: {
       sel = new Set([it.id]);
       setSelected(sel);
       setAnchor(it.id);
+      setCursor(it.id);
+      setSelFolders(new Set());
     }
     const ids = [...sel];
     const many = ids.length > 1;
@@ -1010,6 +1085,75 @@ export function Library({ nav, view, setView, history, reveal }: {
     }
     if (!f.cover) return <FolderIcon size={40} />;
     return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+  };
+
+  // ---- the bottom bar: what is selected, and one set of actions for all of it ------------
+
+  // Called as a function (not <SelectionBar />) so the bar keeps its state between renders.
+  const selectionBar = () => {
+    const fs = topMost(selFolders);
+    const nF = fs.length;
+    const nI = selected.size;
+    const here = view.kind === 'folder' ? view.id : undefined;
+    if (!nF && !nI) {
+      return (
+        <ActionBar summary={<span className="faint">{gridView ? `${shown.length.toLocaleString()} items` : ''}{cards.length && !inTrash ? `${gridView ? ' · ' : ''}${plural(cards.length, 'folder')}` : ''}</span>}
+          actions={[]}
+          end={gridView && shown.length > 0 ? <button type="button" className="link" onClick={selectAll} title="Ctrl+A">Select all</button> : undefined} />
+      );
+    }
+    const summary = nF === 1 && !nI ? <><b>“{fs[0].name}”</b> selected</>
+      : <><b>{[nF ? plural(nF, 'folder') : '', nI ? plural(nI, 'item') : ''].filter(Boolean).join(' and ')}</b> selected</>;
+    const clear = (
+      <>
+        {gridView && !allSelected && shown.length > nI && (
+          <button type="button" className="link" onClick={selectAll} title="Ctrl+A">Select all {shown.length.toLocaleString()}</button>
+        )}
+        <button type="button" className="link" title="Esc" onClick={() => { setSelected(new Set()); setSelFolders(new Set()); }}>Clear</button>
+      </>
+    );
+    if (inTrash) {
+      return (
+        <ActionBar summary={summary} end={clear} actions={[
+          { key: 'restore', label: 'Restore', icon: <RestoreIcon />, onClick: () => restoreItems(selIds) },
+          { key: 'forever', label: 'Delete for good', danger: true, pinned: true,
+            onClick: () => setDialog({ t: 'forever', ids: selIds, folder: null, what: plural(selIds.length, 'item') }) },
+        ]} />
+      );
+    }
+    const itemsOnly = nF === 0;
+    const allFav = itemsOnly && selIds.every((id) => itemById(id)?.favourite);
+    const what = nF === 1 && !nI ? `“${fs[0].name}”` : [nF ? plural(nF, 'folder') : '', nI ? plural(nI, 'item') : ''].filter(Boolean).join(' and ');
+    const actions: BarAction[] = [];
+    if (nF === 1 && !nI && here !== fs[0].id) actions.push({ key: 'open', label: 'Open', icon: <FolderIcon size={14} />, title: 'Enter', onClick: () => openFolder(fs[0].id) });
+    actions.push(
+      { key: 'play', label: 'Play', icon: <PlayIcon size={13} />, title: 'Slideshow of everything selected (folders: everything inside)',
+        onClick: onMedia((list) => {
+          const first = itemsOnly ? selIds[0] : undefined;
+          playList(list, true, first, nF === 1 && !nI ? fs[0].name : 'Selection');
+        }) },
+      { key: 'fav', label: allFav ? 'Unfavourite' : 'Favourite', icon: <HeartIcon size={14} />,
+        onClick: onMedia((list) => setFav(list.map((i) => i.id), !list.every((i) => i.favourite))) },
+      { key: 'tag', label: 'Tag…', icon: <TagIcon />, title: nF ? 'Tags every item inside the selected folders too' : undefined,
+        onClick: onMedia((list) => setDialog({ t: 'tagItems', ids: list.map((i) => i.id) })) },
+      { key: 'weight', label: 'Weight…', icon: <WeightIcon />,
+        onClick: onMedia((list) => setDialog({ t: 'weight', ids: list.map((i) => i.id), current: list[0].weight ?? 1 })) },
+      { key: 'move', label: 'Move to…', icon: <MoveIcon />,
+        onClick: () => (itemsOnly ? setDialog({ t: 'moveItems', ids: selIds }) : setDialog({ t: 'moveMixed', folders: fs, ids: selIds })) },
+      { key: 'export', label: 'Export…', icon: <ExportIcon />, title: 'Write unencrypted copies to a folder',
+        onClick: nF === 1 && !nI
+          ? () => setDialog({ t: 'export', request: { folder: fs[0].id }, what })
+          : onMedia((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
+    );
+    if (folder && itemsOnly && nI === 1) actions.push({ key: 'cover', label: 'Set as folder cover', onClick: () => act(() => api.setCover(folder.id, selIds[0])) });
+    if (nF === 1 && !nI) {
+      actions.push({ key: 'rename', label: 'Rename…', onClick: () => setDialog({ t: 'rename', folder: fs[0] }) });
+      actions.push({ key: 'look', label: 'Colour and emoji…', onClick: () => setDialog({ t: 'look', folder: fs[0] }) });
+    }
+    actions.push({ key: 'faces', label: 'Scan for faces', onClick: onMedia((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) });
+    actions.push({ key: 'delete', label: 'Delete', icon: <TrashIcon />, danger: true, pinned: true, title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
+      onClick: () => (itemsOnly ? trashItems(selIds) : askDeleteMany()) });
+    return <ActionBar summary={summary} actions={actions} end={clear} />;
   };
 
   // ---- render ---------------------------------------------------------------------------
@@ -1088,7 +1232,7 @@ export function Library({ nav, view, setView, history, reveal }: {
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
               onContextMenu={(e) => folderContext(e, f)}>
               <span className="twisty" />
-              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, pinned)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
+              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, pinned, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
                 title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
@@ -1112,8 +1256,8 @@ export function Library({ nav, view, setView, history, reveal }: {
                   return n;
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
-              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, visibleTree)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
-                title="Ctrl/Shift + click to select several · middle-click to play">
+              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, visibleTree, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
+                title="Click to open · Ctrl/Shift + click to select several · middle-click to play">
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -1201,7 +1345,7 @@ export function Library({ nav, view, setView, history, reveal }: {
               )}
               {gridView && shown.length > 0 && (
                 <button type="button" className="btn btn-sm" title={allSelected ? 'Clear the selection (Esc)' : 'Select everything shown here (Ctrl+A)'}
-                  onClick={() => (allSelected ? setSelected(new Set()) : selectAll())}>
+                  onClick={() => { if (allSelected) { setSelected(new Set()); setSelFolders(new Set()); } else selectAll(); }}>
                   {allSelected ? 'Select none' : 'Select all'}
                 </button>
               )}
@@ -1287,11 +1431,13 @@ export function Library({ nav, view, setView, history, reveal }: {
             <div className="fgrid" style={{ gridTemplateColumns: `repeat(${Math.max(1, cols - 1)}, minmax(0, 1fr))` }}>
               {cards.map((f) => (
                 <div key={f.id} className={`fcard${selFolders.has(f.id) ? ' fsel' : ''}`} data-card={f.id} data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
+                  onClick={(e) => { if (!(e.target as HTMLElement).closest('.dropdown')) folderClick(e, f, cards, false); }}
+                  onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest('.dropdown')) openFolder(f.id); }}
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
-                    onClick={(e) => folderClick(e, f, cards)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={`Open ${f.name}`}
-                    title="Click to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move">
+                    onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={f.name}
+                    title="Click to select · double-click (or Enter) to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move">
                     {coverView(f)}
                     {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>
@@ -1315,7 +1461,12 @@ export function Library({ nav, view, setView, history, reveal }: {
             shown.length ? (
               <MediaGrid items={shown} columns={cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
                 keyboard={quick == null && !dialog && !ctx} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
-                onSelect={(sel, a) => { setSelected(sel); setAnchor(a); }}
+                onSelect={(sel, a, additive) => {
+                  setSelected(sel);
+                  setAnchor(a);
+                  if (a != null) setCursor(a);
+                  if (!additive) setSelFolders(new Set());
+                }}
                 onOpen={(it) => playItems(false, it.id)}
                 onContext={itemContext}
                 preview={inTrash ? 'off' : preview}
@@ -1345,48 +1496,7 @@ export function Library({ nav, view, setView, history, reveal }: {
         </main>
       </div>
 
-      {selFolders.size > 0 && (
-        <div className="selbar" role="toolbar" aria-label="Folder selection" style={selected.size ? { bottom: 78 } : undefined}>
-          <b>{plural(selFolders.size, 'folder')} selected</b>
-          <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveFolders', folders: topMost(selFolders) })}><MoveIcon /> Move to…</button>
-          <button type="button" className="btn btn-sm btn-danger" onClick={askDeleteMany} title="Moves to the trash (Ctrl+Z to undo)"><TrashIcon /> Delete</button>
-          <button type="button" className="link" onClick={() => setSelFolders(new Set())}>Clear</button>
-        </div>
-      )}
-      {selected.size > 0 && (
-        <div className="selbar" role="toolbar" aria-label="Selection">
-          <b>{selected.size} selected</b>
-          {!allSelected && shown.length > selected.size && (
-            <button type="button" className="link" onClick={selectAll} title="Ctrl+A">Select all {shown.length.toLocaleString()}</button>
-          )}
-          {inTrash ? (
-            <>
-              <button type="button" className="btn btn-sm" onClick={() => restoreItems(selIds)}><RestoreIcon /> Restore</button>
-              <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'forever', ids: selIds, folder: null, what: plural(selIds.length, 'item') })}>
-                Delete for good</button>
-            </>
-          ) : (
-            <>
-              <button type="button" className="btn btn-sm" onClick={() => playItems(true, selIds[0], true)}><PlayIcon size={13} /> Play</button>
-              <button type="button" className="btn btn-sm" onClick={() => {
-                const allFav = selIds.every((id) => itemById(id)?.favourite);
-                setFav(selIds, !allFav);
-              }}><HeartIcon size={14} /> Favourite</button>
-              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'tagItems', ids: selIds })}><TagIcon /> Tag…</button>
-              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'weight', ids: selIds, current: itemById(selIds[0])?.weight ?? 1 })}>
-                <WeightIcon /> Weight…</button>
-              <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveItems', ids: selIds })}><MoveIcon /> Move to…</button>
-              <button type="button" className="btn btn-sm" title="Write unencrypted copies to a folder"
-                onClick={() => setDialog({ t: 'export', request: { ids: selIds }, what: plural(selIds.length, 'item') })}><ExportIcon /> Export…</button>
-              {folder && selected.size === 1 && (
-                <button type="button" className="btn btn-sm" onClick={() => act(() => api.setCover(folder.id, selIds[0]))}>Set as folder cover</button>
-              )}
-              <button type="button" className="btn btn-sm btn-danger" onClick={() => trashItems(selIds)} title="Moves to the trash (Ctrl+Z to undo)"><TrashIcon /> Delete</button>
-            </>
-          )}
-          <button type="button" className="link" onClick={() => setSelected(new Set())}>Clear</button>
-        </div>
-      )}
+      {selectionBar()}
 
       <div className="notes" onPointerEnter={() => setNoteHover(true)} onPointerLeave={() => setNoteHover(false)}>
       {showNote && note && (
@@ -1520,6 +1630,11 @@ export function Library({ nav, view, setView, history, reveal }: {
       {dialog?.t === 'moveFolders' && (
         <FolderPicker title={`Move ${plural(dialog.folders.length, 'folder')} into…`} folders={folders} exclude={dialog.folders.map((f) => f.id)} confirm="Move"
           onClose={() => setDialog(null)} onPick={(p) => moveFolders(dialog.folders, p)} />
+      )}
+      {dialog?.t === 'moveMixed' && (
+        <FolderPicker title={`Move ${[plural(dialog.folders.length, 'folder'), dialog.ids.length ? plural(dialog.ids.length, 'item') : ''].filter(Boolean).join(' and ')} to…`}
+          folders={folders} exclude={dialog.folders.map((f) => f.id)} confirm="Move"
+          onClose={() => setDialog(null)} onPick={(p) => moveMixed(dialog.folders, dialog.ids, p)} />
       )}
       {dialog?.t === 'extracted' && (
         <ConfirmDialog title="Remove the remaining empty folder?" confirm="Yes" cancel="No" onClose={() => setDialog(null)}
