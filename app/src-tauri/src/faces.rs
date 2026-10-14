@@ -377,13 +377,34 @@ fn facts(conn: &Connection) -> R<Facts> {
         let (model, f) = row.map_err(e)?;
         faces.entry(model).or_default().push(f);
     }
-    let folders = library::all_folders(conn)?;
+    // The folder tree (light: no covers or counts).
+    let folders: Vec<(i64, Option<i64>, String, bool)> = conn
+        .prepare("SELECT id, parent_id, name, person FROM folders WHERE deleted_at IS NULL")
+        .map_err(e)?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? != 0)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    let mut kids: HashMap<i64, Vec<i64>> = HashMap::new();
+    for (id, parent, _, _) in &folders {
+        if let Some(p) = parent {
+            kids.entry(*p).or_default().push(*id);
+        }
+    }
     let mut people = Vec::new();
     let mut names = HashMap::new();
-    for f in folders.iter().filter(|f| f.person) {
-        let inside: HashSet<i64> = folders.iter().filter(|x| x.id == f.id || x.path.iter().any(|c| c.id == f.id)).map(|x| x.id).collect();
-        people.push(PersonMeta { id: f.id, inside });
-        names.insert(f.id, f.name.clone());
+    for (id, _, name, _) in folders.iter().filter(|f| f.3) {
+        let mut inside: HashSet<i64> = HashSet::from([*id]);
+        let mut todo = vec![*id];
+        while let Some(f) = todo.pop() {
+            for k in kids.get(&f).into_iter().flatten() {
+                if inside.insert(*k) {
+                    todo.push(*k);
+                }
+            }
+        }
+        people.push(PersonMeta { id: *id, inside });
+        names.insert(*id, name.clone());
     }
     let pairs = |sql: &str| -> R<HashSet<(i64, i64)>> {
         conn.prepare(sql)

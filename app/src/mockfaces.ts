@@ -70,6 +70,7 @@ const state = {
   hidden: new Set<string>(['x13', 'x16']),
   gone: new Set<number>(),
   merged: false,
+  offered: false,
 };
 
 function group(who: string, photos: number, looksLike: UnknownGroup['looksLike'] = null): UnknownGroup {
@@ -135,6 +136,11 @@ export function facesAnswer(cmd: string, a: Record<string, unknown>): unknown {
   if (!on()) return undefined;
   switch (cmd) {
     case 'library_folders':
+      // "47 of these are Baran" as if an import had just been scanned (once, with ?people=sort).
+      if (/[?&]people=sort\b/.test(location.search) && !state.offered) {
+        state.offered = true;
+        import('./facesort').then((m) => m.showOffer({ folder: 1, name: 'Baran', items: [10, 11, 16, 17, 22, 34, 35].map(item) }));
+      }
       return FOLDERS.map(card);
     case 'faces_review':
       return review();

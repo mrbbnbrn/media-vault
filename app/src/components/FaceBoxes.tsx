@@ -145,7 +145,7 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
       </div>
       {naming && (
         <PromptDialog title="New person" label="Name" confirm="Create" initial={q.trim()}
-          hint="A person folder is made for them, and this picture goes in it."
+          hint="A person folder is made for them, and every photo they are recognised in shows on their page. Nothing is moved."
           onClose={() => setNaming(false)}
           onSubmit={async (name) => {
             await api.facesNewPerson(name.trim(), null, [props.face.id]);

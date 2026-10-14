@@ -377,10 +377,15 @@ fn person_covers(conn: &Connection) -> R<HashMap<i64, i64>> {
     type Row = (i64, i64, f32, f32, Vec<u8>);
     let rows: Vec<Row> = conn
         .prepare(
-            "SELECT f.person_id, f.media_id, f.w, f.score, f.descriptor FROM faces f JOIN media m ON m.id = f.media_id \
-             JOIN folders d ON d.id = f.person_id \
-             WHERE f.person_id IS NOT NULL AND m.deleted_at IS NULL AND d.person = 1 AND d.deleted_at IS NULL \
-             AND m.thumb_object_id IS NOT NULL AND m.thumb_object_id <> '' AND m.kind = 'image'",
+            // At most 200 faces per person (confirmed ones first): people
+            // recognised in thousands of photos stay quick.
+            "SELECT person_id, media_id, w, score, descriptor FROM ( \
+               SELECT f.person_id, f.media_id, f.w, f.score, f.descriptor, \
+                      ROW_NUMBER() OVER (PARTITION BY f.person_id ORDER BY f.auto, f.id DESC) AS k \
+               FROM faces f JOIN media m ON m.id = f.media_id JOIN folders d ON d.id = f.person_id \
+               WHERE f.person_id IS NOT NULL AND m.deleted_at IS NULL AND d.person = 1 AND d.deleted_at IS NULL \
+               AND m.thumb_object_id IS NOT NULL AND m.thumb_object_id <> '' AND m.kind = 'image' AND f.hidden = 0) \
+             WHERE k <= 200",
         )
         .map_err(e)?
         .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
