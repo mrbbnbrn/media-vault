@@ -45,6 +45,16 @@ describe('round covers', () => {
     close(g.top + g.h, 1);
   });
 
+  it('opens into a plain cover crop shifted towards the face (no zoom)', () => {
+    const face = { x: 0.7, y: 0.4, w: 0.1, h: 0.15 };
+    const f = coverFit(2, face, false);
+    expect(f.h).toBe(1);
+    expect(f.w).toBe(2);
+    // Face centre (x 0.75 of a 2-wide picture) as near the middle as the edges allow.
+    close(f.left, -1);
+    close(f.top, 0);
+  });
+
   it('copes with nonsense', () => {
     expect(coverFit(NaN)).toEqual({ w: 1, h: 1, left: 0, top: 0 });
     expect(coverFit(1, { x: 0.5, y: 0.5, w: 0, h: 0 })).toEqual({ w: 1, h: 1, left: 0, top: 0 });

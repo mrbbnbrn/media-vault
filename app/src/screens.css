@@ -613,19 +613,7 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .crumb-jump { border: none; background: none; color: var(--faint); padding: 0 5px; margin: 0 1px; border-radius: 4px; cursor: pointer; font-size: 14px; }
 .crumb-jump:hover { background: #1c1f24; color: var(--text); }
 .folder-note { display: inline-flex; align-items: center; gap: 5px; max-width: 420px; color: var(--faint); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-/* Stacked folder cards */
-.fstack { position: absolute; inset: 0; display: block; }
-.fstack img { position: absolute; left: 9%; top: 9%; width: 82%; height: 82%; object-fit: cover; border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
-  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1.15), filter 0.28s ease, box-shadow 0.28s ease; }
-.fstack .fstack-1 { transform: rotate(-6deg) translate(-4%, 2%); filter: brightness(0.7); }
-.fstack .fstack-2 { transform: rotate(5deg) translate(4%, 1%); filter: brightness(0.8); }
-.fstack .fstack-top { left: 6%; top: 6%; width: 88%; height: 88%; }
-/* Hovering fans the cards out like a hand of cards, so all three pictures show. */
-.fcard:hover .fstack .fstack-1 { transform: translate(-27%, -2%) rotate(-9deg) scale(0.62); filter: brightness(0.92); }
-.fcard:hover .fstack .fstack-2 { transform: translate(27%, -2%) rotate(9deg) scale(0.62); filter: brightness(0.92); }
-.fcard:hover .fstack .fstack-top { transform: translateY(5%) scale(0.66); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.7); }
-.fstack img.cycle { animation: fadein 0.35s ease; }
-@media (prefers-reduced-motion: reduce) { .fstack img { transition: none; } }
+/* Stacked folder cards: see "grid and folder-card visuals" at the end. */
 /* Scroll mode */
 .scroll-mode { max-width: 980px; width: 100%; margin: 0 auto; }
 /* Memories */
@@ -771,39 +759,22 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .why-meter { position: relative; display: block; width: 100%; max-width: 280px; height: 6px; margin: 6px 0 2px; border-radius: 3px; background: var(--raised); }
 .why-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
 .why-meter-cut { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text-2); }
-/* ---- grid extras: minimap, progress lines, magnifier, round person covers ---- */
-.minimap { position: fixed; z-index: 8; border-radius: 7px; overflow: hidden; background: rgba(255, 255, 255, 0.025); box-shadow: inset 0 0 0 1px var(--line); cursor: pointer; opacity: 0.8; transition: opacity 0.15s; touch-action: none; }
-.minimap:hover { opacity: 1; }
-.minimap canvas { display: block; }
-.minimap-view { position: absolute; left: 0; right: 0; border-radius: 4px; background: rgba(46, 196, 182, 0.16); box-shadow: inset 0 0 0 1px rgba(46, 196, 182, 0.85); pointer-events: none; }
-.minimap-hover { position: absolute; left: 0; right: 0; height: 1px; background: rgba(255, 255, 255, 0.7); pointer-events: none; }
-.minimap-preview { position: fixed; z-index: 9; padding: 6px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6); pointer-events: none; animation: fadein 0.12s ease-out; }
-.minimap-label { padding: 0 2px 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
-.minimap-shot { position: relative; overflow: hidden; border-radius: 6px; background: #0e1013; }
-.minimap-shot img, .minimap-shot span { position: absolute; object-fit: cover; border-radius: 2px; background: #1a1d22; }
+/* ---- grid extras: progress lines, round person covers (scroll preview and Alt enlarge: see the end) ---- */
 
 .tile .tile-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0, 0, 0, 0.55); pointer-events: none; }
 .tile .tile-progress span { display: block; height: 100%; background: var(--accent); border-radius: 0 2px 2px 0; }
 .tile.hinfo:hover .tile-progress { opacity: 0; }
 
-.loupe { position: fixed; z-index: 65; border-radius: 50%; overflow: hidden; pointer-events: none; background: #0b0c0e;
-  box-shadow: 0 0 0 2px rgba(46, 196, 182, 0.9), 0 0 0 5px rgba(0, 0, 0, 0.45), 0 18px 48px rgba(0, 0, 0, 0.7); }
-.loupe img { position: absolute; max-width: none; transition: opacity 0.15s; }
-.loupe-mag { position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%); padding: 1px 7px; border-radius: 8px; background: rgba(0, 0, 0, 0.65); color: #e9e7e3; font-family: var(--mono); font-size: 11px; }
 
 .pround { position: relative; display: inline-block; flex: none; border-radius: 50%; overflow: hidden; background: #1d2026; box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.16); vertical-align: middle; }
 .pround img { position: absolute; max-width: none; border-radius: 0; }
 .fcover .pcard { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: radial-gradient(circle at 50% 45%, #232830 0%, #181b20 70%); }
-.fcover .pcard .pround { width: 80%; height: 80%; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 10px 28px rgba(0, 0, 0, 0.55); transition: box-shadow 0.18s, transform 0.25s ease; }
-.fcover .pcard .pround img { object-fit: fill; }
-.fcard:hover .pcard .pround, .fcard.fsel .pcard .pround { box-shadow: 0 0 0 2px var(--accent), 0 12px 30px rgba(0, 0, 0, 0.6); transform: scale(1.03); }
 .rail-folder .pround.rail-round { width: 36px; height: 36px; }
 .rail-folder.sub .pround.rail-round { width: 30px; height: 30px; }
 .rail-folder.parent .pround.rail-round { width: 32px; height: 32px; margin-top: 6px; }
 .rail-folder.on .pround, .rail-folder.fsel .pround, .rail-folder.drop-over .pround { box-shadow: 0 0 0 2px var(--accent); }
 .rail-folder:hover .pround { box-shadow: 0 0 0 2px var(--accent-border, var(--accent)); }
 .pround.people-round { box-shadow: 0 0 0 2px var(--accent-border, rgba(46, 196, 182, 0.6)); }
-@media (prefers-reduced-motion: reduce) { .fcover .pcard .pround { transition: none; } }
 
 /* "Line up faces": the previous picture fades out over the new one. */
 .player .align-ghost { position: absolute; inset: 0; pointer-events: none; }
@@ -893,3 +864,73 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 /* Tiles show where you are with the selection ring; no separate focus outline. */
 .tile:focus-visible { outline: none; }
 .who-pop > .input { width: 100%; }
+
+/* ==== Grid and folder-card visuals ==================================================== */
+
+/* Stacked folder cards: two pictures from inside peek out behind the cover.
+   Hovering fans them out to the sides, over the neighbouring cards (the mouse
+   passes through them, so the next card can always be hovered), and the front
+   card grows a little; holding there cycles pictures in that front card. */
+.fstack { position: absolute; inset: 0; display: block; pointer-events: none; }
+.fstack img { position: absolute; left: 9%; top: 9%; width: 82%; height: 82%; object-fit: cover; border-radius: 6px; pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1.1), filter 0.32s ease, box-shadow 0.32s ease; }
+.fstack .fstack-1 { transform: rotate(-6deg) translate(-4%, 2%); filter: brightness(0.7); }
+.fstack .fstack-2 { transform: rotate(5deg) translate(4%, 1%); filter: brightness(0.8); }
+.fstack .fstack-top { left: 6%; top: 6%; width: 88%; height: 88%; }
+.fstack img.cycle { animation: fadein 0.35s ease; }
+/* Room to fan out: the cover lets the back cards out, and the hovered card
+   sits above its neighbours (and stays there until the cards are back). */
+.fcover:has(> .fstack) { overflow: visible; }
+.fcard:has(.fstack) { position: relative; transition: z-index 0s linear 0.34s; transition-behavior: allow-discrete; }
+.fcard:has(.fstack):hover { z-index: 5; transition-delay: 0s; }
+.fcard:hover .fstack .fstack-1 { transform: translate(-56%, -2%) rotate(-11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+.fcard:hover .fstack .fstack-2 { transform: translate(56%, -2%) rotate(11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+.fcard:hover .fstack .fstack-top { transform: scale(1.07); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.75); }
+/* First and last column: fan less towards the window edge
+   (sized so they stay within the card's padding and the page margin at any
+   card size, so the page never gets a sideways scrollbar). */
+.fcard:hover .fstack.edge-l .fstack-1 { transform: translate(calc(-15% - 20px), -3%) rotate(-8deg) scale(0.8); }
+.fcard:hover .fstack.edge-r .fstack-2 { transform: translate(calc(15% + 20px), -3%) rotate(8deg) scale(0.8); }
+
+/* Person folders: the circle opens into the card's square while hovered
+   (the picture eases from the face close-up to the whole cover); holding
+   there cycles pictures from the folder in that square. */
+.fcover .pcard .pround { width: 80%; height: 80%; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 10px 28px rgba(0, 0, 0, 0.55);
+  transition: width 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 0.3s ease, box-shadow 0.2s; }
+.fcover .pcard .pround img { object-fit: fill; transition: width 0.3s ease, height 0.3s ease, left 0.3s ease, top 0.3s ease; }
+.fcard.fsel .pcard .pround { box-shadow: 0 0 0 2px var(--accent), 0 12px 30px rgba(0, 0, 0, 0.6); }
+.fcover .pcard .pround.open { width: 100%; height: 100%; border-radius: 10px; box-shadow: none; }
+.fcover .pcard .pround .pround-cycle { left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; transition: none; animation: fadein 0.35s ease; }
+.fcover .pcard .pround .pround-cycle.still { animation: none; }
+
+/* Long grids: a strip beside the scrollbar. Point at it for a preview of
+   that spot, click or drag on it to jump there. */
+.minimap { position: fixed; z-index: 8; cursor: pointer; touch-action: none; border-radius: 6px 0 0 6px; background: transparent; transition: background 0.15s; }
+.minimap:hover, .minimap.dragging { background: rgba(255, 255, 255, 0.04); }
+.minimap-hover { position: absolute; left: 4px; right: 0; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--accent); opacity: 0.8; pointer-events: none; }
+.minimap-preview { position: fixed; z-index: 9; padding: 6px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6); pointer-events: none; animation: fadein 0.12s ease-out; }
+.minimap-label { padding: 0 2px 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.minimap-shot { position: relative; overflow: hidden; border-radius: 6px; background: #0e1013; }
+.minimap-shot img, .minimap-shot span { position: absolute; object-fit: cover; border-radius: 2px; background: #1a1d22; }
+
+/* A wider scrollbar for the library (easier to grab). */
+.lib-main::-webkit-scrollbar { width: 14px; height: 14px; }
+.lib-main::-webkit-scrollbar-track { background: transparent; }
+.lib-main::-webkit-scrollbar-thumb { min-height: 48px; border-radius: 7px; border: 2px solid transparent; background: #343a43 padding-box; }
+.lib-main::-webkit-scrollbar-thumb:hover { background: #4a525d padding-box; }
+.lib-main::-webkit-scrollbar-thumb:active { background: rgba(46, 196, 182, 0.7) padding-box; }
+.lib-main::-webkit-scrollbar-corner { background: transparent; }
+
+/* Hold Alt over a tile: its picture grows in place, uncropped, at full resolution. */
+.alt-enlarge { position: fixed; z-index: 65; overflow: hidden; pointer-events: none; border-radius: 8px; background: #0b0c0e;
+  box-shadow: 0 0 0 2px rgba(46, 196, 182, 0.85), 0 22px 56px rgba(0, 0, 0, 0.75);
+  transition: left 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), top 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.16s; }
+.alt-enlarge img, .alt-enlarge video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.alt-enlarge .full { opacity: 0; transition: opacity 0.15s; }
+.alt-enlarge .full.ready { opacity: 1; }
+.alt-enlarge.closing { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fstack img, .fcover .pcard .pround, .fcover .pcard .pround img, .alt-enlarge { transition: none; }
+}

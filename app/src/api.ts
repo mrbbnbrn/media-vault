@@ -82,7 +82,7 @@ export interface LookSettings {
   tileRadius: number;
   /** Top-bar buttons in order; empty = default. */
   topBar: string[];
-  /** The thumbnail minimap beside the grid's scrollbar (long grids only). */
+  /** The scroll preview strip beside the grid's scrollbar (long grids only). */
   minimap?: boolean;
 }
 

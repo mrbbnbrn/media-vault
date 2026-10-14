@@ -15,7 +15,7 @@ import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayo
 import { startMoveDrag } from '../dragmove';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
-import { Loupe } from './Loupe';
+import { AltEnlarge } from './AltEnlarge';
 import { Minimap, MINIMAP_RESERVE } from './Minimap';
 import { wantsMinimap, watchedShare } from '../tilemaths';
 import { resumeOf, useResumeChanges } from '../resumebus';
@@ -68,7 +68,7 @@ export function MediaGrid(props: {
   gap?: number;
   /** The overview strip beside the scrollbar (long grids only). */
   minimap?: boolean;
-  /** What the minimap preview says at an item (month, first letters…); groups' labels win. */
+  /** What the scroll preview says at an item (month, first letters…); groups' labels win. */
   minimapLabel?: (it: Item) => string | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
@@ -331,7 +331,7 @@ export function MediaGrid(props: {
 
   return (
     <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height, width: showMini ? `calc(100% - ${MINIMAP_RESERVE}px)` : undefined }} role="grid" aria-label="Media">
-      <Loupe root={ref} items={props.items} shape={mode === 'shape'} />
+      <AltEnlarge root={ref} items={props.items} />
       {showMini && <Minimap items={props.items} layout={layout} gridW={width} scroller={props.scroller} grid={ref} view={view} labelAt={labelAt} />}
       {layout.headers.filter((h) => h.y + HEADER_H >= view.top - 600 && h.y <= view.bottom + 600).map((h) => (
         <div key={h.y} className="group-head" style={{ top: h.y, height: HEADER_H }}>
