@@ -72,6 +72,7 @@ export default function Museum(props: MuseumProps) {
   const [showMap, setShowMap] = useState(true);
   const lockedRef = useRef(false);
   const everLocked = useRef(false);
+  const unlockedAt = useRef(0);
   /** Set while walking through a door: the next wing reuses the canvas (and keeps the mouse captured). */
   const keepContext = useRef(false);
   const renderer = useRef<WebGLRenderer | null>(null);
@@ -170,6 +171,7 @@ export default function Museum(props: MuseumProps) {
       const on = document.pointerLockElement === canvasRef.current;
       lockedRef.current = on;
       if (on) everLocked.current = true;
+      else unlockedAt.current = performance.now();
       setLocked(on);
       if (!on) engine.current?.clearKeys();
     };
@@ -251,7 +253,8 @@ export default function Museum(props: MuseumProps) {
       e.stopPropagation();
       if (e.code === 'Escape') {
         e.preventDefault();
-        if (!lockedRef.current) props_.current.onClose();
+        // The Esc that freed the mouse must not also close the museum.
+        if (!lockedRef.current && performance.now() - unlockedAt.current > 300) props_.current.onClose();
         return;
       }
       if (MOVE.has(e.code)) {
