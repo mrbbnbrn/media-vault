@@ -31,6 +31,7 @@ import {
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
 import { ShortcutsDialog } from './Shortcuts';
+import { useUpscale } from './Upscale';
 import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 
 export interface PlayerHandle {
@@ -642,6 +643,10 @@ export function Player(props: PlayerProps) {
   };
   const shownFaces = showFaces ? facesAt(faces, isVideo, time.at) : [];
 
+  // The offline AI upscaler (still pictures in the vault, full viewer only).
+  const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
+    keys: !!props.keys, onMessage: setFlash, onStart: () => setPaused(true) });
+
   // ---- video and GIF tools ------------------------------------------------------------------
 
   const seekTo = (t: number) => {
@@ -960,6 +965,12 @@ export function Player(props: PlayerProps) {
             ) : (
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
+            {up.src && item && (
+              <div className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
+                <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} prefs={prefs} paused
+                  onInfo={up.onShown} onError={up.onFailed} />
+              </div>
+            )}
             {drawn && shownFaces.length > 0 && (
               <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} />
@@ -981,6 +992,7 @@ export function Player(props: PlayerProps) {
           {Math.round((isDoc ? docZoom : zoom.s) * 100)}%{!isDoc && !prefs.smoothZoom ? ' · crisp' : ''} · Reset
         </button>
       )}
+      {up.bar}
       {flash && <div className="p-flash" role="status">{flash}</div>}
       {resumed != null && !mini && (
         <div className="resume-chip" role="status">
@@ -1092,6 +1104,7 @@ export function Player(props: PlayerProps) {
             {speedButton}
             {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+              {up.button}
               {faceCapable && (
                 <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}
                   aria-label="Face boxes" title={prefs.faceBoxes ? 'Hide face boxes' : 'Show boxes around faces'} onClick={() => setFaceBoxes(!prefs.faceBoxes)}>

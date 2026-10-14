@@ -1,0 +1,175 @@
+name: upscaler pack
+
+# Builds the optional AI upscaler download, MediaVault-upscaler-windows.zip,
+# and publishes it once under its own tag (like the video tool). Run by hand
+# (Actions → upscaler pack → Run workflow); it never runs on a push, so it
+# costs build minutes only when the pack changes. Runs on Linux (cheaper):
+# nothing in it needs Windows.
+#
+# The zip unzips next to the app and adds MediaVault\tools\upscaler\:
+#   onnxruntime.dll, DirectML.dll  official NuGet packages, checked against nuget.org
+#   realesrgan-x4plus.onnx         converted here from the official weights
+#   gfpgan-v1.4.onnx               converted here from the official weights
+#   LICENSES.txt, README.txt, SHA256SUMS.txt, VERSION.txt
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (default upscaler-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # ONNX Runtime 1.24 is the last release with DirectML; the app's ort crate
+  # asks for API 24 (app/src-tauri/Cargo.toml).
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  # The weights, from the authors' own GitHub releases.
+  ESRGAN_URL: https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth
+  ESRGAN_SHA256: 4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1
+  GFPGAN_URL: https://github.com/TencentARC/GFPGAN/releases/download/v1.3.4/GFPGANv1.4.pth
+  GFPGAN_SHA256: e2cd4703ab14f4d01fd1383a8a8b266f9a5833dacee8e6a79d3bf21a1b6be5ad
+  # The network definitions, at pinned commits (GFPGAN v1.3.8, BasicSR v1.4.2, Real-ESRGAN v0.3.0).
+  GFPGAN_COMMIT: 2eac2033893ca7f427f4035d80fe95b92649ac56
+  BASICSR_COMMIT: 651835a1b9d38dbbdaf45750f56906be2364f01a
+  REALESRGAN_COMMIT: fa4c8a03ae3dbc9ea6ed471a6ab5da94ac15c2ea
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: PyTorch (CPU) and ONNX, pinned
+        run: |
+          python -m pip install --upgrade pip
+          pip install torch==2.14.1 --index-url https://download.pytorch.org/whl/cpu
+          pip install numpy==2.5.4 onnx==1.23.2 onnxruntime==1.31.0
+
+      - name: Weights and network definitions (checked)
+        run: |
+          set -euo pipefail
+          mkdir -p w archs
+          curl -fsSL --retry 4 -o w/RealESRGAN_x4plus.pth "$ESRGAN_URL"
+          curl -fsSL --retry 4 -o w/GFPGANv1.4.pth "$GFPGAN_URL"
+          G=https://raw.githubusercontent.com/TencentARC/GFPGAN/$GFPGAN_COMMIT
+          B=https://raw.githubusercontent.com/XPixelGroup/BasicSR/$BASICSR_COMMIT
+          R=https://raw.githubusercontent.com/xinntao/Real-ESRGAN/$REALESRGAN_COMMIT
+          curl -fsSL -o archs/gfpganv1_clean_arch.py  $G/gfpgan/archs/gfpganv1_clean_arch.py
+          curl -fsSL -o archs/stylegan2_clean_arch.py $G/gfpgan/archs/stylegan2_clean_arch.py
+          curl -fsSL -o archs/rrdbnet_arch.py         $B/basicsr/archs/rrdbnet_arch.py
+          curl -fsSL -o archs/GFPGAN-LICENSE.txt      $G/LICENSE
+          curl -fsSL -o archs/BasicSR-LICENSE.txt     $B/LICENSE.txt
+          curl -fsSL -o archs/RealESRGAN-LICENSE.txt  $R/LICENSE
+          sha256sum -c <<EOF
+          $ESRGAN_SHA256  w/RealESRGAN_x4plus.pth
+          $GFPGAN_SHA256  w/GFPGANv1.4.pth
+          576f44f3aae39e21a8138fe51f8ec96c0b94559e08fc10c78416e8658ac290a9  archs/gfpganv1_clean_arch.py
+          274f6a66c0c56ee565e0df9e77a90d2a475c766419e15026273ca10f0dfd0ba0  archs/stylegan2_clean_arch.py
+          6aa8eb3f77e918b90eeff4ebfaf8745abe0c40eb8fcc03abbc1928693d70ab58  archs/rrdbnet_arch.py
+          EOF
+
+      - name: Convert to ONNX (checked against PyTorch)
+        run: |
+          mkdir -p pack
+          python -I tools/upscaler/convert.py --archs archs --realesrgan w/RealESRGAN_x4plus.pth \
+            --gfpgan w/GFPGANv1.4.pth --out pack
+          ls -la pack
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            # The hash nuget.org recorded when the package was published.
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            if command -v dotnet >/dev/null; then
+              dotnet nuget verify --all "$lid.nupkg" || echo "::warning::dotnet nuget verify could not confirm the signature of $id (hash check above passed)"
+            fi
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+          ls -la ../pack
+          ls microsoft.ml.onnxruntime.directml microsoft.ai.directml
+
+      - name: Licences, readme, checksums
+        run: |
+          set -euo pipefail
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — AI UPSCALER PACK: LICENCES"
+            echo "========================================"
+            echo
+            echo "realesrgan-x4plus.onnx  Real-ESRGAN x4plus by Xintao Wang et al. (BSD 3-Clause)."
+            echo "    Converted from RealESRGAN_x4plus.pth ($ESRGAN_URL, SHA-256 $ESRGAN_SHA256)"
+            echo "    with the network definition of BasicSR $BASICSR_COMMIT (Apache 2.0)."
+            echo "gfpgan-v1.4.onnx        GFPGAN v1.4 by Tencent ARC (Apache 2.0, with third-party parts under"
+            echo "    other licences, some for NON-COMMERCIAL use only: see below)."
+            echo "    Converted from GFPGANv1.4.pth ($GFPGAN_URL, SHA-256 $GFPGAN_SHA256)"
+            echo "    with the network definition of GFPGAN $GFPGAN_COMMIT."
+            echo "    The face model builds on StyleGAN2 (NVIDIA Source Code License: non-commercial) and was"
+            echo "    trained on FFHQ (CC BY-NC-SA 4.0). Use GFPGAN for PERSONAL, NON-COMMERCIAL purposes only."
+            echo "onnxruntime.dll         ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence),"
+            echo "    from the NuGet package Microsoft.ML.OnnxRuntime.DirectML $ORT_DML_VERSION."
+            echo "DirectML.dll            DirectML $DIRECTML_VERSION (Microsoft), from the NuGet package"
+            echo "    Microsoft.AI.DirectML $DIRECTML_VERSION; redistributed under its licence below."
+            echo
+            for f in archs/RealESRGAN-LICENSE.txt archs/BasicSR-LICENSE.txt archs/GFPGAN-LICENSE.txt \
+                     "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ($(dirname "$f")) ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          printf '%s\r\n' \
+            "Media Vault AI upscaler" \
+            "" \
+            "Unzip into the same place as the app: this adds MediaVault\\tools\\upscaler." \
+            "Then open a picture in the viewer and press Upscale (or U)." \
+            "" \
+            "Real-ESRGAN: the whole picture, faces left as they are (most faithful)." \
+            "GFPGAN: also rebuilds faces (sharpest faces). Personal use only, see LICENSES.txt." \
+            "" \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="upscaler-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" \
+            "realesrgan-x4plus (fp32)" "gfpgan-v1.4 (fp32)" > pack/VERSION.txt
+          (cd pack && sha256sum *.onnx *.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p z/MediaVault/tools/upscaler
+          cp pack/* z/MediaVault/tools/upscaler/
+          (cd z && zip -qr -6 ../MediaVault-upscaler-windows.zip MediaVault)
+          ls -la MediaVault-upscaler-windows.zip
+          notes="The AI upscaler for the viewer (Real-ESRGAN x4plus and GFPGAN v1.4, ONNX Runtime $ORT_DML_VERSION with DirectML). Unzip into the same place as the app; it adds MediaVault\\tools\\upscaler. GFPGAN is for personal use only (see LICENSES.txt)."
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" MediaVault-upscaler-windows.zip --clobber
+          else
+            gh release create "$TAG" MediaVault-upscaler-windows.zip --prerelease --title "AI upscaler $TAG (download once)" --notes "$notes"
+          fi

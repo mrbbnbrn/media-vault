@@ -182,6 +182,8 @@ jobs:
           fi
           repo="https://github.com/$GITHUB_REPOSITORY/releases"
           tag="build-${GITHUB_RUN_NUMBER}"
+          # The AI upscaler pack is made by its own workflow (upscaler.yml); point to the newest one.
+          utag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^upscaler-' | sort -r | head -1 || true)
           printf '%s\n' \
             "**Updating:** download only MediaVault-app-windows.zip (small), close the app, and unzip it over your MediaVault folder." \
             "" \
@@ -190,6 +192,7 @@ jobs:
             "- the smart-search models: $repo/tag/models-v1 (MediaVault-models-windows.zip)" \
             "  (already have the models from before? just add MediaVault-models-english-addon.zip from the same page)" \
             "- the video tool, for converting and animations: $repo/tag/$ttag (MediaVault-videotool-windows.zip)" \
+            ${utag:+"- the AI upscaler for pictures (optional, large): $repo/tag/$utag (MediaVault-upscaler-windows.zip)"} \
             "" \
             "Without them the app still works: it then uses the web engine that comes with Windows, smart search is off, and converting isn't available." > notes.md
           gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --draft --notes-file notes.md

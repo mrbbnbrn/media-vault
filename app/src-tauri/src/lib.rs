@@ -34,6 +34,9 @@ mod storage;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
 mod videotool;
+// The offline AI upscaler in the viewer (optional pack: tools/upscaler).
+mod upscale;
+mod upscale_img;
 mod winshell;
 mod windowstate;
 // "Why is this here?" for search results, and the slot machine's data.
@@ -86,6 +89,8 @@ fn panic_shortcut() -> Shortcut {
 fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     let taken = inner.session.lock().unwrap().take();
     let was_open = taken.is_some();
+    upscale::cancel();
+    upscale::forget_all();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -1924,6 +1929,12 @@ pub fn run() {
             // background jobs, vault growth
             background_left,
             vault_growth,
+            // offline AI upscaler (upscale.rs)
+            upscale::upscale_info,
+            upscale::upscale_start,
+            upscale::upscale_cancel,
+            upscale::upscale_save,
+            upscale::upscale_forget,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

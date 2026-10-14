@@ -4,6 +4,7 @@ import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
 import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
 import { DamageReportView, ExportDialog } from '../components/Safety';
+import { UpscalerSection } from '../components/Upscale';
 import { faceBackend } from '../ml/facescan';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
@@ -645,6 +646,10 @@ function SmartSection() {
           </div>
         )}
       </section>
+
+      <div className="divider" />
+
+      <UpscalerSection />
     </>
   );
 }

@@ -705,6 +705,16 @@ export const api = {
     call<Explanation>('explain_match', { id, filter, smart: smart ?? null, smartFolder: smartFolder ?? null }),
   // the slot machine (slots.rs): pictures of a folder and its subfolders, with people and tag groups
   slotData: (folder: number | null) => call<SlotData>('slot_machine_data', { folder }),
+  // offline AI upscaler (Rust: upscale.rs; window side: components/Upscale.tsx)
+  upscaleInfo: () => call<UpscalerInfo>('upscale_info'),
+  /** Sends the picture's pixels; 'upscale-progress' events follow, then 'upscale-done'. Returns the job number. */
+  upscaleStart: (request: UpscaleRequest, rgba: Uint8Array) => upscaleStart(request, rgba),
+  /** Stops the running upscale (its 'upscale-done' says cancelled). */
+  upscaleCancel: () => call<void>('upscale_cancel'),
+  /** Saves a result as a new item next to the original. */
+  upscaleSave: (token: number) => call<UpscaleSaved>('upscale_save', { token }),
+  /** The viewer closed: forget results, free the models' memory. */
+  upscaleForget: () => call<void>('upscale_forget'),
 };
 
 // ---- why is this here? / slot machine ----------------------------------------------
@@ -960,6 +970,15 @@ const mock = {
         throw new Error('Preview: adding vaults works in the real app.');
       case 'beats_supported':
         return false;
+      case 'upscale_info':
+        return { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\upscaler', device: 'gpu', deviceKnown: false } satisfies UpscalerInfo;
+      case 'upscale_start':
+        return mockUpscale(a.request as UpscaleRequest);
+      case 'upscale_cancel':
+        mockJob += 1;
+        return;
+      case 'upscale_save':
+        return { id: 999, name: 'Picture (upscaled).jpg' } satisfies UpscaleSaved;
       case 'library_folders':
       case 'query_items':
       case 'all_tags':
@@ -1088,3 +1107,111 @@ export const jobsApi = {
   backgroundLeft: () => (inTauri ? call<BackgroundLeft>('background_left') : Promise.resolve<BackgroundLeft>({ thumbs: 0, previews: 0 })),
   vaultGrowth: () => (inTauri ? call<Growth>('vault_growth') : new Promise<Growth>((r) => setTimeout(() => r(mockGrowth()), 80))),
 };
+// ---- offline AI upscaler -------------------------------------------------------------------
+
+export type UpscaleModel = 'realesrgan' | 'gfpgan';
+
+export interface UpscalerInfo {
+  available: boolean;
+  /** Why not, in one sentence. */
+  problem: string | null;
+  /** Where the pack is looked for. */
+  folder: string | null;
+  /** 'gpu' or 'cpu' (a guess until it has run once: see deviceKnown). */
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+}
+
+export interface UpscaleRequest {
+  itemId: number;
+  /** The pixels sent: width × height × 4 (RGBA). */
+  width: number;
+  height: number;
+  model: UpscaleModel;
+  /** Per face: eye on the picture's left, other eye, nose tip, mouth left, mouth right (pixels). */
+  faces: [number, number][][];
+}
+
+/** Payload of 'upscale-progress'. */
+export interface UpscaleProgress {
+  job: number;
+  fraction: number;
+  stage: 'loading' | 'picture' | 'faces' | 'finishing';
+}
+
+/** Payload of 'upscale-done'. */
+export interface UpscaleDone {
+  job: number;
+  /** Show it with upscaledUrl(token). */
+  token: number | null;
+  width: number;
+  height: number;
+  factor: number;
+  faces: number;
+  device: 'gpu' | 'cpu' | null;
+  cancelled: boolean;
+  error: string | null;
+}
+
+export interface UpscaleSaved {
+  id: number;
+  name: string;
+}
+
+export const upscaledUrl = (token: number) => proto('vault', `upscaled/${token}`);
+
+/** Body: 4 bytes (little-endian) JSON length, the request as JSON, then RGBA. */
+export function upscaleBody(request: UpscaleRequest, rgba: Uint8Array): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(request));
+  const body = new Uint8Array(4 + json.length + rgba.length);
+  new DataView(body.buffer).setUint32(0, json.length, true);
+  body.set(json, 4);
+  body.set(rgba, 4 + json.length);
+  return body;
+}
+
+async function upscaleStart(request: UpscaleRequest, rgba: Uint8Array): Promise<number> {
+  if (!inTauri) return mock.call('upscale_start', { request }) as Promise<number>;
+  try {
+    return await invoke<number>('upscale_start', upscaleBody(request, rgba));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+type UpscaleListener = { progress: (p: UpscaleProgress) => void; done: (d: UpscaleDone) => void };
+
+/** Upscale events (in the browser preview, a pretend run). */
+export function onUpscale(cb: UpscaleListener): () => void {
+  if (!inTauri) {
+    mockUpscaleListeners.add(cb);
+    return () => mockUpscaleListeners.delete(cb);
+  }
+  const a = listen<UpscaleProgress>('upscale-progress', (e) => cb.progress(e.payload));
+  const b = listen<UpscaleDone>('upscale-done', (e) => cb.done(e.payload));
+  return () => {
+    a.then((u) => u());
+    b.then((u) => u());
+  };
+}
+
+const mockUpscaleListeners = new Set<UpscaleListener>();
+let mockJob = 0;
+function mockUpscale(r: UpscaleRequest): number {
+  const job = ++mockJob;
+  let f = 0;
+  const t = setInterval(() => {
+    if (job !== mockJob) {
+      clearInterval(t);
+      mockUpscaleListeners.forEach((l) => l.done({ job, token: null, width: 0, height: 0, factor: 4, faces: 0, device: null, cancelled: true, error: null }));
+      return;
+    }
+    f = Math.min(1, f + 0.08);
+    mockUpscaleListeners.forEach((l) => l.progress({ job, fraction: f, stage: f < 0.75 || r.model === 'realesrgan' ? 'picture' : 'faces' }));
+    if (f >= 1) {
+      clearInterval(t);
+      mockUpscaleListeners.forEach((l) => l.done({ job, token: 0, width: r.width * 4, height: r.height * 4, factor: 4, faces: r.faces.length, device: 'gpu', cancelled: false, error: null }));
+    }
+  }, 150);
+  return job;
+}

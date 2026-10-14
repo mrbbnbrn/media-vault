@@ -32,6 +32,12 @@ tauri-plugin-global-shortcut = "2"
 tauri-plugin-notification = "=2.5.0"
 vault-core = { version = "0.1.0", path = "../../crates/vault-core" }
 zeroize = "1.9.1"
+# The offline AI upscaler (upscale.rs). ONNX Runtime is loaded at run time
+# from the optional upscaler pack (tools/upscaler), so the app starts fine
+# without it. API 24 = ONNX Runtime 1.24, the last one with DirectML.
+ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "load-dynamic", "directml", "api-24"] }
+# Saving an upscaled photo as a high-quality JPEG.
+jpeg-encoder = "0.7.1"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

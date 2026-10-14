@@ -30,6 +30,13 @@ What's in the full package
               folder) for converting items and making animations. It works
               in memory: nothing decrypted is written to disk. Without this
               folder those two options are simply not available.
+  tools\upscaler\
+              The AI upscaler (a separate download, MediaVault-upscaler-
+              windows.zip): makes pictures 4 times bigger in the viewer,
+              offline, on the graphics card when it can. Real-ESRGAN for the
+              whole picture, GFPGAN to also rebuild faces (GFPGAN: personal
+              use only, see LICENSES.txt there). Without it the Upscale
+              button just explains where to get it.
   Face recognition is built into MediaVault.exe and also works offline.
 
 Requirements
