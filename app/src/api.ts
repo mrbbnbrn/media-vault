@@ -48,6 +48,8 @@ export interface AppConfig {
   makePreviews: boolean;
   /** Analyse pictures for smart search in the background. */
   smartIndex: boolean;
+  /** Hide the app's windows from screenshots, screen recording and screen sharing. */
+  blockCapture: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -612,6 +614,12 @@ export const api = {
   /** Runs in the background: 'animation-progress' events, then 'animation-done'. */
   animationStart: (request: AnimationRequest) => call<void>('animation_start', { request }),
   cancelVideoTask: (task: VideoTask) => call<void>('cancel_task', { task }),
+  // beat detection from the computer's own sound (Windows; nothing is recorded)
+  /** True where listening to the computer's sound can work (Windows). */
+  beatsSupported: () => call<boolean>('beats_supported'),
+  /** Start listening; "beat" and "beat-level" events follow. Safe to call twice. */
+  beatsStart: () => call<void>('beats_start'),
+  beatsStop: () => call<void>('beats_stop'),
 };
 
 // ---- video tool (ffmpeg) -----------------------------------------------------
@@ -670,6 +678,22 @@ export interface AnimationDone {
   skipped: [string, string][];
   cancelled: boolean;
   error: string | null;
+}
+
+
+/** Payload of the "beat" event. */
+export interface BeatEvent {
+  /** Milliseconds since listening started. */
+  t_ms: number;
+  /** 0..1, how clearly the beat stood out. */
+  strength: number;
+  /** Tempo estimate once there is a steady one. */
+  bpm: number | null;
+}
+
+/** Payload of the "beat-level" event (about 10 a second). */
+export interface BeatLevelEvent {
+  level: number;
 }
 
 export type SimilarLevel = 'strict' | 'normal' | 'loose';
@@ -744,6 +768,7 @@ const mock = {
       smartSearch: false,
       makePreviews: true,
       smartIndex: true,
+      blockCapture: true,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -797,6 +822,8 @@ const mock = {
         return;
       case 'add_vault':
         throw new Error('Preview: adding vaults works in the real app.');
+      case 'beats_supported':
+        return false;
       case 'library_folders':
       case 'query_items':
       case 'all_tags':
