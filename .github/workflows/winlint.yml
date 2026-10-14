@@ -12,6 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@v2
+      - name: Placeholder UI build (the app embeds app/dist)
+        shell: bash
+        run: mkdir -p app/dist && echo '<!doctype html>' > app/dist/index.html
       - name: Lint
         shell: bash
         run: |
