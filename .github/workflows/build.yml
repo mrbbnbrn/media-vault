@@ -145,11 +145,6 @@ jobs:
             gh release create "$etag" MediaVault-engine-windows.zip --prerelease --title "Web engine $ver (download once)" \
               --notes "The built-in web engine (Microsoft WebView2 $ver). Unzip into the same place as the app; it adds a WebView2 folder inside MediaVault."
           fi
-          if ! gh release view models-v1 --json assets --jq '.assets[].name' | grep -qx MediaVault-models-windows.zip; then
-            mkdir -p m/MediaVault && cp -r ../target/release/models m/MediaVault/
-            (cd m && 7z a -tzip -mx=1 ../MediaVault-models-windows.zip MediaVault > /dev/null)
-            gh release upload models-v1 MediaVault-models-windows.zip --clobber
-          fi
           repo="https://github.com/$GITHUB_REPOSITORY/releases"
           tag="build-${GITHUB_RUN_NUMBER}"
           printf '%s\n' \

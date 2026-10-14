@@ -26,6 +26,10 @@ jobs:
           get clip-text-tokenizer.json $HF/sentence-transformers/clip-ViT-B-32-multilingual-v1/resolve/main/tokenizer.json
           get clip-text-tokenizer_config.json $HF/sentence-transformers/clip-ViT-B-32-multilingual-v1/resolve/main/tokenizer_config.json
           get clip-text-dense.safetensors $HF/sentence-transformers/clip-ViT-B-32-multilingual-v1/resolve/main/2_Dense/model.safetensors
+          # The original English CLIP text tower (knows English words best; blended in)
+          get clip-en-text.onnx $HF/Xenova/clip-vit-base-patch32/resolve/main/onnx/text_model_quantized.onnx
+          get clip-en-tokenizer.json $HF/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json
+          get clip-en-tokenizer_config.json $HF/Xenova/clip-vit-base-patch32/resolve/main/tokenizer_config.json
           ls -la
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
@@ -35,3 +39,14 @@ jobs:
         run: |
           gh release view models-v1 >/dev/null 2>&1 || gh release create models-v1 --prerelease --title "Smart search models" --notes "Offline models used by smart search. Downloaded from Hugging Face (Xenova/clip-vit-base-patch32, sentence-transformers/clip-ViT-B-32-multilingual-v1)."
           gh release upload models-v1 m/* --clobber
+      - name: Zips for the app (unzip next to MediaVault.exe's folder)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p z/MediaVault/models a/MediaVault/models
+          cp m/clip-* z/MediaVault/models/
+          cp m/clip-en-* a/MediaVault/models/
+          (cd z && zip -qr -1 ../MediaVault-models-windows.zip MediaVault)
+          (cd a && zip -qr -1 ../MediaVault-models-english-addon.zip MediaVault)
+          ls -la *.zip
+          gh release upload models-v1 MediaVault-models-windows.zip MediaVault-models-english-addon.zip --clobber
