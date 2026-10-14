@@ -1,0 +1,22 @@
+# Windows lint only, started by hand (Actions → windows lint → Run workflow).
+# For finding Windows-only lint problems cheaply; never runs on a push.
+name: windows lint
+
+on:
+  workflow_dispatch:
+
+jobs:
+  clippy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup show active-toolchain || rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Lint
+        shell: bash
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked --message-format=short -- -D warnings 2>&1 | tee clippy.txt || {
+            grep -E "(error|warning)" clippy.txt | grep -v "^error: could not compile" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }

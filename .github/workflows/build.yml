@@ -42,7 +42,14 @@ jobs:
       - name: Rust tests
         run: cargo test --workspace --release --locked
       - name: Lint
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+        shell: bash
+        # Lint messages also go out as annotations, so they can be read without the full log.
+        run: |
+          set -o pipefail
+          cargo clippy --workspace --all-targets --locked --message-format=short -- -D warnings 2>&1 | tee clippy.txt || {
+            grep -E "(error|warning)" clippy.txt | grep -v "^error: could not compile" | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
 
       - uses: actions/setup-python@v5
         with:
