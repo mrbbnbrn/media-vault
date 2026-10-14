@@ -4,6 +4,7 @@
 // decoded in memory, like thumbnails.
 
 import { api, mediaUrl, type FaceIn, type Kind } from '../api';
+import { loopJob } from '../jobs';
 
 type FaceApi = typeof import('@vladmandic/face-api');
 type Raw = { x: number; y: number; w: number; h: number; px: number; score: number; descriptor: number[] };
@@ -227,6 +228,17 @@ export function startFaceScanner(): () => void {
         r();
       };
     });
+  const job = loopJob('faces', {
+    label: 'Scanning faces',
+    long: true,
+    left: () => api.facesStatus().then((s) => s.queued),
+    cancel: () => {
+      setFaceScanPaused(true);
+      listeners.forEach((l) => l());
+    },
+    cancelLabel: 'Pause',
+    summary: (n) => `Face scan finished: ${n.toLocaleString()} ${n === 1 ? 'item' : 'items'} scanned`,
+  });
   (async () => {
     let told = 0;
     const tell = (force = false) => {
@@ -237,6 +249,7 @@ export function startFaceScanner(): () => void {
     };
     while (!stopped) {
       if (paused) {
+        job.idle();
         await sleep(60_000);
         continue;
       }
@@ -248,9 +261,11 @@ export function startFaceScanner(): () => void {
       }
       if (!tasks.length) {
         tell(true);
+        job.idle();
         await sleep(10_000);
         continue;
       }
+      job.batch();
       for (const t of tasks) {
         if (stopped || paused) break;
         try {
@@ -261,10 +276,12 @@ export function startFaceScanner(): () => void {
           if (stopped) break;
           await api.facesFailed(t.id).catch(() => {});
         }
+        job.step();
         tell();
         await new Promise((r) => setTimeout(r, 60));
       }
     }
+    job.idle();
     running = false;
   })();
   stopFn = () => {

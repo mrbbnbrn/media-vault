@@ -29,6 +29,10 @@ pub struct ExportRequest {
     pub all: bool,
     /// Where to put the new export folder.
     pub dest: String,
+    /// Remove camera info, location and dates (set from the app's settings,
+    /// never by the window).
+    #[serde(skip)]
+    pub strip: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -199,7 +203,8 @@ pub fn run(s: &Session, req: &ExportRequest, cancel: &AtomicBool, progress: &mut
             fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             let target = unique_path(&dir, &safe_name(&row.name), &mut taken);
             let oid = ObjectId::from_hex(&row.object).map_err(|e| e.to_string())?;
-            let mut reader = s.vault().open_object(ObjectKind::Media, &oid).map_err(|e| e.to_string())?;
+            let reader = s.vault().open_object(ObjectKind::Media, &oid).map_err(|e| e.to_string())?;
+            let mut reader = crate::stripmeta::maybe(reader, &row.name, req.strip)?;
             let mut out = OpenOptions::new().write(true).create_new(true).open(&target).map_err(|e| e.to_string())?;
             let mut n = 0u64;
             let r = (|| -> Result<(), String> {
@@ -263,23 +268,48 @@ mod tests {
         std::fs::create_dir_all(&out).unwrap();
         let go = |req: ExportRequest| run(&s, &req, &AtomicBool::new(false), &mut |_| {});
 
-        let all = go(ExportRequest { ids: vec![], folder: None, all: true, dest: out.display().to_string() });
+        let all = go(ExportRequest { ids: vec![], folder: None, all: true, dest: out.display().to_string(), strip: false });
         assert_eq!(all.exported, 3, "{:?}", all);
         let root = PathBuf::from(&all.folder);
         assert_eq!(std::fs::read(root.join("Alex/Beach/b.jpg")).unwrap(), vec![2u8; 3000]);
         assert!(root.join("c.jpg").exists());
 
         let alex = library::find_child(&s.db(), None, "Alex").unwrap().unwrap();
-        let f = go(ExportRequest { ids: vec![], folder: Some(alex), all: false, dest: out.display().to_string() });
+        let f = go(ExportRequest { ids: vec![], folder: Some(alex), all: false, dest: out.display().to_string(), strip: false });
         assert_eq!(f.exported, 2);
         assert!(PathBuf::from(&f.folder).ends_with("Alex"));
         assert!(PathBuf::from(&f.folder).join("Beach/b.jpg").exists());
 
         let id: i64 = s.db().query_row("SELECT id FROM media WHERE original_name = 'b.jpg'", [], |r| r.get(0)).unwrap();
-        let one = go(ExportRequest { ids: vec![id], folder: None, all: false, dest: out.display().to_string() });
+        let one = go(ExportRequest { ids: vec![id], folder: None, all: false, dest: out.display().to_string(), strip: false });
         assert_eq!(one.exported, 1);
         assert!(PathBuf::from(&one.folder).join("b.jpg").exists());
         assert_ne!(one.folder, all.folder, "a new folder each time");
         assert_eq!(chrono_like_today().len(), 10);
+    }
+
+    #[test]
+    fn camera_info_is_removed_when_asked() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("cam.jpg");
+        let original = crate::stripmeta::tiny_camera_jpeg();
+        std::fs::write(&src, &original).unwrap();
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
+        let out = t.path().join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        for strip in [false, true] {
+            let d = run(&s, &ExportRequest { ids: vec![], folder: None, all: true, dest: out.display().to_string(), strip }, &AtomicBool::new(false), &mut |_| {});
+            assert_eq!(d.exported, 1, "{d:?}");
+            let got = std::fs::read(PathBuf::from(&d.folder).join("cam.jpg")).unwrap();
+            if strip {
+                assert!(!got.windows(5).any(|w| w == b"Canon"));
+                assert!(got.len() < original.len());
+            } else {
+                assert_eq!(got, original);
+            }
+        }
+        assert_eq!(std::fs::read(&src).unwrap(), original, "the original is never touched");
     }
 }

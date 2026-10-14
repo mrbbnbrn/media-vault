@@ -230,18 +230,6 @@ export function ShareTaskCards() {
   const t = useTasks();
   return (
     <>
-      {(t.sharing || t.shareStarting) && (
-        <div className="icard">
-          <div className="row-between">
-            <b>Making encrypted archive</b>
-            <button type="button" className="link" onClick={() => api.cancelTask('share')}>Stop</button>
-          </div>
-          <div className="bar"><div style={{ width: `${t.sharing?.totalBytes ? (t.sharing.bytes / t.sharing.totalBytes) * 100 : 0}%` }} /></div>
-          <span className="mono faint ellipsis" style={{ fontSize: 12 }}>
-            {t.sharing ? `${t.sharing.done.toLocaleString()} / ${t.sharing.total.toLocaleString()} · ${t.sharing.name}` : 'starting…'}
-          </span>
-        </div>
-      )}
       {t.shareDone && (
         <div className="icard">
           <div className="row-between">

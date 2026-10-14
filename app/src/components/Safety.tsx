@@ -103,16 +103,6 @@ export function TaskCards() {
   const [showReport, setShowReport] = useState(false);
   return (
     <>
-      {t.check && (
-        <div className="icard">
-          <div className="row-between">
-            <b>Checking for damage</b>
-            <button type="button" className="link" onClick={() => api.cancelTask('check')}>Stop</button>
-          </div>
-          <div className="bar"><div style={{ width: `${t.check.total ? (t.check.done / t.check.total) * 100 : 0}%` }} /></div>
-          <span className="mono faint" style={{ fontSize: 12 }}>{t.check.done.toLocaleString()} / {t.check.total.toLocaleString()}</span>
-        </div>
-      )}
       {t.checkResult && (
         <div className="icard">
           <div className="row-between">
@@ -123,18 +113,6 @@ export function TaskCards() {
             </span>
           </div>
           {'error' in t.checkResult && <span style={{ fontSize: 13 }}>{t.checkResult.error}</span>}
-        </div>
-      )}
-      {(t.exporting || t.exportStarting) && (
-        <div className="icard">
-          <div className="row-between">
-            <b>Exporting</b>
-            <button type="button" className="link" onClick={() => api.cancelTask('export')}>Stop</button>
-          </div>
-          <div className="bar"><div style={{ width: `${t.exporting?.totalBytes ? (t.exporting.bytes / t.exporting.totalBytes) * 100 : 0}%` }} /></div>
-          <span className="mono faint ellipsis" style={{ fontSize: 12 }}>
-            {t.exporting ? `${t.exporting.done.toLocaleString()} / ${t.exporting.total.toLocaleString()} · ${t.exporting.name}` : 'starting…'}
-          </span>
         </div>
       )}
       {t.exportDone && (
@@ -160,8 +138,8 @@ export function TaskCards() {
 }
 
 export function hasTaskCards(t: ReturnType<typeof useTasks>) {
-  return !!(t.check || t.checkResult || t.exporting || t.exportStarting || t.exportDone ||
-    (!t.shareWatched && (t.sharing || t.shareStarting || t.shareDone)));
+  // Progress shows in the background-jobs ring (ActivityRing); only results get a card.
+  return !!(t.checkResult || t.exportDone || (!t.shareWatched && t.shareDone));
 }
 
 function when(sec: number) {

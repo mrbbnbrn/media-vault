@@ -47,6 +47,29 @@ pub struct VFile {
     /// Hex object id in the vault.
     pub object: String,
     pub size: u64,
+    /// Remove camera info, location and dates on the way out (the setting).
+    pub strip: bool,
+}
+
+impl VFile {
+    /// The size Explorer can be told up front. A cleaned picture's size is
+    /// only known once it has been read.
+    pub fn known_size(&self, path: &str) -> Option<u64> {
+        (!(self.strip && crate::stripmeta::changes_length(path))).then_some(self.size)
+    }
+}
+
+/// One item as Explorer reads it: the decrypting reader (cleaned when asked)
+/// and its length. Nothing is written anywhere.
+pub fn open_item(s: &Session, object: &str, name: &str, strip: bool) -> std::io::Result<(Box<dyn crate::stripmeta::ReadSeek>, u64)> {
+    let oid = vault_core::ObjectId::from_hex(object).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let r = s.vault().open_object(vault_core::ObjectKind::Media, &oid).map_err(|e| std::io::Error::other(e.to_string()))?;
+    if strip {
+        crate::stripmeta::open(r, name)
+    } else {
+        let n = r.len();
+        Ok((Box::new(r), n))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -185,7 +208,7 @@ pub fn plan_entries(
             if let Some(path) = path {
                 out.push(VEntry {
                     path,
-                    file: Some(VFile { media: m.id, object: m.object.clone(), size: m.size }),
+                    file: Some(VFile { media: m.id, object: m.object.clone(), size: m.size, strip: false }),
                 });
             }
         }
@@ -454,7 +477,11 @@ const ONLY_WINDOWS: &str = "This only works on Windows.";
 async fn plan_for(state: &Shared, ids: Vec<i64>, folders: Vec<i64>) -> Result<(std::sync::Weak<Session>, Vec<VEntry>), String> {
     let s = crate::sess(state)?;
     let weak = Arc::downgrade(&s);
-    let plan = crate::blocking(move || load_plan(&s, &ids, &folders)).await?;
+    let strip = state.config.lock().unwrap().strip_metadata;
+    let mut plan = crate::blocking(move || load_plan(&s, &ids, &folders)).await?;
+    for f in plan.iter_mut().filter_map(|e| e.file.as_mut()) {
+        f.strip = strip;
+    }
     Ok((weak, plan))
 }
 
@@ -730,5 +757,33 @@ mod tests {
         assert_eq!(plan[2].file.as_ref().unwrap().size, 3000);
         assert!(load_plan(&s, &[], &[]).is_err());
         assert_eq!(paste_question(1), "Copy 1 file out of the vault?\n\nIt will be a normal, unencrypted file.");
+    }
+
+    #[test]
+    fn explorer_gets_cleaned_pictures_when_asked() {
+        use crate::{import, session};
+        use std::io::Read;
+        use std::sync::atomic::AtomicBool;
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("cam.jpg");
+        let original = crate::stripmeta::tiny_camera_jpeg();
+        std::fs::write(&src, &original).unwrap();
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
+        let id: i64 = s.db().query_row("SELECT id FROM media", [], |r| r.get(0)).unwrap();
+        let plan = load_plan(&s, &[id], &[]).unwrap();
+        let mut f = plan[0].file.clone().unwrap();
+        assert_eq!(f.known_size("cam.jpg"), Some(original.len() as u64));
+        for strip in [false, true] {
+            f.strip = strip;
+            let (mut r, n) = open_item(&s, &f.object, "cam.jpg", strip).unwrap();
+            let mut got = Vec::new();
+            r.read_to_end(&mut got).unwrap();
+            assert_eq!(n, got.len() as u64);
+            assert_eq!(got.windows(5).any(|w| w == b"Canon"), !strip);
+        }
+        assert_eq!(f.known_size("cam.jpg"), None, "a cleaned picture's size isn't promised up front");
+        assert_eq!(f.known_size("clip.mp4"), Some(f.size), "videos keep their size");
     }
 }

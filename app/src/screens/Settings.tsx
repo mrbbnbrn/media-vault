@@ -11,6 +11,8 @@ import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTa
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
+import { GrowthSpark } from '../components/VaultGrowth';
+import { setNotifyWhenDone } from '../jobs';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
@@ -395,6 +397,7 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Space from deleted items</span><b>{info.reclaimableBytes ? formatBytes(info.reclaimableBytes) : 'none'}</b></div>
         </div>
       )}
+      <GrowthSpark />
       {info && info.looseObjects > 0 && (
         <div className="setting">
           <div className="text">
@@ -518,6 +521,12 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
         <Toggle title="Hide this window from screenshots and screen sharing"
           desc="Screenshots, screen recordings and screen sharing (Discord, Zoom…) show a black window instead. Turn off when you want to share your screen."
           on={cfg.blockCapture !== false} set={(v) => update({ ...cfg, blockCapture: v })} />
+        <Toggle title="Remove camera info, location and dates from files I export or share"
+          desc="For exports, encrypted .7z files and dragging or copying to Explorer. Cleans JPEG, PNG, WebP and GIF pictures and MP4/MOV videos (turned pictures stay the right way up); other files go out as they are. Your files in the vault are never changed."
+          on={!!cfg.stripMetadata} set={(v) => update({ ...cfg, stripMetadata: v })} />
+        <Toggle title="Notify me when long jobs finish"
+          desc="A Windows notification when an import, export or scan that took a while finishes while you're in another app. It only gives counts, never names."
+          on={cfg.notifyDone !== false} set={(v) => { setNotifyWhenDone(v); update({ ...cfg, notifyDone: v }); }} />
       </section>
 
       <div className="divider" />

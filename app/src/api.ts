@@ -59,6 +59,10 @@ export interface AppConfig {
   /** Hide the app's windows from screenshots, screen recording and screen sharing. */
   blockCapture: boolean;
   look: LookSettings;
+  /** Remove camera info, location and dates from files that leave the vault. */
+  stripMetadata: boolean;
+  /** A Windows notification when a long job finishes in the background. */
+  notifyDone: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -634,7 +638,7 @@ export const api = {
 
   // safety
   checkDamage: () => call<void>('check_damage'),
-  cancelTask: (task: 'check' | 'export' | 'share') => call<void>('cancel_task', { task }),
+  cancelTask: (task: 'check' | 'export' | 'share' | 'convert' | 'animation') => call<void>('cancel_task', { task }),
   exportStart: (request: ExportRequest) => call<void>('export_start', { request }),
   // share as encrypted .7z: "share-progress" (ShareProgress), then "share-done" (ShareDone)
   share7zStart: (request: ShareRequest) => call<void>('share_7z_start', { request }),
@@ -892,6 +896,8 @@ const mock = {
       smartIndex: true,
       blockCapture: true,
       look: { sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [] },
+      stripMetadata: false,
+      notifyDone: true,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -1028,3 +1034,57 @@ export interface CopyLinks { items: [number, number | null][] }
 export interface Merged { items: [number, number | null][]; folders: [number, number | null][]; emptied: number[]; trashed: number[] }
 export interface TagInfo { name: string; color: string | null; items: number; folders: number }
 export interface TagUse { name: string; color: string | null; items: number[]; folders: number[] }
+
+// ---- background jobs, vault growth (Rust: lib.rs, growth.rs) ---------------------------
+
+/** Thumbnails and preview clips still to make. */
+export interface BackgroundLeft {
+  thumbs: number;
+  previews: number;
+}
+
+export interface GrowthMonth {
+  /** "2026-10" */
+  month: string;
+  /** Files added that month and their size. */
+  items: number;
+  bytes: number;
+  /** Everything stored at the end of that month. */
+  totalItems: number;
+  totalBytes: number;
+}
+
+/** Stored size by the month things were added. Free copies count once; the trash counts (it still takes space). */
+export interface Growth {
+  months: GrowthMonth[];
+  totalItems: number;
+  totalBytes: number;
+  last30Items: number;
+  last30Bytes: number;
+  trashItems: number;
+  trashBytes: number;
+}
+
+/** A believable two-year history for the browser preview. */
+function mockGrowth(): Growth {
+  const months: GrowthMonth[] = [];
+  const d = new Date();
+  let ti = 0;
+  let tb = 0;
+  for (let k = 25; k >= 0; k--) {
+    const at = new Date(d.getFullYear(), d.getMonth() - k, 1);
+    const wave = Math.sin(k * 1.7) * 0.5 + 0.5;
+    const items = k === 9 ? 0 : Math.round(40 + wave * 260 + (k % 5 === 0 ? 900 : 0));
+    const bytes = Math.round(items * (2.1e6 + wave * 6e6));
+    ti += items;
+    tb += bytes;
+    months.push({ month: `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}`, items, bytes, totalItems: ti, totalBytes: tb });
+  }
+  const last = months[months.length - 1];
+  return { months, totalItems: ti, totalBytes: tb, last30Items: last.items, last30Bytes: last.bytes, trashItems: 37, trashBytes: 412e6 };
+}
+
+export const jobsApi = {
+  backgroundLeft: () => (inTauri ? call<BackgroundLeft>('background_left') : Promise.resolve<BackgroundLeft>({ thumbs: 0, previews: 0 })),
+  vaultGrowth: () => (inTauri ? call<Growth>('vault_growth') : new Promise<Growth>((r) => setTimeout(() => r(mockGrowth()), 80))),
+};

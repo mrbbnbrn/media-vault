@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use tauri::{AppHandle, Manager};
-use vault_core::{ObjectId, ObjectKind};
 use windows::Win32::Foundation::{
     DATA_S_SAMEFORMATETC, DRAGDROP_S_CANCEL, DRAGDROP_S_DROP, DRAGDROP_S_USEDEFAULTCURSORS, DV_E_FORMATETC, DV_E_LINDEX,
     E_FAIL, E_NOTIMPL, E_POINTER, GlobalFree, HANDLE, HGLOBAL, HWND, OLE_E_ADVISENOTSUPPORTED, S_FALSE, S_OK,
@@ -167,10 +166,13 @@ fn descriptor_bytes(plan: &[VEntry]) -> Vec<u8> {
         };
         match &e.file {
             Some(f) => {
-                d.dwFlags |= FD_FILESIZE.0 as u32;
                 d.dwFileAttributes = FILE_ATTRIBUTE_NORMAL;
-                d.nFileSizeHigh = (f.size >> 32) as u32;
-                d.nFileSizeLow = f.size as u32;
+                // A cleaned picture's size is only known once it is read.
+                if let Some(size) = f.known_size(&e.path) {
+                    d.dwFlags |= FD_FILESIZE.0 as u32;
+                    d.nFileSizeHigh = (size >> 32) as u32;
+                    d.nFileSizeLow = size as u32;
+                }
             }
             None => d.dwFileAttributes = FILE_ATTRIBUTE_DIRECTORY,
         }
@@ -188,8 +190,7 @@ fn descriptor_bytes(plan: &[VEntry]) -> Vec<u8> {
 
 // ---- a file being read out of the vault ---------------------------------------
 
-trait ReadSeek: Read + Seek {}
-impl<T: Read + Seek> ReadSeek for T {}
+use crate::stripmeta::ReadSeek;
 
 #[implement(IStream)]
 struct VaultStream {
@@ -197,6 +198,8 @@ struct VaultStream {
     object: String,
     name: String,
     size: u64,
+    /// Remove camera info, location and dates while reading.
+    strip: bool,
     reader: RefCell<Option<Box<dyn ReadSeek>>>,
     pos: Cell<u64>,
 }
@@ -212,10 +215,10 @@ impl VaultStream {
         };
         let mut slot = self.reader.borrow_mut();
         if slot.is_none() {
-            let oid = ObjectId::from_hex(&self.object).map_err(|_| windows::core::Error::from(STG_E_READFAULT))?;
-            let mut r = s.vault().open_object(ObjectKind::Media, &oid).map_err(|_| windows::core::Error::from(STG_E_READFAULT))?;
+            let (mut r, _) = super::open_item(&s, &self.object, &self.name, self.strip)
+                .map_err(|_| windows::core::Error::from(STG_E_READFAULT))?;
             r.seek(SeekFrom::Start(self.pos.get())).map_err(|_| windows::core::Error::from(STG_E_READFAULT))?;
-            *slot = Some(Box::new(r));
+            *slot = Some(r);
         }
         drop(s);
         f(slot.as_mut().unwrap().as_mut()).map_err(|_| STG_E_READFAULT.into())
@@ -414,12 +417,21 @@ impl VaultData {
         let entry = usize::try_from(index).ok().and_then(|i| self.plan.get(i)).ok_or(DV_E_LINDEX)?;
         let file = entry.file.as_ref().ok_or(DV_E_LINDEX)?;
         let name = entry.path.rsplit('\\').next().unwrap_or(&entry.path).to_string();
+        // A cleaned picture is made right away, so its real size is known.
+        let (reader, size) = if file.known_size(&entry.path).is_none() {
+            let s = self.session.upgrade().filter(|s| !s.is_closed()).ok_or(STG_E_ACCESSDENIED)?;
+            let (r, n) = super::open_item(&s, &file.object, &name, true).map_err(|_| STG_E_READFAULT)?;
+            (Some(r), n)
+        } else {
+            (None, file.size)
+        };
         Ok(VaultStream {
             session: self.session.clone(),
             object: file.object.clone(),
             name,
-            size: file.size,
-            reader: RefCell::new(None),
+            size,
+            strip: file.strip,
+            reader: RefCell::new(reader),
             pos: Cell::new(0),
         }
         .into())

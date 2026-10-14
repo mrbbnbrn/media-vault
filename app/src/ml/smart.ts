@@ -3,6 +3,7 @@
 // (a `models` folder next to MediaVault.exe).
 
 import { api, modelUrl, previewUrl, thumbUrl } from '../api';
+import { loopJob } from '../jobs';
 import { COLS, ROWS } from '../previews';
 import { FILES, SIZE, coverRect, toPixelValues } from './clipcore';
 
@@ -131,6 +132,9 @@ export function startClipIndexer(): () => void {
       return;
     }
     let notified = 0;
+    const job = loopJob('smart', {
+      label: 'Analysing for smart search', left: () => api.clipStatus().then((s) => Math.max(0, s.total - s.done - s.failed)),
+    });
     while (!stopped) {
       let tasks: { id: number; kind: string; preview: boolean }[] = [];
       try {
@@ -139,9 +143,11 @@ export function startClipIndexer(): () => void {
         break; // locked
       }
       if (!tasks.length) {
+        job.idle();
         await sleep(6000);
         continue;
       }
+      job.batch();
       for (const t of tasks) {
         if (stopped) break;
         try {
@@ -156,12 +162,14 @@ export function startClipIndexer(): () => void {
           }
           await api.clipFailed(t.id).catch(() => {});
         }
+        job.step();
         if (Date.now() - notified > 1000) {
           notified = Date.now();
           listeners.forEach((l) => l());
         }
       }
     }
+    job.idle();
     listeners.forEach((l) => l());
     running = false;
   })();

@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react';
 import { api, thumbUrl, type Item, type Stats } from '../api';
 import { formatBytes } from '../theme';
+import { GrowthChart } from './VaultGrowth';
 
 const KIND_NAMES: Record<string, string> = { image: 'Pictures', gif: 'GIFs', video: 'Videos', text: 'Text files', pdf: 'PDFs' };
 
@@ -16,12 +17,6 @@ export function StatsView(props: { onOpenFolder: (id: number | null) => void; on
   if (err) return <div className="error">{err}</div>;
   if (!s) return <div className="faint">Counting…</div>;
   const maxFolder = Math.max(1, ...s.byFolder.map((f) => f.bytes));
-  const months = s.byMonth.slice(-24);
-  const maxMonth = Math.max(1, ...months.map((m) => m.items));
-  const fmtMonth = (m: string) => {
-    const [y, mo] = m.split('-').map(Number);
-    return new Intl.DateTimeFormat(undefined, { month: 'short', year: '2-digit' }).format(new Date(y, mo - 1, 1));
-  };
   return (
     <div className="stats">
       <div className="stat-tiles">
@@ -69,20 +64,7 @@ export function StatsView(props: { onOpenFolder: (id: number | null) => void; on
         </section>
       </div>
 
-      {months.length > 0 && (
-        <section className="spanel">
-          <h2>Added per month</h2>
-          <div className="month-bars" role="img" aria-label="Items added per month">
-            {months.map((m) => (
-              <div key={m.month} className="mb" title={`${fmtMonth(m.month)}: ${m.items.toLocaleString()} items, ${formatBytes(m.bytes)}`}>
-                <span className="mb-n">{m.items.toLocaleString()}</span>
-                <div className="mb-bar" style={{ height: `${Math.max(2, (m.items / maxMonth) * 100)}%` }} />
-                <span className="mb-label">{fmtMonth(m.month)}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
+      <GrowthChart />
 
       <section className="spanel">
         <h2>Most viewed</h2>
