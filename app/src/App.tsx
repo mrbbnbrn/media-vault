@@ -138,6 +138,14 @@ export function App() {
       })
       .catch((e) => setFatal(String(e)));
     const stopTracking = startActivityTracking();
+    // Ctrl+S: save everything now (changes are also saved by themselves right away).
+    const onSaveKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') {
+        e.preventDefault();
+        api.saveNow().then(() => setToast('Everything is saved.'), (err) => setToast(String(err?.message ?? err)));
+      }
+    };
+    window.addEventListener('keydown', onSaveKey);
     // If the library can't be saved, say so (changes are kept and retried).
     const offSave = onEvent<string>('save-failed', (m) => setToast(`${m} Your changes are kept and saving is retried; don't close the app yet.`));
     startExternalDrops();
@@ -155,6 +163,7 @@ export function App() {
     return () => {
       stopTracking();
       offSave.then((u) => u());
+      window.removeEventListener('keydown', onSaveKey);
       unlisten.then((u) => u());
     };
   }, [refresh]);

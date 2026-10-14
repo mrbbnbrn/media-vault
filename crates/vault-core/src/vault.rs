@@ -646,13 +646,25 @@ impl Vault {
     /// Save the (serialized SQLite) database. The previous version is kept in
     /// meta-backups/, and only the newest DB_BACKUPS_KEPT copies are retained.
     pub fn save_db(&self, sqlite_bytes: &[u8]) -> Result<()> {
+        self.save_db_spaced(sqlite_bytes, std::time::Duration::ZERO)
+    }
+
+    /// Like [`Vault::save_db`], but a backup copy is only made when the newest
+    /// one is older than `min_gap` (the app saves after every change, and ten
+    /// backups a few seconds apart would be little use).
+    pub fn save_db_spaced(&self, sqlite_bytes: &[u8], min_gap: std::time::Duration) -> Result<()> {
         self.require_write()?;
         // The database points into the packs, so they must be on disk first.
         self.packs.sync()?;
         let current = self.root.join(DB_FILE);
         let backups = self.root.join(BACKUP_DIR);
         fs::create_dir_all(&backups)?;
-        if current.exists() {
+        let newest_ms = self
+            .db_backups()?
+            .last()
+            .and_then(|p| p.file_name()?.to_str()?.strip_prefix("meta-")?.strip_suffix(".db.enc")?.parse::<u128>().ok());
+        let due = newest_ms.is_none_or(|ms| now_millis().saturating_sub(ms) >= min_gap.as_millis());
+        if current.exists() && due {
             let name = format!("meta-{:015}.db.enc", now_millis());
             fs::copy(&current, backups.join(name))?;
             self.prune_db_backups()?;

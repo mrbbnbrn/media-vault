@@ -502,6 +502,8 @@ export const api = {
   storageInfo: () => call<StorageInfo>('storage_info'),
   storageTask: (task: StorageTask) => call<void>('storage_task', { task }),
   cacheInfo: () => call<CacheInfo>('cache_info'),
+  /** Ctrl+S: write everything to disk now. */
+  saveNow: () => call<void>('save_now'),
   /** Small remembered UI state for this vault (JSON text). */
   uiGet: (key: string) => call<string | null>('ui_get', { key }),
   uiSet: (key: string, value: string) => call<void>('ui_set', { key, value }),

@@ -9,6 +9,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
     group: 'Library',
     keys: [
       ['Ctrl+Z', 'Undo the last change (move, delete, tag, favourite…)'],
+      ['Ctrl+S', 'Save now (changes are also saved by themselves right away)'],
       ['Double-click', 'Open'],
       ['Ctrl / Shift + click', 'Select several'],
       ['Ctrl+A', 'Select everything shown (Esc clears)'],

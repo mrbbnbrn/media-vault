@@ -26,6 +26,8 @@ pub struct Session {
     closed: AtomicBool,
     dirty: AtomicBool,
     last_change: Mutex<Instant>,
+    /// A save has been asked for and not started yet.
+    save_pending: AtomicBool,
     /// When the oldest unsaved change was made (None = nothing unsaved).
     first_unsaved: Mutex<Option<Instant>>,
     /// One save at a time (the watcher, imports and commands all save).
@@ -132,6 +134,7 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         dirty: AtomicBool::new(false),
         last_change: Mutex::new(Instant::now()),
         first_unsaved: Mutex::new(None),
+        save_pending: AtomicBool::new(false),
         save_lock: Mutex::new(()),
     })
 }
@@ -173,6 +176,21 @@ impl Session {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
+    /// Save right away in the background (changes made while it runs are
+    /// picked up by the next save). Several requests at once make one save.
+    pub fn save_soon(self: &std::sync::Arc<Self>) {
+        if self.save_pending.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let s = self.clone();
+        std::thread::spawn(move || {
+            s.save_pending.store(false, Ordering::SeqCst);
+            if s.is_dirty() && !s.is_closed() {
+                let _ = s.save();
+            }
+        });
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
     }
@@ -206,7 +224,8 @@ impl Session {
                 }
             }
         };
-        self.vault().save_db(&bytes).map_err(|e| {
+        // A backup copy at most every 10 minutes (saving happens after every change).
+        self.vault().save_db_spaced(&bytes, Duration::from_secs(600)).map_err(|e| {
             self.dirty.store(true, Ordering::SeqCst);
             restore_first();
             format!("Couldn't save the library: {}", friendly(e))

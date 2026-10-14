@@ -426,6 +426,13 @@ fn database_round_trip_and_rotating_backups() {
     }
     assert_eq!(v.db_backups().unwrap().len(), 10);
 
+    // Saving often with a minimum gap keeps just one fresh backup.
+    let before = v.db_backups().unwrap().len();
+    for _ in 0..5 {
+        v.save_db_spaced(&db::serialize(&conn).unwrap(), std::time::Duration::from_secs(3600)).unwrap();
+    }
+    assert_eq!(v.db_backups().unwrap().len(), before, "the newest backup is recent, no new copies");
+
     let (bytes, _) = v.load_db().unwrap();
     let conn2 = db::deserialize(&bytes).unwrap();
     let n: i64 = conn2

@@ -348,8 +348,24 @@ async fn read_db<T: Send + 'static>(
     blocking(move || f(&s.db())).await
 }
 
-/// Run a library edit; the change is saved (encrypted) a moment later.
+/// Run a library edit made by you; it is saved (encrypted) right away.
 async fn edit_db<T: Send + 'static>(
+    inner: &Shared,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let s = sess(inner)?;
+    blocking(move || {
+        let out = f(&s.db())?;
+        s.mark_dirty();
+        s.save_soon();
+        Ok(out)
+    })
+    .await
+}
+
+/// A library change from background work (analysis, scans, view counts):
+/// saved with the next regular save (within a few seconds).
+async fn edit_db_bg<T: Send + 'static>(
     inner: &Shared,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
@@ -360,6 +376,13 @@ async fn edit_db<T: Send + 'static>(
         Ok(out)
     })
     .await
+}
+
+/// Ctrl+S: save everything now.
+#[tauri::command]
+async fn save_now(state: State<'_, Shared>) -> Result<(), String> {
+    let s = sess(state.inner())?;
+    blocking(move || if s.is_dirty() { s.save() } else { Ok(()) }).await
 }
 
 #[tauri::command]
@@ -496,7 +519,7 @@ async fn library_stats(state: State<'_, Shared>) -> Result<extras::Stats, String
 
 #[tauri::command]
 async fn mark_viewed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db(state.inner(), move |c| extras::mark_viewed(c, id)).await
+    edit_db_bg(state.inner(), move |c| extras::mark_viewed(c, id)).await
 }
 
 #[tauri::command]
@@ -559,7 +582,12 @@ async fn add_file_bytes(
     data: Vec<u8>,
 ) -> Result<i64, String> {
     let s = sess(state.inner())?;
-    blocking(move || import::add_bytes(&s, folder, &name, &data)).await
+    blocking(move || {
+        let id = import::add_bytes(&s, folder, &name, &data)?;
+        s.save_soon();
+        Ok(id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -728,7 +756,7 @@ async fn save_thumb(
 /// The window couldn't decode this file (e.g. an unsupported video codec).
 #[tauri::command]
 async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db(state.inner(), move |c| {
+    edit_db_bg(state.inner(), move |c| {
         c.execute(
             "UPDATE media SET thumb_object_id = '' WHERE id = ? AND thumb_object_id IS NULL",
             [id],
@@ -817,7 +845,7 @@ async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Resul
 
 #[tauri::command]
 async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db(state.inner(), move |c| {
+    edit_db_bg(state.inner(), move |c| {
         c.execute("UPDATE media SET preview_object_id = '' WHERE id = ? AND preview_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -848,7 +876,7 @@ async fn ui_set(state: State<'_, Shared>, key: String, value: String) -> Result<
     if key.len() > 64 || value.len() > 512 * 1024 {
         return Err("Too large.".into());
     }
-    edit_db(state.inner(), move |c| {
+    edit_db_bg(state.inner(), move |c| {
         c.execute(
             "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             [format!("ui:{key}"), value],
@@ -1101,12 +1129,12 @@ async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces:
 
 #[tauri::command]
 async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>) -> Result<usize, String> {
-    edit_db(state.inner(), move |c| faces::save(c, media, &faces)).await
+    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces)).await
 }
 
 #[tauri::command]
 async fn faces_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
-    edit_db(state.inner(), move |c| faces::failed(c, media)).await
+    edit_db_bg(state.inner(), move |c| faces::failed(c, media)).await
 }
 
 #[tauri::command]
@@ -1169,12 +1197,12 @@ async fn clip_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<clip::C
 
 #[tauri::command]
 async fn clip_save(state: State<'_, Shared>, media: i64, vec: Vec<f32>) -> Result<(), String> {
-    edit_db(state.inner(), move |c| clip::save(c, media, &vec)).await
+    edit_db_bg(state.inner(), move |c| clip::save(c, media, &vec)).await
 }
 
 #[tauri::command]
 async fn clip_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
-    edit_db(state.inner(), move |c| clip::failed(c, media)).await
+    edit_db_bg(state.inner(), move |c| clip::failed(c, media)).await
 }
 
 #[tauri::command]
@@ -1426,6 +1454,7 @@ pub fn run() {
             preview_failed,
             cache_info,
             ui_get,
+            save_now,
             extract_folder,
             unextract_folder,
             ui_set,
