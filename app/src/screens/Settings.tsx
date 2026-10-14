@@ -5,10 +5,10 @@ import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components
 import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
 import { DamageReportView, ExportDialog } from '../components/Safety';
 import { UpscalerSection } from '../components/Upscale';
-import { faceBackend } from '../ml/facescan';
+import { FaceSection } from '../components/FaceEngine';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTask } from '../api';
+import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
@@ -606,32 +606,15 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
 }
 
 function SmartSection() {
-  const [faces, setFaces] = useState<ScanStatus | null>(null);
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [models, setModels] = useState<boolean | null>(null);
   useEffect(() => {
-    api.facesStatus().then(setFaces).catch(() => {});
     api.clipStatus().then(setClip).catch(() => {});
     smartAvailable().then(setModels);
   }, []);
   return (
     <>
-      <section className="section">
-        <h2>Face recognition</h2>
-        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-          Mark a folder as a <b>person folder</b> (folder menu) and the app learns that person from the pictures inside, then
-          suggests other pictures that show them in <b>People</b>. Scanning only happens for what you choose to scan, and
-          nothing is moved until you confirm. Everything stays on this PC, inside the encrypted vault.
-        </p>
-        {faces && (
-          <div className="stats" style={{ flexWrap: 'wrap' }}>
-            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Scanned</span><b>{faces.scanned.toLocaleString()}</b></div>
-            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Faces found</span><b>{faces.faces.toLocaleString()}</b></div>
-            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Waiting</span><b>{faces.queued.toLocaleString()}</b></div>
-            {faceBackend() && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{faceBackend() === 'webgl' ? 'graphics card' : 'processor'}</b></div>}
-          </div>
-        )}
-      </section>
+      <FaceSection />
 
       <div className="divider" />
 

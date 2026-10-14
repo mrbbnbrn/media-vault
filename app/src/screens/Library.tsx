@@ -19,7 +19,9 @@ import {
   ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { LookAlikes } from '../components/LookAlikes';
-import { PeopleView } from '../components/People';
+import { PeopleView, PersonAlso } from '../components/People';
+import { FaceSortOffer } from '../components/FaceSort';
+import { peopleInText } from '../peoplelogic';
 import { RenameDialog, type RenameEntry } from '../components/RenameDialog';
 import { QuickSort } from '../components/QuickSort';
 import { TagManager } from '../components/TagManager';
@@ -2081,6 +2083,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             )}
             <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
             {folder?.note && <span className="folder-note" title={folder.note}><NoteIcon size={13} /> {folder.note}</span>}
+            {folder?.person && view.kind === 'folder' && <PersonAlso folder={folder} onShowAll={() => setView({ kind: 'timeline', person: folder.id })} />}
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
                 : view.kind === 'stats' || view.kind === 'people' || looks || view.kind === 'memories' ? ''
@@ -2328,6 +2331,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       {pick && !dialog && (
         <TodaysPickCard item={pick} onClose={dismissPick} onOpen={() => { dismissPick(); openInFolder(pick); }} />
       )}
+      <FaceSortOffer did={did} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} />
       </div>
 
       {quick != null && (
@@ -2577,12 +2581,16 @@ function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: Sea
   const folderHits = q
     ? props.folders.filter((f) => !f.person && fold(f.name).includes(q)).sort((a, b) => starts(a.name) - starts(b.name)).slice(0, 5)
     : [];
+  // "Baran + Ayşe": photos with both of them.
+  const together = (peopleInText(text, props.folders) ?? []).filter((id) => !people.includes(id));
   type Opt =
+    | { t: 'people'; ids: number[]; name: string; hint: string }
     | { t: 'person'; id: number; name: string; hint: string }
     | { t: 'tag'; name: string; hint: string }
     | { t: 'folder'; id: number; name: string; hint: string }
     | { t: 'name'; text: string };
   const opts: Opt[] = [
+    ...(together.length >= 2 ? [{ t: 'people', ids: together, name: together.map((id) => props.folders.find((f) => f.id === id)?.name ?? '').join(' + '), hint: 'together in a photo' } as Opt] : []),
     ...personHits.map((f): Opt => ({ t: 'person', id: f.id, name: f.name, hint: 'person' })),
     ...tagHits.map((t): Opt => ({
       t: 'tag', name: t.name,
@@ -2593,7 +2601,8 @@ function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: Sea
   ];
   const choose = (o: Opt | undefined) => {
     if (!o) return;
-    if (o.t === 'person') props.onChange({ tags, names, people: [...people, o.id] });
+    if (o.t === 'people') props.onChange({ tags, names, people: [...people, ...o.ids] });
+    else if (o.t === 'person') props.onChange({ tags, names, people: [...people, o.id] });
     else if (o.t === 'tag') props.onChange({ tags: [...tags, o.name], names, people });
     else if (o.t === 'folder') props.onOpenFolder(o.id);
     else props.onChange({ tags, names: [...names, o.text], people });
@@ -2644,9 +2653,9 @@ function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: Sea
       {focus && opts.length > 0 && (
         <div className="menu suggest" role="listbox">
           {opts.map((o, i) => (
-            <button key={o.t === 'name' ? 'name' : `${o.t}${'id' in o ? o.id : o.name}`} type="button" role="option" aria-selected={i === hi}
+            <button key={o.t === 'name' ? 'name' : o.t === 'people' ? 'people' : `${o.t}${'id' in o ? o.id : o.name}`} type="button" role="option" aria-selected={i === hi}
               className={`menu-item${i === hi ? ' on' : ''}`} onMouseDown={(e) => { e.preventDefault(); choose(o); }}>
-              {o.t === 'person' ? <><FaceIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
+              {o.t === 'person' || o.t === 'people' ? <><FaceIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
                 : o.t === 'tag' ? <><TagIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
                 : o.t === 'folder' ? <><FolderIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
                 : <><SearchIcon size={13} /> File name contains “{o.text}”</>}

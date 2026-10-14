@@ -1,10 +1,12 @@
-// Face recognition, the window side: find faces in pictures and video frames
-// and make a 128-number fingerprint for each, fully offline (face-api, models
-// built into the app). Nothing decrypted is written anywhere: pictures are
-// decoded in memory, like thumbnails.
+// Face recognition, the window side: decode pictures and video frames (in
+// memory, like thumbnails; nothing decrypted is written anywhere) and find
+// the faces in them, fully offline. With the faces pack (InsightFace
+// buffalo_l, run natively: faceid.rs) the pixels are sent to the app and
+// each face gets a 512-number fingerprint; without it the built-in face-api
+// (models in the app) makes 128-number ones, as before.
 
-import { api, mediaUrl, type FaceIn, type Kind } from '../api';
-import { loopJob } from '../jobs';
+import { api, mediaUrl, type FaceEngineStatus, type FaceIn, type Kind } from '../api';
+import { loopJob, updateJob } from '../jobs';
 
 type FaceApi = typeof import('@vladmandic/face-api');
 type Raw = { x: number; y: number; w: number; h: number; px: number; score: number; descriptor: number[] };
@@ -17,7 +19,7 @@ const MAX_SIDE = 1280;
 
 let backend = '';
 /** "webgl" (graphics card) or "cpu", once loaded. */
-export const faceBackend = () => backend;
+export const faceBackend = () => (model === 1 ? (nativeDevice === 'gpu' ? 'native-gpu' : 'native-cpu') : backend);
 
 // ---- preferred: a worker (keeps the window smooth) ---------------------------------------
 
@@ -139,6 +141,56 @@ export async function facePoints(src: CanvasImageSource, w: number, h: number): 
   return pts.map((face) => face.map(([x, y]) => [x * k, y * k] as [number, number]));
 }
 
+// ---- native (the faces pack) ---------------------------------------------------------------
+
+/** Pictures are sent to the native model at most this big (it finds faces at 640, and lines them up from these pixels). */
+const NATIVE_SIDE = 1600;
+/** Which model the scanner uses: 1 = InsightFace (faces pack), 0 = built-in face-api. */
+let model: 0 | 1 = 0;
+let nativeDevice: string | null = null;
+let nativeFailures = 0;
+export const faceModel = () => model;
+
+/** Ask the app whether the faces pack is there (and use it if so). */
+export async function checkFaceEngine(): Promise<FaceEngineStatus | null> {
+  try {
+    const e = await api.facesEngine();
+    model = e.native.available && nativeFailures < 3 ? 1 : 0;
+    nativeDevice = e.native.device;
+    return e;
+  } catch {
+    return null;
+  }
+}
+
+async function detectNative(src: CanvasImageSource, w: number, h: number, frameMs = 0): Promise<FaceIn[]> {
+  const s = Math.min(1, NATIVE_SIDE / Math.max(w, h));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * s));
+  c.height = Math.max(1, Math.round(h * s));
+  const g = c.getContext('2d', { willReadFrequently: true })!;
+  g.imageSmoothingQuality = 'high';
+  g.drawImage(src, 0, 0, c.width, c.height);
+  const px = g.getImageData(0, 0, c.width, c.height).data;
+  try {
+    const faces = await api.facesDetect({ width: c.width, height: c.height, frameMs }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
+    nativeFailures = 0;
+    return faces;
+  } catch (e) {
+    // The model itself failing again and again: back to the built-in one.
+    if (++nativeFailures >= 3) model = 0;
+    throw e;
+  } finally {
+    c.width = c.height = 0;
+  }
+}
+
+function cosine(a: number[], b: number[]) {
+  let s = 0;
+  for (let i = 0; i < a.length; i++) s += a[i] * b[i];
+  return s;
+}
+
 function dist(a: number[], b: number[]) {
   let s = 0;
   for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
@@ -148,20 +200,23 @@ function dist(a: number[], b: number[]) {
 const timeout = <T,>(p: Promise<T>, ms: number) =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
-async function scanImage(id: number): Promise<FaceIn[]> {
+const find = (m: 0 | 1, src: CanvasImageSource, w: number, h: number, frameMs = 0) =>
+  m === 1 ? detectNative(src, w, h, frameMs) : detect(src, w, h, frameMs);
+
+async function scanImage(id: number, m: 0 | 1): Promise<FaceIn[]> {
   const img = new Image();
   img.crossOrigin = 'anonymous';
   img.src = mediaUrl(id);
   try {
     await timeout(img.decode(), 30_000);
-    return await detect(img, img.naturalWidth, img.naturalHeight);
+    return await find(m, img, img.naturalWidth, img.naturalHeight);
   } finally {
     img.src = '';
   }
 }
 
 /** A few frames spread through the video; the same person seen again is kept once. */
-async function scanVideo(id: number): Promise<FaceIn[]> {
+async function scanVideo(id: number, m: 0 | 1): Promise<FaceIn[]> {
   const v = document.createElement('video');
   v.crossOrigin = 'anonymous';
   v.muted = true;
@@ -189,8 +244,8 @@ async function scanVideo(id: number): Promise<FaceIn[]> {
         );
       }
       if (!v.videoWidth) continue;
-      for (const face of await detect(v, v.videoWidth, v.videoHeight, Math.round(t * 1000))) {
-        const same = kept.findIndex((k) => dist(k.descriptor, face.descriptor) < 0.45);
+      for (const face of await find(m, v, v.videoWidth, v.videoHeight, Math.round(t * 1000))) {
+        const same = kept.findIndex((k) => (m === 1 ? cosine(k.descriptor, face.descriptor) > 0.5 : dist(k.descriptor, face.descriptor) < 0.45));
         if (same < 0) kept.push(face);
         else if (face.score * face.w > kept[same].score * kept[same].w) kept[same] = face;
       }
@@ -202,8 +257,9 @@ async function scanVideo(id: number): Promise<FaceIn[]> {
   }
 }
 
-export function scanItem(id: number, kind: Kind): Promise<FaceIn[]> {
-  return kind === 'video' ? scanVideo(id) : scanImage(id);
+/** Faces in one item, with the built-in model (0) or the faces pack (1, the default when it is there). */
+export function scanItem(id: number, kind: Kind, m: 0 | 1 = model): Promise<FaceIn[]> {
+  return kind === 'video' ? scanVideo(id, m) : scanImage(id, m);
 }
 
 // ---- background scanner ------------------------------------------------------------------
@@ -245,6 +301,16 @@ export function startFaceScanner(): () => void {
         r();
       };
     });
+  let upgraded = false;
+  let lastAuto = 0;
+  let named = false;
+  // Name sure faces automatically now and then while scanning (and at the end).
+  const autoName = async (force = false) => {
+    if (model !== 1 || (!force && Date.now() - lastAuto < 20_000) || (!force && !named)) return;
+    lastAuto = Date.now();
+    named = false;
+    await api.facesAuto().catch(() => 0);
+  };
   const job = loopJob('faces', {
     label: 'Scanning faces',
     long: true,
@@ -271,32 +337,47 @@ export function startFaceScanner(): () => void {
         continue;
       }
       let tasks: { id: number; kind: Kind }[] = [];
+      let upgrading = false;
       try {
+        const engine = await checkFaceEngine();
+        // The faces pack just arrived: everything is scanned again with it, once.
+        if (engine && model === 1 && !upgraded) {
+          upgraded = true;
+          await api.facesUpgrade().catch(() => 0);
+        }
+        upgrading = model === 1 && (engine?.upgradeLeft ?? 0) > 0;
         tasks = await api.facesNeeded(8);
       } catch {
         break; // locked
       }
       if (!tasks.length) {
+        await autoName(true);
         tell(true);
         job.idle();
         await sleep(10_000);
         continue;
       }
       job.batch();
+      updateJob('faces', { label: upgrading ? 'Updating faces (new model)' : 'Scanning faces' });
       for (const t of tasks) {
         if (stopped || paused) break;
+        const m = model;
         try {
-          const faces = await scanItem(t.id, t.kind);
+          const faces = await scanItem(t.id, t.kind, m);
           if (stopped) break;
-          await api.facesSave(t.id, faces);
+          await api.facesSave(t.id, faces, m);
+          if (faces.length) named = true;
         } catch {
           if (stopped) break;
-          await api.facesFailed(t.id).catch(() => {});
+          // A native failure with a working built-in model left: try that before giving up.
+          if (m === 1 && model === 0) continue;
+          await api.facesFailed(t.id, m).catch(() => {});
         }
         job.step();
         tell();
-        await new Promise((r) => setTimeout(r, 60));
+        await new Promise((r) => setTimeout(r, m === 1 ? 20 : 60));
       }
+      await autoName();
     }
     job.idle();
     running = false;

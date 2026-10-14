@@ -61,7 +61,7 @@ pub fn pack_dir() -> Option<PathBuf> {
 }
 
 /// The runtime library in `dir` (on Linux also a versioned libonnxruntime.so.1.x).
-fn runtime_in(dir: &Path) -> Option<PathBuf> {
+pub(crate) fn runtime_in(dir: &Path) -> Option<PathBuf> {
     let p = dir.join(runtime_name());
     if p.is_file() {
         return Some(p);
@@ -126,7 +126,7 @@ static RUNTIME: OnceLock<Result<ort::environment::Environment, String>> = OnceLo
 /// Whether the last model ran on the graphics card.
 static LAST_DEVICE: Mutex<Option<bool>> = Mutex::new(None);
 
-fn start_runtime(dir: &Path) -> Result<&'static ort::environment::Environment, String> {
+pub(crate) fn start_runtime(dir: &Path) -> Result<&'static ort::environment::Environment, String> {
     RUNTIME
         .get_or_init(|| {
             let lib = runtime_in(dir).ok_or("The upscaler pack is incomplete (onnxruntime is missing).")?;
@@ -171,7 +171,7 @@ struct Loaded {
 /// Models stay loaded while the viewer is open (GFPGAN takes a while to load).
 static MODELS: Mutex<Option<Loaded>> = Mutex::new(None);
 
-fn open_session(env: &ort::environment::Environment, path: &Path, gpu: bool) -> Result<ort::session::Session, String> {
+pub(crate) fn open_session(env: &ort::environment::Environment, path: &Path, gpu: bool) -> Result<ort::session::Session, String> {
     let err = |e: &dyn std::fmt::Display| format!("The upscaler couldn't load its model ({e}).");
     let mut b = ort::session::Session::builder(env).map_err(|e| err(&e))?;
     if !gpu {

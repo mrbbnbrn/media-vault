@@ -24,6 +24,10 @@ mod engine;
 mod exporter;
 mod extras;
 mod faces;
+// Native face recognition (optional pack: tools/faces): InsightFace buffalo_l.
+mod faceid;
+mod faceid_math;
+mod facegraph;
 // The vault's size by month (Statistics chart, Settings sparkline).
 mod growth;
 mod import;
@@ -97,6 +101,8 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     let was_open = taken.is_some();
     upscale::cancel();
     upscale::forget_all();
+    faces::forget_cache();
+    faceid::unload();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -1314,13 +1320,13 @@ async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces:
 }
 
 #[tauri::command]
-async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>) -> Result<usize, String> {
-    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces)).await
+async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>, model: Option<i64>) -> Result<usize, String> {
+    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::FACEAPI))).await
 }
 
 #[tauri::command]
-async fn faces_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| faces::failed(c, media)).await
+async fn faces_failed(state: State<'_, Shared>, media: i64, model: Option<i64>) -> Result<(), String> {
+    edit_db_bg(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::FACEAPI))).await
 }
 
 #[tauri::command]
@@ -1328,9 +1334,88 @@ async fn faces_status(state: State<'_, Shared>) -> Result<faces::ScanStatus, Str
     read_db(state.inner(), faces::status).await
 }
 
+/// Everything the People page shows (names sure faces automatically first).
 #[tauri::command]
-async fn faces_review(state: State<'_, Shared>) -> Result<faces::Review, String> {
-    read_db(state.inner(), faces::review).await
+async fn faces_review(state: State<'_, Shared>, request: Option<faces::ReviewRequest>) -> Result<faces::Review, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let r = faces::review(&*s, &request.unwrap_or_default())?;
+        if r.changed > 0 {
+            s.mark_dirty();
+        }
+        Ok(r)
+    })
+    .await
+}
+
+/// The automatic naming pass (the scanner calls it now and then).
+#[tauri::command]
+async fn faces_auto(state: State<'_, Shared>) -> Result<usize, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let n = faces::refresh(&*s)?;
+        if n > 0 {
+            s.mark_dirty();
+        }
+        Ok(n)
+    })
+    .await
+}
+
+/// Which face model is used, the faces pack, and the rescan with the new model.
+#[tauri::command]
+async fn faces_engine(state: State<'_, Shared>) -> Result<faces::EngineStatus, String> {
+    read_db(state.inner(), faces::engine_status).await
+}
+
+/// The faces pack is there: scan everything again with it (once).
+#[tauri::command]
+async fn faces_upgrade(state: State<'_, Shared>) -> Result<usize, String> {
+    edit_db_bg(state.inner(), faces::upgrade).await
+}
+
+/// "Find me in this folder".
+#[tauri::command]
+async fn faces_find_owner(state: State<'_, Shared>, person: i64) -> Result<Option<faces::OwnerProposal>, String> {
+    let s = sess(state.inner())?;
+    blocking(move || faces::find_owner(&*s, person)).await
+}
+
+/// "Not important" (hidden = true) or show again.
+#[tauri::command]
+async fn faces_hide(state: State<'_, Shared>, face_ids: Vec<i64>, hidden: bool) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::hide(c, &face_ids, hidden)).await
+}
+
+#[tauri::command]
+async fn faces_merge_people(state: State<'_, Shared>, keep: i64, other: i64) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::merge_people(c, keep, other)).await
+}
+
+#[tauri::command]
+async fn faces_not_same(state: State<'_, Shared>, a: i64, b: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| faces::not_same(c, a, b)).await
+}
+
+/// After an import: queue the new pictures for face scanning (if face
+/// recognition is in use). Returns them.
+#[tauri::command]
+async fn faces_after_import(state: State<'_, Shared>, since: i64) -> Result<Vec<i64>, String> {
+    edit_db_bg(state.inner(), move |c| faces::after_import(c, since)).await
+}
+
+/// "47 of these are Baran — put them in his folder?"
+#[tauri::command]
+async fn faces_sort_offers(state: State<'_, Shared>, ids: Vec<i64>) -> Result<faces::SortOffers, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let r = faces::sort_offers(&*s, &ids)?;
+        if r.changed > 0 {
+            s.mark_dirty();
+        }
+        Ok(r)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -1931,6 +2016,16 @@ pub fn run() {
             faces_of,
             faces_unsure,
             faces_of_many,
+            faces_auto,
+            faces_engine,
+            faces_upgrade,
+            faces_find_owner,
+            faces_hide,
+            faces_merge_people,
+            faces_not_same,
+            faces_after_import,
+            faces_sort_offers,
+            faceid::faces_detect,
             set_resume,
             clip_needed,
             clip_save,

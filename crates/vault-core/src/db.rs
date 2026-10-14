@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -399,6 +399,46 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    if v < 10 {
+        // v10: native face recognition (InsightFace). Which model found each
+        // face and scanned each item (0 = built-in face-api, 1 = buffalo_l),
+        // faces named automatically (and when), "not important" faces, and
+        // pairs of people you said are not the same. Each part only if its
+        // table is there and it isn't there yet.
+        let table_exists = |t: &str| -> Result<bool> {
+            Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
+        };
+        let adds: [(&str, &str, &str); 5] = [
+            ("faces", "model", "INTEGER NOT NULL DEFAULT 0"),
+            ("faces", "auto", "INTEGER NOT NULL DEFAULT 0"),
+            ("faces", "named_at", "INTEGER"),
+            ("faces", "hidden", "INTEGER NOT NULL DEFAULT 0"),
+            ("media", "faces_model", "INTEGER NOT NULL DEFAULT 0"),
+        ];
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            for (t, c, def) in adds {
+                if table_exists(t)? && !has_column(conn, t, c)? {
+                    conn.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN {c} {def};"))?;
+                }
+            }
+            if table_exists("faces")? {
+                conn.execute_batch("CREATE INDEX IF NOT EXISTS faces_model ON faces(model);")?;
+            }
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS face_not_same (a INTEGER NOT NULL, b INTEGER NOT NULL, PRIMARY KEY (a, b)) WITHOUT ROWID; \
+                 PRAGMA user_version = 10;",
+            )?;
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -554,5 +594,30 @@ mod tests {
         let c2 = deserialize(&bytes).unwrap();
         let n2: i64 = c2.query_row("SELECT COUNT(*) FROM media", [], |r| r.get(0)).unwrap();
         assert_eq!(n2, 2);
+    }
+
+    #[test]
+    fn v10_keeps_faces_and_adds_the_model() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", []).unwrap();
+        c.execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor) VALUES (1, 0, 0, 1, 1, 1, x'00')", []).unwrap();
+        // Back to how a v9 library looked, then upgrade again.
+        c.execute_batch(
+            "DROP INDEX faces_model; ALTER TABLE faces DROP COLUMN model; ALTER TABLE faces DROP COLUMN auto; \
+             ALTER TABLE faces DROP COLUMN named_at; ALTER TABLE faces DROP COLUMN hidden; ALTER TABLE media DROP COLUMN faces_model; \
+             DROP TABLE face_not_same; PRAGMA user_version = 9;",
+        )
+        .unwrap();
+        migrate(&c).unwrap();
+        let (m, a, h, fm): (i64, i64, i64, i64) = c
+            .query_row("SELECT f.model, f.auto, f.hidden, m.faces_model FROM faces f JOIN media m ON m.id = f.media_id", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((m, a, h, fm), (0, 0, 0, 0));
+        c.execute("INSERT INTO face_not_same(a, b) VALUES (1, 2)", []).unwrap();
+        // A library without the faces table still upgrades.
+        c.execute_batch("DROP TABLE face_rejects; DROP TABLE faces; DROP TABLE face_not_same; PRAGMA user_version = 9;").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 10);
     }
 }

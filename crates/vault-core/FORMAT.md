@@ -142,10 +142,14 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   A non-NULL `deleted_at` (milliseconds) means the item or folder is in the app's
   trash; it is still fully stored and can be recovered like anything else.
 - `bookmarks(id, media_id, position_ms, note)` — bookmarks inside videos
-- `faces(id, media_id, frame_ms, x, y, w, h, score, descriptor, person_id)` — faces found by
-  face recognition; position as fractions of the picture, `descriptor` = 128 little-endian
-  float32 values, `person_id` = the person folder it was confirmed for.
-  `face_rejects(face_id, folder_id)` remembers "not this person".
+- `faces(id, media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden)` —
+  faces found by face recognition; position as fractions of the picture. `model` 0 = the
+  built-in face-api (`descriptor` = 128 little-endian float32 values), 1 = InsightFace
+  buffalo_l (512 values, unit length). `person_id` = the person folder it shows; `auto` = 1 if
+  the app named it on its own (`named_at`, seconds), 0 if you confirmed it; `hidden` = 1 for
+  people marked "not important". `face_rejects(face_id, folder_id)` remembers "not this person",
+  `face_not_same(a, b)` "these two people are not the same". `media.faces_model` = the model
+  that scanned the item (-1 = waiting to be scanned again with the new model).
 - `media.preview_object_id` — a video's preview clip: one JPEG holding 48 small frames
   (8 across, 6 down), stored like a thumbnail. Can be deleted; the app makes it again.
 - `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512

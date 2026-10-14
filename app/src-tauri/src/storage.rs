@@ -172,7 +172,7 @@ pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
         "faces" => {
             let db = s.db();
             let n: i64 = db.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0)).map_err(e)?;
-            db.execute_batch("DELETE FROM face_rejects; DELETE FROM faces; UPDATE media SET faces_state = 0; VACUUM;")
+            db.execute_batch("DELETE FROM face_rejects; DELETE FROM faces; DELETE FROM face_not_same; UPDATE media SET faces_state = 0, faces_model = 0; VACUUM;")
                 .map_err(e)?;
             format!("Deleted {n} faces. Person folders stay; scan again to find faces.")
         }

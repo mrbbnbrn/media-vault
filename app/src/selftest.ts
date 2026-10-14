@@ -264,9 +264,9 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
   if (people) {
     await step('face recognition', async () => {
       const t = performance.now();
-      const faces = await timeout(scanItem(people.id, 'image'), 240_000, 'scan');
+      const faces = await timeout(scanItem(people.id, 'image', 0), 240_000, 'scan');
       if (faces.length < 2) throw new Error(`found ${faces.length} faces`);
-      await api.facesSave(people.id, faces);
+      await api.facesSave(people.id, faces, 0);
       const st = await api.facesStatus();
       return `${faces.length} faces in ${Math.round(performance.now() - t)} ms on ${faceBackend()}, ${st.faces} stored`;
     });

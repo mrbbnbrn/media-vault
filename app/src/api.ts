@@ -217,6 +217,8 @@ export interface FaceBox {
   w: number;
   h: number;
   person: number | null;
+  /** Named automatically (not by you). */
+  auto?: boolean;
 }
 
 export interface Suggestion {
@@ -233,20 +235,94 @@ export interface Suggestion {
 }
 
 export interface PersonGroup {
-  person: { folder: number; name: string; known: number; unsure: number };
+  person: {
+    folder: number; name: string;
+    /** Faces you confirmed. */
+    known: number;
+    unsure: number;
+    /** Faces named automatically. */
+    recognised?: number;
+    /** Photos and videos showing them (their folder, or recognised anywhere). */
+    photos?: number;
+  };
+  /** Unsure faces to tick, most alike first. */
   suggestions: Suggestion[];
+  suggestionsTotal?: number;
+  /** Named automatically, newest first. */
+  recent?: Suggestion[];
+  recentTotal?: number;
+  /** "This looks like X in 46 photos" (few confirmed faces yet). */
+  owner?: { photos: number; samples: Suggestion[] } | null;
 }
 
 export interface UnknownGroup {
+  /** Stable while the group stays the same. */
+  key?: number;
   faceIds: number[];
   samples: Suggestion[];
   photos: number;
+  looksLike?: { folder: number; name: string; confidence: number } | null;
+}
+
+export interface MergeHint {
+  a: number;
+  aName: string;
+  b: number;
+  bName: string;
+  confidence: number;
+}
+
+/** Native face recognition (InsightFace buffalo_l, the optional faces pack). */
+export interface FaceEngineInfo {
+  available: boolean;
+  problem: string | null;
+  folder: string | null;
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+  /** ONNX Runtime comes from the upscaler pack. */
+  sharedRuntime: boolean;
+}
+
+export interface FaceEngineStatus {
+  native: FaceEngineInfo;
+  active: 'buffalo_l' | 'faceapi';
+  /** Items still to be scanned again with the new model. */
+  upgradeLeft: number;
+  upgraded: number;
 }
 
 export interface FaceReview {
   people: PersonGroup[];
   unknown: UnknownGroup[];
+  unknownTotal?: number;
+  /** "Not important" people. */
+  hidden?: UnknownGroup[];
+  /** "These look like the same person — merge?" */
+  merges?: MergeHint[];
   status: ScanStatus;
+  engine?: FaceEngineStatus;
+}
+
+/** How much the People page shows (more as you scroll). */
+export interface ReviewRequest {
+  /** Per person: how many suggestions. */
+  more?: [number, number][];
+  /** Per person: how many recognised faces. */
+  recent?: [number, number][];
+  groups?: number;
+}
+
+export interface OwnerProposal {
+  person: number;
+  name: string;
+  /** One face per photo, most alike first. */
+  faces: Suggestion[];
+}
+
+export interface SortOffers {
+  /** Of the items asked about, still waiting to be scanned. */
+  waiting: number;
+  offers: { folder: number; name: string; items: Item[] }[];
 }
 
 export interface ClipStatus {
@@ -656,11 +732,26 @@ export const api = {
   setPersonFolder: (folder: number, on: boolean) => call<void>('set_person_folder', { folder, on }),
   facesQueue: (request: ScanRequest) => call<number>('faces_queue', { request }),
   facesNeeded: (limit: number) => call<{ id: number; kind: Kind; durationMs: number | null }[]>('faces_needed', { limit }),
-  facesSave: (media: number, faces: FaceIn[]) => call<number>('faces_save', { media, faces }),
-  facesFailed: (media: number) => call<void>('faces_failed', { media }),
+  /** model: 0 = built-in face-api (128 numbers), 1 = InsightFace (512). */
+  facesSave: (media: number, faces: FaceIn[], model = 0) => call<number>('faces_save', { media, faces, model }),
+  facesFailed: (media: number, model = 0) => call<void>('faces_failed', { media, model }),
   facesStatus: () => call<ScanStatus>('faces_status'),
-  facesReview: () => call<FaceReview>('faces_review'),
-  facesAccept: (faceIds: number[], person: number) => call<{ moved: number; tagged: number }>('faces_accept', { faceIds, person }),
+  facesReview: (request?: ReviewRequest) => call<FaceReview>('faces_review', { request: request ?? null }),
+  /** Names sure faces automatically; returns how many changed. */
+  facesAuto: () => call<number>('faces_auto'),
+  facesEngine: () => call<FaceEngineStatus>('faces_engine'),
+  /** Scan everything again with the new model (once). */
+  facesUpgrade: () => call<number>('faces_upgrade'),
+  /** Faces in one picture (RGBA), found natively; throws when the faces pack isn't there. */
+  facesDetect: (request: { width: number; height: number; frameMs: number }, rgba: Uint8Array) => facesDetect(request, rgba),
+  facesFindOwner: (person: number) => call<OwnerProposal | null>('faces_find_owner', { person }),
+  facesHide: (faceIds: number[], hidden: boolean) => call<number>('faces_hide', { faceIds, hidden }),
+  facesMergePeople: (keep: number, other: number) => call<number>('faces_merge_people', { keep, other }),
+  facesNotSame: (a: number, b: number) => call<void>('faces_not_same', { a, b }),
+  /** After an import (seconds): queues the new pictures for scanning; returns them. */
+  facesAfterImport: (since: number) => call<number[]>('faces_after_import', { since }),
+  facesSortOffers: (ids: number[]) => call<SortOffers>('faces_sort_offers', { ids }),
+  facesAccept: (faceIds: number[], person: number) => call<{ named?: number; moved: number; tagged: number }>('faces_accept', { faceIds, person }),
   facesReject: (faceIds: number[], person: number) => call<void>('faces_reject', { faceIds, person }),
   facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>
     call<{ folder: number; accepted: { moved: number; tagged: number } }>('faces_new_person', { name, parent, faceIds }),
@@ -954,6 +1045,9 @@ const mock = {
     }
     const demo = (await import('./mockgrid')).demoAnswer(cmd, a);
     if (demo !== undefined) return demo;
+    // Face recognition with made-up people (People page, Settings).
+    const faces = (await import('./mockfaces')).facesAnswer(cmd, a);
+    if (faces !== undefined) return faces;
     const s = this.state;
     const session = (path: string, needsNewPassword = false): SessionInfo => ({
       path,
@@ -1206,6 +1300,15 @@ async function upscaleStart(request: UpscaleRequest, rgba: Uint8Array): Promise<
   if (!inTauri) return mock.call('upscale_start', { request }) as Promise<number>;
   try {
     return await invoke<number>('upscale_start', upscaleBody(request, rgba));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+async function facesDetect(request: { width: number; height: number; frameMs: number }, rgba: Uint8Array): Promise<FaceIn[]> {
+  if (!inTauri) throw new Error('Preview: native face recognition works in the real app.');
+  try {
+    return await invoke<FaceIn[]>('faces_detect', upscaleBody(request as unknown as UpscaleRequest, rgba));
   } catch (e) {
     throw new Error(typeof e === 'string' ? e : String(e));
   }
