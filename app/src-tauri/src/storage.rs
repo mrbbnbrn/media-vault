@@ -62,6 +62,67 @@ pub fn info(s: &Session) -> Result<StorageInfo, String> {
     })
 }
 
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct CacheInfo {
+    pub thumbs: usize,
+    pub thumb_bytes: u64,
+    pub previews: usize,
+    pub preview_bytes: u64,
+}
+
+fn cache_ids(s: &Session, column: &str) -> Result<Vec<(i64, ObjectId)>, String> {
+    let db = s.db();
+    let mut st = db
+        .prepare(&format!("SELECT id, {column} FROM media WHERE {column} IS NOT NULL AND {column} <> ''"))
+        .map_err(|e| e.to_string())?;
+    let rows = st
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(|r| r.ok())
+        .filter_map(|(id, h)| ObjectId::from_hex(&h).ok().map(|o| (id, o)))
+        .collect();
+    Ok(rows)
+}
+
+/// How many thumbnails and preview clips there are, and the space they take.
+pub fn cache_info(s: &Session) -> Result<CacheInfo, String> {
+    let size = |ids: &[(i64, ObjectId)]| -> u64 {
+        let v = s.vault();
+        ids.iter().filter_map(|(_, o)| v.object_location(ObjectKind::Thumbnail, o)).map(|(_, _, len)| len).sum()
+    };
+    let t = cache_ids(s, "thumb_object_id")?;
+    let p = cache_ids(s, "preview_object_id")?;
+    Ok(CacheInfo { thumbs: t.len(), thumb_bytes: size(&t), previews: p.len(), preview_bytes: size(&p) })
+}
+
+/// Delete every thumbnail (they are made again as needed) or every preview
+/// clip, then give the space back.
+pub fn delete_cache(s: &Session, thumbs: bool) -> Result<String, String> {
+    let column = if thumbs { "thumb_object_id" } else { "preview_object_id" };
+    let ids = cache_ids(s, column)?;
+    {
+        let db = s.db();
+        db.execute(&format!("UPDATE media SET {column} = NULL WHERE {column} IS NOT NULL"), [])
+            .map_err(|e| e.to_string())?;
+    }
+    s.mark_dirty();
+    s.save().map_err(|e| e.to_string())?;
+    let v = s.vault();
+    for (_, o) in &ids {
+        let _ = v.delete_object(ObjectKind::Thumbnail, o);
+    }
+    drop(v);
+    let freed = reclaim(s).map(|r| r.reclaimed_bytes).unwrap_or(0);
+    Ok(format!(
+        "Deleted {} {}; {:.1} MB freed.{}",
+        ids.len(),
+        if thumbs { "thumbnails" } else { "preview clips" },
+        freed as f64 / 1e6,
+        if thumbs { " Thumbnails are made again in the background as you browse." } else { "" }
+    ))
+}
+
 /// Move items stored as separate files into packs. Safe to interrupt: the
 /// separate files are only deleted after the packed copies are verified and
 /// the library recording them has been saved.
@@ -86,7 +147,8 @@ fn check_all_present(s: &Session) -> Result<(), String> {
         let mut st = db
             .prepare(
                 "SELECT 1, object_id FROM media UNION ALL \
-                 SELECT 2, thumb_object_id FROM media WHERE thumb_object_id IS NOT NULL AND thumb_object_id <> ''",
+                 SELECT 2, thumb_object_id FROM media WHERE thumb_object_id IS NOT NULL AND thumb_object_id <> '' UNION ALL \
+                 SELECT 2, preview_object_id FROM media WHERE preview_object_id IS NOT NULL AND preview_object_id <> ''",
             )
             .map_err(|e| e.to_string())?;
         st.query_map([], |r| {
@@ -150,6 +212,44 @@ mod tests {
     use super::*;
     use crate::{import, library, session};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn thumbnails_and_preview_clips_can_be_counted_and_deleted() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for i in 0..3 {
+            std::fs::write(src.join(format!("{i}.mp4")), vec![i as u8 + 1; 50_000]).unwrap();
+        }
+        import::run(
+            &s,
+            &import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true },
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+        let ids: Vec<i64> = s.db().prepare("SELECT id FROM media").unwrap().query_map([], |r| r.get(0)).unwrap().flatten().collect();
+        for id in &ids {
+            let (th, _) = s.vault().add_object(ObjectKind::Thumbnail, &[1u8; 4000][..]).unwrap();
+            let (pv, _) = s.vault().add_object(ObjectKind::Thumbnail, &[2u8; 20_000][..]).unwrap();
+            s.db().execute("UPDATE media SET thumb_object_id = ?, preview_object_id = ? WHERE id = ?", rusqlite::params![th.to_hex(), pv.to_hex(), id]).unwrap();
+        }
+        s.save().unwrap();
+        let c = cache_info(&s).unwrap();
+        assert_eq!((c.thumbs, c.previews), (3, 3));
+        assert!(c.preview_bytes >= 60_000 && c.thumb_bytes >= 12_000);
+        assert!(library::query_items(&s.db(), &Default::default()).unwrap().iter().all(|i| i.preview));
+
+        delete_cache(&s, false).unwrap();
+        let c = cache_info(&s).unwrap();
+        assert_eq!((c.thumbs, c.previews), (3, 0));
+        assert!(library::query_items(&s.db(), &Default::default()).unwrap().iter().all(|i| !i.preview));
+        // The videos themselves are untouched.
+        check_all_present(&s).unwrap();
+        delete_cache(&s, true).unwrap();
+        assert_eq!(cache_info(&s).unwrap().thumbs, 0);
+        check_all_present(&s).unwrap();
+    }
 
     #[test]
     fn delete_then_reclaim_keeps_the_rest_intact() {

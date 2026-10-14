@@ -17,6 +17,7 @@ import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
 import { startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
+import { startPreviewMaker } from './previews';
 import { runSelfTestIfRequested } from './selftest';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
@@ -97,6 +98,9 @@ export function App() {
   // for smart search whenever its models are there (full package).
   useEffect(() => (open ? startFaceScanner() : undefined), [open]);
   useEffect(() => (open ? startClipIndexer() : undefined), [open]);
+  // Small preview clips for smooth grids (can be turned off in Settings → Storage).
+  const makePreviews = open && app?.config.makePreviews !== false;
+  useEffect(() => (makePreviews ? startPreviewMaker() : undefined), [makePreviews]);
 
   useEffect(() => {
     if (!toast) return;

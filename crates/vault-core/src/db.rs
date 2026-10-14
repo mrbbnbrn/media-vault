@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -273,6 +273,22 @@ fn migrate(conn: &Connection) -> Result<()> {
                 vec       BLOB NOT NULL                   -- 512 little-endian f32, unit length
             );
             PRAGMA user_version = 5;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
+        }
+    }
+    if v < 6 {
+        // v6: a small preview clip per video (a strip of frames, stored with
+        // the thumbnails). NULL = not made yet, '' = couldn't be made.
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE media ADD COLUMN preview_object_id TEXT;
+            PRAGMA user_version = 6;
             COMMIT;
             "#,
         );

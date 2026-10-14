@@ -43,11 +43,14 @@ pub struct Item {
     pub views: i64,
     /// When it was put in the trash (ms), if it is there.
     pub deleted_at: Option<i64>,
+    /// Videos: a small preview clip exists (for smooth grids).
+    pub preview: bool,
 }
 
 const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, m.height, m.duration_ms, \
      m.favourite, m.weight, m.thumb_object_id, m.imported_at, m.folder_id, \
-     COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at";
+     COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at, \
+     IFNULL(m.preview_object_id, '') <> ''";
 
 fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
     let thumb: Option<String> = r.get(10)?;
@@ -73,6 +76,7 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         taken_at: r.get(13)?,
         views: r.get(14)?,
         deleted_at: r.get(15)?,
+        preview: r.get(16)?,
     })
 }
 
@@ -598,19 +602,20 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
     let mut o = Orphans::default();
     let mut st = conn
         .prepare(&format!(
-            "SELECT object_id, thumb_object_id FROM media WHERE {where_sql}"
+            "SELECT object_id, thumb_object_id, preview_object_id FROM media WHERE {where_sql}"
         ))
         .map_err(e)?;
     for row in st
         .query_map(params_from_iter(args.iter().cloned()), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
         })
         .map_err(e)?
     {
-        let (m, t) = row.map_err(e)?;
+        let (m, t, p) = row.map_err(e)?;
         o.media.push(m);
-        if let Some(t) = t.filter(|t| !t.is_empty()) {
-            o.thumbs.push(t);
+        // Preview clips live with the thumbnails.
+        for x in [t, p].into_iter().flatten().filter(|x| !x.is_empty()) {
+            o.thumbs.push(x);
         }
     }
     Ok(o)

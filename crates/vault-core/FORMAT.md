@@ -146,6 +146,8 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   face recognition; position as fractions of the picture, `descriptor` = 128 little-endian
   float32 values, `person_id` = the person folder it was confirmed for.
   `face_rejects(face_id, folder_id)` remembers "not this person".
+- `media.preview_object_id` — a video's preview clip: one JPEG holding 48 small frames
+  (8 across, 6 down), stored like a thumbnail. Can be deleted; the app makes it again.
 - `clip(media_id, vec)` — smart-search vector of an item: 512 little-endian float32 values
   (unit length, CLIP ViT-B/32 space)
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs

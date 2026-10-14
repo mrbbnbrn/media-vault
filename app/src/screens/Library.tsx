@@ -1001,7 +1001,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <TaskCards />
           {storageJob && (
             <div className="icard">
-              <b>{storageJob.task === 'convert' ? 'Packing files' : 'Reclaiming space'}</b>
+              <b>{storageJob.task === 'convert' ? 'Packing files' : storageJob.task === 'reclaim' ? 'Reclaiming space' : 'Deleting and freeing space'}</b>
               <div className="bar"><div style={{ width: `${storageJob.total ? (storageJob.done / storageJob.total) * 100 : 0}%` }} /></div>
               <span className="mono faint" style={{ fontSize: 12 }}>{storageJob.done.toLocaleString()} / {storageJob.total.toLocaleString()}</span>
             </div>

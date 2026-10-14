@@ -708,7 +708,10 @@ async fn save_thumb(
                 rusqlite::params![tid.to_hex(), width, height, duration_ms, id],
             )
             .map_err(|e| e.to_string())?;
-            let _ = clip::reset(&db, id);
+            // A replaced thumbnail may show something else: analyse it again.
+            if old.as_deref().is_some_and(|o: &str| !o.is_empty()) {
+                let _ = clip::reset(&db, id);
+            }
             old
         };
         if let Some(o) = old.filter(|o| !o.is_empty())
@@ -734,6 +737,96 @@ async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
         Ok(())
     })
     .await
+}
+
+// ---- preview clips (a strip of small frames per video, made by the window) ----------------
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewTask {
+    id: i64,
+    duration_ms: Option<i64>,
+}
+
+/// Videos without a preview clip yet; `prefer` (those on screen) first.
+#[tauri::command]
+async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>) -> Result<Vec<PreviewTask>, String> {
+    read_db(state.inner(), move |c| {
+        let e = |x: rusqlite::Error| x.to_string();
+        let mut out: Vec<PreviewTask> = Vec::new();
+        for id in prefer.iter().take(64) {
+            if let Ok(t) = c.query_row(
+                "SELECT id, duration_ms FROM media WHERE id = ? AND kind = 'video' AND preview_object_id IS NULL \
+                 AND deleted_at IS NULL AND IFNULL(thumb_object_id, 'x') <> ''",
+                [id],
+                |r| Ok(PreviewTask { id: r.get(0)?, duration_ms: r.get(1)? }),
+            ) {
+                out.push(t);
+            }
+            if out.len() as i64 >= limit {
+                return Ok(out);
+            }
+        }
+        let mut st = c
+            .prepare(
+                "SELECT id, duration_ms FROM media WHERE kind = 'video' AND preview_object_id IS NULL AND deleted_at IS NULL \
+                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY id DESC LIMIT ?",
+            )
+            .map_err(e)?;
+        for t in st
+            .query_map([limit], |r| Ok(PreviewTask { id: r.get(0)?, duration_ms: r.get(1)? }))
+            .map_err(e)?
+            .flatten()
+        {
+            if out.len() as i64 >= limit {
+                break;
+            }
+            if !out.iter().any(|x| x.id == t.id) {
+                out.push(t);
+            }
+        }
+        Ok(out)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Result<(), String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let (pid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, &data[..]).map_err(|e| e.to_string())?;
+        let old: Option<String> = {
+            let db = s.db();
+            let old = db.query_row("SELECT preview_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
+            db.execute("UPDATE media SET preview_object_id = ? WHERE id = ?", rusqlite::params![pid.to_hex(), id])
+                .map_err(|e| e.to_string())?;
+            old
+        };
+        if let Some(o) = old.filter(|o| !o.is_empty())
+            && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
+        {
+            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
+        }
+        s.mark_dirty();
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db(state.inner(), move |c| {
+        c.execute("UPDATE media SET preview_object_id = '' WHERE id = ? AND preview_object_id IS NULL", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn cache_info(state: State<'_, Shared>) -> Result<storage::CacheInfo, String> {
+    let s = sess(state.inner())?;
+    blocking(move || storage::cache_info(&s)).await
 }
 
 // ---- import ------------------------------------------------------------------------------
@@ -831,11 +924,15 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
     let task: &'static str = match task.as_str() {
         "convert" => "convert",
         "reclaim" => "reclaim",
+        "deleteThumbs" => "deleteThumbs",
+        "deletePreviews" => "deletePreviews",
         _ => return Err("Unknown task.".into()),
     };
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
-        let result = if task == "convert" {
+        let result = if task == "deleteThumbs" || task == "deletePreviews" {
+            storage::delete_cache(&s, task == "deleteThumbs")
+        } else if task == "convert" {
             storage::convert(&s, &mut |done, total| {
                 let _ = app.emit("storage-progress", StorageProgress { task, done, total });
             })
@@ -1263,6 +1360,10 @@ pub fn run() {
             thumbs_needed,
             save_thumb,
             thumb_failed,
+            previews_needed,
+            save_preview,
+            preview_failed,
+            cache_info,
             inspect_drop,
             check_archive_password,
             start_import,

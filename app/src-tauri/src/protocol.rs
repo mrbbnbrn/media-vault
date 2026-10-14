@@ -150,15 +150,15 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
     let Some(id) = id else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
-    let row: Option<(String, Option<String>, String)> = s
+    let row: Option<(String, Option<String>, String, Option<String>)> = s
         .db()
         .query_row(
-            "SELECT object_id, thumb_object_id, ext FROM media WHERE id = ?",
+            "SELECT object_id, thumb_object_id, ext, preview_object_id FROM media WHERE id = ?",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok();
-    let Some((obj, thumb, ext)) = row else {
+    let Some((obj, thumb, ext, preview)) = row else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
     let (kind, hex, mime) = match what {
@@ -166,6 +166,10 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
         "thumb" => match thumb.filter(|t| !t.is_empty()) {
             Some(t) => (ObjectKind::Thumbnail, t, "image/jpeg"),
             None => return plain(StatusCode::NOT_FOUND, "No thumbnail yet."),
+        },
+        "preview" => match preview.filter(|t| !t.is_empty()) {
+            Some(t) => (ObjectKind::Thumbnail, t, "image/jpeg"),
+            None => return plain(StatusCode::NOT_FOUND, "No preview clip yet."),
         },
         _ => return plain(StatusCode::NOT_FOUND, "Not found."),
     };

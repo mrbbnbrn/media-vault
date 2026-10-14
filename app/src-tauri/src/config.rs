@@ -97,6 +97,8 @@ pub struct AppConfig {
     pub builtin_engine: bool,
     /// The smart-search switch next to the search box.
     pub smart_search: bool,
+    /// Make small preview clips of videos in the background (smooth grids).
+    pub make_previews: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -115,6 +117,7 @@ impl Default for AppConfig {
             viewer: ViewerSettings::default(),
             builtin_engine: true,
             smart_search: false,
+            make_previews: true,
             vaults: Vec::new(),
             last_vault: None,
         }

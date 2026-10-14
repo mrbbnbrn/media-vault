@@ -3,7 +3,8 @@
 // from the encrypted vault and from ordinary files.
 
 import { invoke } from '@tauri-apps/api/core';
-import { api, inTauri, localUrl, mediaUrl, onEvent, thumbUrl, type DamageReport, type ExportDone, type Kind, type LocalItem } from './api';
+import { makePreviewStrip } from './previews';
+import { api, inTauri, localUrl, mediaUrl, onEvent, previewUrl, thumbUrl, type DamageReport, type ExportDone, type Kind, type LocalItem } from './api';
 import { animationMs, makeThumb } from './media';
 import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
@@ -212,6 +213,15 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       const ms = animationMs(got);
       if (ms < 400) throw new Error(`loop only ${ms} ms`);
       return `${bytes.length} bytes, ${ms} ms loop`;
+    });
+    await step('preview clip (smooth grids)', async () => {
+      const t = performance.now();
+      const bytes = await makePreviewStrip(vid.id);
+      await api.savePreview(vid.id, Array.from(bytes));
+      const got = await checkImage(previewUrl(vid.id));
+      if (!(await api.getItem(vid.id)).preview) throw new Error('not marked as having a clip');
+      const c = await api.cacheInfo();
+      return `${bytes.length} bytes, ${got}, made in ${Math.round(performance.now() - t)} ms; ${c.previews} clip(s) ${c.previewBytes} bytes`;
     });
     await step('bookmarks, trash and restore', async () => {
       const b = await api.addBookmark(vid.id, 1500, 'selftest');

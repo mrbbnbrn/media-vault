@@ -393,3 +393,6 @@ body.clean-fs .toast { display: none; }
 .damage p { margin: 0; }
 .damage-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--line); font-size: 13px; }
 .person-mark { display: inline-flex; color: var(--accent); opacity: 0.8; margin-left: 4px; flex-shrink: 0; }
+/* Preview clips: a strip of small frames shown one at a time. */
+.clip-frame { overflow: hidden; display: block; }
+.clip { position: absolute; display: block; background-size: 800% 600%; background-repeat: no-repeat; }

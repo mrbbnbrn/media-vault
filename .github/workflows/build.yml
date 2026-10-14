@@ -138,19 +138,37 @@ jobs:
           path: dist/MediaVault
           retention-days: 7
 
-      - name: Full package as a GitHub release
+      - name: Publish a release (app, plus engine and models only when they are new)
         if: github.ref == 'refs/heads/main' && (contains(github.event.head_commit.message, '[release]') || inputs.release)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp -r dist/MediaVault dist/MediaVault-light
-          cp -r target/release/WebView2 target/release/models dist/MediaVault/
+          set -e
           cd dist
-          7z a -tzip -mx=5 MediaVault-full-windows.zip MediaVault > /dev/null
-          7z a -tzip -mx=9 MediaVault-light-windows.zip MediaVault-light > /dev/null
-          ls -la *.zip
+          # The parts unzip into the same MediaVault folder.
+          7z a -tzip -mx=9 MediaVault-app-windows.zip MediaVault > /dev/null
+          ver=$(cat ../target/release/WebView2/VERSION.txt | tr -d '\r\n ')
+          etag="engine-$ver"
+          if ! gh release view "$etag" >/dev/null 2>&1; then
+            mkdir -p e/MediaVault && cp -r ../target/release/WebView2 e/MediaVault/
+            (cd e && 7z a -tzip -mx=5 ../MediaVault-engine-windows.zip MediaVault > /dev/null)
+            gh release create "$etag" MediaVault-engine-windows.zip --prerelease --title "Web engine $ver (download once)" \
+              --notes "The built-in web engine (Microsoft WebView2 $ver). Unzip into the same place as the app; it adds a WebView2 folder inside MediaVault."
+          fi
+          if ! gh release view models-v1 --json assets --jq '.assets[].name' | grep -qx MediaVault-models-windows.zip; then
+            mkdir -p m/MediaVault && cp -r ../target/release/models m/MediaVault/
+            (cd m && 7z a -tzip -mx=1 ../MediaVault-models-windows.zip MediaVault > /dev/null)
+            gh release upload models-v1 MediaVault-models-windows.zip --clobber
+          fi
+          repo="https://github.com/$GITHUB_REPOSITORY/releases"
           tag="build-${GITHUB_RUN_NUMBER}"
-          gh release create "$tag" MediaVault-full-windows.zip MediaVault-light-windows.zip \
-            --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --latest \
-            --notes "Full package: the app with its own web engine and the smart-search models — unzip and run MediaVault.exe. Light package: just the app (uses the web engine that comes with Windows; no smart search)."
+          printf '%s\n' \
+            "**Updating:** download only MediaVault-app-windows.zip (small), close the app, and unzip it over your MediaVault folder." \
+            "" \
+            "**First time:** also download, once, and unzip into the same place:" \
+            "- the web engine: $repo/tag/$etag (MediaVault-engine-windows.zip)" \
+            "- the smart-search models: $repo/tag/models-v1 (MediaVault-models-windows.zip)" \
+            "" \
+            "Without them the app still works: it then uses the web engine that comes with Windows, and smart search is off." > notes.md
+          gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --latest --notes-file notes.md

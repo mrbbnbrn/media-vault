@@ -7,7 +7,8 @@ import { DamageReportView, ExportDialog } from '../components/Safety';
 import { faceBackend } from '../ml/facescan';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import type { ClipStatus, EngineInfo, ScanStatus } from '../api';
+import type { CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTask } from '../api';
+import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
@@ -163,7 +164,7 @@ export function Settings({ nav }: { nav: Nav }) {
             </>
           )}
           {section === 'vault' && <VaultSection nav={nav} />}
-          {section === 'storage' && <StorageSection />}
+          {section === 'storage' && <StorageSection cfg={cfg} update={update} />}
           {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
           {section === 'smart' && <SmartSection />}
           {section === 'about' && (
@@ -278,25 +279,29 @@ function VaultSection({ nav }: { nav: Nav }) {
   );
 }
 
-function StorageSection() {
+function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
   const [info, setInfo] = useState<StorageInfo | null>(null);
+  const [cache, setCache] = useState<CacheInfo | null>(null);
+  const [confirm, setConfirm] = useState<'deleteThumbs' | 'deletePreviews' | null>(null);
   const [job, setJob] = useState<StorageProgress | null>(null);
   const [done, setDone] = useState<StorageDone | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
     api.storageInfo().then(setInfo).catch((e) => setErr(String(e)));
+    api.cacheInfo().then(setCache).catch(() => {});
     const a = onEvent<StorageProgress>('storage-progress', setJob);
     const b = onEvent<StorageDone>('storage-done', (d) => {
       setJob(null);
       setDone(d);
       api.storageInfo().then(setInfo).catch(() => {});
+      api.cacheInfo().then(setCache).catch(() => {});
     });
     return () => {
       a.then((u) => u());
       b.then((u) => u());
     };
   }, []);
-  const run = async (task: 'convert' | 'reclaim') => {
+  const run = async (task: StorageTask) => {
     setDone(null);
     setErr(null);
     setJob({ task, done: 0, total: 0 });
@@ -339,9 +344,43 @@ function StorageSection() {
         </div>
         <button type="button" className="btn" disabled={!!job || !info?.reclaimableBytes} onClick={() => run('reclaim')}>Reclaim</button>
       </div>
+      <h2 style={{ marginTop: 18 }}>Thumbnails and preview clips</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        Made by the app from your files and kept encrypted in the vault. Deleting them never touches your files.
+      </p>
+      {cache && (
+        <div className="stats" style={{ flexWrap: 'wrap' }}>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Thumbnails</span><b>{cache.thumbs.toLocaleString()} · {formatBytes(cache.thumbBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Preview clips</span><b>{cache.previews.toLocaleString()} · {formatBytes(cache.previewBytes)}</b></div>
+        </div>
+      )}
+      <Toggle title="Make preview clips" on={cfg.makePreviews !== false} set={(v) => update({ ...cfg, makePreviews: v })}
+        desc="Small, low-resolution clips of each video, made in the background. When too many videos play in a grid at once, all of them switch to these clips so it stays smooth." />
+      <div className="setting">
+        <div className="text">
+          <span className="title">Delete preview clips</span>
+          <span className="desc">{cfg.makePreviews !== false ? 'They are made again in the background. Turn off “Make preview clips” first to keep the space free.' : 'Frees the space they use.'}</span>
+        </div>
+        <button type="button" className="btn" disabled={!!job || !cache?.previews} onClick={() => setConfirm('deletePreviews')}>Delete</button>
+      </div>
+      <div className="setting">
+        <div className="text">
+          <span className="title">Delete thumbnails</span>
+          <span className="desc">The library needs them to show your items, so they are made again in the background while the vault is open.</span>
+        </div>
+        <button type="button" className="btn" disabled={!!job || !cache?.thumbs} onClick={() => setConfirm('deleteThumbs')}>Delete</button>
+      </div>
+      {confirm && (
+        <ConfirmDialog title={confirm === 'deleteThumbs' ? 'Delete all thumbnails?' : 'Delete all preview clips?'} confirm="Delete" danger
+          onClose={() => setConfirm(null)} onConfirm={() => run(confirm)}>
+          {confirm === 'deleteThumbs'
+            ? `${cache?.thumbs.toLocaleString()} thumbnails (${formatBytes(cache?.thumbBytes ?? 0)}) are deleted and the space is given back. Your files are not touched.`
+            : `${cache?.previews.toLocaleString()} preview clips (${formatBytes(cache?.previewBytes ?? 0)}) are deleted and the space is given back. Your files are not touched.`}
+        </ConfirmDialog>
+      )}
       {job && (
         <div className="info">
-          {job.task === 'convert' ? 'Packing' : 'Reclaiming space'}… {job.total ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}` : ''}
+          {job.task === 'convert' ? 'Packing' : job.task === 'reclaim' ? 'Reclaiming space' : 'Deleting and freeing space'}… {job.total ? `${job.done.toLocaleString()} / ${job.total.toLocaleString()}` : ''}
         </div>
       )}
       {done && <div className={done.ok ? 'info' : 'error'}>{done.message}</div>}

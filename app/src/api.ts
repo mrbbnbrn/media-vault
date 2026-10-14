@@ -44,6 +44,8 @@ export interface AppConfig {
   builtinEngine: boolean;
   /** The smart-search switch next to the search box. */
   smartSearch: boolean;
+  /** Make small preview clips of videos in the background. */
+  makePreviews: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
 }
@@ -212,6 +214,8 @@ export interface Item {
   views: number;
   /** In the trash since (ms). */
   deletedAt: number | null;
+  /** Videos: a small preview clip exists. */
+  preview: boolean;
 }
 
 export interface Crumb {
@@ -369,14 +373,23 @@ export interface StorageInfo {
   looseObjects: number;
 }
 
+export interface CacheInfo {
+  thumbs: number;
+  thumbBytes: number;
+  previews: number;
+  previewBytes: number;
+}
+
+export type StorageTask = 'convert' | 'reclaim' | 'deleteThumbs' | 'deletePreviews';
+
 export interface StorageProgress {
-  task: 'convert' | 'reclaim';
+  task: StorageTask;
   done: number;
   total: number;
 }
 
 export interface StorageDone {
-  task: 'convert' | 'reclaim';
+  task: StorageTask;
   ok: boolean;
   message: string;
 }
@@ -475,7 +488,13 @@ export const api = {
 
   // storage housekeeping
   storageInfo: () => call<StorageInfo>('storage_info'),
-  storageTask: (task: 'convert' | 'reclaim') => call<void>('storage_task', { task }),
+  storageTask: (task: StorageTask) => call<void>('storage_task', { task }),
+  cacheInfo: () => call<CacheInfo>('cache_info'),
+
+  // preview clips
+  previewsNeeded: (limit: number, prefer: number[]) => call<{ id: number; durationMs: number | null }[]>('previews_needed', { limit, prefer }),
+  savePreview: (id: number, data: number[]) => call<void>('save_preview', { id, data }),
+  previewFailed: (id: number) => call<void>('preview_failed', { id }),
 
   // outside-vault player
   scanLocal: (paths: string[]) => call<LocalSet>('scan_local', { paths }),
@@ -526,6 +545,7 @@ function proto(scheme: string, path: string): string {
 
 export const mediaUrl = (id: number) => proto('vault', `media/${id}`);
 export const thumbUrl = (id: number) => proto('vault', `thumb/${id}`);
+export const previewUrl = (id: number) => proto('vault', `preview/${id}`);
 export const localUrl = (key: string) => proto('local', `f/${key}`);
 export const modelUrl = (name: string) => proto('models', name);
 
@@ -572,6 +592,7 @@ const mock = {
       viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, volume: 0.8, gridColumns: 0 },
       builtinEngine: true,
       smartSearch: false,
+      makePreviews: true,
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -650,6 +671,10 @@ const mock = {
         return { queued: 0, scanned: 0, faces: 0, failed: 0 };
       case 'faces_review':
         return { people: [], unknown: [], status: { queued: 0, scanned: 0, faces: 0, failed: 0 } };
+      case 'previews_needed':
+        return [];
+      case 'cache_info':
+        return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
       case 'clip_status':
         return { total: 0, done: 0, failed: 0 };
       case 'folder_view':
