@@ -62,6 +62,8 @@ const FOV = 66;
 /** Walking and hurrying (Shift), metres per second. */
 export const WALK = 4.2;
 export const RUN = 10.5;
+const WALK_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+const DIRS = [1, -1] as const;
 
 type Bucket =
   | 'lamp' | 'floor' | 'damask' | 'wood' | 'goldRail' | 'skirt' | 'marble' | 'frameGold' | 'gold' | 'carpet' | 'ceiling' | 'velvet' | 'pool' | 'shade'
@@ -216,6 +218,8 @@ export class MuseumEngine {
   private m4 = new THREE.Matrix4();
   private box = new THREE.Box3();
   private picTick = 0;
+  /** Something changed that needs drawing (while holding still in a close look). */
+  private dirty = true;
   private tmp = new THREE.Vector3();
   private doorFired = false;
   private resizeObs: ResizeObserver;
@@ -368,6 +372,7 @@ export class MuseumEngine {
     if (p) cancelAnimationFrame(this.raf);
     else {
       this.last = performance.now();
+      this.dirty = true;
       this.loop();
     }
   }
@@ -377,15 +382,16 @@ export class MuseumEngine {
    * Walking: a picture gets a close look, a wing door opens. In a close look:
    * the picture itself opens in the viewer, anywhere else steps back.
    */
-  click(ndc?: { x: number; y: number }) {
+  click(ndc?: { x: number; y: number }): boolean {
     const hit = this.pick(ndc ?? { x: 0, y: 0 }, this.close ? 6 : 12);
     if (this.close) {
       if (hit?.kind === 'frame' && hit.frame === this.close.frame) this.events.onOpen(hit.frame);
       else this.stepBack();
-      return;
+      return true;
     }
     if (hit?.kind === 'frame') this.closeLook(hit.frame);
     else if (hit?.kind === 'door') this.events.onDoor(hit.door);
+    return !!hit;
   }
 
   /** The picture being looked at closely, if any. */
@@ -1098,6 +1104,8 @@ export class MuseumEngine {
         return im;
       };
       const hi = [make(ch.brass, mats.brass), make(ch.crystal, mats.crystal), make(ch.candle, mats.candle), make(ch.flame, mats.flame)];
+      // Tiny crystals only make a speckle in the soft floor reflection: leave them out of it.
+      hi[1].layers.disable(LAYER_REFLECT);
       const lo = [make(loG, loMat)];
       const chain = make(chainG, mats.brass);
       const halo: number[] = [];
@@ -1156,6 +1164,7 @@ export class MuseumEngine {
   // ---- per frame ----------------------------------------------------------------------------
 
   private resize() {
+    this.dirty = true;
     const w = this.canvas.clientWidth;
     const h = this.canvas.clientHeight;
     if (!w || !h) return;
@@ -1204,13 +1213,28 @@ export class MuseumEngine {
     if (this.disposed || this.paused) return;
     this.raf = requestAnimationFrame(this.loop);
     if (document.hidden) return;
-    this.renderer.info.reset();
     const now = performance.now();
     const raw = (now - this.last) / 1000;
     const dt = Math.min(0.05, raw);
     this.last = now;
     this.time += dt;
-    this.adapt(raw);
+    // Holding still in a close look on a picture: nothing moves, so draw only when
+    // something changes (a sharper texture arriving), and at full resolution.
+    const still = !!this.close && !this.glide && this.close.frame.item.kind === 'image';
+    if (still) {
+      if (this.scale < 1) {
+        this.scale = 1;
+        this.renderer.setPixelRatio(basePixelRatio.get(this.renderer) ?? 1);
+        this.resize();
+      }
+      for (let i = 0; i < 2 && this.uploads.length; i++) this.uploads.shift()!();
+      if ((this.streamTick += dt) > 0.3) {
+        this.streamTick = 0;
+        this.stream(false);
+      }
+      if (!this.dirty) return;
+    } else this.adapt(raw);
+    this.dirty = false;
     if (this.glide) this.glideStep(dt);
     else this.move(dt);
     this.applyPose();
@@ -1238,6 +1262,7 @@ export class MuseumEngine {
       }
     }
     for (const s of this.slots) if (s.videoTex && s.video && s.video.readyState >= 2) s.videoTex.needsUpdate = true;
+    this.renderer.info.reset();
     if (this.composer) this.composer.render();
     else this.renderer.render(this.scene, this.camera);
     this.frames++;
@@ -1287,6 +1312,7 @@ export class MuseumEngine {
   /** Starts a glide (through doors if need be) to a pose; instant if asked or for reduced motion. */
   private moveTo(to: Pose & { eye: number }, instant = false) {
     this.vel.set(0, 0);
+    this.dirty = true;
     if (instant || reducedMotion()) {
       this.glide = null;
       this.pose = { x: to.x, y: to.y, yaw: to.yaw, pitch: to.pitch };
@@ -1308,7 +1334,7 @@ export class MuseumEngine {
   private glideStep(dt: number) {
     const g = this.glide!;
     // Pressing a walking key takes over (not in a close look).
-    if (!this.close && ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].some((k) => this.keys.has(k))) {
+    if (!this.close && WALK_KEYS.some((k) => this.keys.has(k))) {
       this.glide = null;
       this.at = null;
       return;
@@ -1380,7 +1406,7 @@ export class MuseumEngine {
     this.frustum.setFromProjectionMatrix(this.m4);
     // Walk out through the doors (halls are a chain): a hall is drawn while the
     // doorway leading to it is on screen, up to two halls away.
-    for (const dir of [1, -1]) {
+    for (const dir of DIRS) {
       for (let k = 1; k <= 2; k++) {
         const far = cur + dir * k;
         if (far < 0 || far >= vis.length) break;
@@ -1573,6 +1599,7 @@ export class MuseumEngine {
     if (s.mat.map !== t) {
       s.mat.map = t;
       s.mat.needsUpdate = true;
+      this.dirty = true;
     }
   }
 
@@ -1773,6 +1800,7 @@ export class MuseumEngine {
     s.plaque = new THREE.Mesh(g, m);
     s.plaque.matrixAutoUpdate = false;
     s.group.add(s.plaque);
+    this.dirty = true;
   }
 
   private dropPlaque(s: Slot) {

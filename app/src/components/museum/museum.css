@@ -51,7 +51,7 @@
 .museum-close-nav:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 @keyframes museum-close-in { from { opacity: 0; transform: translate(-50%, 8px); } }
 /* The viewer over the museum (the museum stays loaded underneath). */
-.museum-viewer { position: fixed; inset: 0; z-index: 46; }
+.museum-viewer { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 46; }
 /* The viewer's "shrink back into the grid tile" has no tile to go to here. */
 body:has(.museum) .flip-ghost { display: none !important; }
 

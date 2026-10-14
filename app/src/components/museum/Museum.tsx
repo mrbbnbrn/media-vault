@@ -313,7 +313,9 @@ export default function Museum(props: MuseumProps) {
         engine.current?.click(at);
         if (!engine.current?.closeFrame() && !dragMode) lock();
       } else if (dragMode) engine.current?.click(at);
-      else lock();
+      // With the mouse free (after a close look) a picture under it gets a close look;
+      // anywhere else the mouse is captured again.
+      else if (!(entered && engine.current?.click(at))) lock();
     }
   };
 
