@@ -121,6 +121,23 @@ export async function detect(src: CanvasImageSource, w: number, h: number, frame
     .map((r) => ({ frameMs, x: r.x, y: r.y, w: r.w, h: r.h, score: r.score, descriptor: r.descriptor }));
 }
 
+/** The upscaler: the 68 face points of every face in a picture, in its own pixels. */
+export async function facePoints(src: CanvasImageSource, w: number, h: number): Promise<[number, number][][]> {
+  const c = canvasOf(src, w, h);
+  let pts: [number, number][][];
+  if (await useWorker()) {
+    const r = (await ask({ type: 'points', img: c.getContext('2d')!.getImageData(0, 0, c.width, c.height) })) as { points?: [number, number][][]; error?: string };
+    if (r.error) throw new Error(r.error);
+    pts = r.points ?? [];
+  } else {
+    const f = await loadFaceApi();
+    const found = await f.detectAllFaces(c, new f.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 40 })).withFaceLandmarks();
+    pts = found.map((r) => r.landmarks.positions.map((p) => [p.x, p.y] as [number, number]));
+  }
+  const k = w / c.width;
+  return pts.map((face) => face.map(([x, y]) => [x * k, y * k] as [number, number]));
+}
+
 function dist(a: number[], b: number[]) {
   let s = 0;
   for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;

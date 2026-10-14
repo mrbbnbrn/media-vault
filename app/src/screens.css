@@ -676,3 +676,19 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .tagman-palette button.none { background: transparent; border: 1px solid var(--line-2); color: var(--faint); }
 .btn.ghost.danger-text { color: var(--danger); }
 .look-tile.small { width: 120px; height: 120px; }
+
+/* ---- AI upscaler (components/Upscale.tsx) ---------------------------------------- */
+.upscaled-layer { position: absolute; inset: 0; }
+.upscaled-layer.hide { visibility: hidden; }
+.upscale-ctl { display: inline-flex; align-items: center; gap: 6px; }
+.upscale-ctl .pbtn { gap: 6px; font-size: 13px; }
+.upscale-ctl .pbtn.dim { opacity: 0.6; }
+.upscale-ctl .up-models button { min-width: 0; min-height: 30px; padding: 0 9px; font-size: 12px; }
+.upscale-bar { position: absolute; left: 50%; bottom: 128px; transform: translateX(-50%); z-index: 5; display: flex; align-items: center; gap: 10px; padding: 6px 8px 6px 14px; border-radius: 12px; background: rgba(0, 0, 0, 0.78); border: 1px solid rgba(255, 255, 255, 0.1); color: #f0eee9; font-size: 13px; max-width: calc(100% - 40px); animation: pop-in 0.15s ease-out; }
+.upscale-bar > svg { color: var(--accent); flex-shrink: 0; }
+.upscale-bar b { font-weight: 600; white-space: nowrap; }
+.upscale-bar .faint { white-space: nowrap; }
+.upscale-bar.original > svg { color: #c9c7c2; }
+.upscale-bar.note { padding-right: 8px; line-height: 1.45; }
+.upscale-bar .up-progress { width: 120px; height: 4px; border-radius: 2px; background: rgba(255, 255, 255, 0.14); overflow: hidden; flex-shrink: 0; }
+.upscale-bar .up-progress span { display: block; height: 100%; background: var(--accent); transition: width 0.25s; }

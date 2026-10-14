@@ -3,7 +3,7 @@
 import './faceenv';
 import * as faceapi from '@vladmandic/face-api';
 
-type In = { id: number; type: 'init' } | { id: number; type: 'detect'; img: ImageData };
+type In = { id: number; type: 'init' } | { id: number; type: 'detect'; img: ImageData } | { id: number; type: 'points'; img: ImageData };
 
 const MODELS = '/facemodels';
 let ready: Promise<string> | null = null;
@@ -37,6 +37,19 @@ self.onmessage = async (e: MessageEvent<In>) => {
     }
     const tf = faceapi.tf as unknown as { browser: { fromPixels(i: ImageData): unknown }; dispose(t: unknown): void };
     const input = tf.browser.fromPixels(m.img) as Parameters<typeof faceapi.detectAllFaces>[0];
+    if (m.type === 'points') {
+      // The upscaler: the 68 face points of each face (pixels of this image).
+      try {
+        const found = await faceapi
+          .detectAllFaces(input, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 40 }))
+          .withFaceLandmarks();
+        const points = found.map((r) => r.landmarks.positions.map((p) => [p.x, p.y] as [number, number]));
+        self.postMessage({ id: m.id, points });
+      } finally {
+        tf.dispose(input);
+      }
+      return;
+    }
     try {
       const found = await faceapi
         .detectAllFaces(input, new faceapi.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 40 }))

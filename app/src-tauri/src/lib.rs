@@ -30,6 +30,9 @@ mod organize;
 mod similar;
 mod storage;
 mod videotool;
+// The offline AI upscaler in the viewer (optional pack: tools/upscaler).
+mod upscale;
+mod upscale_img;
 mod winshell;
 
 use std::collections::HashMap;
@@ -76,6 +79,8 @@ fn panic_shortcut() -> Shortcut {
 fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     let taken = inner.session.lock().unwrap().take();
     let was_open = taken.is_some();
+    upscale::cancel();
+    upscale::forget_all();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -1868,6 +1873,12 @@ pub fn run() {
             duel_ratings,
             duel_result,
             duel_restore,
+            // offline AI upscaler (upscale.rs)
+            upscale::upscale_info,
+            upscale::upscale_start,
+            upscale::upscale_cancel,
+            upscale::upscale_save,
+            upscale::upscale_forget,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

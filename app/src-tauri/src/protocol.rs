@@ -150,6 +150,16 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
     let Some(id) = id else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
+    // An upscaled picture, from memory (upscale.rs).
+    if what == "upscaled" {
+        return match crate::upscale::shown(id as u64) {
+            Some(png) => {
+                let (r, len) = crate::upscale::reader(png);
+                respond(r, len, "image/png", header_str(req, header::RANGE))
+            }
+            None => plain(StatusCode::NOT_FOUND, "Not found."),
+        };
+    }
     let row: Option<(String, Option<String>, String, Option<String>)> = s
         .db()
         .query_row(

@@ -58,7 +58,11 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
   },
   {
     group: 'Pictures',
-    keys: [['← / →', 'Previous / next item']],
+    keys: [
+      ['← / →', 'Previous / next item'],
+      ['U', 'Upscale ×4 with AI, offline (again: back to the normal picture; while it works: stop)'],
+      ['Hold O', 'Show the original while looking at the upscaled picture'],
+    ],
   },
   {
     group: 'Videos and GIFs',
