@@ -154,6 +154,11 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy
+- `media.copy_of` — a free copy: several items may share one stored file (`object_id`);
+  `copy_of` is the id of the original (NULL = an original). A stored file is only removed
+  when no item uses it any more. `media.note`, `folders.note` — your notes;
+  `media.resume_ms` — where a video was left off; `media.elo`, `media.duels` — duel ranking;
+  `tags.color` — a tag's colour
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings

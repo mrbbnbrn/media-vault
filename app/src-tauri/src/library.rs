@@ -45,12 +45,22 @@ pub struct Item {
     pub deleted_at: Option<i64>,
     /// Videos: a small preview clip exists (for smooth grids).
     pub preview: bool,
+    /// A free copy: the original's id (shares its stored file).
+    pub copy_of: Option<i64>,
+    /// Other items (originals or free copies) share this item's stored file.
+    pub linked: bool,
+    /// Your note.
+    pub note: Option<String>,
+    /// Videos: where you left off (ms).
+    pub resume_ms: Option<i64>,
 }
 
 const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, m.height, m.duration_ms, \
      m.favourite, m.weight, m.thumb_object_id, m.imported_at, m.folder_id, \
      COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at, \
-     IFNULL(m.preview_object_id, '') <> ''";
+     IFNULL(m.preview_object_id, '') <> '', m.copy_of, \
+     EXISTS(SELECT 1 FROM media x WHERE x.object_id = m.object_id AND x.id <> m.id AND x.deleted_at IS NULL), \
+     m.note, m.resume_ms";
 
 fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
     let thumb: Option<String> = r.get(10)?;
@@ -77,6 +87,10 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         views: r.get(14)?,
         deleted_at: r.get(15)?,
         preview: r.get(16)?,
+        copy_of: r.get(17)?,
+        linked: r.get(18)?,
+        note: r.get(19)?,
+        resume_ms: r.get(20)?,
     })
 }
 
@@ -655,6 +669,31 @@ pub struct Orphans {
     pub thumbs: Vec<String>,
 }
 
+/// Keep only the stored files no item uses any more (free copies share them).
+/// Call after the rows are gone.
+pub fn unused_only(conn: &Connection, o: Orphans) -> R<Orphans> {
+    let used = |id: &str| -> R<bool> {
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM media WHERE object_id = ?1 OR thumb_object_id = ?1 OR preview_object_id = ?1)",
+            [id],
+            |r| r.get::<_, bool>(0),
+        )
+        .map_err(e)
+    };
+    let mut out = Orphans::default();
+    for m in o.media {
+        if !used(&m)? && !out.media.contains(&m) {
+            out.media.push(m);
+        }
+    }
+    for t in o.thumbs {
+        if !used(&t)? && !out.thumbs.contains(&t) {
+            out.thumbs.push(t);
+        }
+    }
+    Ok(out)
+}
+
 fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orphans> {
     let mut o = Orphans::default();
     let mut st = conn
@@ -1028,7 +1067,7 @@ pub fn delete_forever(conn: &Connection, ids: &[i64]) -> R<Orphans> {
     .map_err(e)?;
     drop_empty_trashed_folders(&tx)?;
     tx.commit().map_err(e)?;
-    Ok(orphans)
+    unused_only(conn, orphans)
 }
 
 /// Delete a folder in the trash (and what was deleted with it) for good.
@@ -1076,7 +1115,7 @@ pub fn delete_folder_forever(conn: &Connection, id: i64) -> R<Orphans> {
     )
     .map_err(e)?;
     tx.commit().map_err(e)?;
-    Ok(orphans)
+    unused_only(conn, orphans)
 }
 
 pub fn empty_trash(conn: &Connection) -> R<Orphans> {
@@ -1092,7 +1131,7 @@ pub fn empty_trash(conn: &Connection) -> R<Orphans> {
     tx.execute("DELETE FROM folders WHERE deleted_at IS NOT NULL", [])
         .map_err(e)?;
     tx.commit().map_err(e)?;
-    Ok(orphans)
+    unused_only(conn, orphans)
 }
 
 /// Remove things that have been in the trash longer than `days`.

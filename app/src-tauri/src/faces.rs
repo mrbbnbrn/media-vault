@@ -517,6 +517,18 @@ pub fn faces_of(conn: &Connection, media: i64) -> R<Vec<FaceBox>> {
         .map_err(e)
 }
 
+/// Faces of many items at once (for face boxes on the grid), by item.
+pub fn faces_of_many(conn: &Connection, media: &[i64]) -> R<Vec<(i64, Vec<FaceBox>)>> {
+    let mut out = Vec::new();
+    for &m in media.iter().take(2000) {
+        let f = faces_of(conn, m)?;
+        if !f.is_empty() {
+            out.push((m, f));
+        }
+    }
+    Ok(out)
+}
+
 /// Photos in a person's folder with several faces and no answer yet.
 pub fn unsure_items(conn: &Connection, person: i64) -> R<Vec<Item>> {
     let folder_items = library::query_items(conn, &library::ItemFilter { folder: Some(Some(person)), recursive: true, ..Default::default() })?;

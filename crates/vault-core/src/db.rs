@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -325,6 +325,30 @@ fn migrate(conn: &Connection) -> Result<()> {
             ALTER TABLE media ADD COLUMN sharpness REAL;
             ALTER TABLE media ADD COLUMN phash_state INTEGER NOT NULL DEFAULT 0;
             PRAGMA user_version = 8;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
+        }
+    }
+    if v < 9 {
+        // v9: free copies (several items sharing one stored file; copy_of =
+        // the original's id), notes, tag colours, where a video was left off,
+        // and the duel ranking.
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            ALTER TABLE media ADD COLUMN copy_of INTEGER;
+            ALTER TABLE media ADD COLUMN note TEXT;
+            ALTER TABLE media ADD COLUMN resume_ms INTEGER;
+            ALTER TABLE media ADD COLUMN elo REAL;
+            ALTER TABLE media ADD COLUMN duels INTEGER NOT NULL DEFAULT 0;
+            ALTER TABLE folders ADD COLUMN note TEXT;
+            ALTER TABLE tags ADD COLUMN color TEXT;
+            CREATE INDEX IF NOT EXISTS media_object ON media(object_id);
+            PRAGMA user_version = 9;
             COMMIT;
             "#,
         );

@@ -251,6 +251,13 @@ export interface Item {
   deletedAt: number | null;
   /** Videos: a small preview clip exists. */
   preview: boolean;
+  /** A free copy: the original's id. */
+  copyOf: number | null;
+  /** Other items share this item's stored file (original or free copies). */
+  linked: boolean;
+  note: string | null;
+  /** Videos: where you left off (ms). */
+  resumeMs: number | null;
 }
 
 export interface Crumb {
@@ -589,6 +596,8 @@ export const api = {
   facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>
     call<{ folder: number; accepted: { moved: number; tagged: number } }>('faces_new_person', { name, parent, faceIds }),
   facesOf: (media: number) => call<FaceBox[]>('faces_of', { media }),
+  facesOfMany: (media: number[]) => call<[number, FaceBox[]][]>('faces_of_many', { media }),
+  setResume: (id: number, ms: number | null) => call<void>('set_resume', { id, ms }),
   facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),
 
   // smart search

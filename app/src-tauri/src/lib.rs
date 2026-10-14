@@ -754,8 +754,9 @@ async fn save_thumb(
             let db = s.db();
             let old = db.query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
             db.execute(
+                // Free copies share the stored file, so they share the thumbnail too.
                 "UPDATE media SET thumb_object_id = ?1, width = COALESCE(?2, width), height = COALESCE(?3, height), \
-                 duration_ms = COALESCE(?4, duration_ms) WHERE id = ?5",
+                 duration_ms = COALESCE(?4, duration_ms) WHERE object_id = (SELECT object_id FROM media WHERE id = ?5)",
                 rusqlite::params![tid.to_hex(), width, height, duration_ms, id],
             )
             .map_err(|e| e.to_string())?;
@@ -850,7 +851,10 @@ async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Resul
         let old: Option<String> = {
             let db = s.db();
             let old = db.query_row("SELECT preview_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
-            db.execute("UPDATE media SET preview_object_id = ? WHERE id = ?", rusqlite::params![pid.to_hex(), id])
+            db.execute(
+                "UPDATE media SET preview_object_id = ?1 WHERE object_id = (SELECT object_id FROM media WHERE id = ?2)",
+                rusqlite::params![pid.to_hex(), id],
+            )
                 .map_err(|e| e.to_string())?;
             // Smart search looks at the clip's moments too: analyse again.
             let _ = clip::reset(&db, id);
@@ -1292,6 +1296,22 @@ async fn faces_of(state: State<'_, Shared>, media: i64) -> Result<Vec<faces::Fac
 }
 
 #[tauri::command]
+async fn faces_of_many(state: State<'_, Shared>, media: Vec<i64>) -> Result<Vec<(i64, Vec<faces::FaceBox>)>, String> {
+    read_db(state.inner(), move |c| faces::faces_of_many(c, &media)).await
+}
+
+/// Where a video was left off (None = from the start). Background save.
+#[tauri::command]
+async fn set_resume(state: State<'_, Shared>, id: i64, ms: Option<i64>) -> Result<(), String> {
+    edit_db_bg(state.inner(), move |c| {
+        c.execute("UPDATE media SET resume_ms = ?1 WHERE id = ?2", rusqlite::params![ms.filter(|m| *m > 0), id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
 async fn faces_unsure(state: State<'_, Shared>, person: i64) -> Result<Vec<library::Item>, String> {
     read_db(state.inner(), move |c| faces::unsure_items(c, person)).await
 }
@@ -1649,6 +1669,8 @@ pub fn run() {
             faces_new_person,
             faces_of,
             faces_unsure,
+            faces_of_many,
+            set_resume,
             clip_needed,
             clip_save,
             clip_failed,
