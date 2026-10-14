@@ -262,7 +262,7 @@ export function column(h: number, r = 0.32): { marble: Geo; gold: Geo; plinth: G
   const baseH = 0.5;
   const capH = 0.75;
   const shaftH = h - baseH - capH - 0.25;
-  const shaft = new THREE.CylinderGeometry(r * 0.9, r, shaftH, 48, 6, true);
+  const shaft = new THREE.CylinderGeometry(r * 0.9, r, shaftH, 48, 1, true);
   const p = shaft.getAttribute('position') as THREE.BufferAttribute;
   for (let i = 0; i < p.count; i++) {
     const x = p.getX(i);
@@ -279,18 +279,18 @@ export function column(h: number, r = 0.32): { marble: Geo; gold: Geo; plinth: G
   shaft.translate(0, 0.25 + baseH + shaftH / 2, 0);
   const marble = norm(shaft);
   const plinth = box(0, 0.125, 0, r * 2.9, 0.25, r * 2.9, 1);
-  const base = lathe([[r * 1.35, 0], [r * 1.35, 0.08], [r * 1.25, 0.12], [r * 1.3, 0.2], [r * 1.12, 0.28], [r * 1.05, 0.34], [r * 1.1, 0.4], [r * 0.98, 0.46], [r * 0.95, baseH]], 32);
+  const base = lathe([[r * 1.35, 0], [r * 1.35, 0.08], [r * 1.25, 0.12], [r * 1.3, 0.2], [r * 1.12, 0.28], [r * 1.05, 0.34], [r * 1.1, 0.4], [r * 0.98, 0.46], [r * 0.95, baseH]], 24);
   base.translate(0, 0.25, 0);
   const top = h - capH;
   const cap = lathe([
     [r * 0.9, 0], [r * 1.0, 0.04], [r * 0.94, 0.08], [r * 0.95, 0.2], [r * 1.05, 0.36], [r * 1.25, 0.5], [r * 1.42, 0.58], [r * 1.42, 0.62],
-  ], 32, 4);
+  ], 24, 4);
   cap.translate(0, top, 0);
   const abacus = box(0, top + 0.68, 0, r * 3.1, 0.14, r * 3.1, 0.5);
   // Volutes: four gilded scrolls under the corners of the abacus.
   const vol: Geo[] = [];
   for (let k = 0; k < 4; k++) {
-    const t = new THREE.TorusGeometry(r * 0.22, r * 0.08, 8, 16);
+    const t = new THREE.TorusGeometry(r * 0.22, r * 0.08, 6, 12);
     t.rotateY(Math.PI / 4 + (k * Math.PI) / 2);
     const a = Math.PI / 4 + (k * Math.PI) / 2;
     t.translate(Math.cos(a) * r * 1.35, top + 0.5, Math.sin(a) * r * 1.35);
@@ -318,7 +318,7 @@ export function stanchion(): Geo {
   return lathe([
     [0, 0], [0.17, 0], [0.17, 0.02], [0.14, 0.05], [0.06, 0.08], [0.03, 0.12], [0.022, 0.16], [0.022, 0.86], [0.035, 0.88], [0.03, 0.9],
     [0.05, 0.93], [0.055, 0.96], [0.04, 0.99], [0.012, 1.01], [0, 1.02],
-  ], 20);
+  ], 14);
 }
 
 /** A sagging velvet rope between two post tops. */
@@ -358,7 +358,7 @@ export function chandelier(lo = false): ChandelierGeo {
     [0, -0.62], [0.03, -0.58], [0.05, -0.5], [0.03, -0.44], [0.07, -0.38], [0.13, -0.3], [0.16, -0.2], [0.14, -0.12], [0.09, -0.06], [0.05, 0],
     [0.04, 0.1], [0.07, 0.16], [0.06, 0.22], [0.035, 0.3], [0.035, 0.5], [0.08, 0.55], [0.1, 0.6], [0.06, 0.66], [0.03, 0.72], [0.03, 0.88],
     [0.06, 0.92], [0.06, 0.96], [0.02, 1.0], [0, 1.0],
-  ], lo ? 10 : 16));
+  ], lo ? 8 : 12));
   // Crown ring at the top.
   const crown = new THREE.TorusGeometry(0.26, 0.012, 4, lo ? 12 : 24);
   crown.rotateX(Math.PI / 2);
@@ -380,7 +380,7 @@ export function chandelier(lo = false): ChandelierGeo {
       const p = (r: number, yy: number) => dir.clone().multiplyScalar(r).setY(yy);
       // S-shaped arm.
       const curve = new THREE.CatmullRomCurve3([p(0.06, y - 0.12), p(R * 0.35, y - 0.2), p(R * 0.75, y - 0.16), p(R * 0.98, y - 0.04), p(R, y + rise)]);
-      brass.push(norm(new THREE.TubeGeometry(curve, lo ? 6 : 12, 0.014 * scale, lo ? 4 : 5, false)));
+      brass.push(norm(new THREE.TubeGeometry(curve, lo ? 4 : 8, 0.014 * scale, lo ? 3 : 5, false)));
       // A small scroll under the arm.
       if (!lo) {
         const sc = new THREE.TorusGeometry(0.05 * scale, 0.008 * scale, 4, 10, Math.PI * 1.4);
