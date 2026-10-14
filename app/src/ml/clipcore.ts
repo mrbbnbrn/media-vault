@@ -20,6 +20,9 @@ export const FILES = {
   tokenizer: 'clip-text-tokenizer.json',
   tokenizerConfig: 'clip-text-tokenizer_config.json',
   dense: 'clip-text-dense.safetensors',
+  enText: 'clip-en-text.onnx',
+  enTokenizer: 'clip-en-tokenizer.json',
+  enTokenizerConfig: 'clip-en-tokenizer_config.json',
 };
 
 const MEAN = [0.48145466, 0.4578275, 0.40821073];
@@ -154,4 +157,58 @@ export class ClipText {
     }
     return normalize(y);
   }
+}
+
+/** OpenAI CLIP's own text model: the best at English words (including
+ *  everyday and adult vocabulary the multilingual model learned less well). */
+export class ClipTextEn {
+  private constructor(private ort: Ort, private session: OrtNS.InferenceSession, private tokenizer: Tokenizer) {}
+
+  static async create(ort: Ort, load: LoadFile): Promise<ClipTextEn> {
+    await initOrt(ort, load);
+    const json = (b: ArrayBuffer) => JSON.parse(new TextDecoder().decode(b));
+    const [model, tok, cfg] = await Promise.all([load(FILES.enText), load(FILES.enTokenizer), load(FILES.enTokenizerConfig)]);
+    const session = await ort.InferenceSession.create(new Uint8Array(model), { executionProviders: ['wasm'] });
+    return new ClipTextEn(ort, session, new Tokenizer(json(tok), json(cfg)));
+  }
+
+  async embed(text: string): Promise<Float32Array> {
+    let ids = this.tokenizer.encode(text.trim().toLowerCase()).ids;
+    if (ids.length > MAX_TOKENS) ids = [...ids.slice(0, MAX_TOKENS - 1), ids[ids.length - 1]];
+    const n = ids.length;
+    const feeds: Record<string, OrtNS.Tensor> = {};
+    for (const name of this.session.inputNames) {
+      const data = name === 'input_ids' ? BigInt64Array.from(ids.map(BigInt)) : new BigInt64Array(n).fill(1n);
+      feeds[name] = new this.ort.Tensor('int64', data, [1, n]);
+    }
+    const out = await this.session.run(feeds);
+    const t = out.text_embeds ?? out[this.session.outputNames[0]];
+    return normalize(t.data as Float32Array);
+  }
+
+  /** Plain English (every word a known English word)? Other languages are
+   *  left to the multilingual model. */
+  isEnglish(q: string): boolean {
+    if (!/^[\x20-\x7e]+$/.test(q) || !q.trim()) return false;
+    const toks = this.tokenizer.encode(q.trim().toLowerCase()).tokens.slice(1, -1);
+    return toks.length > 0 && toks.every((t) => t.endsWith('</w>'));
+  }
+
+  async embedQuery(q: string): Promise<Float32Array> {
+    const sum = new Float32Array(DIM);
+    for (const p of [q, `a photo of ${q}`]) {
+      const v = await this.embed(p);
+      for (let i = 0; i < DIM; i++) sum[i] += v[i];
+    }
+    return normalize(sum);
+  }
+}
+
+/** Both text models together: the multilingual one for every language,
+ *  the English one (weight `en`) where it understands the words. */
+export function blend(multi: Float32Array, english: Float32Array | null, en = 1): Float32Array {
+  if (!english) return multi;
+  const out = new Float32Array(DIM);
+  for (let i = 0; i < DIM; i++) out[i] = multi[i] + en * english[i];
+  return normalize(out);
 }

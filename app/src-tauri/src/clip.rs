@@ -38,16 +38,18 @@ fn normalized(v: &[f32]) -> Option<Vec<f32>> {
 pub struct ClipTask {
     pub id: i64,
     pub kind: String,
+    /// Videos: a preview clip exists, so several moments can be analysed.
+    pub preview: bool,
 }
 
 /// Items that still need analysing (they need a thumbnail first).
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ClipTask>> {
     conn.prepare(
-        "SELECT id, kind FROM media WHERE clip_state = 0 AND deleted_at IS NULL AND thumb_object_id IS NOT NULL \
+        "SELECT id, kind, IFNULL(preview_object_id, '') <> '' FROM media WHERE clip_state = 0 AND deleted_at IS NULL AND thumb_object_id IS NOT NULL \
          AND kind IN ('image', 'gif', 'video') ORDER BY id DESC LIMIT ?",
     )
     .map_err(e)?
-    .query_map([limit], |r| Ok(ClipTask { id: r.get(0)?, kind: r.get(1)? }))
+    .query_map([limit], |r| Ok(ClipTask { id: r.get(0)?, kind: r.get(1)?, preview: r.get(2)? }))
     .map_err(e)?
     .collect::<rusqlite::Result<Vec<_>>>()
     .map_err(e)
@@ -71,10 +73,21 @@ pub fn status(conn: &Connection) -> R<ClipStatus> {
     })
 }
 
+/// Up to this many vectors per item (videos: the thumbnail plus moments
+/// from its preview clip). The best-matching one counts.
+pub const MAX_VECTORS: usize = 8;
+
 pub fn save(conn: &Connection, media: i64, vec: &[f32]) -> R<()> {
-    let Some(v) = normalized(vec) else {
+    if vec.is_empty() || !vec.len().is_multiple_of(DIM) || vec.len() / DIM > MAX_VECTORS {
         return failed(conn, media);
-    };
+    }
+    let mut v = Vec::with_capacity(vec.len());
+    for chunk in vec.chunks(DIM) {
+        match normalized(chunk) {
+            Some(n) => v.extend(n),
+            None => return failed(conn, media),
+        }
+    }
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute("INSERT OR REPLACE INTO clip(media_id, vec) VALUES (?, ?)", params![media, to_blob(&v)]).map_err(e)?;
     tx.execute("UPDATE media SET clip_state = 1 WHERE id = ?", [media]).map_err(e)?;
@@ -116,7 +129,11 @@ pub fn search(conn: &Connection, query: &[f32], folder: Option<i64>, limit: usiz
         .filter_map(|r| r.ok())
         .map(|(id, b)| {
             let v = from_blob(&b);
-            (id, v.iter().zip(&q).map(|(a, b)| a * b).sum::<f32>())
+            let best = v
+                .chunks(DIM)
+                .map(|c| c.iter().zip(&q).map(|(a, b)| a * b).sum::<f32>())
+                .fold(f32::MIN, f32::max);
+            (id, best)
         })
         .collect();
     if scored.is_empty() {
@@ -187,6 +204,14 @@ mod tests {
         assert_eq!(inside.iter().map(|h| h.item.id).collect::<Vec<_>>(), vec![beach2]);
         library::trash_items(&c, &[beach]).unwrap();
         assert_eq!(search(&c, &vec_at(0, 0, 0.0), None, 1).unwrap()[0].item.id, beach2);
+        // A video with several moments: the best one counts.
+        let vid = add(&c, None, "video");
+        let mut both = vec_at(5, 6, 0.0);
+        both.extend(vec_at(0, 2, 0.0));
+        save(&c, vid, &both).unwrap();
+        let h = search(&c, &vec_at(0, 0, 0.0), None, 10).unwrap();
+        assert_eq!(h[0].item.id, vid, "its second moment matches exactly");
+        save(&c, vid, &vec![0.5; DIM * 9]).unwrap(); // too many vectors: refused
         reset(&c, cat).unwrap();
         assert_eq!(needed(&c, 10).unwrap().len(), 1);
     }

@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -289,6 +289,23 @@ fn migrate(conn: &Connection) -> Result<()> {
             BEGIN;
             ALTER TABLE media ADD COLUMN preview_object_id TEXT;
             PRAGMA user_version = 6;
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = r {
+            let _ = conn.execute_batch("ROLLBACK;");
+            return Err(e.into());
+        }
+    }
+    if v < 7 {
+        // v7: smart search also looks at several moments of each video
+        // (from its preview clip); videos that have one are analysed again.
+        let r = conn.execute_batch(
+            r#"
+            BEGIN;
+            DELETE FROM clip WHERE media_id IN (SELECT id FROM media WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '');
+            UPDATE media SET clip_state = 0 WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '';
+            PRAGMA user_version = 7;
             COMMIT;
             "#,
         );

@@ -148,8 +148,9 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   `face_rejects(face_id, folder_id)` remembers "not this person".
 - `media.preview_object_id` — a video's preview clip: one JPEG holding 48 small frames
   (8 across, 6 down), stored like a thumbnail. Can be deleted; the app makes it again.
-- `clip(media_id, vec)` — smart-search vector of an item: 512 little-endian float32 values
-  (unit length, CLIP ViT-B/32 space)
+- `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512
+  little-endian float32 values (each unit length, CLIP ViT-B/32 space); videos have the
+  thumbnail plus moments from their preview clip
 - `objects(object_id, kind, pack, offset, length)` — where each object is in the packs
 - `tags`, `media_tags`, `folder_tags` — tags; folder tags apply to everything inside
 - `presets`, `layouts`, `settings` — app settings

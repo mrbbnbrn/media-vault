@@ -2,7 +2,8 @@
 // "kırmızı araba"). Fully offline. Needs the model files of the full package
 // (a `models` folder next to MediaVault.exe).
 
-import { api, modelUrl, thumbUrl } from '../api';
+import { api, modelUrl, previewUrl, thumbUrl } from '../api';
+import { COLS, ROWS } from '../previews';
 import { FILES, SIZE, coverRect, toPixelValues } from './clipcore';
 
 let worker: Worker | null = null;
@@ -46,19 +47,45 @@ export function embedQuery(q: string): Promise<Float32Array> {
 }
 
 /** A picture (any drawable) -> CLIP's input. */
-export function pixelsOf(src: CanvasImageSource, w: number, h: number): Float32Array {
+export function pixelsOf(src: CanvasImageSource, w: number, h: number, part?: { x: number; y: number }): Float32Array {
   const c = document.createElement('canvas');
   c.width = SIZE;
   c.height = SIZE;
   const g = c.getContext('2d', { willReadFrequently: true })!;
   g.imageSmoothingQuality = 'high';
   const r = coverRect(w, h);
-  g.drawImage(src, r.x, r.y, r.w, r.h);
+  if (part) g.drawImage(src, part.x, part.y, w, h, r.x, r.y, r.w, r.h);
+  else g.drawImage(src, r.x, r.y, r.w, r.h);
   return toPixelValues(g.getImageData(0, 0, SIZE, SIZE).data, 4);
 }
 
 export function embedPixels(px: Float32Array): Promise<Float32Array> {
   return ask({ type: 'image', px }, [px.buffer]);
+}
+
+async function loadImg(url: string): Promise<HTMLImageElement> {
+  const img = new Image();
+  img.crossOrigin = 'anonymous';
+  img.src = url;
+  await img.decode();
+  return img;
+}
+
+/** Videos with a preview clip: the thumbnail plus one frame from each of the
+ *  clip's four moments, so a scene anywhere in the video can be found. */
+async function embedVideo(id: number): Promise<Float32Array> {
+  const out: Float32Array[] = [await embedItem(id)];
+  const strip = await loadImg(previewUrl(id));
+  const cw = strip.naturalWidth / COLS;
+  const ch = strip.naturalHeight / ROWS;
+  for (const i of [0, 12, 24, 36]) {
+    const px = pixelsOf(strip, cw, ch, { x: (i % COLS) * cw, y: Math.floor(i / COLS) * ch });
+    out.push(await embedPixels(px));
+  }
+  strip.src = '';
+  const all = new Float32Array(out.length * out[0].length);
+  out.forEach((v, k) => all.set(v, k * v.length));
+  return all;
 }
 
 async function embedItem(id: number): Promise<Float32Array> {
@@ -105,7 +132,7 @@ export function startClipIndexer(): () => void {
     }
     let notified = 0;
     while (!stopped) {
-      let tasks: { id: number }[] = [];
+      let tasks: { id: number; kind: string; preview: boolean }[] = [];
       try {
         tasks = await api.clipNeeded(16);
       } catch {
@@ -118,7 +145,7 @@ export function startClipIndexer(): () => void {
       for (const t of tasks) {
         if (stopped) break;
         try {
-          const v = await embedItem(t.id);
+          const v = t.kind === 'video' && t.preview ? await embedVideo(t.id) : await embedItem(t.id);
           if (stopped) break;
           await api.clipSave(t.id, Array.from(v));
         } catch (e) {

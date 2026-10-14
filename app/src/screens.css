@@ -396,3 +396,4 @@ body.clean-fs .toast { display: none; }
 /* Preview clips: a strip of small frames shown one at a time. */
 .clip-frame { overflow: hidden; display: block; }
 .clip { position: absolute; display: block; background-size: 800% 600%; background-repeat: no-repeat; }
+body.dragging, body.dragging * { cursor: grabbing !important; }

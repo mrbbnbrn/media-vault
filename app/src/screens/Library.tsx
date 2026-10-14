@@ -27,6 +27,7 @@ import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
 import { StatsView } from '../components/StatsView';
 import { TodaysPickCard, useTodaysPick } from '../components/TodaysPick';
 import { setDropHandler } from '../drop';
+import { startMoveDrag, targetFolder } from '../dragmove';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
@@ -43,7 +44,7 @@ export type LibView =
   | { kind: 'timeline' }
   | { kind: 'trash' }
   | { kind: 'stats' }
-  | { kind: 'search'; tags: string[]; names: string[] }
+  | { kind: 'search'; tags: string[]; names: string[]; people: number[] }
   | { kind: 'smart'; q: string }
   | { kind: 'people' };
 
@@ -106,8 +107,12 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
   }
 }
 
-function searchTitle(v: { tags: string[]; names: string[] }) {
+type SearchValue = { tags: string[]; names: string[]; people: number[] };
+const NO_SEARCH: SearchValue = { tags: [], names: [], people: [] };
+
+function searchTitle(v: SearchValue, folders: FolderCard[]) {
   const parts = [
+    ...v.people.map((p) => folders.find((f) => f.id === p)?.name ?? 'person'),
     ...v.tags.map((t) => `tagged “${t}”`),
     ...v.names.map((n) => `name contains “${n}”`),
   ];
@@ -235,7 +240,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
         else if (view.kind === 'all' || view.kind === 'timeline') setItems(await api.queryItems({}));
         else if (view.kind === 'favourites') setItems(await api.queryItems({ favouritesOnly: true }));
         else if (view.kind === 'recent') setItems(await api.queryItems({ recentDays: 14 }));
-        else if (view.kind === 'search') setItems(await api.queryItems({ tags: view.tags, names: view.names }));
+        else if (view.kind === 'search') setItems(await api.queryItems({ tags: view.tags, names: view.names, people: view.people ?? [] }));
         else if (view.kind === 'trash') {
           const t2 = await api.trashView();
           setTrash(t2);
@@ -293,6 +298,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       } else if (e.key === 'Delete' && keyActions.current.selected.size) {
         e.preventDefault();
         keyActions.current.del();
+      } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !e.shiftKey) {
+        e.preventDefault();
+        keyActions.current.selectAll();
+      } else if (e.key === 'Escape' && keyActions.current.selected.size) {
+        keyActions.current.selectNone();
       }
     };
     window.addEventListener('keydown', onKey);
@@ -423,9 +433,11 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   });
 
   // The Delete key acts on the current selection.
-  const keyActions = useRef({ selected, del: () => {} });
+  const keyActions = useRef({ selected, del: () => {}, selectAll: () => {}, selectNone: () => {} });
   keyActions.current = {
     selected,
+    selectAll: () => selectAll(),
+    selectNone: () => setSelected(new Set()),
     del: () => {
       const ids = [...selected];
       if (view.kind === 'trash') setDialog({ t: 'forever', ids, folder: null, what: plural(ids.length, 'item') });
@@ -510,6 +522,12 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
   const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
   const pinned = folders.filter((f) => f.pinned);
   const selIds = [...selected];
+  const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
+  function selectAll() {
+    if (!gridView || !shown.length) return;
+    setSelected(new Set(shown.map((i) => i.id)));
+    setAnchor(shown[0].id);
+  }
   const gridView = !['folders', 'stats', 'people'].includes(view.kind);
 
   const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
@@ -586,6 +604,28 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     } catch (e) {
       setError(errText(e));
     }
+  };
+
+  /** Drag a folder (sidebar, pinned list or card) onto another folder or Top level. */
+  const startFolderDrag = (e: React.PointerEvent, f: FolderCard) => {
+    startMoveDrag(e, {
+      label: (t) => {
+        if (!t) return `“${f.name}”`;
+        const to = targetFolder(t);
+        return `Move “${f.name}” into ${to === null ? 'Top level' : `“${folders.find((x) => x.id === to)?.name ?? 'folder'}”`}`;
+      },
+      canDrop: (t) => {
+        const to = targetFolder(t);
+        if (to === f.parentId) return false;
+        if (to === null) return true;
+        if (to === f.id) return false;
+        const target = folders.find((x) => x.id === to);
+        return !!target && !target.path.some((c) => c.id === f.id);
+      },
+      onDrop: (t) => {
+        moveFolder(f, targetFolder(t)).catch((err) => setError(errText(err)));
+      },
+    });
   };
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
@@ -679,7 +719,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
     );
   };
 
-  const heading = view.kind === 'search' ? `Search: ${searchTitle(view)}` : viewTitle(view, folder);
+  const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}` : viewTitle(view, folder);
   const totalImporting = Object.values(jobs);
   const showNote = note && (Date.now() - note.at < 8000 || note.at === 0);
   return (
@@ -689,8 +729,9 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <LockIcon size={18} />
           <span>{s.name}</span>
         </div>
-        <SearchBar tags={tags} value={view.kind === 'search' ? view : { tags: [], names: [] }}
-          onChange={(v) => setView(v.tags.length || v.names.length ? { kind: 'search', ...v } : { kind: 'folders' })}
+        <SearchBar tags={tags} folders={folders} value={view.kind === 'search' ? { ...view, people: view.people ?? [] } : NO_SEARCH}
+          onChange={(v) => setView(v.tags.length || v.names.length || v.people.length ? { kind: 'search', ...v } : { kind: 'folders' })}
+          onOpenFolder={openFolder}
           smart={smartOk && !!cfg.smartSearch} smartQuery={smart ? view.q : ''}
           onSmart={(q) => setView(q ? { kind: 'smart', q } : { kind: 'folders' })} />
         <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
@@ -736,7 +777,8 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
               onContextMenu={(e) => folderContext(e, f)}>
               <span className="twisty" />
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} title={f.path.map((c) => c.name).concat(f.name).join(' › ')}>
+              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)}
+                title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -759,7 +801,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                   return n;
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)}>
+              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -793,9 +835,9 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
           <div className="lib-head">
             {view.kind === 'folder' && (
               <span className="crumbs">
-                <button type="button" className="link" onClick={() => setView({ kind: 'folders' })}>All folders</button>
+                <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })}>All folders</button>
                 {folder?.path.map((c) => (
-                  <span key={c.id}> › <button type="button" className="link" onClick={() => openFolder(c.id)}>{c.name}</button></span>
+                  <span key={c.id}> › <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)}>{c.name}</button></span>
                 ))}
                 {' ›'}
               </span>
@@ -825,6 +867,12 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                   <button type="button" className={!everyFolder ? 'on' : ''} onClick={() => setEveryFolder(false)}>Top level</button>
                   <button type="button" className={everyFolder ? 'on' : ''} onClick={() => setEveryFolder(true)}>Every folder</button>
                 </div>
+              )}
+              {gridView && shown.length > 0 && (
+                <button type="button" className="btn btn-sm" title={allSelected ? 'Clear the selection (Esc)' : 'Select everything shown here (Ctrl+A)'}
+                  onClick={() => (allSelected ? setSelected(new Set()) : selectAll())}>
+                  {allSelected ? 'Select none' : 'Select all'}
+                </button>
               )}
               {gridView && !inTrash && (
                 <>
@@ -911,7 +959,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
-                    onClick={() => openFolder(f.id)} aria-label={`Open ${f.name}`}>
+                    onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} aria-label={`Open ${f.name}`}>
                     {coverView(f)}
                     {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>
@@ -967,6 +1015,9 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
       {selected.size > 0 && (
         <div className="selbar" role="toolbar" aria-label="Selection">
           <b>{selected.size} selected</b>
+          {!allSelected && shown.length > selected.size && (
+            <button type="button" className="link" onClick={selectAll} title="Ctrl+A">Select all {shown.length.toLocaleString()}</button>
+          )}
           {inTrash ? (
             <>
               <button type="button" className="btn btn-sm" onClick={() => restoreItems(selIds)}><RestoreIcon /> Restore</button>
@@ -1118,7 +1169,7 @@ export function Library({ nav, view, setView }: { nav: Nav; view: LibView; setVi
 }
 
 function SearchBar(props: {
-  tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void;
+  tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void;
   smart: boolean; smartQuery: string; onSmart: (q: string) => void;
 }) {
   if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} />;
@@ -1146,64 +1197,92 @@ function SmartBar(props: { query: string; onSearch: (q: string) => void }) {
   );
 }
 
-function TagNameBar(props: { tags: TagCount[]; value: { tags: string[]; names: string[] }; onChange: (v: { tags: string[]; names: string[] }) => void }) {
+function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void }) {
   const [text, setText] = useState('');
   const [focus, setFocus] = useState(false);
   const [hi, setHi] = useState(0);
-  const q = text.trim().toLowerCase();
-  const { tags, names } = props.value;
+  const fold = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '');
+  const q = fold(text.trim());
+  const { tags, names, people } = props.value;
+  const starts = (x: string) => Number(!fold(x).startsWith(q));
   const tagHits = props.tags
     .filter((t) => !tags.some((v) => v.toLowerCase() === t.name.toLowerCase()))
-    .filter((t) => !q || t.name.toLowerCase().includes(q))
-    .sort((a, b) => Number(!a.name.toLowerCase().startsWith(q)) - Number(!b.name.toLowerCase().startsWith(q)))
+    .filter((t) => !q || fold(t.name).includes(q))
+    .sort((a, b) => starts(a.name) - starts(b.name))
     .slice(0, 8);
-  type Opt = { t: 'tag'; name: string; hint: string } | { t: 'name'; text: string };
-  const exact = tagHits.find((t) => t.name.toLowerCase() === q);
-  const tagOpts: Opt[] = tagHits.map((t) => ({
-    t: 'tag', name: t.name,
-    hint: `${t.items ? `${t.items} items` : ''}${t.items && t.folders ? ' · ' : ''}${t.folders ? `${t.folders} folders` : ''}`,
-  }));
-  const nameOpt: Opt[] = q ? [{ t: 'name', text: text.trim() }] : [];
-  const opts: Opt[] = exact ? [tagOpts[0], ...nameOpt, ...tagOpts.slice(1)] : [...nameOpt, ...tagOpts];
+  // People (person folders) and other folders whose name matches.
+  const personHits = props.folders
+    .filter((f) => f.person && !people.includes(f.id) && (!q || fold(f.name).includes(q)))
+    .sort((a, b) => starts(a.name) - starts(b.name))
+    .slice(0, q ? 5 : 3);
+  const folderHits = q
+    ? props.folders.filter((f) => !f.person && fold(f.name).includes(q)).sort((a, b) => starts(a.name) - starts(b.name)).slice(0, 5)
+    : [];
+  type Opt =
+    | { t: 'person'; id: number; name: string; hint: string }
+    | { t: 'tag'; name: string; hint: string }
+    | { t: 'folder'; id: number; name: string; hint: string }
+    | { t: 'name'; text: string };
+  const opts: Opt[] = [
+    ...personHits.map((f): Opt => ({ t: 'person', id: f.id, name: f.name, hint: 'person' })),
+    ...tagHits.map((t): Opt => ({
+      t: 'tag', name: t.name,
+      hint: `${t.items ? `${t.items} items` : ''}${t.items && t.folders ? ' · ' : ''}${t.folders ? `${t.folders} folders` : ''}`,
+    })),
+    ...folderHits.map((f): Opt => ({ t: 'folder', id: f.id, name: f.name, hint: f.path.length ? f.path.map((c) => c.name).join(' › ') : 'open folder' })),
+    ...(q ? [{ t: 'name', text: text.trim() } as Opt] : []),
+  ];
   const choose = (o: Opt | undefined) => {
     if (!o) return;
-    if (o.t === 'tag') props.onChange({ tags: [...tags, o.name], names });
-    else props.onChange({ tags, names: [...names, o.text] });
+    if (o.t === 'person') props.onChange({ tags, names, people: [...people, o.id] });
+    else if (o.t === 'tag') props.onChange({ tags: [...tags, o.name], names, people });
+    else if (o.t === 'folder') props.onOpenFolder(o.id);
+    else props.onChange({ tags, names: [...names, o.text], people });
     setText('');
     setHi(0);
   };
+  const any = tags.length || names.length || people.length;
+  const personName = (id: number) => props.folders.find((f) => f.id === id)?.name ?? 'person';
   return (
     <div className="search">
       <SearchIcon />
+      {people.map((p) => (
+        <span key={`p${p}`} className="chip accent"><FaceIcon size={11} /> {personName(p)}
+          <button type="button" aria-label={`Remove ${personName(p)}`} onClick={() => props.onChange({ tags, names, people: people.filter((x) => x !== p) })}><CloseIcon size={11} /></button>
+        </span>
+      ))}
       {tags.map((t) => (
         <span key={`t${t}`} className="chip accent"><TagIcon size={11} /> {t}
-          <button type="button" aria-label={`Remove tag ${t}`} onClick={() => props.onChange({ tags: tags.filter((x) => x !== t), names })}><CloseIcon size={11} /></button>
+          <button type="button" aria-label={`Remove tag ${t}`} onClick={() => props.onChange({ tags: tags.filter((x) => x !== t), names, people })}><CloseIcon size={11} /></button>
         </span>
       ))}
       {names.map((n) => (
         <span key={`n${n}`} className="chip name">“{n}” in name
-          <button type="button" aria-label={`Remove ${n}`} onClick={() => props.onChange({ tags, names: names.filter((x) => x !== n) })}><CloseIcon size={11} /></button>
+          <button type="button" aria-label={`Remove ${n}`} onClick={() => props.onChange({ tags, names: names.filter((x) => x !== n), people })}><CloseIcon size={11} /></button>
         </span>
       ))}
-      <label htmlFor="lib-search" className="sr-only">Search by tag or file name</label>
-      <input id="lib-search" value={text} placeholder={tags.length || names.length ? 'Narrow down…' : 'Search tags or file names…'} autoComplete="off"
+      <label htmlFor="lib-search" className="sr-only">Search people, tags, folders or file names</label>
+      <input id="lib-search" value={text} placeholder={any ? 'Narrow down…' : 'Search people, tags, folders or file names…'} autoComplete="off"
         onFocus={() => setFocus(true)} onBlur={() => setTimeout(() => setFocus(false), 150)}
         onChange={(e) => { setText(e.target.value); setHi(0); }}
         onKeyDown={(e) => {
           if (e.key === 'Enter') { e.preventDefault(); choose(opts[hi]); }
           else if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, opts.length - 1)); }
           else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
-          else if (e.key === 'Backspace' && !text && (tags.length || names.length)) {
-            if (names.length) props.onChange({ tags, names: names.slice(0, -1) });
-            else props.onChange({ tags: tags.slice(0, -1), names });
+          else if (e.key === 'Backspace' && !text && any) {
+            if (names.length) props.onChange({ tags, names: names.slice(0, -1), people });
+            else if (tags.length) props.onChange({ tags: tags.slice(0, -1), names, people });
+            else props.onChange({ tags, names, people: people.slice(0, -1) });
           } else if (e.key === 'Escape') (e.target as HTMLInputElement).blur();
         }} />
       {focus && opts.length > 0 && (
         <div className="menu suggest" role="listbox">
           {opts.map((o, i) => (
-            <button key={o.t === 'tag' ? `t${o.name}` : 'name'} type="button" role="option" aria-selected={i === hi} className={`menu-item${i === hi ? ' on' : ''}`}
-              onMouseDown={(e) => { e.preventDefault(); choose(o); }}>
-              {o.t === 'tag' ? <><TagIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
+            <button key={o.t === 'name' ? 'name' : `${o.t}${'id' in o ? o.id : o.name}`} type="button" role="option" aria-selected={i === hi}
+              className={`menu-item${i === hi ? ' on' : ''}`} onMouseDown={(e) => { e.preventDefault(); choose(o); }}>
+              {o.t === 'person' ? <><FaceIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
+                : o.t === 'tag' ? <><TagIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
+                : o.t === 'folder' ? <><FolderIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
                 : <><SearchIcon size={13} /> File name contains “{o.text}”</>}
             </button>
           ))}

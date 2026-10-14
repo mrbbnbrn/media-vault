@@ -610,6 +610,16 @@ mod tests {
         let m = accept(&c, &fm, mehmet).unwrap();
         assert_eq!(m.moved, 1, "the shared photo stays in Ayşe's folder");
         assert_eq!(library::item_tags(&c, both).unwrap().own, vec!["Ayşe", "Mehmet"]);
+        // Searching for a person finds their folder and every confirmed picture.
+        let found: HashSet<i64> = library::query_items(&c, &library::ItemFilter { people: vec![mehmet], ..Default::default() })
+            .unwrap()
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert!(found.contains(&m1) && found.contains(&both), "{found:?}");
+        assert_eq!(found.len(), 4, "two in the folder from the start, m1 moved in, the shared photo confirmed");
+        let both_people = library::query_items(&c, &library::ItemFilter { people: vec![mehmet, ayse], ..Default::default() }).unwrap();
+        assert_eq!(both_people.iter().map(|i| i.id).collect::<Vec<_>>(), vec![both]);
 
         // "Not this person" sticks, even after scanning again.
         let s = add(&c, None);

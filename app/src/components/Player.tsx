@@ -14,7 +14,7 @@ import { captureVideoFrame, derivedName } from '../clips';
 import { formatTime, kickThumbnails, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
-import { rememberSound, saveViewerPrefs, useViewerPrefs } from '../prefs';
+import { rememberSound, saveViewerPrefs, unmuteVolume, useViewerPrefs } from '../prefs';
 import { Dropdown } from './Dialogs';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
@@ -487,6 +487,8 @@ export function Player(props: PlayerProps) {
 
   const set = (patch: Partial<PlaybackSettings>) => {
     const next = { ...s, ...patch };
+    // Turning sound on at volume 0 starts at 20%. (Dragging the slider itself to 0 stays 0.)
+    if (patch.muted === false && !('volume' in patch)) next.volume = unmuteVolume(next.volume);
     if ('muted' in patch || 'volume' in patch) rememberSound(next.muted, next.volume);
     onSettings(next);
   };

@@ -11,6 +11,7 @@ import {
   clipFpsChanged, onPreviewMade, playClip, preferPreviews, setWantedVideos, stopClip, unwatchVideo, usePreviewMode, watchVideo,
 } from '../previews';
 import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayout';
+import { startMoveDrag } from '../dragmove';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
 
@@ -43,7 +44,6 @@ export function MediaGrid(props: {
   const [width, setWidth] = useState(800);
   const [view, setView] = useState({ top: 0, bottom: 1200 });
   const [ready, setReady] = useState<Set<number>>(new Set());
-  const [drag, setDrag] = useState<{ x: number; y: number; n: number; over: string | null } | null>(null);
   const mode = props.layout ?? 'grid';
 
   useEffect(() => onThumb((id) => setReady((r) => new Set(r).add(id))), []);
@@ -125,43 +125,16 @@ export function MediaGrid(props: {
     props.onSelect(sel, item.id);
   };
 
-  // Pointer-based dragging (works the same with files dropped from Windows enabled).
+  // Dragging the selection onto any folder moves it there.
   const startDrag = (e: React.PointerEvent, item: Item) => {
-    if (e.button !== 0 || !props.onDropOnFolder) return;
-    const x0 = e.clientX;
-    const y0 = e.clientY;
-    let active = false;
-    let over: HTMLElement | null = null;
+    if (!props.onDropOnFolder) return;
     const ids = props.selected.has(item.id) ? [...props.selected] : [item.id];
-    const move = (ev: PointerEvent) => {
-      if (!active && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 7) return;
-      active = true;
-      const el = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>('[data-drop^="folder:"]') ?? null;
-      if (el !== over) {
-        over?.classList.remove('drop-over');
-        el?.classList.add('drop-over');
-        over = el;
-      }
-      setDrag({ x: ev.clientX, y: ev.clientY, n: ids.length, over: el?.dataset.drop ?? null });
-    };
-    const up = () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      over?.classList.remove('drop-over');
-      setDrag(null);
-      if (active && over?.dataset.drop) props.onDropOnFolder?.(ids, over.dataset.drop);
-      if (active) {
-        // Don't treat the end of a drag as a click.
-        const block = (ce: MouseEvent) => {
-          ce.stopPropagation();
-          ce.preventDefault();
-        };
-        window.addEventListener('click', block, { capture: true, once: true });
-        setTimeout(() => window.removeEventListener('click', block, { capture: true }), 50);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
+    const n = `${ids.length} item${ids.length > 1 ? 's' : ''}`;
+    startMoveDrag(e, {
+      label: (t) => (t ? `Move ${n} here` : n),
+      canDrop: (t) => t !== 'folder:' + (item.folderId ?? 'top') || ids.length > 1,
+      onDrop: (t) => props.onDropOnFolder?.(ids, t),
+    });
   };
 
   // The hovered video/GIF uncropped: same scale as in its tile, the tile
@@ -242,11 +215,6 @@ export function MediaGrid(props: {
             : pop.item.kind === 'video'
             ? <video key={pop.item.id} src={mediaUrl(pop.item.id)} muted loop autoPlay playsInline preload="auto" />
             : <img key={pop.item.id} src={mediaUrl(pop.item.id)} alt="" draggable={false} />}
-        </div>
-      )}
-      {drag && (
-        <div className="drag-ghost" style={{ left: drag.x + 14, top: drag.y + 10 }}>
-          {drag.over ? `Move ${drag.n} item${drag.n > 1 ? 's' : ''} here` : `${drag.n} item${drag.n > 1 ? 's' : ''}`}
         </div>
       )}
     </div>

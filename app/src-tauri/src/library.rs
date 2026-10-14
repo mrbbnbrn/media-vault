@@ -338,6 +338,9 @@ pub struct ItemFilter {
     pub names: Vec<String>,
     /// List what is in the trash instead of what is not.
     pub trash: bool,
+    /// Person folders: items in that folder (or below it), or confirmed by
+    /// face recognition to show that person. Several = all of them.
+    pub people: Vec<i64>,
 }
 
 mod double_option {
@@ -436,6 +439,15 @@ pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
         }
         wh.push(format!("m.id IN ({})", vec!["?"; ids.len()].join(",")));
         args.extend(ids.into_iter().map(Value::Integer));
+    }
+    for p in &f.people {
+        let inside = descendants(conn, &[*p])?;
+        wh.push(format!(
+            "(m.folder_id IN ({}) OR m.id IN (SELECT media_id FROM faces WHERE person_id = ?))",
+            vec!["?"; inside.len()].join(",")
+        ));
+        args.extend(inside.into_iter().map(Value::Integer));
+        args.push(Value::Integer(*p));
     }
     let sql = format!(
         "SELECT {ITEM_COLS} FROM media m WHERE {} ORDER BY m.imported_at DESC, m.id DESC",

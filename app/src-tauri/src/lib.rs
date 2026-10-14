@@ -800,6 +800,8 @@ async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Resul
             let old = db.query_row("SELECT preview_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
             db.execute("UPDATE media SET preview_object_id = ? WHERE id = ?", rusqlite::params![pid.to_hex(), id])
                 .map_err(|e| e.to_string())?;
+            // Smart search looks at the clip's moments too: analyse again.
+            let _ = clip::reset(&db, id);
             old
         };
         if let Some(o) = old.filter(|o| !o.is_empty())

@@ -153,6 +153,7 @@ jobs:
             "**First time:** also download, once, and unzip into the same place:" \
             "- the web engine: $repo/tag/$etag (MediaVault-engine-windows.zip)" \
             "- the smart-search models: $repo/tag/models-v1 (MediaVault-models-windows.zip)" \
+            "  (already have the models from before? just add MediaVault-models-english-addon.zip from the same page)" \
             "" \
             "Without them the app still works: it then uses the web engine that comes with Windows, and smart search is off." > notes.md
           gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --draft --notes-file notes.md

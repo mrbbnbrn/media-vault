@@ -35,17 +35,23 @@ export function useViewerPrefs(): ViewerSettings {
 /** Sound settings every new player starts with. */
 export function withSound<T extends { muted: boolean; volume: number }>(s: T): T {
   const v = viewerPrefs();
-  return { ...s, muted: v.muted, volume: v.volume };
+  return { ...s, muted: v.muted, volume: v.soundVolume };
 }
 
 let soundTimer: ReturnType<typeof setTimeout> | null = null;
 /** Remember a mute / volume change for every player (volume drags are saved once they settle). */
 export function rememberSound(muted: boolean, volume: number) {
   const v = viewerPrefs();
-  if (v.muted === muted && v.volume === volume) return;
-  if (config) setPrefsConfig({ ...config, viewer: { ...v, muted, volume } });
+  if (v.muted === muted && v.soundVolume === volume) return;
+  if (config) setPrefsConfig({ ...config, viewer: { ...v, muted, soundVolume: volume } });
   if (soundTimer) clearTimeout(soundTimer);
-  soundTimer = setTimeout(() => saveViewerPrefs({ muted, volume }), 600);
+  soundTimer = setTimeout(() => saveViewerPrefs({ muted, soundVolume: volume }), 600);
+}
+
+/** Unmuting with the volume at 0 gives 20% so there is sound right away. */
+export const UNMUTE_VOLUME = 0.2;
+export function unmuteVolume(volume: number): number {
+  return volume > 0 ? volume : UNMUTE_VOLUME;
 }
 
 export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {

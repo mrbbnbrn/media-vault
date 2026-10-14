@@ -20,7 +20,7 @@ import { setDropHandler } from '../drop';
 import { setCleanFullscreen } from '../fullscreen';
 import { fromItem, fromLocal, type PlayItem } from '../media';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
-import { rememberSound, withSound } from '../prefs';
+import { rememberSound, unmuteVolume, withSound } from '../prefs';
 import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_LAYOUTS } from '../shapes';
 import { SettingsMenu } from './Viewer';
 
@@ -405,8 +405,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             <button type="button" className="pbtn" aria-label="Next" onClick={() => h.next()}><NextIcon size={14} /></button>
             <button type="button" className={`pbtn${muted ? '' : ' on'}`} aria-label={muted ? 'Sound off — turn on' : 'Sound on — mute'}
               onClick={() => {
-                rememberSound(!p.settings.muted, p.settings.volume);
-                update(i, { settings: { ...p.settings, muted: !p.settings.muted } });
+                const muted = !p.settings.muted;
+                const volume = muted ? p.settings.volume : unmuteVolume(p.settings.volume);
+                rememberSound(muted, volume);
+                update(i, { settings: { ...p.settings, muted, volume } });
               }}>{muted ? <MuteIcon size={14} /> : <SoundIcon size={14} />}</button>
             <input type="range" min={0} max={1} step={0.01} value={p.settings.volume} aria-label="Volume" className="vol"
               onChange={(e) => {

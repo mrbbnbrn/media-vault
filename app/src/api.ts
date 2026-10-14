@@ -20,13 +20,13 @@ export interface ViewerSettings {
   seekBigSeconds: number;
   /** Last mute choice, used by every player. */
   muted: boolean;
-  volume: number;
+  soundVolume: number;
   /** Items per row in the library grid (0 = automatic). */
   gridColumns: number;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
-  smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, volume: 0.8, gridColumns: 0,
+  smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
 };
 
 export interface AppConfig {
@@ -260,6 +260,8 @@ export interface ItemFilter {
   /** File name contains each of these. */
   names?: string[];
   trash?: boolean;
+  /** Person folders: in the folder or confirmed by face recognition. */
+  people?: number[];
 }
 
 export interface TrashFolder {
@@ -523,7 +525,7 @@ export const api = {
   facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),
 
   // smart search
-  clipNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('clip_needed', { limit }),
+  clipNeeded: (limit: number) => call<{ id: number; kind: Kind; preview: boolean }[]>('clip_needed', { limit }),
   clipSave: (media: number, vec: number[]) => call<void>('clip_save', { media, vec }),
   clipFailed: (media: number) => call<void>('clip_failed', { media }),
   clipStatus: () => call<ClipStatus>('clip_status'),
@@ -589,7 +591,7 @@ const mock = {
       preview: 'hover',
       wholeOnHover: false,
       gridShape: false,
-      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, volume: 0.8, gridColumns: 0 },
+      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0 },
       builtinEngine: true,
       smartSearch: false,
       makePreviews: true,
