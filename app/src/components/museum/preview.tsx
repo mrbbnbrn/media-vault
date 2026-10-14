@@ -1,10 +1,11 @@
 // Development-only preview of the museum with generated "paintings", so the
 // look can be checked in a plain browser (vite dev → /museum-preview.html).
-// Query: ?n=60 items, &fav=6 favourites, &video=1 adds a generated clip, &clean=1 hides the cards.
+// Query: ?n=60 items, &fav=6 favourites, &video=1 / &gif=1 add a generated clip / GIF, &clean=1 hides the cards.
 
 import { createRoot } from 'react-dom/client';
 import '../../styles.css';
 import '../../screens.css';
+import { GIFEncoder, applyPalette, quantize } from 'gifenc';
 import Museum from './Museum';
 import type { MuseumItem } from './layout';
 
@@ -129,6 +130,29 @@ async function makeVideo(): Promise<string | null> {
   }
 }
 
+function makeGif(): string {
+  const w = 320;
+  const h = 240;
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const g = c.getContext('2d')!;
+  const enc = GIFEncoder();
+  for (let f = 0; f < 12; f++) {
+    g.fillStyle = '#1d3557';
+    g.fillRect(0, 0, w, h);
+    g.fillStyle = '#f1c453';
+    g.beginPath();
+    g.arc(40 + f * 20, 120 + Math.sin(f / 2) * 50, 26, 0, Math.PI * 2);
+    g.fill();
+    const rgba = g.getImageData(0, 0, w, h).data;
+    const pal = quantize(rgba, 64);
+    enc.writeFrame(applyPalette(rgba, pal), w, h, { palette: pal, delay: 90 });
+  }
+  enc.finish();
+  return URL.createObjectURL(new Blob([enc.bytes() as BlobPart], { type: 'image/gif' }));
+}
+
 async function main() {
   const urls = new Map<number, string>();
   const items: MuseumItem[] = [];
@@ -146,6 +170,10 @@ async function main() {
       urls.set(9999, v);
       items.splice(FAV + 1, 0, { id: 9999, name: 'Garden party.webm', kind: 'video', width: 640, height: 360, favourite: false, weight: 1 });
     }
+  }
+  if (q.get('gif')) {
+    urls.set(9998, makeGif());
+    items.splice(FAV, 0, { id: 9998, name: 'Bouncing sun.gif', kind: 'gif', width: 320, height: 240, favourite: false, weight: 1 });
   }
   if (q.get('clean')) {
     const st = document.createElement('style');

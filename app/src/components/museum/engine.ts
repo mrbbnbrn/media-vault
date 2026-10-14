@@ -47,7 +47,7 @@ const EYE = 1.62;
 const RADIUS = 0.32;
 const LOOK = 0.0022;
 
-type Bucket = 'floor' | 'damask' | 'wood' | 'goldRail' | 'skirt' | 'marble' | 'frameGold' | 'gold' | 'carpet' | 'ceiling' | 'velvet' | 'pool' | 'shade' | 'plaque' | 'door' | 'fresco';
+type Bucket = 'lamp' | 'floor' | 'damask' | 'wood' | 'goldRail' | 'skirt' | 'marble' | 'frameGold' | 'gold' | 'carpet' | 'ceiling' | 'velvet' | 'pool' | 'shade' | 'plaque' | 'door' | 'fresco';
 
 interface Slot {
   frame: Frame;
@@ -66,6 +66,8 @@ interface Slot {
   normal: THREE.Vector3;
   /** Bumped on every dispose so late loads are dropped. */
   gen: number;
+  /** An animated GIF playing on the full texture. */
+  anim: { stop: () => void } | null;
 }
 
 const v3 = (x: number, y: number, z: number) => new THREE.Vector3(x, y, z);
@@ -310,6 +312,7 @@ export class MuseumEngine {
     M.set('velvet', new THREE.MeshStandardMaterial({ color: new THREE.Color('#6e0712'), roughness: 0.8, envMapIntensity: 0.4 }));
     M.set('pool', new THREE.MeshBasicMaterial({ map: this.canvasTex(tex.lightPool(), false), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.32, polygonOffset: true, polygonOffsetFactor: -2 }));
     M.set('shade', new THREE.MeshBasicMaterial({ map: this.canvasTex(tex.fade(), false, false), color: 0x000000, transparent: true, opacity: 0.55, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2 }));
+    M.set('lamp', new THREE.MeshBasicMaterial({ color: new THREE.Color(3.2, 2.4, 1.5), side: THREE.DoubleSide }));
     M.set('plaque', new THREE.MeshStandardMaterial({ ...gold, roughness: 0.3 }));
     M.set('door', new THREE.MeshStandardMaterial({ map: this.canvasTex(tex.doorLeaf(), false), roughness: 0.4, envMapIntensity: 0.8 }));
   }
@@ -340,8 +343,9 @@ export class MuseumEngine {
       if (len < 0.01) continue;
       const ux = dx / len;
       const uy = dy / len;
-      const ea = doorNear(w.a) ? 0 : WALL_T / 2;
-      const eb = doorNear(w.b) ? 0 : WALL_T / 2;
+      // Close the corners, but stop just inside a wall met head-on (else its end shows through).
+      const ea = doorNear(w.a) ? 0 : WALL_T / 2 - 0.02;
+      const eb = doorNear(w.b) ? 0 : WALL_T / 2 - 0.02;
       const a = { x: w.a.x - ux * ea, y: w.a.y - uy * ea };
       const b = { x: w.b.x + ux * eb, y: w.b.y + uy * eb };
       const L2 = Math.hypot(b.x - a.x, b.y - a.y);
@@ -538,12 +542,12 @@ export class MuseumEngine {
       put(h.index, 'fresco', norm(fr));
       const ring = new THREE.TorusGeometry(1, 0.035, 8, 64);
       ring.rotateX(Math.PI / 2);
-      ring.scale((r.x1 - r.x0) * 0.26, 3, (r.y1 - r.y0) * 0.28);
+      ring.scale((r.x1 - r.x0) * 0.26, 1, (r.y1 - r.y0) * 0.28);
       ring.translate(cx, h.height - 0.05, cz);
       put(h.index, 'gold', norm(ring));
       const ring2 = new THREE.TorusGeometry(1, 0.05, 8, 64);
       ring2.rotateX(Math.PI / 2);
-      ring2.scale((r.x1 - r.x0) * 0.28, 2, (r.y1 - r.y0) * 0.3);
+      ring2.scale((r.x1 - r.x0) * 0.28, 1, (r.y1 - r.y0) * 0.3);
       ring2.translate(cx, h.height - 0.05, cz);
       put(h.index, 'frameGold', norm(ring2));
     }
@@ -616,7 +620,8 @@ export class MuseumEngine {
     put(d.hall, 'marble', this.wallBox(at, along, d.width + 2 * jw, depth, d.height, d.height + 0.42, 1));
     put(d.hall, 'gold', this.wallBox(at, along, d.width + 0.12, depth + 0.04, d.height - 0.03, d.height + 0.05, 0.5));
     put(d.hall, 'goldRail', this.wallBox(at, along, d.width + 2 * jw + 0.3, depth + 0.12, d.height + 0.42, d.height + 0.56, 0.3));
-    put(d.hall, 'skirt', this.wallBox(at, along, d.width + 2 * jw + 0.1, depth + 0.06, 0, 0.22, 1));
+    // Green marble plinths under the jambs.
+    for (const sgn of [-1, 1]) put(d.hall, 'skirt', this.wallBox(off(sgn * (hw + jw / 2)), along, jw + 0.08, depth + 0.06, 0, 0.3, 1));
     // Signs on both faces.
     for (const side of [1, -1]) {
       const inside = side === 1;
@@ -632,12 +637,12 @@ export class MuseumEngine {
       const t = this.canvasTex(tex.sign(text[0], text[1]), false);
       const mat = new THREE.MeshStandardMaterial({ map: t, roughness: 0.35, metalness: 0.2, emissive: new THREE.Color('#ffffff'), emissiveMap: t, emissiveIntensity: 0.2 });
       this.disposables.push(mat);
-      const g = quad(v3(c.x, d.height + 0.95, c.y), v3(along.x, 0, along.y).multiplyScalar(side), v3(inward.x * side, 0, inward.y * side), 2.4, 0.6);
-      const m = new THREE.Mesh(g, mat);
+      // Facing out of the wall; "right" is the reader's right so the text isn't mirrored.
+      const n3 = v3(inward.x * side, 0, inward.y * side);
+      const r3 = v3(0, 1, 0).cross(n3).normalize();
+      const m = new THREE.Mesh(quad(v3(c.x, d.height + 0.95, c.y), r3, n3, 2.4, 0.6), mat);
       this.scene.add(m);
       // Gilded frame round the sign.
-      const n3 = v3(inward.x * side, 0, inward.y * side);
-      const r3 = v3(0, 1, 0).cross(n3).normalize().negate();
       put(d.hall, 'frameGold', sweepRect(v3(c.x, d.height + 0.95, c.y), r3, v3(0, 1, 0), n3, 2.4, 0.6, frameProfile(0.08), 0.2));
     }
     if (d.kind !== 'pass') {
@@ -702,6 +707,11 @@ export class MuseumEngine {
     bar.rotateZ(Math.PI / 2);
     bar.rotateY(Math.atan2(n.x, n.z));
     put(f.hall, 'gold', norm(bar.translate(lp.x, lp.y, lp.z)));
+    // Its warm glowing slit, facing down onto the picture.
+    const slit = new THREE.PlaneGeometry(lampW * 0.94, 0.03);
+    slit.rotateX(Math.PI / 2);
+    slit.rotateY(Math.atan2(n.x, n.z));
+    put(f.hall, 'lamp', norm(slit.translate(lp.x, lp.y - 0.036, lp.z)));
     const arm = new THREE.CylinderGeometry(0.012, 0.012, 0.28, 8);
     arm.rotateX(Math.PI / 2);
     arm.rotateY(Math.atan2(n.x, n.z));
@@ -734,7 +744,7 @@ export class MuseumEngine {
     this.scene.add(mesh);
     this.slots.push({
       frame: f, mesh, mat, thumb: null, full: null, video: null, videoTex: null, loadingThumb: false, loadingFull: false, dist: Infinity,
-      plaque: null, plaqueAt: pa.clone().addScaledVector(n, 0.012), right, normal: n, gen: 0,
+      plaque: null, plaqueAt: pa.clone().addScaledVector(n, 0.012), right, normal: n, gen: 0, anim: null,
     });
   }
 
@@ -1055,6 +1065,8 @@ export class MuseumEngine {
       else if (!wantVideo && s.video) this.stopVideo(s);
       if (wantFull && !s.full && !s.loadingFull && this.loads < 3) this.loadFull(s);
       else if (!wantFull && s.full) {
+        s.anim?.stop();
+        s.anim = null;
         s.full.dispose();
         s.full = null;
         this.show(s);
@@ -1110,6 +1122,7 @@ export class MuseumEngine {
     this.loads++;
     const gen = s.gen;
     try {
+      if (s.frame.item.kind === 'gif' && (await this.loadGif(s, gen))) return;
       const img = await loadImage(this.sources.full(s.frame.item.id));
       if (this.disposed || gen !== s.gen || s.dist > 9) return;
       s.full = this.toTex(fit(img, this.maxFull), img.naturalWidth, img.naturalHeight, s);
@@ -1119,6 +1132,82 @@ export class MuseumEngine {
     } finally {
       s.loadingFull = false;
       this.loads--;
+    }
+  }
+
+  /**
+   * Plays an animated GIF on the wall: frames decoded in memory with the
+   * browser's ImageDecoder (WebView2 has it) and drawn into a small canvas.
+   * Returns false where that isn't available, so the still picture is used.
+   */
+  private async loadGif(s: Slot, gen: number): Promise<boolean> {
+    type Frame = { image: VideoFrame };
+    type Decoder = { tracks: { ready: Promise<void>; selectedTrack: { frameCount: number } | null }; decode: (o: { frameIndex: number }) => Promise<Frame>; close: () => void };
+    const IDC = (window as unknown as { ImageDecoder?: { new (o: { data: ArrayBuffer; type: string }): Decoder; isTypeSupported: (t: string) => Promise<boolean> } }).ImageDecoder;
+    if (!IDC || !(await IDC.isTypeSupported('image/gif').catch(() => false))) return false;
+    const data = await (await fetch(this.sources.full(s.frame.item.id))).arrayBuffer();
+    if (this.disposed || gen !== s.gen) return true;
+    const dec = new IDC({ data, type: 'image/gif' });
+    try {
+      await dec.tracks.ready;
+      const n = dec.tracks.selectedTrack?.frameCount ?? 1;
+      if (n <= 1) {
+        dec.close();
+        return false;
+      }
+      const first = (await dec.decode({ frameIndex: 0 })).image;
+      const w0 = first.displayWidth;
+      const h0 = first.displayHeight;
+      const k = Math.min(1, 768 / Math.max(w0, h0));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w0 * k));
+      c.height = Math.max(1, Math.round(h0 * k));
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(first, 0, 0, c.width, c.height);
+      let wait = (first.duration ?? 100000) / 1000;
+      first.close();
+      if (this.disposed || gen !== s.gen || s.dist > 9) {
+        dec.close();
+        return true;
+      }
+      const t = new THREE.CanvasTexture(c);
+      t.colorSpace = THREE.SRGBColorSpace;
+      t.generateMipmaps = false;
+      t.minFilter = THREE.LinearFilter;
+      cover(t, c.width, c.height, s.frame.w, s.frame.h);
+      s.full = t;
+      this.show(s);
+      let i = 1;
+      let stopped = false;
+      let timer = 0;
+      const step = async () => {
+        if (stopped) return;
+        try {
+          const f = (await dec.decode({ frameIndex: i })).image;
+          if (stopped) return f.close();
+          ctx.clearRect(0, 0, c.width, c.height);
+          ctx.drawImage(f, 0, 0, c.width, c.height);
+          wait = (f.duration ?? 100000) / 1000;
+          f.close();
+          t.needsUpdate = true;
+          i = (i + 1) % n;
+          timer = window.setTimeout(step, Math.max(20, wait));
+        } catch {
+          /* stays on the last frame */
+        }
+      };
+      timer = window.setTimeout(step, Math.max(20, wait));
+      s.anim = {
+        stop: () => {
+          stopped = true;
+          clearTimeout(timer);
+          dec.close();
+        },
+      };
+      return true;
+    } catch {
+      dec.close();
+      return false;
     }
   }
 
@@ -1181,6 +1270,8 @@ export class MuseumEngine {
 
   private dropAll(s: Slot) {
     s.gen++;
+    s.anim?.stop();
+    s.anim = null;
     this.stopVideo(s);
     s.thumb?.dispose();
     s.full?.dispose();
