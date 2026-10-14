@@ -297,7 +297,10 @@ body.clean-fs .toast { display: none; }
 .player.compact .p-flash { top: 48px; font-size: 12px; }
 
 .track-wrap { position: relative; flex: 1; display: flex; align-items: center; min-width: 120px; }
-.track-wrap input { flex: 1; accent-color: var(--accent); position: relative; z-index: 1; }
+.track-wrap input { flex: 1; accent-color: var(--accent); position: relative; z-index: 1; cursor: pointer;
+  /* A taller box than the drawn bar (which stays thin and centred) so it's easy to hit;
+     the negative margin keeps the layout the same. */
+  height: 30px; margin-top: -8px; margin-bottom: -8px; }
 .ab-region { position: absolute; top: 50%; height: 14px; transform: translateY(-50%); border-radius: 4px; background: color-mix(in srgb, var(--accent) 35%, transparent); border: 1px solid var(--accent); pointer-events: none; z-index: 0; }
 .ab-region.open { border-style: dashed; background: none; }
 .bm-mark { position: absolute; bottom: 50%; z-index: 2; width: 10px; height: 18px; margin-left: -5px; padding: 0; border: none; background: none; cursor: pointer; }
@@ -612,13 +615,17 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .folder-note { display: inline-flex; align-items: center; gap: 5px; max-width: 420px; color: var(--faint); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Stacked folder cards */
 .fstack { position: absolute; inset: 0; display: block; }
-.fstack img { position: absolute; inset: 9% 9% 9% 9%; width: 82%; height: 82%; object-fit: cover; border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55); }
+.fstack img { position: absolute; left: 9%; top: 9%; width: 82%; height: 82%; object-fit: cover; border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: transform 0.28s cubic-bezier(0.2, 0.8, 0.2, 1.15), filter 0.28s ease, box-shadow 0.28s ease; }
 .fstack .fstack-1 { transform: rotate(-6deg) translate(-4%, 2%); filter: brightness(0.7); }
 .fstack .fstack-2 { transform: rotate(5deg) translate(4%, 1%); filter: brightness(0.8); }
-.fstack .fstack-top { inset: 6%; width: 88%; height: 88%; }
-.fcard:hover .fstack .fstack-1 { transform: rotate(-9deg) translate(-7%, 2%); }
-.fcard:hover .fstack .fstack-2 { transform: rotate(8deg) translate(7%, 1%); }
-.fstack img { transition: transform 0.15s ease; }
+.fstack .fstack-top { left: 6%; top: 6%; width: 88%; height: 88%; }
+/* Hovering fans the cards out like a hand of cards, so all three pictures show. */
+.fcard:hover .fstack .fstack-1 { transform: translate(-27%, -2%) rotate(-9deg) scale(0.62); filter: brightness(0.92); }
+.fcard:hover .fstack .fstack-2 { transform: translate(27%, -2%) rotate(9deg) scale(0.62); filter: brightness(0.92); }
+.fcard:hover .fstack .fstack-top { transform: translateY(5%) scale(0.66); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.7); }
+.fstack img.cycle { animation: fadein 0.35s ease; }
+@media (prefers-reduced-motion: reduce) { .fstack img { transition: none; } }
 /* Scroll mode */
 .scroll-mode { max-width: 980px; width: 100%; margin: 0 auto; }
 /* Memories */

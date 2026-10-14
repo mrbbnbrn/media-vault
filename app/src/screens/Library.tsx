@@ -1467,21 +1467,26 @@ export function Library({ nav, view, setView, history, reveal }: {
       return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
     }
     const list = samples[f.id];
+    // Stacked card: two more pictures from inside peek out behind the cover;
+    // hovering fans them out and the front card cycles through the folder.
+    const behind = f.cover ? f.samples.filter((x) => x !== f.cover).slice(0, 2) : [];
+    if (behind.length) {
+      const others = list?.filter((x) => !behind.includes(x)) ?? [];
+      const cycling = hovered && others.length > 1 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
+      return (
+        <span className="fstack">
+          {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
+          {cycling != null
+            ? <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />
+            : <img key="cover" className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />}
+        </span>
+      );
+    }
     if (hovered && list && list.length > 1 && cycle > 0) {
       const id = list[(cycle - 1) % list.length];
       return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
     }
     if (!f.cover) return <FolderIcon size={40} />;
-    // Stacked card: two more pictures from inside peek out behind the cover.
-    const behind = f.samples.filter((x) => x !== f.cover).slice(0, 2);
-    if (behind.length) {
-      return (
-        <span className="fstack">
-          {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
-          <img className="fstack-top" src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />
-        </span>
-      );
-    }
     return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
   };
 
