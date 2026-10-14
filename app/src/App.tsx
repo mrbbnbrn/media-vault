@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api, onLocked, type AppState, type LockReason } from './api';
+import { api, onEvent, onLocked, type AppState, type LockReason } from './api';
 import { applyAccent } from './theme';
 import { setPrefsConfig } from './prefs';
 import { clearUndo } from './undo';
@@ -138,6 +138,8 @@ export function App() {
       })
       .catch((e) => setFatal(String(e)));
     const stopTracking = startActivityTracking();
+    // If the library can't be saved, say so (changes are kept and retried).
+    const offSave = onEvent<string>('save-failed', (m) => setToast(`${m} Your changes are kept and saving is retried; don't close the app yet.`));
     startExternalDrops();
     const unlisten = onLocked((reason) => {
       stopAllPlaying();
@@ -152,6 +154,7 @@ export function App() {
     });
     return () => {
       stopTracking();
+      offSave.then((u) => u());
       unlisten.then((u) => u());
     };
   }, [refresh]);

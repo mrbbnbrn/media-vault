@@ -26,6 +26,8 @@ pub struct Session {
     closed: AtomicBool,
     dirty: AtomicBool,
     last_change: Mutex<Instant>,
+    /// When the oldest unsaved change was made (None = nothing unsaved).
+    first_unsaved: Mutex<Option<Instant>>,
     /// One save at a time (the watcher, imports and commands all save).
     save_lock: Mutex<()>,
 }
@@ -129,6 +131,7 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         closed: AtomicBool::new(false),
         dirty: AtomicBool::new(false),
         last_change: Mutex::new(Instant::now()),
+        first_unsaved: Mutex::new(None),
         save_lock: Mutex::new(()),
     })
 }
@@ -164,7 +167,9 @@ impl Session {
 
     /// Record that the library changed; it is saved shortly afterwards.
     pub fn mark_dirty(&self) {
-        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        let now = Instant::now();
+        *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = now;
+        self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(now);
         self.dirty.store(true, Ordering::SeqCst);
     }
 
@@ -176,6 +181,12 @@ impl Session {
     pub fn save(&self) -> Result<(), String> {
         let _one_at_a_time = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
         self.dirty.store(false, Ordering::SeqCst);
+        let first = self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let restore_first = || {
+            if let Some(f) = first {
+                self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
+            }
+        };
         // Where new encrypted files landed in the packs goes into the database too.
         let changes = self.vault().drain_index_changes();
         let bytes = {
@@ -183,25 +194,41 @@ impl Session {
             if let Err(e) = db::apply_index_changes(&db, &changes) {
                 self.vault().restore_index_changes(changes);
                 self.dirty.store(true, Ordering::SeqCst);
+                restore_first();
                 return Err(format!("Couldn't save the library: {}", friendly(e)));
             }
-            db::serialize(&db).map_err(friendly)?
+            match db::serialize(&db) {
+                Ok(b) => b,
+                Err(e) => {
+                    self.dirty.store(true, Ordering::SeqCst);
+                    restore_first();
+                    return Err(friendly(e));
+                }
+            }
         };
         self.vault().save_db(&bytes).map_err(|e| {
             self.dirty.store(true, Ordering::SeqCst);
+            restore_first();
             format!("Couldn't save the library: {}", friendly(e))
         })
     }
 
-    /// Save if there are changes older than `settle` (so a burst of edits is
-    /// written once).
-    pub fn save_if_settled(&self, settle: Duration) -> Result<(), String> {
+    /// Save once changes have settled for `settle` (so a burst of edits is
+    /// written once) — but never later than `max_wait` after the first
+    /// unsaved change, even while background work keeps changing things.
+    pub fn save_if_settled(&self, settle: Duration, max_wait: Duration) -> Result<(), String> {
         let age = self
             .last_change
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .elapsed();
-        if self.is_dirty() && age >= settle {
+        let waiting = self
+            .first_unsaved
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+        if self.is_dirty() && (age >= settle || waiting >= max_wait) {
             self.save()
         } else {
             Ok(())
@@ -282,6 +309,28 @@ mod tests {
     use super::*;
 
     const KDF: KdfParams = KdfParams::TEST_ONLY;
+
+    #[test]
+    fn busy_background_work_does_not_stop_saving() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        let path = s.vault().root().to_path_buf();
+        s.db().execute("INSERT INTO folders(parent_id, name, created_at) VALUES (NULL, 'Alex', 0)", []).unwrap();
+        s.mark_dirty();
+        // Changes keep coming (last change is always fresh): settling alone never saves…
+        s.mark_dirty();
+        s.save_if_settled(Duration::from_secs(3600), Duration::from_secs(3600)).unwrap();
+        assert!(s.is_dirty());
+        // …but the longest wait does.
+        std::thread::sleep(Duration::from_millis(20));
+        s.mark_dirty();
+        s.save_if_settled(Duration::from_secs(3600), Duration::from_millis(10)).unwrap();
+        assert!(!s.is_dirty());
+        drop(s);
+        let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
+        let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Alex'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "the folder was saved");
+    }
 
     #[test]
     fn create_lock_unlock_and_recover() {

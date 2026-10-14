@@ -1233,14 +1233,25 @@ fn windows_session_locked() -> bool {
 fn start_watcher(app: AppHandle, inner: Shared) {
     std::thread::spawn(move || {
         let mut sleep = SleepDetector::new(SystemTime::now());
+        let mut told_failure = false;
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let slept = sleep.tick(SystemTime::now());
             let Some(open) = inner.session.lock().unwrap().clone() else {
                 continue;
             };
-            // Save library edits shortly after they happen.
-            let _ = open.save_if_settled(Duration::from_secs(1));
+            // Save library edits shortly after they happen: once they settle
+            // for a second, and at the latest 5 s after the first one (the
+            // background analysis keeps changing things all the time).
+            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(5)) {
+                Ok(()) => told_failure = false,
+                Err(e) => {
+                    if !told_failure {
+                        let _ = app.emit("save-failed", e);
+                        told_failure = true;
+                    }
+                }
+            }
             drop(open);
             let lock = inner.config.lock().unwrap().lock.clone();
             let reason = if lock.on_system_lock && slept {
@@ -1335,6 +1346,16 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| {
+            // Closing the window: save the library first.
+            if let WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed = event {
+                let inner = window.app_handle().state::<Shared>().inner().clone();
+                let open = inner.session.lock().unwrap().clone();
+                if let Some(s) = open
+                    && s.is_dirty()
+                {
+                    let _ = s.save();
+                }
+            }
             if let WindowEvent::Resized(_) = event {
                 let app = window.app_handle();
                 let inner = app.state::<Shared>().inner().clone();
@@ -1441,6 +1462,18 @@ pub fn run() {
             clip_status,
             smart_search,
         ])
-        .run(tauri::generate_context!())
-        .expect("Media Vault failed to start");
+        .build(tauri::generate_context!())
+        .expect("Media Vault failed to start")
+        .run(|app, event| {
+            // However the app ends, unsaved library changes are written first.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                let inner = app.state::<Shared>().inner().clone();
+                let open = inner.session.lock().unwrap().clone();
+                if let Some(s) = open
+                    && s.is_dirty()
+                {
+                    let _ = s.save();
+                }
+            }
+        });
 }
