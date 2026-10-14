@@ -26,6 +26,7 @@ mod protocol;
 mod selftest;
 mod session;
 mod share7z;
+mod organize;
 mod similar;
 mod storage;
 mod videotool;
@@ -1413,6 +1414,132 @@ async fn similar_to(state: State<'_, Shared>, id: i64, smart: bool) -> Result<Ve
     read_db(state.inner(), move |c| similar::similar_to(c, id, smart, 300)).await
 }
 
+// ---- organising: free copies, real copies, merging, order, tags, notes ---------------------
+
+#[tauri::command]
+async fn free_copy(state: State<'_, Shared>, ids: Vec<i64>, folder: Option<i64>) -> Result<Vec<i64>, String> {
+    edit_db(state.inner(), move |c| organize::free_copy(c, &ids, folder)).await
+}
+
+#[tauri::command]
+async fn item_copies(state: State<'_, Shared>, id: i64) -> Result<Vec<library::Item>, String> {
+    read_db(state.inner(), move |c| organize::copies_of(c, id)).await
+}
+
+#[tauri::command]
+async fn free_copies_of(state: State<'_, Shared>, ids: Vec<i64>) -> Result<Vec<(i64, Vec<library::Item>)>, String> {
+    read_db(state.inner(), move |c| organize::free_copies_of(c, &ids)).await
+}
+
+#[tauri::command]
+async fn promote_copy(state: State<'_, Shared>, old: i64, new: i64) -> Result<organize::Links, String> {
+    edit_db(state.inner(), move |c| organize::promote(c, old, new)).await
+}
+
+#[tauri::command]
+async fn restore_links(state: State<'_, Shared>, links: organize::Links) -> Result<(), String> {
+    edit_db(state.inner(), move |c| organize::restore_links(c, &links)).await
+}
+
+/// Real copies (Ctrl+C / Ctrl+V). "copy-progress" {done, total} while it works.
+#[tauri::command]
+async fn copy_into(
+    app: AppHandle,
+    state: State<'_, Shared>,
+    ids: Vec<i64>,
+    folders: Vec<i64>,
+    target: Option<i64>,
+) -> Result<organize::Copied, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let mut last = Instant::now();
+        let out = organize::copy_into(&s, &ids, &folders, target, &mut |done, total| {
+            if last.elapsed() > Duration::from_millis(200) || done == total {
+                last = Instant::now();
+                let _ = app.emit("copy-progress", (done, total));
+            }
+        })?;
+        s.save_soon();
+        Ok(out)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn merge_plan(state: State<'_, Shared>, target: i64, sources: Vec<i64>) -> Result<Vec<Vec<library::Item>>, String> {
+    read_db(state.inner(), move |c| organize::merge_plan(c, target, &sources)).await
+}
+
+#[tauri::command]
+async fn merge_folders(state: State<'_, Shared>, target: i64, sources: Vec<i64>, trash: Vec<i64>) -> Result<organize::Merged, String> {
+    edit_db(state.inner(), move |c| organize::merge(c, target, &sources, &trash)).await
+}
+
+#[tauri::command]
+async fn unmerge_folders(state: State<'_, Shared>, merged: organize::Merged) -> Result<(), String> {
+    edit_db(state.inner(), move |c| organize::unmerge(c, &merged)).await
+}
+
+#[tauri::command]
+async fn set_folder_order(state: State<'_, Shared>, ids: Vec<i64>) -> Result<Vec<(i64, i64)>, String> {
+    edit_db(state.inner(), move |c| organize::set_order(c, &ids)).await
+}
+
+#[tauri::command]
+async fn restore_folder_order(state: State<'_, Shared>, before: Vec<(i64, i64)>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| organize::restore_order(c, &before)).await
+}
+
+#[tauri::command]
+async fn tag_list(state: State<'_, Shared>) -> Result<Vec<organize::TagInfo>, String> {
+    read_db(state.inner(), organize::tag_list).await
+}
+
+#[tauri::command]
+async fn rename_tag(state: State<'_, Shared>, old: String, new: String) -> Result<organize::TagUse, String> {
+    edit_db(state.inner(), move |c| organize::rename_tag(c, &old, &new)).await
+}
+
+#[tauri::command]
+async fn delete_tag(state: State<'_, Shared>, name: String) -> Result<organize::TagUse, String> {
+    edit_db(state.inner(), move |c| organize::delete_tag(c, &name)).await
+}
+
+#[tauri::command]
+async fn restore_tag(state: State<'_, Shared>, before: organize::TagUse, current: Option<String>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| organize::restore_tag(c, &before, current.as_deref())).await
+}
+
+#[tauri::command]
+async fn set_tag_color(state: State<'_, Shared>, name: String, color: Option<String>) -> Result<Option<String>, String> {
+    edit_db(state.inner(), move |c| organize::set_tag_color(c, &name, color.as_deref())).await
+}
+
+#[tauri::command]
+async fn set_note(state: State<'_, Shared>, folder: bool, id: i64, note: Option<String>) -> Result<Option<String>, String> {
+    edit_db(state.inner(), move |c| organize::set_note(c, folder, id, note.as_deref())).await
+}
+
+#[tauri::command]
+async fn folder_note(state: State<'_, Shared>, id: i64) -> Result<Option<String>, String> {
+    read_db(state.inner(), move |c| organize::folder_note(c, id)).await
+}
+
+#[tauri::command]
+async fn continue_watching(state: State<'_, Shared>) -> Result<Vec<library::Item>, String> {
+    read_db(state.inner(), organize::continue_watching).await
+}
+
+#[tauri::command]
+async fn suggest_folders(state: State<'_, Shared>, item: i64) -> Result<Vec<organize::Suggestion>, String> {
+    read_db(state.inner(), move |c| organize::suggest(c, item)).await
+}
+
+#[tauri::command]
+async fn exact_groups(state: State<'_, Shared>, folder: Option<i64>) -> Result<Vec<Vec<library::Item>>, String> {
+    read_db(state.inner(), move |c| similar::exact_groups(c, folder)).await
+}
+
 // ---- self-test ---------------------------------------------------------------------
 
 #[tauri::command]
@@ -1703,6 +1830,27 @@ pub fn run() {
             similar_status,
             similar_groups,
             similar_to,
+            free_copy,
+            item_copies,
+            free_copies_of,
+            promote_copy,
+            restore_links,
+            copy_into,
+            merge_plan,
+            merge_folders,
+            unmerge_folders,
+            set_folder_order,
+            restore_folder_order,
+            tag_list,
+            rename_tag,
+            delete_tag,
+            restore_tag,
+            set_tag_color,
+            set_note,
+            folder_note,
+            continue_watching,
+            suggest_folders,
+            exact_groups,
             smart_search,
             // video tool
             video_tool_info,

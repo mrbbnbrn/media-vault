@@ -197,6 +197,45 @@ fn best_first(items: &mut [Item], sharp: &HashMap<i64, f64>) {
     });
 }
 
+/// Put the best of these first (same rule as look-alike groups).
+pub fn rank_best(conn: &Connection, items: &mut [Item]) -> R<()> {
+    let sharp: HashMap<i64, f64> = fingerprints(conn)?.into_iter().map(|(id, f)| (id, f.sharp)).collect();
+    best_first(items, &sharp);
+    Ok(())
+}
+
+/// Exact copies: items with the same content (SHA-256), biggest group first,
+/// best first. Free copies of one stored file count once.
+pub fn exact_groups(conn: &Connection, folder: Option<i64>) -> R<Vec<Vec<Item>>> {
+    let items = library::query_items(
+        conn,
+        &library::ItemFilter { folder: folder.map(Some), recursive: folder.is_some(), ..Default::default() },
+    )?;
+    let keys: HashMap<i64, (String, String)> = conn
+        .prepare("SELECT id, sha256, object_id FROM media WHERE deleted_at IS NULL")
+        .map_err(e)?
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, String>(1)?, r.get::<_, String>(2)?))))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    let mut by_sha: HashMap<String, Vec<Item>> = HashMap::new();
+    let mut seen_objects = std::collections::HashSet::new();
+    for it in items {
+        if let Some((sha, obj)) = keys.get(&it.id)
+            && seen_objects.insert(obj.clone())
+        {
+            by_sha.entry(sha.clone()).or_default().push(it);
+        }
+    }
+    let mut out: Vec<Vec<Item>> = by_sha.into_values().filter(|g| g.len() > 1).collect();
+    let sharp: HashMap<i64, f64> = fingerprints(conn)?.into_iter().map(|(id, f)| (id, f.sharp)).collect();
+    for g in &mut out {
+        best_first(g, &sharp);
+    }
+    out.sort_by(|a, b| b.len().cmp(&a.len()).then(a[0].id.cmp(&b[0].id)));
+    Ok(out)
+}
+
 fn find(p: &mut [usize], mut x: usize) -> usize {
     while p[x] != x {
         p[x] = p[p[x]];
@@ -209,6 +248,8 @@ fn find(p: &mut [usize], mut x: usize) -> usize {
 /// without holding the library open for everyone else).
 pub struct Data {
     items: Vec<Item>,
+    /// Item → stored file: free copies of one file are not look-alikes.
+    objects: HashMap<i64, String>,
     fps: HashMap<i64, Fp>,
     means: HashMap<i64, Vec<f32>>,
 }
@@ -219,6 +260,13 @@ pub fn load(conn: &Connection, smart: bool, folder: Option<i64>) -> R<Data> {
             conn,
             &library::ItemFilter { folder: folder.map(Some), recursive: folder.is_some(), ..Default::default() },
         )?,
+        objects: conn
+            .prepare("SELECT id, object_id FROM media WHERE deleted_at IS NULL")
+            .map_err(e)?
+            .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(e)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(e)?,
         fps: fingerprints(conn)?,
         means: if smart { meanings(conn)? } else { HashMap::new() },
     })
@@ -230,7 +278,9 @@ pub fn load(conn: &Connection, smart: bool, folder: Option<i64>) -> R<Data> {
 /// A, B and C together (as in Baro Alarm). Smart search: each group is built
 /// around one picture, so groups can't chain into one huge group.
 pub fn group(data: Data, level: Level, smart: bool, videos: bool) -> Vec<Vec<Item>> {
-    let Data { items, fps, means } = data;
+    let Data { items, objects, fps, means } = data;
+    let mut seen = std::collections::HashSet::new();
+    let items: Vec<Item> = items.into_iter().filter(|i| objects.get(&i.id).is_none_or(|o| seen.insert(o.clone()))).collect();
     let sharp: HashMap<i64, f64> = fps.iter().map(|(id, f)| (*id, f.sharp)).collect();
     let wanted = |i: &Item| i.kind == "image" || i.kind == "gif" || (videos && i.kind == "video");
     let mut out: Vec<Vec<Item>> = Vec::new();

@@ -126,9 +126,14 @@ pub struct FolderCard {
     pub emoji: Option<String>,
     /// A person folder: face recognition learns this person from it.
     pub person: bool,
+    /// Up to three pictures from inside (for stacked cards).
+    pub samples: Vec<i64>,
+    /// Your note.
+    pub note: Option<String>,
 }
 
 struct FolderRow {
+    note: Option<String>,
     id: i64,
     parent: Option<i64>,
     name: String,
@@ -144,7 +149,7 @@ struct FolderRow {
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
         .prepare(
-            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person FROM folders f \
+            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note FROM folders f \
              LEFT JOIN media m ON m.id = f.cover_media_id AND m.deleted_at IS NULL \
              WHERE f.deleted_at IS NULL ORDER BY f.sort_order, f.name COLLATE NOCASE",
         )
@@ -159,6 +164,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 color: r.get(5)?,
                 emoji: r.get(6)?,
                 person: r.get::<_, i64>(7)? != 0,
+                note: r.get(8)?,
             })
         })
         .map_err(e)?
@@ -193,6 +199,24 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             }
         }
     }
+    // A few pictures per folder for stacked cards (pictures first).
+    let mut samples: HashMap<i64, Vec<i64>> = HashMap::new();
+    {
+        let mut st = conn
+            .prepare(
+                "SELECT folder_id, id FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL \
+                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY folder_id, kind <> 'image', id",
+            )
+            .map_err(e)?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(e)? {
+            let (f, id) = row.map_err(e)?;
+            let v = samples.entry(f).or_default();
+            if v.len() < 3 {
+                v.push(id);
+            }
+        }
+    }
+    let person_covers = person_covers(conn)?;
     let mut tags: HashMap<i64, Vec<String>> = HashMap::new();
     {
         let mut st = conn
@@ -262,6 +286,16 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         if let Some(c) = cov {
             cover_below.insert(*id, c);
         }
+        // Not enough pictures of its own: borrow from subfolders.
+        let mut mine = samples.get(id).cloned().unwrap_or_default();
+        for k in children.get(&Some(*id)).map(|v| v.as_slice()).unwrap_or(&[]) {
+            for x in samples.get(k).cloned().unwrap_or_default() {
+                if mine.len() < 3 && !mine.contains(&x) {
+                    mine.push(x);
+                }
+            }
+        }
+        samples.insert(*id, mine);
     }
 
     let kinds: HashMap<i64, String> = {
@@ -275,7 +309,11 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         .into_iter()
         .map(|(id, path)| {
             let r = by_id[&id];
-            let cover = r.cover.or_else(|| cover_below.get(&id).copied());
+            // Person folders without a chosen cover: the face most like that person.
+            let cover = r
+                .cover
+                .or_else(|| if r.person { person_covers.get(&id).copied() } else { None })
+                .or_else(|| cover_below.get(&id).copied());
             FolderCard {
                 cover_kind: cover.and_then(|c| kinds.get(&c).cloned()),
                 id,
@@ -292,9 +330,55 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 color: r.color.clone(),
                 emoji: r.emoji.clone(),
                 person: r.person,
+                samples: samples.remove(&id).unwrap_or_default(),
+                note: r.note.clone(),
             }
         })
         .collect())
+}
+
+/// For each person folder: the picture whose face is closest to that
+/// person's average face, preferring big, clear faces.
+fn person_covers(conn: &Connection) -> R<HashMap<i64, i64>> {
+    type Row = (i64, i64, f32, f32, Vec<u8>);
+    let rows: Vec<Row> = conn
+        .prepare(
+            "SELECT f.person_id, f.media_id, f.w, f.score, f.descriptor FROM faces f JOIN media m ON m.id = f.media_id \
+             JOIN folders d ON d.id = f.person_id \
+             WHERE f.person_id IS NOT NULL AND m.deleted_at IS NULL AND d.person = 1 AND d.deleted_at IS NULL \
+             AND m.thumb_object_id IS NOT NULL AND m.thumb_object_id <> '' AND m.kind = 'image'",
+        )
+        .map_err(e)?
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    type Face = (i64, f32, f32, Vec<f32>);
+    let mut by_person: HashMap<i64, Vec<Face>> = HashMap::new();
+    for (p, m, w, sc, d) in rows {
+        by_person.entry(p).or_default().push((m, w, sc, crate::faces::from_blob(&d)));
+    }
+    let mut out = HashMap::new();
+    for (p, faces) in by_person {
+        let dim = faces[0].3.len();
+        let n = faces.len() as f32;
+        let mut avg = vec![0f32; dim];
+        for f in faces.iter().filter(|f| f.3.len() == dim) {
+            for (a, b) in avg.iter_mut().zip(&f.3) {
+                *a += b / n;
+            }
+        }
+        // Lower is better: like the person, big in the picture, confidently found.
+        let best = faces
+            .iter()
+            .filter(|f| f.3.len() == dim)
+            .map(|f| (f.0, crate::faces::distance(&f.3, &avg) - 0.25 * f.1.min(0.5) - 0.1 * f.2))
+            .min_by(|a, b| a.1.total_cmp(&b.1));
+        if let Some((m, _)) = best {
+            out.insert(p, m);
+        }
+    }
+    Ok(out)
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -364,7 +448,7 @@ mod double_option {
     }
 }
 
-fn descendants(conn: &Connection, roots: &[i64]) -> R<Vec<i64>> {
+pub fn descendants(conn: &Connection, roots: &[i64]) -> R<Vec<i64>> {
     let mut out: Vec<i64> = roots.to_vec();
     let mut kids: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut st = conn
@@ -483,7 +567,8 @@ pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
         .collect();
     if !names.is_empty() {
         items.retain(|i| {
-            let n = fold(&i.name);
+            // Your notes count as part of the name for searching.
+            let n = fold(&format!("{} {}", i.name, i.note.as_deref().unwrap_or("")));
             names.iter().all(|q| n.contains(q.as_str()))
         });
     }
@@ -810,7 +895,7 @@ pub fn restore_items(conn: &Connection, ids: &[i64]) -> R<usize> {
 }
 
 /// A free name for a folder coming back: "Name", else "Name (restored)", …
-fn free_name(conn: &Connection, parent: Option<i64>, name: &str, except: i64) -> R<String> {
+pub fn free_name(conn: &Connection, parent: Option<i64>, name: &str, except: i64) -> R<String> {
     let mut candidate = name.to_string();
     let mut n = 1;
     loop {
@@ -1207,7 +1292,7 @@ pub fn set_cover(conn: &Connection, folder: i64, media: Option<i64>) -> R<()> {
 
 // ---- items ---------------------------------------------------------------------------
 
-fn id_list(ids: &[i64]) -> (String, Vec<Value>) {
+pub fn id_list(ids: &[i64]) -> (String, Vec<Value>) {
     (
         vec!["?"; ids.len()].join(","),
         ids.iter().map(|i| Value::Integer(*i)).collect(),

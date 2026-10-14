@@ -334,6 +334,38 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     if v < 9 {
+        // v9 needs several items to be able to share one stored file, so the
+        // media table is rebuilt without the "one item per file" rule (the
+        // standard SQLite procedure; every row and column is kept).
+        let sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'media'", [], |r| r.get(0))?;
+        if sql.contains("UNIQUE") {
+            let cols: Vec<String> = {
+                let mut st = conn.prepare("PRAGMA table_info(media)")?;
+                st.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let indexes: Vec<String> = {
+                let mut st = conn.prepare("SELECT sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'media' AND sql IS NOT NULL")?;
+                st.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+            };
+            let new_sql = sql.replacen("UNIQUE", "", 1).replacen("media", "media_v9", 1);
+            let list = cols.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+            conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+            let r = conn.execute_batch(&format!(
+                "BEGIN; {new_sql}; INSERT INTO media_v9 ({list}) SELECT {list} FROM media; DROP TABLE media; \
+                 ALTER TABLE media_v9 RENAME TO media; {} ; COMMIT;",
+                indexes.join("; ")
+            ));
+            if let Err(e) = r {
+                let _ = conn.execute_batch("ROLLBACK;");
+                conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+                return Err(e.into());
+            }
+            conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+            let bad: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+            if bad != 0 {
+                return Err(Error::Corrupt(format!("{bad} broken references after upgrade")));
+            }
+        }
         // v9: free copies (several items sharing one stored file; copy_of =
         // the original's id), notes, tag colours, where a video was left off,
         // and the duel ranking.
@@ -485,4 +517,32 @@ pub fn search_by_tags(conn: &Connection, tags: &[&str]) -> Result<Vec<i64>> {
         .query_map(params_from_iter(args), |r| r.get(0))?
         .collect::<rusqlite::Result<Vec<i64>>>()?;
     Ok(ids)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn items_can_share_a_stored_file_after_upgrade() {
+        let c = create_empty().unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        for name in ["a.jpg", "b.jpg"] {
+            c.execute(
+                "INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('same', 'image', ?, 'jpg', 1, 'h', 0)",
+                [name],
+            )
+            .unwrap();
+        }
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM media WHERE object_id = 'same'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
+        // Indexes came back, and the database round-trips.
+        let idx: i64 = c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND tbl_name = 'media'", [], |r| r.get(0)).unwrap();
+        assert!(idx >= 4, "{idx}");
+        let bytes = serialize(&c).unwrap();
+        let c2 = deserialize(&bytes).unwrap();
+        let n2: i64 = c2.query_row("SELECT COUNT(*) FROM media", [], |r| r.get(0)).unwrap();
+        assert_eq!(n2, 2);
+    }
 }
