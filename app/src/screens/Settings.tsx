@@ -14,6 +14,7 @@ import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
 import { GrowthSpark } from '../components/VaultGrowth';
 import { setNotifyWhenDone } from '../jobs';
+import { setFaceBoxes, useFaceBoxes } from '../prefs';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
@@ -21,6 +22,7 @@ export function Settings({ nav }: { nav: Nav }) {
   const [section, setSection] = useState<Section>('appearance');
   const [cfg, setCfg] = useState<AppConfig>(nav.app.config);
   const [error, setError] = useState<string | null>(null);
+  const faceBoxesOn = useFaceBoxes();
 
   async function update(next: AppConfig) {
     setCfg(next);
@@ -201,8 +203,10 @@ export function Settings({ nav }: { nav: Nav }) {
                 <h2>Around the picture</h2>
                 <Toggle title="Soft colour glow behind pictures" desc="Instead of plain black, a blurred, darkened copy of the picture fills the space around it."
                   on={viewer.ambient} set={(v) => setViewer({ ambient: v })} />
-                <Toggle title="Show boxes around faces" desc="Found faces get a box with the person's name. Click a box to see everything of that person, or to say who it is. The face button in the viewer switches this too."
-                  on={viewer.faceBoxes} set={(v) => setViewer({ faceBoxes: v })} />
+                <Toggle title="Show boxes around faces" desc="Found faces get a box with the person's name. Click a box to see everything of that person, or to say who it is. The face button in the viewer switches this too. Starts off each time the app opens."
+                  on={faceBoxesOn} set={setFaceBoxes} />
+                <Toggle title="Open and close animation" desc="Pictures grow out of their tile when you open them and shrink back into it when you close the viewer. Off opens and closes instantly."
+                  on={viewer.openCloseAnim !== false} set={(v) => setViewer({ openCloseAnim: v })} />
               </section>
 
               <div className="divider" />

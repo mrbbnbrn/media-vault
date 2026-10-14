@@ -30,11 +30,13 @@ export interface ViewerSettings {
   faceBoxes: boolean;
   /** Slideshow "Line up faces": the main face stays at the same place and size. */
   alignFaces?: boolean;
+  /** The picture grows out of its tile when opened and shrinks back into it when closed. */
+  openCloseAnim?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
-  ambient: false, faceBoxes: false, alignFaces: false,
+  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true,
 };
 
 export interface AppConfig {

@@ -18,13 +18,17 @@ function subscribe(f: () => void) {
   return () => subs.delete(f);
 }
 
+/** Face boxes are for this run of the app only: off every time it starts, never saved. */
+let faceBoxesNow = false;
+let faceTick = 0;
+
 export function viewerPrefs(): ViewerSettings {
-  return { ...DEFAULT_VIEWER, ...(config?.viewer ?? {}) };
+  return { ...DEFAULT_VIEWER, ...(config?.viewer ?? {}), faceBoxes: faceBoxesNow };
 }
 
-let cache: { from: ViewerSettings | undefined; value: ViewerSettings } | null = null;
+let cache: { from: ViewerSettings | undefined; tick: number; value: ViewerSettings } | null = null;
 function snapshot(): ViewerSettings {
-  if (!cache || cache.from !== config?.viewer) cache = { from: config?.viewer, value: viewerPrefs() };
+  if (!cache || cache.from !== config?.viewer || cache.tick !== faceTick) cache = { from: config?.viewer, tick: faceTick, value: viewerPrefs() };
   return cache.value;
 }
 
@@ -56,7 +60,7 @@ export function unmuteVolume(volume: number): number {
 
 export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
   if (!config) return;
-  const next = { ...config, viewer: { ...viewerPrefs(), ...patch } };
+  const next = { ...config, viewer: { ...viewerPrefs(), faceBoxes: false, ...patch } };
   setPrefsConfig(next); // feels instant; the saved copy follows
   try {
     setPrefsConfig(await api.saveConfig(next));
@@ -65,10 +69,13 @@ export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
   }
 }
 
-/** Face boxes in the viewer (the library's switch sets the same choice). */
+/** Face boxes in the grid and the viewer (the library's switch sets the same choice). Kept for this run of the app only. */
 export function useFaceBoxes(): boolean {
   return useViewerPrefs().faceBoxes;
 }
 export function setFaceBoxes(on: boolean) {
-  return saveViewerPrefs({ faceBoxes: on });
+  if (faceBoxesNow === on) return;
+  faceBoxesNow = on;
+  faceTick += 1;
+  subs.forEach((f) => f());
 }

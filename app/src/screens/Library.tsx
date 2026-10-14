@@ -36,7 +36,8 @@ import { useFolderPrefs } from '../folderprefs';
 import { MuseumHost, openFolderMuseum, openMuseum } from '../components/museum/launch';
 import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
-import { tileRect } from '../flip';
+import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } from '../viewerflip';
+import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { ActivityRing } from '../components/ActivityRing';
 import { kickFaceScanner } from '../ml/facescan';
@@ -223,8 +224,10 @@ function findAnchor(sc: HTMLElement): ScrollAnchor | null {
   return { sel, offset: best.y - top };
 }
 
-export function Library({ nav, view, setView, history, reveal, tabs }: {
+export function Library({ nav, view, setView, history, reveal, tabs, frozen = false }: {
   nav: Nav; view: LibView; setView: (v: LibView) => void;
+  /** The viewer is open over the library: nothing changes, nothing plays, no keys (it stays mounted so its scroll and state are kept). */
+  frozen?: boolean;
   history: { back: () => boolean; forward: () => boolean; canBack: boolean; canForward: boolean };
   /** Scroll to and highlight this item (after coming back from the viewer, "show in folder"). */
   reveal: { id: number; n: number } | null;
@@ -247,6 +250,22 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     },
   });
   // ---- end tabs ----
+  // ---- frozen under the viewer (viewerflip.ts) ----
+  // Keys wake up a moment after the viewer closes, so the key that closed it
+  // (Escape, Backspace) isn't also handled here.
+  const [awake, setAwake] = useState(!frozen);
+  const asleep = frozen || !awake;
+  const asleepRef = useRef(asleep);
+  asleepRef.current = asleep;
+  useEffect(() => {
+    if (frozen) {
+      setAwake(false);
+      return;
+    }
+    const t = setTimeout(() => setAwake(true), 0);
+    return () => clearTimeout(t);
+  }, [frozen]);
+  // ---- end frozen ----
   const s = nav.app.session!;
   const cfg = nav.app.config;
   const [folders, setFolders] = useState<FolderCard[]>([]);
@@ -592,7 +611,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if (asleepRef.current || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -658,7 +677,9 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     return () => el.removeEventListener('wheel', onWheel);
   }, [setCols]);
 
-  const showHelp = useCallback(() => setDialog({ t: 'shortcuts' }), []);
+  const showHelp = useCallback(() => {
+    if (!asleepRef.current) setDialog({ t: 'shortcuts' });
+  }, []);
   useHelpKey(showHelp);
 
   // ---- actions (all undoable) --------------------------------------------------------------
@@ -921,8 +942,15 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
   const gridView = !['folders', 'stats', 'people', 'lookalikes', 'memories'].includes(view.kind);
   const looks = view.kind === 'lookalikes';
 
+  /** The item the viewer was opened on, and the element it grew from (for coming back). */
+  const opened = useRef<{ id: number; el: HTMLElement | null } | null>(null);
+  const markOpen = (id: number | undefined, auto: boolean) => {
+    opened.current = id != null && !auto ? { id, el: sourceElement(id) } : null;
+    return id != null && !auto ? openRect(id) : undefined;
+  };
   const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
     if (!list.length) return;
+    const fromRect = markOpen(startId, auto);
     nav.go({
       name: 'viewer',
       items: list.map(fromItem),
@@ -931,22 +959,63 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
       auto,
       back: view,
       order: timeline ? undefined : sort,
-      fromRect: !auto && startId != null ? tileRect(startId) : undefined,
+      fromRect,
       person: view.kind === 'folder' && folder?.person ? folder.id : view.kind === 'timeline' ? view.person
         : view.kind === 'search' && view.people?.length === 1 ? view.people[0] : null,
     });
   };
+  // Closing the viewer: bring the item's tile into view (instantly, still under
+  // the viewer) and select it, and say where it is so the picture can shrink into it.
+  const closeReveal = useRef<(id: number) => ReturnType<typeof visibleRect>>(() => null);
+  closeReveal.current = (id) => {
+    const o = opened.current;
+    let rect = gridView ? revealInGrid(id) : null;
+    if (!rect) {
+      // Not in the media grid (People page, look-alikes…): the tile it was opened from, if it is that item.
+      const el = o?.id === id && o.el?.isConnected ? o.el : sourceElement(id);
+      el?.scrollIntoView({ block: 'nearest' });
+      rect = visibleRect(el ?? null);
+    }
+    if (gridView && shown.some((i) => i.id === id)) {
+      const p = returnPick(selected, o?.id ?? null, id);
+      if (p) {
+        setSelected(p.selected);
+        setAnchor(p.anchor);
+        setCursor(p.cursor);
+        setSelFolders(new Set());
+      }
+    }
+    return rect;
+  };
+  useEffect(() => {
+    setLibraryReveal((id) => closeReveal.current(id));
+    return () => setLibraryReveal(null);
+  }, []);
+  // While frozen: grid videos are paused where they are, folder cards stop cycling.
+  useEffect(() => {
+    const el = root.current;
+    if (!frozen || !el) return;
+    setHoverCard(null);
+    const paused = [...el.querySelectorAll('video')].filter((v) => !v.paused);
+    paused.forEach((v) => v.pause());
+    return () => paused.forEach((v) => { if (v.isConnected) v.play().catch(() => {}); });
+  }, [frozen]);
+
   const playItems = (auto: boolean, startId?: number, onlySelected = false) => {
     const list = onlySelected && selected.size > 1 ? shown.filter((i) => selected.has(i.id)) : shown;
     playList(list, auto, startId);
   };
 
-  /** Open an item with its own folder as the playlist. */
-  const openInFolder = async (it: Item) => {
+  /**
+   * Open an item with its own folder as the playlist. `stay`: going back returns
+   * to this view as it was (the People page); otherwise to the item's folder.
+   */
+  const openInFolder = async (it: Item, stay = false) => {
     try {
+      const fromRect = stay ? markOpen(it.id, false) : undefined;
       const list = await api.queryItems({ folder: it.folderId });
       const name = it.folderId == null ? 'Top level' : folders.find((f) => f.id === it.folderId)?.name ?? 'Folder';
-      nav.go({ name: 'viewer', items: list.map(fromItem), startKey: `v${it.id}`, title: name, auto: false, back: { kind: 'folder', id: it.folderId } });
+      nav.go({ name: 'viewer', items: list.map(fromItem), startKey: `v${it.id}`, title: name, auto: false, back: stay ? view : { kind: 'folder', id: it.folderId }, fromRect });
     } catch (e) {
       setError(errText(e));
     }
@@ -1004,11 +1073,11 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     const q = foldName(b.text);
     const card = cards.find((f) => foldName(f.name).startsWith(q));
     if (card) {
-      const el = document.querySelector<HTMLElement>(`[data-card="${card.id}"]`);
-      el?.scrollIntoView({ block: 'nearest' });
-      el?.classList.remove('flash');
-      void el?.offsetWidth;
-      el?.classList.add('flash');
+      // Selected, like an item you jump to (the ring shows where you are).
+      document.querySelector<HTMLElement>(`[data-card="${card.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      setSelected(new Set());
+      setSelFolders(new Set([card.id]));
+      setFolderAnchor(card.id);
       return;
     }
     const it = shown.find((i) => foldName(i.name).startsWith(q));
@@ -1173,12 +1242,10 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
         const b = el.getBoundingClientRect();
         return b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom;
       };
-      const items = new Set(startSel);
-      sc.querySelectorAll<HTMLElement>('[data-item]').forEach((el) => { if (hit(el)) items.add(Number(el.dataset.item)); });
-      const fs = new Set(startFolders);
-      sc.querySelectorAll<HTMLElement>('[data-card]').forEach((el) => { if (hit(el)) fs.add(Number(el.dataset.card)); });
-      setSelected(items);
-      setSelFolders(fs);
+      const its = [...sc.querySelectorAll<HTMLElement>('[data-item]')].filter(hit).map((el) => Number(el.dataset.item));
+      const fs = [...sc.querySelectorAll<HTMLElement>('[data-card]')].filter(hit).map((el) => Number(el.dataset.card));
+      setSelected(bandPick(startSel, its, true));
+      setSelFolders(bandPick(startFolders, fs, true));
     };
     const up = () => {
       window.removeEventListener('pointermove', move);
@@ -1332,27 +1399,11 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
    * Shift selects a range. A plain click starts a new selection, like a plain click on an item.
    */
   const folderClick = (e: React.MouseEvent, f: FolderCard, list: FolderCard[], openIt: boolean) => {
-    if (e.ctrlKey || e.metaKey) {
-      setSelFolders((s0) => {
-        const n = new Set(s0);
-        if (n.has(f.id)) n.delete(f.id);
-        else n.add(f.id);
-        return n;
-      });
-      setFolderAnchor(f.id);
-      return;
-    }
-    if (e.shiftKey) {
-      const a = list.findIndex((x) => x.id === (folderAnchor ?? f.id));
-      const b = list.findIndex((x) => x.id === f.id);
-      if (a >= 0 && b >= 0) {
-        const [lo, hi] = a < b ? [a, b] : [b, a];
-        setSelFolders(new Set(list.slice(lo, hi + 1).map((x) => x.id)));
-        return;
-      }
-    }
-    setSelFolders(new Set([f.id]));
-    setFolderAnchor(f.id);
+    // The same rule as items (selection.ts); a plain click also clears the items and, in the sidebar, opens it.
+    const p = folderPick(list.map((x) => x.id), selFolders, folderAnchor, f.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+    setSelFolders(p.selected);
+    setFolderAnchor(p.anchor);
+    if (p.additive) return;
     setSelected(new Set());
     if (openIt) openFolder(f.id);
   };
@@ -1820,7 +1871,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     : viewTitle(view, folder);
   const showNote = !!note;
   return (
-    <div className="library" ref={root}>
+    <div className={`library${frozen ? ' frozen' : ''}`} ref={root} inert={frozen} aria-hidden={frozen || undefined}>
       <header className="lib-top" ref={header} onContextMenu={(e) => {
         if ((e.target as HTMLElement).closest('input, .search')) return;
         e.preventDefault();
@@ -2098,7 +2149,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
           )}
 
           {view.kind === 'people' && (
-            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
+            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
               onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
           )}
           {smart && clip && clip.done + clip.failed < clip.total && (
@@ -2187,7 +2238,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
             shown.length ? (
               <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
               <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
-                keyboard={quick == null && !dialog && !ctx} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
+                keyboard={quick == null && !dialog && !ctx && !asleep} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a, additive) => {
                   setSelected(sel);
                   setAnchor(a);

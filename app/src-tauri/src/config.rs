@@ -61,6 +61,8 @@ pub struct ViewerSettings {
     pub face_boxes: bool,
     /// Slideshow "Line up faces": the main face stays at the same place and size.
     pub align_faces: bool,
+    /// The picture grows out of its grid tile when opened and shrinks back when closed.
+    pub open_close_anim: bool,
 }
 
 impl Default for ViewerSettings {
@@ -77,6 +79,7 @@ impl Default for ViewerSettings {
             ambient: false,
             face_boxes: false,
             align_faces: false,
+            open_close_anim: true,
         }
     }
 }

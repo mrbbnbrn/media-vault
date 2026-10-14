@@ -27,6 +27,8 @@ const folders: DFolder[] = [
   { id: 9, name: 'ödev 2', parentId: null, order: 0, createdAt: T0 + 50 * DAY, pinned: false, person: false, tags: [] },
   { id: 10, name: 'Screenshots', parentId: null, order: 0, createdAt: T0 + 70 * DAY, pinned: false, person: false, tags: [] },
   { id: 11, name: 'zeynep’s wedding', parentId: null, order: 0, createdAt: T0 + 30 * DAY, pinned: false, person: false, tags: [] },
+  // A person folder with a subfolder (the compact sidebar draws those as a folder shape).
+  { id: 12, name: 'Beach days', parentId: 2, order: 0, createdAt: T0 + 80 * DAY, pinned: false, person: false, tags: [] },
 ];
 
 const WORDS = ['sunset', 'beach', 'balloon', 'cave', 'boat', 'dinner', 'cat', 'dog', 'portrait', 'market', 'İstanbul', 'köprü'];
@@ -34,7 +36,7 @@ const items: DItem[] = [];
 {
   // [folder, how many, tags, faces]
   const plan: [number | null, number, string[], number[]][] = [
-    [2, 6, [], [2]], [3, 5, [], [3]], [5, 16, ['sea'], []], [6, 10, ['balloon'], []], [7, 9, ['cat'], []],
+    [2, 6, [], [2]], [3, 5, [], [3]], [12, 3, [], [2]], [5, 16, ['sea'], []], [6, 10, ['balloon'], []], [7, 9, ['cat'], []],
     [8, 3, [], []], [9, 2, [], []], [10, 12, [], []], [11, 8, ['wedding'], []], [null, 4, [], []],
   ];
   let id = 1;
@@ -188,6 +190,18 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     }
     case 'folder_samples':
       return query({ folder: a.folder as number, recursive: true }).slice(0, a.n as number).map((i) => i.id);
+    case 'faces_review': {
+      // Suggestions for Bahar: pictures from the holidays and the wedding.
+      const pool = items.filter((i) => i.kind === 'image' && (i.folderId === 5 || i.folderId === 11)).slice(0, 18);
+      return {
+        people: [{
+          person: { folder: 2, name: 'Bahar', known: 9, unsure: 0 },
+          suggestions: pool.map((it, k) => ({ faceId: 1000 + it.id, item: it, frameMs: 0, x: 0.4, y: 0.35, w: 0.2, h: 0.25, confidence: 90 - k, sure: k % 3 !== 0 })),
+        }],
+        unknown: [],
+        status: { queued: 0, scanned: items.length, faces: 40, failed: 0 },
+      };
+    }
     case 'faces_of_many':
     case 'similar_needed':
       return [];

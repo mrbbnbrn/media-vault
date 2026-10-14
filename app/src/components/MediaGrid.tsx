@@ -19,6 +19,8 @@ import { Loupe } from './Loupe';
 import { Minimap, MINIMAP_RESERVE } from './Minimap';
 import { wantsMinimap, watchedShare } from '../tilemaths';
 import { resumeOf, useResumeChanges } from '../resumebus';
+import { clickPick, moveFrom, movePick } from '../selection';
+import { useGridReveal } from '../viewerflip';
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
 function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
@@ -118,10 +120,13 @@ export function MediaGrid(props: {
   }, [props.scroller, layout]);
 
   // Bring an item into view (only scrolls if it isn't already visible).
+  // Always the latest layout: the key handler below keeps the first render's copy of this function.
+  const layoutNow = useRef(layout);
+  layoutNow.current = layout;
   const bringIntoView = (i: number, centre = false) => {
     const sc = props.scroller.current;
     const el = ref.current;
-    const b = layout.boxes[i];
+    const b = layoutNow.current.boxes[i];
     if (!sc || !el || !b) return;
     const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
     const y0 = top + b.y;
@@ -129,24 +134,30 @@ export function MediaGrid(props: {
     if (y0 < sc.scrollTop + 8) sc.scrollTop = centre ? y0 - sc.clientHeight / 3 : y0 - 8;
     else if (y1 > sc.scrollTop + sc.clientHeight - 8) sc.scrollTop = centre ? y0 - sc.clientHeight / 3 : y1 - sc.clientHeight + 8;
   };
-  const [flashId, setFlashId] = useState<number | null>(null);
   useEffect(() => {
     if (!props.reveal) return;
     const i = props.items.findIndex((x) => x.id === props.reveal!.id);
     if (i < 0) return;
     // After the scroll position has been restored.
+    // Selected (ring and tick), so nothing else needs to flash.
     const t = setTimeout(() => {
       bringIntoView(i, true);
-      setFlashId(props.reveal!.id);
-      props.onCursor?.(props.reveal!.id);
       props.onSelect(new Set([props.reveal!.id]), props.reveal!.id, false);
+      props.onCursor?.(props.reveal!.id);
     }, 200);
-    const t2 = setTimeout(() => setFlashId(null), 2200);
-    return () => {
-      clearTimeout(t);
-      clearTimeout(t2);
-    };
+    return () => clearTimeout(t);
   }, [props.reveal?.n, props.items.length > 0]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Closing the viewer: scroll the item's tile into view right away and say where it is (viewerflip.ts).
+  useGridReveal((id) => {
+    const i = props.items.findIndex((x) => x.id === id);
+    const el = ref.current;
+    const b = layout.boxes[i];
+    if (i < 0 || !el || !b) return null;
+    bringIntoView(i);
+    const g = el.getBoundingClientRect();
+    return { left: g.left + b.x, top: g.top + b.y, width: b.w, height: b.h };
+  });
 
   // Keyboard: arrows move the selection (Shift extends it), Enter opens,
   // Space = quick look. What is highlighted is always what is selected.
@@ -160,8 +171,8 @@ export function MediaGrid(props: {
       const k = e.key;
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(k) || e.altKey) return;
       // Start from the last selected item; if the selection moved elsewhere, from a selected one.
-      let cur = p.cursor != null && p.selected.has(p.cursor) ? p.items.findIndex((x) => x.id === p.cursor) : -1;
-      if (cur < 0 && p.selected.size) cur = p.items.findIndex((x) => p.selected.has(x.id));
+      const order = p.items.map((x) => x.id);
+      const cur = moveFrom(order, p.selected, p.cursor ?? null);
       if (k === 'Enter') {
         if (cur >= 0) {
           e.preventDefault();
@@ -202,14 +213,9 @@ export function MediaGrid(props: {
         if (best >= 0) next = best;
       }
       const id = p.items[next].id;
-      p.onCursor?.(id);
-      const a = e.shiftKey && p.anchor != null ? p.items.findIndex((x) => x.id === p.anchor) : -1;
-      if (a >= 0) {
-        const [lo, hi] = a < next ? [a, next] : [next, a];
-        p.onSelect(new Set(p.items.slice(lo, hi + 1).map((x) => x.id)), p.anchor, true);
-      } else {
-        p.onSelect(new Set([id]), id, false);
-      }
+      const picked = movePick(order, p.anchor, id, e.shiftKey);
+      p.onSelect(picked.selected, picked.anchor, picked.additive);
+      p.onCursor?.(picked.cursor);
       bringIntoView(next);
       // Keyboard focus follows the selection, so no second outline stays behind
       // on the tile that was clicked before.
@@ -241,26 +247,11 @@ export function MediaGrid(props: {
   }, [wantKey, clipMode.clips]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => setWantedVideos(0), []);
 
-  const click = (e: React.MouseEvent, item: Item, i: number) => {
-    const sel = new Set(props.selected);
-    if (e.shiftKey && props.anchor != null) {
-      const a = props.items.findIndex((x) => x.id === props.anchor);
-      if (a >= 0) {
-        const [lo, hi] = a < i ? [a, i] : [i, a];
-        if (!(e.ctrlKey || e.metaKey)) sel.clear();
-        for (let k = lo; k <= hi; k++) sel.add(props.items[k].id);
-        props.onSelect(sel, props.anchor, true);
-        return;
-      }
-    }
-    if (e.ctrlKey || e.metaKey) {
-      if (sel.has(item.id)) sel.delete(item.id);
-      else sel.add(item.id);
-    } else {
-      sel.clear();
-      sel.add(item.id);
-    }
-    props.onSelect(sel, item.id, e.ctrlKey || e.metaKey);
+  // One rule for clicks, arrow keys and everything else (selection.ts).
+  const click = (e: React.MouseEvent, item: Item) => {
+    const p = clickPick(props.items.map((x) => x.id), props.selected, props.anchor, item.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
+    props.onSelect(p.selected, p.anchor, p.additive);
+    props.onCursor?.(p.cursor);
   };
 
   // Dragging the selection onto any folder moves it there.
@@ -349,9 +340,9 @@ export function MediaGrid(props: {
         const watched = watchedShare(it.kind, it.durationMs, resumeOf(it));
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
-            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${flashId === it.id ? ' flash' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
+            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
             style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
-            onClick={(e) => { click(e, it, i); props.onCursor?.(it.id); }} onDoubleClick={() => props.onOpen(it)}
+            onClick={(e) => click(e, it)} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
             onContextMenu={(e) => {
               e.preventDefault();

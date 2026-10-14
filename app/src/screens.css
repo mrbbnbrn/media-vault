@@ -491,8 +491,6 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .viewer.opening .player { background: transparent; }
 .viewer.opening .stage, .viewer.opening .p-top, .viewer.opening .p-controls { opacity: 0; }
 .flip-in-ghost { position: absolute; z-index: 3; object-fit: cover; transform-origin: 0 0; pointer-events: none; }
-.flip-in-ghost.done { opacity: 0; transition: opacity 0.15s ease-out; }
-.flip-ghost { position: fixed; z-index: 45; object-fit: cover; transform-origin: 0 0; pointer-events: none; }
 
 /* Soft colour glow behind pictures */
 .ambient-glow { position: absolute; inset: -8%; background-size: cover; background-position: center; filter: blur(64px) brightness(0.42) saturate(1.35); transform: scale(1.1); pointer-events: none; animation: fadein 0.5s ease; }
@@ -587,16 +585,13 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .side.rail .side-head { display: none; }
 .rail-folders { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 10px 0; border-top: 1px solid var(--line); margin-top: 6px; width: 100%; }
 .rail-folder { position: relative; flex: none; width: 40px; height: 40px; padding: 0; border: none; border-radius: 7px; background: transparent; cursor: pointer; display: flex; align-items: center; justify-content: center; }
-.rail-folder img, .rail-folder .rail-blank { position: relative; width: 36px; height: 36px; border-radius: 6px; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #1f2329; color: var(--text-2); font-size: 16px; }
+.rail-folder > img, .rail-folder > .rail-blank { position: relative; width: 36px; height: 36px; border-radius: 6px; object-fit: cover; display: flex; align-items: center; justify-content: center; background: #1f2329; color: var(--text-2); font-size: 16px; }
 .rail-folder.parent { width: 48px; height: 44px; }
-.rail-folder.parent img, .rail-folder.parent .rail-blank { width: 34px; height: 28px; margin-top: 7px; border-radius: 4px; }
+.rail-folder.parent > img, .rail-folder.parent > .rail-blank { width: 34px; height: 28px; margin-top: 7px; border-radius: 4px; }
 .rail-folder .rail-shape { position: absolute; inset: 4px 0 0; border-radius: 4px 9px 6px 6px; background: #3a3f47; }
 .rail-folder .rail-shape::before { content: ''; position: absolute; left: 0; top: -5px; width: 18px; height: 8px; border-radius: 3px 3px 0 0; background: #3a3f47; }
-.rail-folder.sub img, .rail-folder.sub .rail-blank { width: 30px; height: 30px; }
-.rail-folder.parent.sub img, .rail-folder.parent.sub .rail-blank { width: 30px; height: 24px; }
-.rail-folder.on img, .rail-folder.on .rail-blank { box-shadow: 0 0 0 2px var(--accent-border); }
-.rail-folder.fsel img, .rail-folder.fsel .rail-blank { box-shadow: 0 0 0 2px var(--accent); }
-.rail-folder.drop-over img, .rail-folder.drop-over .rail-blank { box-shadow: 0 0 0 2px var(--accent); }
+.rail-folder.sub > img, .rail-folder.sub > .rail-blank { width: 30px; height: 30px; }
+.rail-folder.parent.sub > img, .rail-folder.parent.sub > .rail-blank { width: 30px; height: 24px; }
 .rail-pin { position: absolute; top: -3px; right: -3px; width: 15px; height: 15px; border-radius: 50%; background: var(--accent); color: var(--on-accent); display: flex; align-items: center; justify-content: center; z-index: 1; }
 
 /* Tiles: info on hover, face boxes, free-copy mark */
@@ -800,8 +795,6 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .rail-folder .pround.rail-round { width: 36px; height: 36px; }
 .rail-folder.sub .pround.rail-round { width: 30px; height: 30px; }
 .rail-folder.parent .pround.rail-round { width: 32px; height: 32px; margin-top: 6px; }
-.rail-folder.on .pround, .rail-folder.fsel .pround, .rail-folder.drop-over .pround { box-shadow: 0 0 0 2px var(--accent); }
-.rail-folder:hover .pround { box-shadow: 0 0 0 2px var(--accent-border, var(--accent)); }
 .pround.people-round { box-shadow: 0 0 0 2px var(--accent-border, rgba(46, 196, 182, 0.6)); }
 @media (prefers-reduced-motion: reduce) { .fcover .pcard .pround { transition: none; } }
 
@@ -893,3 +886,46 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 /* Tiles show where you are with the selection ring; no separate focus outline. */
 .tile:focus-visible { outline: none; }
 .who-pop > .input { width: 100%; }
+
+/* ---- selection: one look everywhere -------------------------------------------------------------
+   What is selected gets a ring and (tiles, folder cards) a tick, drawn on its
+   own layer: never the focus outline, so focus (which follows the selection)
+   and hover can't hide it or add a second highlight. Where you are (the open
+   folder in the sidebar) is a thin bar on the left, not a ring. */
+.tile, .tile:focus, .tile:focus-visible, .tile.sel { outline: none; }
+.tile.sel::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none;
+  box-shadow: inset 0 0 0 2px var(--accent), inset 0 0 0 3px rgba(0, 0, 0, 0.45); }
+.tile.sel .tick { z-index: 1; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); }
+.tile.flash { animation: none; }
+
+.fcard { position: relative; }
+.fcard.fsel, .fcard.fsel:focus-within { outline: none; }
+.fcard .fcover:focus, .fcard .fcover:focus-visible { outline: none; }
+.fcard.fsel::after { content: ''; position: absolute; inset: -1px; border-radius: 14px; pointer-events: none; box-shadow: 0 0 0 2px var(--accent); }
+.fcard.fsel::before { content: '✓'; position: absolute; z-index: 2; top: 16px; left: 16px; width: 20px; height: 20px; border-radius: 5px; pointer-events: none;
+  background: var(--accent); color: var(--on-accent); font-size: 13px; font-weight: 700; display: flex; align-items: center; justify-content: center; box-shadow: 0 1px 4px rgba(0, 0, 0, 0.45); }
+.fcard.flash { animation: none; }
+.fcard.fsel .pin-badge { left: 36px; }
+/* Person cards: hovering only lifts the round picture a little; the ring is the selection's. */
+.fcard:hover .pcard .pround, .fcard.fsel .pcard .pround { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.22), 0 12px 30px rgba(0, 0, 0, 0.6); }
+
+/* Sidebar (wide): the open folder has a bar on the left, selected folders are filled. Hover never covers either. */
+.side .side-row:focus, .side .side-row:focus-visible, .side .tree-name:focus, .side .tree-name:focus-visible { outline: none; }
+.side-row.tree.fsel:hover, .side-row.fsel:hover { background: var(--accent-soft); }
+
+/* Compact sidebar: the same rule. */
+.rail-folder:focus, .rail-folder:focus-visible { outline: none; }
+.rail-folder:hover { background: #171a1f; }
+.rail-folder.on::before { content: ''; position: absolute; left: -4px; top: 50%; width: 3px; height: 18px; margin-top: -9px; border-radius: 2px; background: var(--accent); }
+.rail-folder.parent.on::before { left: -1px; }
+.rail-folder.fsel > img, .rail-folder.fsel > .rail-blank, .rail-folder.fsel > .pround,
+.rail-folder.drop-over > img, .rail-folder.drop-over > .rail-blank, .rail-folder.drop-over > .pround { box-shadow: 0 0 0 2px var(--accent); }
+.rail-folder.parent.fsel > .rail-shape, .rail-folder.parent.fsel > .rail-shape::before { background: color-mix(in srgb, var(--accent) 45%, #3a3f47); }
+
+/* ---- the viewer over the library (viewerflip.ts) ---------------------------------------------- */
+/* The library stays mounted under the viewer: its own pop-ups stay under it too. */
+.library.frozen { position: relative; z-index: 0; }
+.vflip-layer { position: fixed; inset: 0; z-index: 48; pointer-events: none; }
+.vflip-back { position: absolute; left: 0; right: 0; bottom: 0; top: var(--titlebar-h, 0px); background: #000; }
+.vflip-ghost { position: fixed; display: block; transform-origin: 0 0; pointer-events: none; }
+canvas.flip-in-ghost { display: block; }

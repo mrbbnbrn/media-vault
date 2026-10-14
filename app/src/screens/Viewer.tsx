@@ -8,7 +8,8 @@ import { Dropdown, PromptDialog } from '../components/Dialogs';
 import { BackIcon } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
 import { SpeedRound } from '../components/SpeedRound';
-import { drawnRect, FLIP_MS, invert, reducedMotion, shrinkToTile, type Box } from '../flip';
+import { drawnRect, type Box } from '../flip';
+import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
 import type { PlayItem } from '../media';
 import type { Order } from '../playlist';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
@@ -25,10 +26,16 @@ export interface TitleCard {
 
 const TITLE_CARD_MS = 2500;
 
+/** What the viewer showed when it was closed, for the shrink back into the grid (viewerflip.ts). */
+export interface ViewerClose {
+  snap: HTMLCanvasElement | null;
+  from: Box | null;
+}
+
 export function Viewer(props: {
   nav: Nav; items: PlayItem[]; startKey?: string; title: string; auto: boolean; order?: Order;
-  /** Back to the library; `last` = the item that was showing. */
-  onBack: (last: PlayItem | null) => void;
+  /** Back to the library; `last` = the item that was showing; `close`: what to shrink back into its tile (null: no animation). */
+  onBack: (last: PlayItem | null, close: ViewerClose | null) => void;
   onShowFolder?: (item: PlayItem) => void;
   /** Everything of a person (their person folder id), from a face box. */
   onShowPerson?: (folderId: number) => void;
@@ -56,11 +63,16 @@ export function Viewer(props: {
   useEffect(() => {
     if (props.nav.app.session) api.folders().then((f) => setFolderNames(new Map(f.map((x) => [x.id, x.name])))).catch(() => {});
   }, [props.nav.app.session]);
+  const rootRef = useRef<HTMLDivElement>(null);
   const back = () => {
     const last = current.current;
-    // The picture shrinks back into its tile once the library shows it.
-    if (last?.itemId != null && !mini) shrinkToTile(last.itemId, last.thumb, player.current?.mediaRect() ?? null);
-    props.onBack(last);
+    // A copy of what is on screen shrinks back into its tile (or fades) over the library.
+    let close: ViewerClose | null = null;
+    if (!mini && animOn()) {
+      const from = player.current?.mediaRect() ?? null;
+      close = { from, snap: snapshotViewer(rootRef.current, from) };
+    }
+    props.onBack(last, close);
   };
   // The mouse's back button leaves the viewer (not from the mini player).
   useEffect(() => {
@@ -112,30 +124,56 @@ export function Viewer(props: {
     return () => clearTimeout(t);
   }, [card]);
 
-  // ---- the picture grows out of its grid tile ---------------------------------------------------
+  // ---- the picture grows out of its grid tile (viewerflip.ts) ------------------------------------
+  // The library stays underneath, so the tile is still there: its thumbnail
+  // (already decoded) grows to where the picture will be, then crossfades to it.
   const [flip] = useState(() => {
     const it = props.items.find((i) => i.key === props.startKey);
-    if (!props.fromRect || !it?.thumb || !it.width || !it.height || card || props.speedRound || reducedMotion()) return null;
+    if (!props.fromRect || !it || !it.width || !it.height || card || props.speedRound || mini || !animOn()) return null;
     if (it.kind === 'text' || it.kind === 'pdf') return null;
-    return { src: it.thumb, to: drawnRect(window.innerWidth, window.innerHeight, it.width, it.height, settings.fit), from: props.fromRect };
+    const copy = copyImage(sourceElement(it.itemId)?.querySelector('img') ?? null);
+    return copy ? { copy, w: it.width, h: it.height, from: props.fromRect } : null;
   });
   const [opening, setOpening] = useState(!!flip);
-  const [ghost, setGhost] = useState(!!flip);
-  const ghostRef = useRef<HTMLImageElement>(null);
-  const rootRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
-    if (!flip) return;
-    const t = invert(flip.from, flip.to);
-    ghostRef.current?.animate(
-      [{ transform: `translate(${t.x}px, ${t.y}px) scale(${t.s})`, opacity: 0.85 }, { transform: 'none', opacity: 1 }],
-      { duration: FLIP_MS, easing: 'cubic-bezier(0.2, 0, 0.2, 1)' },
-    );
-    rootRef.current?.animate([{ backgroundColor: 'rgba(0, 0, 0, 0)' }, { backgroundColor: 'rgba(0, 0, 0, 1)' }], { duration: FLIP_MS, easing: 'ease-out' });
-    const a = setTimeout(() => setOpening(false), FLIP_MS);
-    const b = setTimeout(() => setGhost(false), FLIP_MS + 160);
+    const root = rootRef.current;
+    if (!root || mini) return;
+    if (!flip) {
+      // No tile to grow from (slideshows, memories): a quick fade in.
+      if (animOn() && !props.speedRound) root.animate([{ opacity: 0 }, { opacity: 1 }], { duration: 140, easing: 'ease-out' });
+      return;
+    }
+    const stage = (root.querySelector('.stage') ?? root).getBoundingClientRect();
+    const d = drawnRect(stage.width, stage.height, flip.w, flip.h, settings.fit);
+    const to: Box = { left: stage.left + d.left, top: stage.top + d.top, width: d.width, height: d.height };
+    const r = root.getBoundingClientRect();
+    const ghost = flip.copy;
+    ghost.className = 'flip-in-ghost';
+    ghost.setAttribute('aria-hidden', 'true');
+    Object.assign(ghost.style, { left: `${to.left - r.left}px`, top: `${to.top - r.top}px`, width: `${to.width}px`, height: `${to.height}px`, opacity: '1' });
+    root.appendChild(ghost);
+    root.animate([{ backgroundColor: 'rgba(0, 0, 0, 0)' }, { backgroundColor: 'rgba(0, 0, 0, 1)' }], { duration: OPEN_MS, easing: 'ease-out' });
+    let live = true;
+    let frame = 0;
+    growGhost(ghost, flip.from, to).then(() => {
+      // Hold the thumbnail until the full picture (or the video's first frame) is there, then crossfade.
+      const t0 = performance.now();
+      const wait = () => {
+        if (!live) return;
+        if (!viewerMediaReady(root, !!player.current?.mediaRect()) && performance.now() - t0 < 2500) {
+          frame = requestAnimationFrame(wait);
+          return;
+        }
+        setOpening(false);
+        const fade = ghost.animate([{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: 'ease-out', fill: 'forwards' });
+        fade.finished.then(() => ghost.remove(), () => ghost.remove());
+      };
+      wait();
+    });
     return () => {
-      clearTimeout(a);
-      clearTimeout(b);
+      live = false;
+      cancelAnimationFrame(frame);
+      ghost.remove();
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -206,10 +244,6 @@ export function Viewer(props: {
         onWeight={vault ? (it, w) => it.itemId != null && api.setWeight([it.itemId], w) : undefined}
         onFullscreen={toggleClean}
       />
-      {ghost && flip && (
-        <img ref={ghostRef} className={`flip-in-ghost${opening ? '' : ' done'}`} src={flip.src} alt="" aria-hidden="true"
-          style={{ left: flip.to.left, top: flip.to.top, width: flip.to.width, height: flip.to.height }} />
-      )}
       {card && props.titleCard && !mini && (
         <div className="title-card" style={{ animationDuration: `${TITLE_CARD_MS}ms` }} role="status">
           <h1>{props.titleCard.title}</h1>

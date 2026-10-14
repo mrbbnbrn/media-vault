@@ -18,6 +18,8 @@ import { MiniFrame } from './components/MiniFrame';
 import { TitleBar } from './components/TitleBar';
 import { useLibraryTabs, useTabKeys } from './tabs/useTabs';
 import type { Box } from './flip';
+import { playClose, revealTile } from './viewerflip';
+import { viewKey } from './viewmemory';
 import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
@@ -49,7 +51,7 @@ export interface ViewerRoute {
   auto: boolean;
   back: LibView;
   order?: Order;
-  /** The grid tile it was opened from (tileRect(id) from flip.ts): the picture grows from there. */
+  /** The grid tile it was opened from (openRect(id) from viewerflip.ts): the picture grows from there. */
   fromRect?: Box | null;
   /** Pictures slowly pan and zoom (Memories). */
   kenBurns?: boolean;
@@ -59,6 +61,8 @@ export interface ViewerRoute {
   speedRound?: boolean;
   /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
   person?: number | null;
+  /** Opened from the library, which stays mounted (frozen) under the viewer. Set by go(). */
+  overLibrary?: boolean;
 }
 
 export interface Nav {
@@ -225,8 +229,12 @@ export function App() {
     // library and settings keep it.
     if (s.name !== 'library' && s.name !== 'settings') setMini(null);
     if (s.name === 'viewer' || s.name === 'multi') viewerTab.current = tabs.activeId;
+    // The library stays mounted (frozen) under a viewer opened from it: same scroll, same everything.
+    if (s.name === 'viewer') s = { ...s, overLibrary: screen.name === 'library' };
     setScreen(s);
   };
+  const libraryShown = !!app.session && tabs.ready
+    && (screen.name === 'library' || (screen.name === 'viewer' && !!screen.overLibrary));
   const nav: Nav = { app, go, refresh };
   const viewerRoute: ViewerRoute | null = screen.name === 'viewer' ? screen : mini && app.session && (screen.name === 'library' || screen.name === 'settings') ? mini : null;
   let viewerId = 0;
@@ -262,8 +270,8 @@ export function App() {
       {screen.name === 'recover' && <Recover nav={nav} path={screen.path} />}
       {screen.name === 'newPassword' && <NewPassword nav={nav} />}
       {screen.name === 'words' && <RecoveryWords nav={nav} words={screen.words} context={screen.context} />}
-      {screen.name === 'library' && app.session && tabs.ready && (
-        <Library nav={nav} view={tabs.view} setView={goView}
+      {libraryShown && (
+        <Library nav={nav} view={tabs.view} setView={goView} frozen={screen.name !== 'library'}
           history={{ back: tabs.back, forward: tabs.forward, canBack: tabs.canBack, canForward: tabs.canForward }}
           reveal={reveal} tabs={{ open: (v) => tabs.open(v), onFolders: tabs.onFolders }} />
       )}
@@ -274,10 +282,21 @@ export function App() {
             fromRect={viewerRoute.fromRect} kenBurns={viewerRoute.kenBurns} titleCard={viewerRoute.titleCard} speedRound={viewerRoute.speedRound}
             person={viewerRoute.person}
             mini={isMini}
-            onBack={(last) => {
+            onBack={(last, close) => {
               setMini(null);
-              tabs.returnTo(viewerTab.current, viewerRoute.back);
-              showItem(last?.itemId);
+              // Back to the view it was opened from. When that is the library still
+              // under the viewer, nothing reloads: its tile is brought into view and
+              // selected, and the picture shrinks back into it.
+              const same = !!viewerRoute.overLibrary && screen.name === 'viewer' && libraryShown
+                && (viewerTab.current == null || viewerTab.current === tabs.activeId) && viewKey(viewerRoute.back) === viewKey(tabs.view);
+              if (same) {
+                const to = revealTile(last?.itemId);
+                if (close) playClose(close.snap, close.from, to);
+              } else {
+                if (close) playClose(close.snap, close.from, null);
+                tabs.returnTo(viewerTab.current, viewerRoute.back);
+                showItem(last?.itemId);
+              }
               setScreen(app.session ? { name: 'library' } : { name: 'start' });
             }}
             onShowFolder={(it) => {
