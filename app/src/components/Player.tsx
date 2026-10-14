@@ -32,6 +32,7 @@ import {
 } from './Icons';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
+import { UpscaleCompare } from './UpscaleCompare';
 import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 
 export interface PlayerHandle {
@@ -648,6 +649,7 @@ export function Player(props: PlayerProps) {
   // The offline AI upscaler (still pictures in the vault, full viewer only).
   const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
     keys: !!props.keys, onMessage: setFlash, onStart: () => setPaused(true) });
+  const upLayer = useRef<HTMLDivElement>(null);
 
   // ---- video and GIF tools ------------------------------------------------------------------
 
@@ -968,11 +970,12 @@ export function Player(props: PlayerProps) {
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
             {up.src && item && (
-              <div className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
+              <div ref={upLayer} className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
                 <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} prefs={prefs} paused
                   onInfo={up.onShown} onError={up.onFailed} />
               </div>
             )}
+            {up.src && up.compare && <UpscaleCompare layer={upLayer} drawn={drawn} label={up.label} keys={!!props.keys} />}
             {drawn && shownFaces.length > 0 && (
               <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />
