@@ -5,7 +5,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
+  api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind,
   type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
   takeLogin,
 } from '../api';
@@ -33,6 +33,7 @@ import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
 import { tileRect } from '../flip';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
+import { ActivityRing } from '../components/ActivityRing';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
@@ -240,7 +241,6 @@ export function Library({ nav, view, setView, history, reveal }: {
   const [dialog, setDialog] = useState<Dialog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [jobs, setJobs] = useState<Record<number, ImportProgress>>({});
   const [reports, setReports] = useState<ImportReport[]>([]);
   const [coverBump, setCoverBump] = useState(0);
   const [ctx, setCtx] = useState<{ x: number; y: number; title: string; items: MenuItem[] } | null>(null);
@@ -741,20 +741,14 @@ export function Library({ nav, view, setView, history, reveal }: {
   });
 
   useEffect(() => {
-    const a = onEvent<ImportProgress>('import-progress', (p) => setJobs((j) => ({ ...j, [p.job]: p })));
+    // Progress shows in the background-jobs ring (jobs.ts); the summary card here.
     const b = onEvent<ImportReport>('import-done', (r) => {
-      setJobs((j) => {
-        const n = { ...j };
-        delete n[r.job];
-        return n;
-      });
       setReports((rs) => [...rs, r]);
       kickThumbnails();
       reload();
       nav.refresh().catch(() => {});
     });
     return () => {
-      a.then((u) => u());
       b.then((u) => u());
     };
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -1648,7 +1642,6 @@ export function Library({ nav, view, setView, history, reveal }: {
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
     : view.kind === 'timeline' && view.person != null ? `${folders.find((f) => f.id === view.person)?.name ?? 'Person'} · timeline`
     : viewTitle(view, folder);
-  const totalImporting = Object.values(jobs);
   const showNote = !!note;
   return (
     <div className="library" ref={root}>
@@ -1786,6 +1779,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           </>}
           <div className="side-spacer" />
           {sideView({ kind: 'trash' }, 'Trash', undefined, <TrashIcon size={rail ? 16 : 14} />)}
+          <ActivityRing rail={rail} notify={cfg.notifyDone !== false} />
         </aside>
 
         <main className="lib-main" ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
@@ -2054,16 +2048,9 @@ export function Library({ nav, view, setView, history, reveal }: {
           <button type="button" className="link" aria-label="Dismiss" onClick={() => setNote(null)}><CloseIcon size={12} /></button>
         </div>
       )}
-      {(totalImporting.length > 0 || reports.length > 0 || storageJob || storageMsg || hasTaskCards(tasks)) && (
+      {(reports.length > 0 || storageMsg || hasTaskCards(tasks)) && (
         <section className="imports" aria-label="Import progress">
           <TaskCards />
-          {storageJob && (
-            <div className="icard">
-              <b>{storageJob.task === 'convert' ? 'Packing files' : storageJob.task === 'reclaim' ? 'Reclaiming space' : 'Deleting and freeing space'}</b>
-              <div className="bar"><div style={{ width: `${storageJob.total ? (storageJob.done / storageJob.total) * 100 : 0}%` }} /></div>
-              <span className="mono faint" style={{ fontSize: 12 }}>{storageJob.done.toLocaleString()} / {storageJob.total.toLocaleString()}</span>
-            </div>
-          )}
           {storageMsg && (
             <div className="icard">
               <div className="row-between">
@@ -2073,7 +2060,6 @@ export function Library({ nav, view, setView, history, reveal }: {
               <span style={{ fontSize: 13 }}>{storageMsg.message}</span>
             </div>
           )}
-          {totalImporting.map((p) => <ImportCard key={p.job} p={p} />)}
           {reports.map((r) => (
             <ImportSummary key={r.job} r={r} onClose={() => setReports((rs) => rs.filter((x) => x.job !== r.job))} />
           ))}
@@ -2525,28 +2511,6 @@ function ArchivePasswordDialog(props: { summary: DropSummary; onClose: () => voi
         </div>
       </form>
     </Modal>
-  );
-}
-
-function ImportCard({ p }: { p: ImportProgress }) {
-  const started = useRef(Date.now());
-  const secs = (Date.now() - started.current) / 1000;
-  const speed = secs > 1 ? p.bytes / secs : 0;
-  const pct = p.total ? Math.min(100, (p.done / p.total) * 100) : 0;
-  const left = speed > 0 && p.done > 0 && p.total > p.done ? ((secs / p.done) * (p.total - p.done)) : 0;
-  return (
-    <div className="icard">
-      <div className="row-between">
-        <b className="ellipsis">Importing {p.source || '…'}</b>
-        <button type="button" className="link" onClick={() => api.cancelImport(p.job)}>Cancel</button>
-      </div>
-      <div className="bar"><div style={{ width: `${pct}%` }} /></div>
-      <div className="row-between mono faint" style={{ fontSize: 12 }}>
-        <span>{p.done.toLocaleString()} / {p.total.toLocaleString()} files</span>
-        <span>{speed ? `${formatBytes(speed)}/s` : ''}{left > 5 ? ` · ~${Math.ceil(left / 60)} min left` : ''}</span>
-      </div>
-      <div className="faint ellipsis" style={{ fontSize: 12 }}>{p.current}</div>
-    </div>
   );
 }
 

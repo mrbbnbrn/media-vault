@@ -113,6 +113,12 @@ pub struct AppConfig {
     pub block_capture: bool,
     /// How the library looks: sidebar, tiles, interface size, top bar.
     pub look: LookSettings,
+    /// Remove camera info, location and dates from files that leave the
+    /// vault (export, encrypted .7z, drag-out / copy to Explorer). Off by default.
+    pub strip_metadata: bool,
+    /// A Windows notification when a long job finishes while the window
+    /// isn't in front (counts only, never names).
+    pub notify_done: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
@@ -170,6 +176,8 @@ impl Default for AppConfig {
             smart_index: true,
             block_capture: true,
             look: LookSettings::default(),
+            strip_metadata: false,
+            notify_done: true,
             vaults: Vec::new(),
             last_vault: None,
         }
@@ -306,6 +314,19 @@ mod tests {
         assert_eq!(c.lock.safety_net_minutes, 0);
         assert!(c.fullscreen_controls_on_mouse);
         assert!(c.block_capture);
+    }
+
+    #[test]
+    fn privacy_and_notify_defaults_for_older_config_files() {
+        let c: AppConfig = serde_json::from_str(r##"{"accent":"#2ec4b6"}"##).unwrap();
+        assert!(!c.strip_metadata, "metadata removal is opt-in");
+        assert!(c.notify_done);
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"stripMetadata":true,"notifyDone":false}"#).unwrap().sanitized();
+        assert!(c.strip_metadata && !c.notify_done);
+        // A broken value doesn't stop the app: the file falls back to defaults.
+        let t = tempfile::tempdir().unwrap();
+        fs::write(t.path().join("config.json"), br#"{"stripMetadata":"yes"}"#).unwrap();
+        assert!(!load(t.path()).strip_metadata);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 // background; the library compares them.
 
 import { api, thumbUrl } from './api';
+import { loopJob } from './jobs';
 
 // cos((2x + 1) · u · π / 64) for the 8 lowest frequencies over 32 pixels.
 const COS: Float64Array[] = Array.from({ length: 8 }, (_, u) =>
@@ -133,6 +134,9 @@ export function startFingerprinter(): () => void {
         r();
       };
     });
+  const job = loopJob('fingerprints', {
+    label: 'Fingerprinting pictures', left: () => api.similarStatus().then((s) => Math.max(0, s.total - s.done)),
+  });
   (async () => {
     let told = 0;
     const tell = (force = false) => {
@@ -150,9 +154,11 @@ export function startFingerprinter(): () => void {
       }
       if (!tasks.length) {
         tell(true);
+        job.idle();
         await sleep(15_000);
         continue;
       }
+      job.batch();
       for (const t of tasks) {
         if (stopped) break;
         try {
@@ -163,10 +169,12 @@ export function startFingerprinter(): () => void {
           if (stopped) break;
           await api.similarFailed(t.id).catch(() => {});
         }
+        job.step();
         tell();
         await new Promise((r) => setTimeout(r, 8));
       }
     }
+    job.idle();
     running = false;
   })();
   stopFn = () => {

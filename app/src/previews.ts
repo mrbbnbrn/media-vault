@@ -8,7 +8,8 @@
 // When there are clearly fewer videos on screen again, the originals return.
 
 import { useSyncExternalStore } from 'react';
-import { api, mediaUrl } from './api';
+import { api, jobsApi, mediaUrl } from './api';
+import { loopJob } from './jobs';
 
 export const COLS = 8;
 export const ROWS = 6;
@@ -120,6 +121,7 @@ export function startPreviewMaker(): () => void {
         r();
       };
     });
+  const job = loopJob('previews', { label: 'Making preview clips', unit: '', left: () => jobsApi.backgroundLeft().then((l) => l.previews) });
   (async () => {
     while (!stopped) {
       let tasks: { id: number }[] = [];
@@ -129,9 +131,11 @@ export function startPreviewMaker(): () => void {
         break; // locked
       }
       if (!tasks.length) {
+        job.idle();
         await sleep(15_000);
         continue;
       }
+      job.batch();
       for (const t of tasks) {
         if (stopped) break;
         try {
@@ -143,10 +147,12 @@ export function startPreviewMaker(): () => void {
           if (stopped) break;
           await api.previewFailed(t.id).catch(() => {});
         }
+        job.step();
         // A short rest so the window stays smooth.
         await new Promise((r) => setTimeout(r, 150));
       }
     }
+    job.idle();
     running = false;
   })();
   stopFn = () => {

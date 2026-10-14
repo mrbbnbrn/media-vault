@@ -18,6 +18,8 @@ mod engine;
 mod exporter;
 mod extras;
 mod faces;
+// The vault's size by month (Statistics chart, Settings sparkline).
+mod growth;
 mod import;
 mod integrity;
 mod library;
@@ -29,6 +31,8 @@ mod share7z;
 mod organize;
 mod similar;
 mod storage;
+// Removing camera info, location and dates from files that leave the vault.
+mod stripmeta;
 mod videotool;
 mod winshell;
 
@@ -1118,8 +1122,9 @@ fn cancel_task(state: State<'_, Shared>, task: String) {
 
 /// Write items out as ordinary (unencrypted) files. "export-progress", then "export-done".
 #[tauri::command]
-fn export_start(app: AppHandle, state: State<'_, Shared>, request: exporter::ExportRequest) -> Result<(), String> {
+fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter::ExportRequest) -> Result<(), String> {
     let s = sess(&state)?;
+    request.strip = state.config.lock().unwrap().strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "export")?;
     std::thread::spawn(move || {
@@ -1141,8 +1146,9 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, request: exporter::Exp
 /// Put items and folders into a password-protected .7z. "share-progress"
 /// (same shape as export progress), then "share-done". Cancel with task "share".
 #[tauri::command]
-fn share_7z_start(app: AppHandle, state: State<'_, Shared>, request: share7z::ShareRequest) -> Result<(), String> {
+fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z::ShareRequest) -> Result<(), String> {
     let s = sess(&state)?;
+    request.strip = state.config.lock().unwrap().strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "share")?;
     std::thread::spawn(move || {
@@ -1616,6 +1622,37 @@ fn start_watcher(app: AppHandle, inner: Shared) {
     });
 }
 
+// ---- background jobs, vault growth ------------------------------------------------------
+
+/// Thumbnails and preview clips still to make (for the background-jobs ring).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BackgroundLeft {
+    thumbs: i64,
+    previews: i64,
+}
+
+#[tauri::command]
+async fn background_left(state: State<'_, Shared>) -> Result<BackgroundLeft, String> {
+    read_db(state.inner(), |c| {
+        let one = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string());
+        Ok(BackgroundLeft {
+            thumbs: one("SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL")?,
+            previews: one(
+                "SELECT COUNT(*) FROM media WHERE kind = 'video' AND preview_object_id IS NULL AND deleted_at IS NULL \
+                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> ''",
+            )?,
+        })
+    })
+    .await
+}
+
+/// Stored size by the month things were added (growth.rs).
+#[tauri::command]
+async fn vault_growth(state: State<'_, Shared>) -> Result<growth::Growth, String> {
+    read_db(state.inner(), |c| growth::growth(c, library::now_secs())).await
+}
+
 // ---- entry point -----------------------------------------------------------------
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1641,6 +1678,8 @@ pub fn run() {
     let panic = panic_shortcut();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Local "job finished" toasts (no network).
+        .plugin(tauri_plugin_notification::init())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, shortcut, event| {
@@ -1868,6 +1907,9 @@ pub fn run() {
             duel_ratings,
             duel_result,
             duel_restore,
+            // background jobs, vault growth
+            background_left,
+            vault_growth,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

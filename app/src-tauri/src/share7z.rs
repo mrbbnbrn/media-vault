@@ -52,6 +52,10 @@ pub struct ShareRequest {
     /// Keep the folders (from the selected folder down) inside the archive.
     #[serde(default = "yes")]
     pub keep_structure: bool,
+    /// Remove camera info, location and dates (set from the app's settings,
+    /// never by the window).
+    #[serde(skip)]
+    pub strip: bool,
 }
 
 impl Drop for ShareRequest {
@@ -477,7 +481,8 @@ fn write_archive(
         progress(&ShareProgress { done: i, total, bytes: bytes_before, total_bytes, name: f.name.clone() });
         let opened = ObjectId::from_hex(&f.object)
             .map_err(|e| e.to_string())
-            .and_then(|oid| s.vault().open_object(ObjectKind::Media, &oid).map_err(|e| e.to_string()));
+            .and_then(|oid| s.vault().open_object(ObjectKind::Media, &oid).map_err(|e| e.to_string()))
+            .and_then(|r| crate::stripmeta::maybe(r, &f.name, req.strip));
         let reader = match opened {
             Ok(r) => r,
             Err(e) => {
@@ -591,6 +596,7 @@ mod tests {
             level: 0,
             split_bytes: None,
             keep_structure: true,
+            strip: false,
         }
     }
 
@@ -641,6 +647,27 @@ mod tests {
         let again = run(&f.s, &req(&dest, vec![c], vec![]), &AtomicBool::new(false), &mut |_| {});
         assert!(again.error.unwrap().contains("already a file"));
         assert_eq!(read_all(&dest, "s3cret pw").len(), 5, "the existing archive is untouched");
+    }
+
+    #[test]
+    fn camera_info_is_removed_from_shared_pictures_when_asked() {
+        let f = fixture();
+        let src = f.out.join("cam");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("cam.jpg"), crate::stripmeta::tiny_camera_jpeg()).unwrap();
+        let job = import::Job { id: 2, paths: vec![src.join("cam.jpg").display().to_string()], target: None, password: None, archive_folder: true };
+        assert_eq!(import::run(&f.s, &job, &AtomicBool::new(false), &mut |_| {}).imported, 1);
+        let cam = id_of(&f.s, "cam.jpg");
+        for strip in [false, true] {
+            let dest = f.out.join(format!("strip-{strip}.7z"));
+            let mut r = req(&dest, vec![cam], vec![]);
+            r.strip = strip;
+            let d = run(&f.s, &r, &AtomicBool::new(false), &mut |_| {});
+            assert_eq!(d.error, None);
+            let got = read_all(&dest, "s3cret pw");
+            let has = got["cam.jpg"].windows(5).any(|w| w == b"Canon");
+            assert_eq!(has, !strip, "strip = {strip}");
+        }
     }
 
     #[test]

@@ -28,6 +28,8 @@ sevenz-rust2 = { version = "=0.24.0", features = ["aes256"] }
 tauri = { version = "2", features = [] }
 tauri-plugin-dialog = "2"
 tauri-plugin-global-shortcut = "2"
+# "Import finished" toasts when a long job ends while the window is in the background.
+tauri-plugin-notification = "=2.5.0"
 vault-core = { version = "0.1.0", path = "../../crates/vault-core" }
 zeroize = "1.9.1"
 
@@ -53,4 +55,6 @@ windows = { version = "0.62.2", features = [
 windows-core = "0.62.2"
 
 [dev-dependencies]
+# Only to build and decode sample pictures in the metadata-removal tests.
+image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 tempfile = "3.27.0"

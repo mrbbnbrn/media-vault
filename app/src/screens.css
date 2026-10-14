@@ -676,3 +676,63 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .tagman-palette button.none { background: transparent; border: 1px solid var(--line-2); color: var(--faint); }
 .btn.ghost.danger-text { color: var(--danger); }
 .look-tile.small { width: 120px; height: 120px; }
+
+/* ---- background jobs: the ring at the bottom of the sidebar and its list (ActivityRing.tsx) ---- */
+.jobring-wrap { position: sticky; bottom: -40px; margin: 6px 0 -40px; padding: 6px 0 40px; background: linear-gradient(to bottom, transparent, var(--panel) 14px); z-index: 2; animation: fadein 0.25s; }
+.jobring-wrap.rail { align-self: center; }
+.jobring-wrap.fading { animation: jobring-out 4s ease-in forwards; }
+@keyframes jobring-out { 0%, 50% { opacity: 1; } 100% { opacity: 0; } }
+.jobring { position: relative; display: flex; align-items: center; gap: 9px; width: 100%; min-height: 36px; padding: 0 8px; border: 1px solid transparent; border-radius: 10px; background: transparent; color: var(--text-2); font-size: 13px; text-align: left; cursor: pointer; }
+.jobring:hover, .jobring.open { background: #171a1f; border-color: var(--line-2); }
+.jobring-wrap.rail .jobring { width: 42px; padding: 0; justify-content: center; }
+.jobring-text { display: flex; align-items: baseline; gap: 8px; flex: 1; min-width: 0; }
+.jobring-pct { margin-left: auto; font-family: var(--mono); font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.jobring-n { position: absolute; bottom: 3px; left: 24px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: var(--on-accent); font-size: 10px; font-weight: 600; line-height: 15px; text-align: center; box-shadow: 0 0 0 2px var(--panel); }
+.jobring-wrap.rail .jobring-n { left: 25px; bottom: 2px; }
+.jring { flex-shrink: 0; transform-origin: 50% 50%; }
+.jring.spin { animation: jring-spin 1.1s linear infinite; }
+@keyframes jring-spin { to { transform: rotate(360deg); } }
+.jring-track { fill: none; stroke: var(--line-2); stroke-width: 2.5; }
+.jring-arc { fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; transition: stroke-dashoffset 0.4s ease; }
+.jring-mark { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.jring.failed .jring-arc, .jring.failed .jring-mark { stroke: var(--danger); }
+.jobpop { position: fixed; z-index: 60; width: 320px; max-width: calc(100vw - 16px); max-height: min(60vh, 440px); overflow: auto; padding: 12px 14px 14px; border-radius: 14px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.55); display: flex; flex-direction: column; gap: 14px; animation: fadein 0.15s; }
+.jobpop-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 13px; }
+.jobpop-head b { font-weight: 500; color: var(--text); }
+.jobrow { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--text-2); }
+.jobrow-top { display: flex; align-items: center; gap: 8px; min-height: 22px; }
+.jobrow-top > .ellipsis { flex: 1; }
+.jobrow-x { width: 22px; height: 22px; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center; border: none; border-radius: 6px; background: transparent; color: var(--faint); cursor: pointer; }
+.jobrow-x:hover { background: #23262c; color: var(--text); }
+.jobrow .bar { height: 4px; }
+.jobrow.ended .bar > div { opacity: 0.55; }
+.jobrow.failed .bar > div { background: var(--danger); }
+.bar.indef > div { width: 30%; animation: bar-slide 1.4s ease-in-out infinite; }
+@keyframes bar-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.jobrow-meta { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+@media (prefers-reduced-motion: reduce) { .jring.spin, .bar.indef > div { animation: none; } }
+
+/* ---- vault size over time (VaultGrowth.tsx) ---- */
+.growth-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; margin-bottom: 8px; font-size: 13px; }
+.growth-head h2 { margin: 0 !important; }
+.growth-total { color: var(--text); font-weight: 500; }
+.growth-plot { position: relative; width: 100%; }
+.growth-plot svg { display: block; overflow: visible; }
+.growth-grid { stroke: var(--line); stroke-width: 1; }
+.growth-y { fill: var(--faint); font-size: 11px; text-anchor: end; font-family: var(--mono); }
+.growth-x { fill: var(--faint); font-size: 11px; text-anchor: middle; }
+.growth-panel { fill: var(--muted); font-size: 11px; letter-spacing: 0.02em; }
+.growth-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.growth-bar { fill: var(--accent); opacity: 0.7; transition: opacity 0.12s; }
+.growth-bar.on { opacity: 1; }
+.growth-cross { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 3 3; }
+.growth-dot { fill: var(--accent); stroke: #131519; stroke-width: 2; }
+.growth-tip { position: absolute; transform: translate(-50%, -100%); pointer-events: none; display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.5); font-size: 12px; color: var(--text-2); white-space: nowrap; z-index: 3; }
+.growth-tip b { color: var(--text); font-weight: 500; }
+.growth-hint { margin: 10px 0 0; font-size: 12px; line-height: 1.5; }
+.growth-spark { display: flex; align-items: center; gap: 12px; font-size: 13px; color: var(--muted); }
+.growth-spark b { color: var(--text); font-weight: 500; }
+.growth-spark svg { flex-shrink: 0; overflow: visible; }
+.growth-spark-fill { fill: var(--accent); opacity: 0.12; }
+/* The multi-screen ".spanel" (absolute) must not move the Statistics panels. */
+.stats .spanel { position: relative; overflow: visible; }

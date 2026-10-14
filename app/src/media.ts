@@ -1,7 +1,8 @@
 // Media helpers: thumbnail making (in memory, never on disk), GIF / animated
 // WebP length, and the playable item shape shared by every player.
 
-import { api, mediaUrl, localUrl, thumbUrl, type Item, type Kind, type LocalItem } from './api';
+import { api, jobsApi, mediaUrl, localUrl, thumbUrl, type Item, type Kind, type LocalItem } from './api';
+import { loopJob } from './jobs';
 import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
 
@@ -282,6 +283,7 @@ export function startThumbnailer(): () => void {
       listeners.forEach((l) => l(t.id));
     }
   };
+  const job = loopJob('thumbs', { label: 'Making thumbnails', unit: '', left: () => jobsApi.backgroundLeft().then((l) => l.thumbs) });
   (async () => {
     while (!stopped) {
       let tasks: { id: number; kind: Kind }[] = [];
@@ -291,13 +293,18 @@ export function startThumbnailer(): () => void {
         break; // locked
       }
       if (!tasks.length) {
+        job.idle();
         await sleep(4000);
         continue;
       }
+      job.batch();
       for (let i = 0; i < tasks.length && !stopped; i += 2) {
-        await Promise.all(tasks.slice(i, i + 2).map(work));
+        const two = tasks.slice(i, i + 2);
+        await Promise.all(two.map(work));
+        two.forEach(() => job.step());
       }
     }
+    job.idle();
     running = false;
   })();
   return () => {

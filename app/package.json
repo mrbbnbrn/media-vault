@@ -15,6 +15,7 @@
     "@huggingface/tokenizers": "0.2.0",
     "@tauri-apps/api": "2.12.3",
     "@tauri-apps/plugin-dialog": "2.8.2",
+    "@tauri-apps/plugin-notification": "2.5.0",
     "@vladmandic/face-api": "1.7.15",
     "gifenc": "1.0.3",
     "onnxruntime-web": "1.30.0",
