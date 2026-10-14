@@ -9,6 +9,7 @@ import { plural } from '../undo';
 import { Dropdown, Modal, PromptDialog } from './Dialogs';
 import { CloseIcon, FaceIcon } from './Icons';
 import type { LibView } from '../screens/Library';
+import { RoundCover } from './RoundCover';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
@@ -132,7 +133,7 @@ export function PeopleView(props: {
           onAccept={(ids) => done(api.facesAccept(ids, g.person.folder), `${plural(ids.length, 'picture')} added to ${g.person.name}.`)}
           onReject={(ids) => done(api.facesReject(ids, g.person.folder), `Got it — ${plural(ids.length, 'face')} marked as not ${g.person.name}.`)}
           onOpenItem={props.onOpenItem} onTimeline={props.onTimeline ? () => props.onTimeline!(g.person.folder) : undefined}
-          onOpenTab={props.onOpenTab} />
+          onOpenTab={props.onOpenTab} folder={props.folders.find((f) => f.id === g.person.folder)} />
       ))}
 
       {review && review.unknown.length > 0 && (
@@ -186,6 +187,7 @@ function PersonCard(props: {
   onOpenItem: (it: Item) => void;
   onTimeline?: () => void;
   onOpenTab?: (v: LibView) => void;
+  folder?: FolderCard;
 }) {
   const { person, suggestions } = props.g;
   const middle = (v: LibView) => (props.onOpenTab ? {
@@ -208,7 +210,7 @@ function PersonCard(props: {
   return (
     <section className="person">
       <div className="person-head">
-        <h2 {...middle({ kind: 'folder', id: person.folder })} title={props.onOpenTab ? 'Middle-click to open this person’s folder in a new tab' : undefined}><FaceIcon /> {person.name}</h2>
+        <h2 {...middle({ kind: 'folder', id: person.folder })} title={props.onOpenTab ? 'Middle-click to open this person’s folder in a new tab' : undefined}>{props.folder?.cover ? <RoundCover folder={props.folder} size={36} className="people-round" /> : <FaceIcon />} {person.name}</h2>
         <span className="faint">
           learned from {plural(person.known, 'face')}
           {person.known < 3 && ' — add a few more clear pictures for better suggestions'}

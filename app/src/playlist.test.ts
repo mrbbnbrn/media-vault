@@ -129,3 +129,13 @@ describe('weighted random', () => {
     expect(p.next(true)!.key).toBe('x');
   });
 });
+
+describe('peek', () => {
+  it('shows the next items in order, wrapping with repeat all', () => {
+    const p = new Playlist(items, 'nameAsc', 'all', 'a10.jpg');
+    expect(p.peek(2).map((x) => x.key)).toEqual(['b2.jpg', 'a2.jpg']);
+    const off = new Playlist(items, 'nameAsc', 'off', 'a10.jpg');
+    expect(off.peek(5).map((x) => x.key)).toEqual(['b2.jpg']);
+    expect(new Playlist(items, 'random').peek(3)).toEqual([]);
+  });
+});

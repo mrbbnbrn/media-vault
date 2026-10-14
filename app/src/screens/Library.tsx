@@ -41,6 +41,7 @@ import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
 import { MediaGrid } from '../components/MediaGrid';
+import { RoundCover } from '../components/RoundCover';
 import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
 import { StatsView } from '../components/StatsView';
 import { TodaysPickCard, useTodaysPick } from '../components/TodaysPick';
@@ -123,6 +124,17 @@ const SORTS: { id: Order; label: string }[] = [
   { id: 'nameDesc', label: 'Name Z–A' },
   { id: 'largest', label: 'Largest first' },
 ];
+
+/** What the minimap preview says at an item: its month when sorted by date, its first letter when by name. */
+const monthFmt = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
+function minimapLabel(sort: Order | null): ((it: Item) => string | null) | undefined {
+  if (sort === 'newest' || sort === 'oldest') return (it) => `Added ${monthFmt.format(new Date(it.importedAt * 1000))}`;
+  if (sort === 'nameAsc' || sort === 'nameDesc') return (it) => {
+    const c = it.name.trim().charAt(0).toLocaleUpperCase();
+    return !c ? null : /\d/.test(c) ? '0–9' : c;
+  };
+  return undefined;
+}
 
 const KINDS: { id: Kind | 'any'; label: string }[] = [
   { id: 'any', label: 'All types' },
@@ -876,6 +888,8 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
       back: view,
       order: timeline ? undefined : sort,
       fromRect: !auto && startId != null ? tileRect(startId) : undefined,
+      person: view.kind === 'folder' && folder?.person ? folder.id : view.kind === 'timeline' ? view.person
+        : view.kind === 'search' && view.people?.length === 1 ? view.people[0] : null,
     });
   };
   const playItems = (auto: boolean, startId?: number, onlySelected = false) => {
@@ -920,7 +934,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
   /** Shift + middle-click a folder: play it as a slideshow. */
   const playFolder = async (f: FolderCard) => {
     const list = await api.queryItems({ folder: f.id, recursive: true });
-    if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
+    if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
     else setNote({ text: `“${f.name}” is empty`, at: 0 });
   };
   const middle = (f: FolderCard) => ({
@@ -967,7 +981,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
     { label: 'Slideshow', onSelect: async () => {
       const list = await api.queryItems({ folder: f.id, recursive: true });
-      if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view });
+      if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
     } },
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
@@ -1549,6 +1563,8 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
   }, [hoverCard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const coverView = (f: FolderCard) => {
+    // Person folders: a round cover centred on the face.
+    if (f.person && f.cover) return <span className="pcard"><RoundCover folder={f} bump={coverBump} /></span>;
     const hovered = hoverCard === f.id;
     const playing = preview === 'all' || (preview === 'hover' && hovered);
     const animated = f.coverKind === 'video' || f.coverKind === 'gif';
@@ -1746,7 +1762,9 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
     );
   };
   /** A folder's little picture (its cover), or the folder icon. */
-  const folderPic = (f: FolderCard, size: number) => f.cover
+  const folderPic = (f: FolderCard, size: number) => f.cover && f.person
+    ? <RoundCover folder={f} size={size} bump={coverBump} className="side-round" />
+    : f.cover
     ? <img className="side-cover" src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} style={{ width: size, height: size }} />
     : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
 
@@ -1840,7 +1858,8 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
                     title={f.path.map((c) => c.name).concat(f.name).join(' › ')} aria-label={f.name}
                     onClick={(e) => folderClick(e, f, tree, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
                     {parent && <span className="rail-shape" aria-hidden="true" />}
-                    {f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
+                    {f.cover && f.person ? <RoundCover folder={f} bump={coverBump} className="rail-round" />
+                      : f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
                     {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
                   </button>
                 );
@@ -2135,6 +2154,7 @@ export function Library({ nav, view, setView, history, reveal, tabs }: {
                 dimmed={clipboard?.mode === 'cut' ? new Set(clipboard.ids) : undefined}
                 onDragStart={inTrash ? undefined : (e, ids) => dragOut(e, ids, [])}
                 gap={look.tileGap}
+                minimap={look.minimap !== false} minimapLabel={minimapLabel(timeline || smart || inTrash || view.kind === 'similar' ? null : sort)}
                 onDropOnFolder={inTrash ? undefined : (ids, target) => act(() => moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7))))} />
               </div>
             ) : !loading && !(inTrash && trash?.folders.length) && (

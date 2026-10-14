@@ -25,6 +25,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Shift + middle-click a folder', 'Play it as a slideshow'],
       ['Folders and items together', 'Select both (Ctrl + click); the bar at the bottom acts on all of them — favourite, tag, play… apply to everything inside the folders'],
       ['Ctrl + mouse wheel', 'More or fewer items per row'],
+      ['Hold Alt + point at a picture', 'Magnifier: see that spot close up (Alt + mouse wheel: more or less)'],
       ['Ctrl+X / Ctrl+C, then Ctrl+V', 'Move or copy items and folders into another folder (Ctrl+V on the desktop copies them out, after asking)'],
       ['Ctrl+V (picture or files copied elsewhere)', 'Imports them into the open folder'],
       ['Drag onto a folder’s top or bottom edge', 'Put folders in your own order'],

@@ -14,6 +14,7 @@ import { useBeatSync } from '../beats';
 import { clipBox, drawnRect, type Box } from '../flip';
 import { kickFaceScanner } from '../ml/facescan';
 import { facesAt, kenBurnsPath, resumeStart, resumeValue } from '../viewerlogic';
+import { noteResume } from '../resumebus';
 import { captureVideoFrame, derivedName } from '../clips';
 import { formatTime, kickThumbnails, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
@@ -23,6 +24,7 @@ import { ContextMenu, Dropdown } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
+import { useFaceAlign } from './FaceAlign';
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
@@ -80,6 +82,8 @@ export interface PlayerProps {
   hold?: boolean;
   /** A known face was clicked: show everything of that person (folder id). */
   onShowPerson?: (folderId: number) => void;
+  /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
+  person?: number | null;
   ref?: Ref<PlayerHandle>;
 }
 
@@ -201,6 +205,7 @@ export function Player(props: PlayerProps) {
   }, [flash]);
 
   const beatMark = useRef<() => void>(() => {});
+  const alignSnap = useRef<() => void>(() => {});
   const go = useCallback((dir: 'next' | 'prev', auto = false) => {
     const p = listRef.current;
     if (!p) return;
@@ -212,6 +217,7 @@ export function Player(props: PlayerProps) {
       return;
     }
     beatMark.current();
+    if (n.key !== before) alignSnap.current();
     setFailed(false);
     if (n.key === before) {
       setTick((t) => t + 1);
@@ -246,8 +252,25 @@ export function Player(props: PlayerProps) {
     return () => clearTimeout(t);
   }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // "Line up faces": the main face stays at the same place and size from picture to picture.
+  const align = useFaceAlign({
+    on: !!prefs.alignFaces && slideshow && !mini,
+    item,
+    natural: isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null,
+    stage: stageWH,
+    fit: s.fit,
+    blocked: zoomed || failed,
+    person: props.person,
+    upcoming: () => listRef.current?.peek(5) ?? [],
+    layer: kbRef,
+    kenBurns: !!(props.kenBurns || s.kenBurns),
+    showMs: s.imageSeconds * 1000,
+    halted,
+  });
+  alignSnap.current = align.snap;
+
   // Slow pan and zoom over each picture during the slideshow.
-  const kenBurns = (props.kenBurns || s.kenBurns) && slideshow && item?.kind === 'image' && !zoomed && !failed;
+  const kenBurns = (props.kenBurns || s.kenBurns) && slideshow && item?.kind === 'image' && !zoomed && !failed && !align.lining;
   useEffect(() => {
     const el = kbRef.current;
     if (!el || !kenBurns || typeof el.animate !== 'function') return;
@@ -470,6 +493,7 @@ export function Player(props: PlayerProps) {
     if (ms === p.saved) return;
     p.saved = ms;
     api.setResume(p.id, ms).catch(() => {});
+    noteResume(p.id, ms);
     // This list's copy follows, so coming back to it starts at the right place.
     const it = props.items.find((x) => x.itemId === p.id);
     if (it) it.resumeMs = ms;
@@ -942,6 +966,7 @@ export function Player(props: PlayerProps) {
             )}
           </div>
         )}
+        {align.ghost}
         {!item && <div className="media-failed">Nothing to play here.</div>}
         {drawing && <div className="zoom-rect drawing" style={{ left: drawing.x, top: drawing.y, width: drawing.w, height: drawing.h }} />}
         {rect && !drawing && (

@@ -216,6 +216,18 @@ export class Playlist<T extends Entry = Entry> {
     return this.current();
   }
 
+  /** The next `n` items in order (none in random modes, where the next one isn't known yet). */
+  peek(n: number): T[] {
+    if (this.pos < 0 || isRandomish(this.order)) return [];
+    const out: T[] = [];
+    for (let k = 1; k <= n && k < this.seq.length; k++) {
+      const i = this.pos + k;
+      if (i < this.seq.length) out.push(this.seq[i]);
+      else if (this.repeat === 'all') out.push(this.seq[i - this.seq.length]);
+    }
+    return out;
+  }
+
   /** Position for "34 of 214"; -1 in random modes. */
   index(): number {
     return isRandomish(this.order) ? -1 : this.pos;

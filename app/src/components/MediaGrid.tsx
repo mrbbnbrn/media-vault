@@ -15,6 +15,10 @@ import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayo
 import { startMoveDrag } from '../dragmove';
 import { formatTime, onThumb } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
+import { Loupe } from './Loupe';
+import { Minimap, MINIMAP_RESERVE } from './Minimap';
+import { wantsMinimap, watchedShare } from '../tilemaths';
+import { resumeOf, useResumeChanges } from '../resumebus';
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
 function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
@@ -62,6 +66,10 @@ export function MediaGrid(props: {
   onDragStart?: (e: React.PointerEvent, ids: number[]) => void;
   /** Space between tiles (re-layout when it changes). */
   gap?: number;
+  /** The overview strip beside the scrollbar (long grids only). */
+  minimap?: boolean;
+  /** What the minimap preview says at an item (month, first letters…); groups' labels win. */
+  minimapLabel?: (it: Item) => string | null;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -69,6 +77,7 @@ export function MediaGrid(props: {
   const [view, setView] = useState({ top: 0, bottom: 1200 });
   const [ready, setReady] = useState<Set<number>>(new Set());
   const mode = props.layout ?? 'grid';
+  useResumeChanges();
 
   useEffect(() => onThumb((id) => setReady((r) => new Set(r).add(id))), []);
   const clipMode = usePreviewMode();
@@ -303,8 +312,21 @@ export function MediaGrid(props: {
     }
   }
 
+  const showMini = !!props.minimap && wantsMinimap(layout.height, view.bottom - view.top);
+  const labelAt = (i: number) => {
+    const gs = props.groups;
+    if (gs?.length) {
+      let label: string | null = null;
+      for (const g of gs) if (g.start <= i) label = g.label;
+      return label;
+    }
+    return props.items[i] ? props.minimapLabel?.(props.items[i]) ?? null : null;
+  };
+
   return (
-    <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height }} role="grid" aria-label="Media">
+    <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height, width: showMini ? `calc(100% - ${MINIMAP_RESERVE}px)` : undefined }} role="grid" aria-label="Media">
+      <Loupe root={ref} items={props.items} shape={mode === 'shape'} />
+      {showMini && <Minimap items={props.items} layout={layout} gridW={width} scroller={props.scroller} grid={ref} view={view} labelAt={labelAt} />}
       {layout.headers.filter((h) => h.y + HEADER_H >= view.top - 600 && h.y <= view.bottom + 600).map((h) => (
         <div key={h.y} className="group-head" style={{ top: h.y, height: HEADER_H }}>
           <b>{h.label}</b> <span className="faint">{h.count.toLocaleString()}</span>
@@ -318,6 +340,7 @@ export function MediaGrid(props: {
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
         const asClip = playing && it.kind === 'video' && clipMode.clips;
         const place = (props.faceBoxes || props.faceCrop) && props.faces?.has(it.id) ? placement(it, b.w, b.h) : null;
+        const watched = watchedShare(it.kind, it.durationMs, resumeOf(it));
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
             className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${flashId === it.id ? ' flash' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
@@ -370,6 +393,7 @@ export function MediaGrid(props: {
             {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
             {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
             {it.kind === 'video' && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
+            {watched != null && <span className="tile-progress" title={`Watched ${Math.round(watched * 100)}%`}><span style={{ width: `${watched * 100}%` }} /></span>}
             {it.kind === 'gif' && <span className="badge">GIF</span>}
             {it.kind === 'pdf' && <span className="badge">PDF</span>}
             {it.kind === 'text' && <span className="badge">{it.ext.toUpperCase()}</span>}

@@ -57,6 +57,8 @@ export interface ViewerRoute {
   titleCard?: TitleCard;
   /** Speed round: pictures and GIFs only, F to favourite, summary at the end. */
   speedRound?: boolean;
+  /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
+  person?: number | null;
 }
 
 export interface Nav {
@@ -270,6 +272,7 @@ export function App() {
         <MiniFrame key={viewerId} mini={isMini} onExpand={expandMini}>
           <Viewer nav={nav} items={viewerRoute.items} startKey={viewerRoute.startKey} title={viewerRoute.title} auto={viewerRoute.auto} order={viewerRoute.order}
             fromRect={viewerRoute.fromRect} kenBurns={viewerRoute.kenBurns} titleCard={viewerRoute.titleCard} speedRound={viewerRoute.speedRound}
+            person={viewerRoute.person}
             mini={isMini}
             onBack={(last) => {
               setMini(null);
