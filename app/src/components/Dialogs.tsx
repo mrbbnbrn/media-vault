@@ -84,15 +84,19 @@ export function ConfirmDialog(props: {
   danger?: boolean;
   onConfirm: () => Promise<void> | void;
   onClose: () => void;
+  /** Label of the other button (default "Cancel"), and what it does (default: just close). */
+  cancel?: string;
+  onCancel?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  const cancel = props.onCancel ?? props.onClose;
   return (
-    <Modal title={props.title} onClose={props.onClose}>
+    <Modal title={props.title} onClose={cancel}>
       <div className="muted" style={{ fontSize: 14, lineHeight: 1.6 }}>{props.children}</div>
       {err && <div className="error" role="alert">{err}</div>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
-        <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
+        <button type="button" className="btn" onClick={cancel}>{props.cancel ?? 'Cancel'}</button>
         <button
           type="button"
           className={props.danger ? 'btn btn-danger-solid' : 'btn btn-primary'}

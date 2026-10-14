@@ -6,7 +6,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
-  type ClipStatus, type ExportRequest, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
+  type ClipStatus, type ExportRequest, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
   takeLogin,
 } from '../api';
 import type { Nav } from '../App';
@@ -69,7 +69,10 @@ type Dialog =
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | { t: 'shortcuts' }
   | { t: 'sheet' }
-  | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string };
+  | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
+  | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
+  | { t: 'moveFolders'; folders: FolderCard[] }
+  | { t: 'extracted'; folder: FolderCard; x: Extracted };
 
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
@@ -160,6 +163,9 @@ export function Library({ nav, view, setView, history, reveal }: {
   const [trash, setTrash] = useState<TrashView | null>(null);
   const [tags, setTags] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
+  // Folders can be selected too (Ctrl / Shift + click in the sidebar or on cards).
+  const [selFolders, setSelFolders] = useState<Set<number>>(new Set());
+  const [folderAnchor, setFolderAnchor] = useState<number | null>(null);
   const [anchor, setAnchor] = useState<number | null>(null);
   // Each view remembers its own sort, type filter and items per row (kept in the vault).
   const viewerPrefs = useViewerPrefs();
@@ -414,13 +420,13 @@ export function Library({ nav, view, setView, history, reveal }: {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
-      } else if (e.key === 'Delete' && keyActions.current.selected.size) {
+      } else if (e.key === 'Delete' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.del();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'a' && !e.shiftKey) {
         e.preventDefault();
         keyActions.current.selectAll();
-      } else if (e.key === 'Escape' && keyActions.current.selected.size) {
+      } else if (e.key === 'Escape' && keyActions.current.anySelected()) {
         keyActions.current.selectNone();
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
@@ -565,18 +571,27 @@ export function Library({ nav, view, setView, history, reveal }: {
   // The Delete key acts on the current selection.
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
+    anySelected: () => false as boolean,
   });
   keyActions.current = {
     selected,
+    anySelected: () => selected.size > 0 || selFolders.size > 0,
     back: () => {
       if (!history.back() && view.kind === 'folder') setView(view.id == null ? { kind: 'folders' } : { kind: 'folder', id: folder?.parentId ?? null });
     },
     forward: () => void history.forward(),
     typeJump: (k: string) => typeJump(k),
     selectAll: () => selectAll(),
-    selectNone: () => setSelected(new Set()),
+    selectNone: () => {
+      setSelected(new Set());
+      setSelFolders(new Set());
+    },
     del: () => {
       const ids = [...selected];
+      if (selFolders.size) {
+        askDeleteMany();
+        return;
+      }
       if (view.kind === 'trash') setDialog({ t: 'forever', ids, folder: null, what: plural(ids.length, 'item') });
       else trashItems(ids);
     },
@@ -661,6 +676,10 @@ export function Library({ nav, view, setView, history, reveal }: {
   const selIds = [...selected];
   const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
   function selectAll() {
+    if (view.kind === 'folders') {
+      setSelFolders(new Set(cards.map((f) => f.id)));
+      return;
+    }
     if (!gridView || !shown.length) return;
     setSelected(new Set(shown.map((i) => i.id)));
     setAnchor(shown[0].id);
@@ -768,6 +787,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', onSelect: () => setDialog({ t: 'rename', folder: f }) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
+    { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
     { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
 
@@ -790,30 +810,132 @@ export function Library({ nav, view, setView, history, reveal }: {
     }
   };
 
+  // ---- several folders ----------------------------------------------------------------
+
+  /** Only the outermost of the selected folders (a subfolder goes along with its parent). */
+  const topMost = (ids: Iterable<number>): FolderCard[] => {
+    const set = new Set(ids);
+    return folders.filter((f) => set.has(f.id) && !f.path.some((c) => set.has(c.id)));
+  };
+  /** Click on a folder: open it; Ctrl adds/removes it from the selection, Shift selects a range. */
+  const folderClick = (e: React.MouseEvent, f: FolderCard, list: FolderCard[]) => {
+    if (e.ctrlKey || e.metaKey) {
+      setSelFolders((s0) => {
+        const n = new Set(s0);
+        if (n.has(f.id)) n.delete(f.id);
+        else n.add(f.id);
+        return n;
+      });
+      setFolderAnchor(f.id);
+      return;
+    }
+    if (e.shiftKey) {
+      const a = list.findIndex((x) => x.id === (folderAnchor ?? f.id));
+      const b = list.findIndex((x) => x.id === f.id);
+      if (a >= 0 && b >= 0) {
+        const [lo, hi] = a < b ? [a, b] : [b, a];
+        setSelFolders(new Set(list.slice(lo, hi + 1).map((x) => x.id)));
+        return;
+      }
+    }
+    setSelFolders(new Set());
+    openFolder(f.id);
+  };
+  const askDeleteMany = () => {
+    const fs = topMost(selFolders);
+    if (!fs.length && !selected.size) return;
+    setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
+  };
+  const deleteMany = async (fs: FolderCard[], items: number[]) => {
+    for (const f of fs) await api.deleteFolder(f.id);
+    if (items.length) await api.deleteItems(items);
+    const what = [fs.length ? plural(fs.length, 'folder') : '', items.length ? plural(items.length, 'item') : ''].filter(Boolean).join(' and ');
+    did(`Moved ${what} to the trash`, async () => {
+      for (const f of fs) await api.restoreFolder(f.id);
+      if (items.length) await api.restoreItems(items);
+    });
+    setSelFolders(new Set());
+    setSelected(new Set());
+    if (view.kind === 'folder' && fs.some((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folders' });
+    else await reload();
+    nav.refresh().catch(() => {});
+  };
+  const moveFolders = async (fs: FolderCard[], parent: number | null) => {
+    const done: FolderCard[] = [];
+    try {
+      for (const f of fs) {
+        if (f.parentId === parent) continue;
+        await api.moveFolder(f.id, parent);
+        done.push(f);
+      }
+    } finally {
+      if (done.length) {
+        did(done.length === 1 ? `Moved “${done[0].name}”` : `Moved ${plural(done.length, 'folder')}`, async () => {
+          for (const f of done) await api.moveFolder(f.id, f.parentId);
+        });
+      }
+      setSelFolders(new Set());
+      await reload();
+    }
+  };
+  /** "Extract here": everything inside goes up one level; then ask about the empty folder. */
+  const extractHere = async (f: FolderCard) => {
+    try {
+      const x = await api.extractFolder(f.id);
+      setDialog({ t: 'extracted', folder: f, x });
+      await reload();
+    } catch (err) {
+      setError(errText(err));
+    }
+  };
+  const finishExtract = async (f: FolderCard, x: Extracted, remove: boolean) => {
+    if (remove) await api.deleteFolder(f.id);
+    const n = x.items.length + x.folders.length;
+    did(`Extracted “${f.name}” (${plural(n, 'thing')} moved up)${remove ? ' and removed it' : ''}`, async () => {
+      if (remove) await api.restoreFolder(f.id);
+      await api.unextractFolder(f.id, x);
+    });
+    if (remove && view.kind === 'folder' && view.id === f.id) setView(x.parent == null ? { kind: 'folders' } : { kind: 'folder', id: x.parent });
+    else await reload();
+    nav.refresh().catch(() => {});
+  };
+
   /** Drag a folder (sidebar, pinned list or card) onto another folder or Top level. */
   const startFolderDrag = (e: React.PointerEvent, f: FolderCard) => {
+    // Dragging one of several selected folders moves them all.
+    const group = selFolders.has(f.id) && selFolders.size > 1 ? topMost(selFolders) : [f];
+    const what = group.length > 1 ? plural(group.length, 'folder') : `“${f.name}”`;
     startMoveDrag(e, {
       label: (t) => {
-        if (!t) return `“${f.name}”`;
+        if (!t) return what;
         const to = targetFolder(t);
-        return `Move “${f.name}” into ${to === null ? 'Top level' : `“${folders.find((x) => x.id === to)?.name ?? 'folder'}”`}`;
+        return `Move ${what} into ${to === null ? 'Top level' : `“${folders.find((x) => x.id === to)?.name ?? 'folder'}”`}`;
       },
       canDrop: (t) => {
         const to = targetFolder(t);
-        if (to === f.parentId) return false;
+        if (group.every((g) => g.parentId === to)) return false;
         if (to === null) return true;
-        if (to === f.id) return false;
         const target = folders.find((x) => x.id === to);
-        return !!target && !target.path.some((c) => c.id === f.id);
+        return !!target && group.every((g) => g.id !== to && !target.path.some((c) => c.id === g.id));
       },
       onDrop: (t) => {
-        moveFolder(f, targetFolder(t)).catch((err) => setError(errText(err)));
+        const to = targetFolder(t);
+        if (group.length === 1) moveFolder(f, to).catch((err) => setError(errText(err)));
+        else moveFolders(group, to).catch((err) => setError(errText(err)));
       },
     });
   };
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
     e.preventDefault();
+    if (selFolders.has(f.id) && selFolders.size > 1) {
+      const fs = topMost(selFolders);
+      setCtx({ x: e.clientX, y: e.clientY, title: plural(fs.length, 'folder'), items: [
+        { label: `Move ${plural(fs.length, 'folder')} to…`, onSelect: () => setDialog({ t: 'moveFolders', folders: fs }) },
+        { label: `Delete ${plural(fs.length, 'folder')}…`, danger: true, sepBefore: true, onSelect: askDeleteMany },
+      ] });
+      return;
+    }
     setCtx({ x: e.clientX, y: e.clientY, title: f.name, items: folderMenu(f) });
   };
 
@@ -963,10 +1085,10 @@ export function Library({ nav, view, setView, history, reveal }: {
           {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={14} />)}
           {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
           {pinned.map((f) => (
-            <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
+            <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
               onContextMenu={(e) => folderContext(e, f)}>
               <span className="twisty" />
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
+              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, pinned)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
                 title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
@@ -980,7 +1102,7 @@ export function Library({ nav, view, setView, history, reveal }: {
             <FolderIcon size={15} /> Top level
           </button>
           {visibleTree.map((f) => (
-            <div key={f.id} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}`} data-drop={`folder:${f.id}`}
+            <div key={f.id} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
               style={{ paddingLeft: 6 + f.depth * 16 }} onContextMenu={(e) => folderContext(e, f)}>
               {f.subfolders > 0 ? (
                 <button type="button" className="twisty" aria-label={collapsed.has(f.id) ? 'Expand' : 'Collapse'} onClick={() => setCollapsed((c) => {
@@ -990,8 +1112,8 @@ export function Library({ nav, view, setView, history, reveal }: {
                   return n;
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
-              <button type="button" className="tree-name" onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
-                title="Middle-click to play this folder">
+              <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, visibleTree)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
+                title="Ctrl/Shift + click to select several · middle-click to play">
                 {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
@@ -1164,12 +1286,12 @@ export function Library({ nav, view, setView, history, reveal }: {
           {!inTrash && cards.length > 0 && (
             <div className="fgrid" style={{ gridTemplateColumns: `repeat(${Math.max(1, cols - 1)}, minmax(0, 1fr))` }}>
               {cards.map((f) => (
-                <div key={f.id} className="fcard" data-card={f.id} data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
+                <div key={f.id} className={`fcard${selFolders.has(f.id) ? ' fsel' : ''}`} data-card={f.id} data-drop={`folder:${f.id}`} onContextMenu={(e) => folderContext(e, f)}
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
                   onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
-                    onClick={() => openFolder(f.id)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={`Open ${f.name}`}
-                    title="Click to open · middle-click to play · drag onto a folder to move">
+                    onClick={(e) => folderClick(e, f, cards)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={`Open ${f.name}`}
+                    title="Click to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move">
                     {coverView(f)}
                     {f.pinned && <span className="pin-badge" title="Pinned"><PinIcon size={12} /></span>}
                     <span className="drop-label">Drop here</span>
@@ -1223,6 +1345,14 @@ export function Library({ nav, view, setView, history, reveal }: {
         </main>
       </div>
 
+      {selFolders.size > 0 && (
+        <div className="selbar" role="toolbar" aria-label="Folder selection" style={selected.size ? { bottom: 78 } : undefined}>
+          <b>{plural(selFolders.size, 'folder')} selected</b>
+          <button type="button" className="btn btn-sm" onClick={() => setDialog({ t: 'moveFolders', folders: topMost(selFolders) })}><MoveIcon /> Move to…</button>
+          <button type="button" className="btn btn-sm btn-danger" onClick={askDeleteMany} title="Moves to the trash (Ctrl+Z to undo)"><TrashIcon /> Delete</button>
+          <button type="button" className="link" onClick={() => setSelFolders(new Set())}>Clear</button>
+        </div>
+      )}
       {selected.size > 0 && (
         <div className="selbar" role="toolbar" aria-label="Selection">
           <b>{selected.size} selected</b>
@@ -1373,6 +1503,33 @@ export function Library({ nav, view, setView, history, reveal }: {
         }} />
       )}
       {dialog?.t === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {dialog?.t === 'deleteMany' && (() => {
+        const nItems = dialog.folders.reduce((a, f) => a + f.items, 0);
+        const parts = [
+          dialog.folders.length ? `${plural(dialog.folders.length, 'folder')} (with ${plural(nItems, 'item')} inside)` : '',
+          dialog.items.length ? plural(dialog.items.length, 'selected item') : '',
+        ].filter(Boolean);
+        return (
+          <ConfirmDialog title={`Delete ${parts.join(' and ')}?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+            onConfirm={() => deleteMany(dialog.folders, dialog.items)}>
+            {dialog.folders.length > 0 && <>{dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}{dialog.folders.length > 6 ? ' …' : ''}. </>}
+            Everything goes to the trash, where you can restore it for 30 days, or press Ctrl+Z right away.
+          </ConfirmDialog>
+        );
+      })()}
+      {dialog?.t === 'moveFolders' && (
+        <FolderPicker title={`Move ${plural(dialog.folders.length, 'folder')} into…`} folders={folders} exclude={dialog.folders.map((f) => f.id)} confirm="Move"
+          onClose={() => setDialog(null)} onPick={(p) => moveFolders(dialog.folders, p)} />
+      )}
+      {dialog?.t === 'extracted' && (
+        <ConfirmDialog title="Remove the remaining empty folder?" confirm="Yes" cancel="No" onClose={() => setDialog(null)}
+          onCancel={() => { const d = dialog; setDialog(null); finishExtract(d.folder, d.x, false); }}
+          onConfirm={() => finishExtract(dialog.folder, dialog.x, true)}>
+          Everything inside “{dialog.folder.name}” moved up to {dialog.x.parent == null ? 'the top level' : `“${folders.find((f) => f.id === dialog.x.parent)?.name ?? 'its parent'}”`}
+          {dialog.x.renamed.length > 0 && <> ({dialog.x.renamed.map(([, a, b]) => `“${a}” is now “${b}”`).join(', ')}, because that name was taken)</>}.
+          “{dialog.folder.name}” is empty now.
+        </ConfirmDialog>
+      )}
       {dialog?.t === 'export' && <ExportDialog request={dialog.request} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'sheet' && (
         <ContactSheet title={heading} items={shown} onClose={() => setDialog(null)} onOpen={(it) => { setDialog(null); playItems(false, it.id); }} />

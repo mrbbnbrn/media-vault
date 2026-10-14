@@ -264,6 +264,13 @@ export interface ItemFilter {
   people?: number[];
 }
 
+export interface Extracted {
+  parent: number | null;
+  items: number[];
+  folders: number[];
+  renamed: [number, string, string][];
+}
+
 export interface TrashFolder {
   id: number;
   name: string;
@@ -441,6 +448,9 @@ export const api = {
   deleteItems: (ids: number[]) => call<number>('delete_items', { ids }),
   restoreItems: (ids: number[]) => call<number>('restore_items', { ids }),
   restoreFolder: (id: number) => call<void>('restore_folder', { id }),
+  /** Move everything inside a folder up into its parent (the folder stays, empty). */
+  extractFolder: (id: number) => call<Extracted>('extract_folder', { id }),
+  unextractFolder: (id: number, extracted: Extracted) => call<void>('unextract_folder', { id, extracted }),
   trashView: () => call<TrashView>('trash_view'),
   deleteForever: (ids: number[]) => call<number>('delete_forever', { ids }),
   deleteFolderForever: (id: number) => call<number>('delete_folder_forever', { id }),

@@ -744,6 +744,77 @@ fn free_name(conn: &Connection, parent: Option<i64>, name: &str, except: i64) ->
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct Extracted {
+    /// Where everything went (None = top level).
+    pub parent: Option<i64>,
+    pub items: Vec<i64>,
+    pub folders: Vec<i64>,
+    /// Subfolders renamed because the parent already had one with that name: (id, old, new).
+    pub renamed: Vec<(i64, String, String)>,
+}
+
+/// "Extract here": move everything inside a folder up into its parent. The
+/// folder itself stays (empty); a subfolder whose name is taken in the
+/// parent gets " (2)", " (3)", …
+pub fn extract_folder(conn: &Connection, id: i64) -> R<Extracted> {
+    let parent: Option<i64> = conn
+        .query_row("SELECT parent_id FROM folders WHERE id = ? AND deleted_at IS NULL", [id], |r| r.get(0))
+        .map_err(|_| "That folder doesn't exist any more.".to_string())?;
+    let mut out = Extracted { parent, ..Default::default() };
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    let kids: Vec<(i64, String)> = tx
+        .prepare("SELECT id, name FROM folders WHERE parent_id = ? AND deleted_at IS NULL ORDER BY name COLLATE NOCASE")
+        .map_err(e)?
+        .query_map([id], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    for (kid, name) in kids {
+        let mut candidate = name.clone();
+        let mut n = 2;
+        while find_child(&tx, parent, &candidate)?.is_some() {
+            candidate = format!("{name} ({n})");
+            n += 1;
+        }
+        tx.execute("UPDATE folders SET parent_id = ?, name = ? WHERE id = ?", params![parent, candidate, kid])
+            .map_err(e)?;
+        if candidate != name {
+            out.renamed.push((kid, name, candidate));
+        }
+        out.folders.push(kid);
+    }
+    out.items = tx
+        .prepare("SELECT id FROM media WHERE folder_id = ? AND deleted_at IS NULL")
+        .map_err(e)?
+        .query_map([id], |r| r.get(0))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    tx.execute("UPDATE media SET folder_id = ? WHERE folder_id = ? AND deleted_at IS NULL", params![parent, id])
+        .map_err(e)?;
+    tx.commit().map_err(e)?;
+    Ok(out)
+}
+
+/// Undo "Extract here": everything goes back inside the folder, renamed
+/// subfolders get their old names back.
+pub fn unextract_folder(conn: &Connection, id: i64, x: &Extracted) -> R<()> {
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    for f in &x.folders {
+        tx.execute("UPDATE folders SET parent_id = ? WHERE id = ?", params![id, f]).map_err(e)?;
+    }
+    for (f, old, _) in &x.renamed {
+        tx.execute("UPDATE folders SET name = ? WHERE id = ?", params![old, f]).map_err(e)?;
+    }
+    for m in &x.items {
+        tx.execute("UPDATE media SET folder_id = ? WHERE id = ?", params![id, m]).map_err(e)?;
+    }
+    tx.commit().map_err(e)?;
+    Ok(())
+}
+
 /// Bring a deleted folder back with everything that was deleted with it.
 pub fn restore_folder(conn: &Connection, id: i64) -> R<()> {
     let (stamp, parent, name): (Option<i64>, Option<i64>, String) = conn
@@ -1699,4 +1770,24 @@ mod tests {
         assert!(list_named(&c, "preset").unwrap().is_empty());
         assert!(list_named(&c, "bogus").is_err());
     }
+    #[test]
+    fn extract_moves_everything_up_and_renames_clashes() {
+        let c = vault_core::db::create_empty().unwrap();
+        let trips = create_folder(&c, None, "Trips").unwrap();
+        let beach = create_folder(&c, Some(trips), "Beach").unwrap();
+        let day2 = create_folder(&c, Some(beach), "Day 2").unwrap();
+        let _other_day2 = create_folder(&c, Some(trips), "Day 2").unwrap();
+        let photo = add(&c, "p.jpg", Some(beach), "image");
+        let x = extract_folder(&c, beach).unwrap();
+        assert_eq!(x.parent, Some(trips));
+        assert_eq!(x.items, vec![photo]);
+        assert_eq!(x.renamed, vec![(day2, "Day 2".to_string(), "Day 2 (2)".to_string())]);
+        assert_eq!(get_item(&c, photo).unwrap().folder_id, Some(trips));
+        assert_eq!(find_child(&c, Some(trips), "Day 2 (2)").unwrap(), Some(day2));
+        // Undo puts it all back.
+        unextract_folder(&c, beach, &x).unwrap();
+        assert_eq!(get_item(&c, photo).unwrap().folder_id, Some(beach));
+        assert_eq!(find_child(&c, Some(beach), "Day 2").unwrap(), Some(day2));
+    }
+
 }

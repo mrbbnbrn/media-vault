@@ -21,6 +21,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Alt+→', 'Forward (also the mouse forward button)'],
       ['Ctrl+F', 'Search (Esc clears, Esc again leaves the search)'],
       ['Middle-click a folder', 'Play it as a slideshow'],
+      ['Ctrl / Shift + click a folder', 'Select several folders (sidebar or cards); Delete, drag or Move to… them together'],
       ['Ctrl + mouse wheel', 'More or fewer items per row'],
       ['Delete', 'Move the selected items to the trash'],
       ['Right-click', 'Options for an item or folder'],

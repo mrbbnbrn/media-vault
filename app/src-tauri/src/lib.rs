@@ -859,6 +859,16 @@ async fn ui_set(state: State<'_, Shared>, key: String, value: String) -> Result<
     .await
 }
 
+#[tauri::command]
+async fn extract_folder(state: State<'_, Shared>, id: i64) -> Result<library::Extracted, String> {
+    edit_db(state.inner(), move |c| library::extract_folder(c, id)).await
+}
+
+#[tauri::command]
+async fn unextract_folder(state: State<'_, Shared>, id: i64, extracted: library::Extracted) -> Result<(), String> {
+    edit_db(state.inner(), move |c| library::unextract_folder(c, id, &extracted)).await
+}
+
 // ---- import ------------------------------------------------------------------------------
 
 #[tauri::command]
@@ -1395,6 +1405,8 @@ pub fn run() {
             preview_failed,
             cache_info,
             ui_get,
+            extract_folder,
+            unextract_folder,
             ui_set,
             inspect_drop,
             check_archive_password,
