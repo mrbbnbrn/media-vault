@@ -5,8 +5,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
-  api, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
-  type ClipStatus, type ExportRequest, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
+  api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportProgress, type ImportReport, type Item, type Kind,
+  type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
   takeLogin,
 } from '../api';
 import type { Nav } from '../App';
@@ -16,11 +16,22 @@ import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
   ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
-  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
+  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { LookAlikes } from '../components/LookAlikes';
 import { PeopleView } from '../components/People';
 import { RenameDialog, type RenameEntry } from '../components/RenameDialog';
+import { QuickSort } from '../components/QuickSort';
+import { TagManager } from '../components/TagManager';
+import { DeleteOriginalDialog, MergeDialog, NoteDialog } from '../components/OrganizeDialogs';
+import { MemoriesView, type Memory } from '../components/Memories';
+import { ShareDialog } from '../components/ShareDialog';
+import { ConvertDialog } from '../components/ConvertDialog';
+import { AnimationDialog } from '../components/AnimationDialog';
+import { Duel } from '../components/Duel';
+import { copyOut, readPaste, savePastedPicture } from '../winclip';
+import { maybeDragOut, lastDragOutError } from '../dragout';
+import { tileRect } from '../flip';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
@@ -39,7 +50,7 @@ import {
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
-import { saveViewerPrefs, useViewerPrefs } from '../prefs';
+import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 
@@ -49,7 +60,8 @@ export type LibView =
   | { kind: 'all' }
   | { kind: 'favourites' }
   | { kind: 'recent' }
-  | { kind: 'timeline' }
+  /** Everything by month; with `person`, only that person (person timeline). */
+  | { kind: 'timeline'; person?: number }
   | { kind: 'trash' }
   | { kind: 'stats' }
   | { kind: 'search'; tags: string[]; names: string[]; people: number[] }
@@ -58,7 +70,11 @@ export type LibView =
   /** Groups of pictures that look the same (whole library or one folder). */
   | { kind: 'lookalikes'; folder: number | null }
   /** Items that look like one item, most alike first. */
-  | { kind: 'similar'; id: number; name: string };
+  | { kind: 'similar'; id: number; name: string }
+  /** Videos you stopped watching part-way. */
+  | { kind: 'continue' }
+  /** Slideshows the app puts together. */
+  | { kind: 'memories' };
 
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
@@ -80,6 +96,18 @@ type Dialog =
   | { t: 'moveFolders'; folders: FolderCard[] }
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
   | { t: 'renameMany'; entries: RenameEntry[] }
+  | { t: 'freeCopy'; ids: number[] }
+  | { t: 'deleteOriginal'; groups: [Item, Item[]][]; ids: number[]; folders: FolderCard[] }
+  | { t: 'merge'; folders: FolderCard[] }
+  | { t: 'note'; folder: boolean; id: number; name: string; note: string | null }
+  | { t: 'copies'; item: Item; list: Item[] }
+  | { t: 'tags' }
+  | { t: 'quickSort'; folder: FolderCard | null }
+  | { t: 'duel'; items: Item[] }
+  | { t: 'share'; ids: number[]; folders: number[]; what: string }
+  | { t: 'convert'; items: Item[]; target?: 'mp4' }
+  | { t: 'animation'; items: Item[] }
+  | { t: 'dragOut'; resolve: (ok: boolean) => void }
   | { t: 'extracted'; folder: FolderCard; x: Extracted };
 
 const SORTS: { id: Order; label: string }[] = [
@@ -122,6 +150,8 @@ function viewTitle(v: LibView, folder: FolderCard | null): string {
     case 'people': return 'People';
     case 'lookalikes': return 'Look-alikes';
     case 'similar': return `Similar to “${v.name}”`;
+    case 'continue': return 'Continue watching';
+    case 'memories': return 'Memories';
   }
 }
 
@@ -185,6 +215,8 @@ export function Library({ nav, view, setView, history, reveal }: {
   const sort: Order = vp.sort ?? 'newest';
   const kind: Kind | 'any' = vp.kind ?? 'any';
   const cols = vp.cols ?? (viewerPrefs.gridColumns || 5);
+  const scrollMode = !!vp.scroll;
+  const setScrollMode = (on: boolean) => { setViewPrefs(vKey, { scroll: on }); setPrefsTick((t) => t + 1); };
   const setSort = (o: Order) => { setViewPrefs(vKey, { sort: o }); setPrefsTick((t) => t + 1); };
   const setKind = (k: Kind | 'any') => { setViewPrefs(vKey, { kind: k }); setPrefsTick((t) => t + 1); };
   const vKeyRef = useRef(vKey);
@@ -226,11 +258,27 @@ export function Library({ nav, view, setView, history, reveal }: {
   const similarSmart = view.kind === 'similar' && smartOn;
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [lookTick, setLookTick] = useState(0);
+  // Cut / copy inside the library (Ctrl+X / Ctrl+C, then Ctrl+V).
+  const [clipboard, setClipboard] = useState<{ mode: 'cut' | 'copy'; ids: number[]; folders: number[] } | null>(null);
+  // How often each folder was a destination: "Move to" submenu and quick sort.
+  const moveStats = useRef<Record<number, number>>({});
+  useEffect(() => {
+    api.uiGet('moveStats').then((v) => { if (v) moveStats.current = JSON.parse(v); }).catch(() => {});
+  }, [s.path]);
+  const bumpMoveStat = (folder: number | null) => {
+    if (folder == null) return;
+    moveStats.current = { ...moveStats.current, [folder]: (moveStats.current[folder] ?? 0) + 1 };
+    api.uiSet('moveStats', JSON.stringify(moveStats.current)).catch(() => {});
+  };
+  // Faces on the grid (face boxes / face-aware tiles), by item.
+  const [gridFaces, setGridFaces] = useState<Map<number, FaceBox[]>>(new Map());
   const tasks = useTasks();
   const undoTop = useUndoTop();
   const [pick, dismissPick] = useTodaysPick(s.path);
   const preview = cfg.preview ?? 'hover';
   const shape = !!cfg.gridShape;
+  const look = { ...DEFAULT_LOOK, ...(cfg.look ?? {}) };
+  const faceBoxesOn = useFaceBoxes();
   const scroller = useRef<HTMLElement>(null);
   const side = useRef<HTMLElement>(null);
   const header = useRef<HTMLElement>(null);
@@ -365,6 +413,8 @@ export function Library({ nav, view, setView, history, reveal }: {
         setSubfolders([]);
         if (view.kind === 'folders' || view.kind === 'stats' || view.kind === 'people') setItems([]);
         else if (view.kind === 'lookalikes') setLookTick((t) => t + 1); // the page fetches its groups
+        else if (view.kind === 'continue') setItems(await api.continueWatching());
+        else if (view.kind === 'memories') setItems([]);
         else if (view.kind === 'similar') {
           const [me, hits] = await Promise.all([api.getItem(view.id).catch(() => null), api.similarTo(view.id, similarSmart)]);
           setItems([...(me && me.deletedAt == null ? [me] : []), ...hits.map((h) => h.item)]);
@@ -374,6 +424,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           const hits = await api.smartSearch(Array.from(vec), null);
           setItems(hits.map((h) => h.item));
         }
+        else if (view.kind === 'timeline' && view.person != null) setItems(await api.queryItems({ people: [view.person] }));
         else if (view.kind === 'all' || view.kind === 'timeline') setItems(await api.queryItems({}));
         else if (view.kind === 'favourites') setItems(await api.queryItems({ favouritesOnly: true }));
         else if (view.kind === 'recent') setItems(await api.queryItems({ recentDays: 14 }));
@@ -446,6 +497,11 @@ export function Library({ nav, view, setView, history, reveal }: {
       } else if (e.key === 'Delete' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.del();
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && ['x', 'c', 'v'].includes(e.key.toLowerCase())) {
+        e.preventDefault();
+        const k = e.key.toLowerCase();
+        if (k === 'v') keyActions.current.paste();
+        else if (keyActions.current.anySelected()) keyActions.current.clip(k === 'x' ? 'cut' : 'copy');
       } else if (e.key === 'F2' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.rename();
@@ -521,6 +577,7 @@ export function Library({ nav, view, setView, history, reveal }: {
   const moveItems = async (ids: number[], target: number | null) => {
     const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
     await api.moveItems(ids, target);
+    bumpMoveStat(target);
     const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
     did(`Moved ${plural(ids.length, 'item')} to “${name}”`, async () => {
       for (const [f, g] of before) await api.moveItems(g, f);
@@ -543,13 +600,32 @@ export function Library({ nav, view, setView, history, reveal }: {
     });
     await reload();
   };
-  const trashItems = async (ids: number[]) => {
-    await api.deleteItems(ids);
-    did(`Moved ${plural(ids.length, 'item')} to the trash`, () => api.restoreItems(ids));
-    setSelected(new Set());
-    await reload();
-    nav.refresh().catch(() => {});
+  /** Originals about to be deleted that have free copies (not being deleted too). */
+  const originalsWithCopies = async (ids: number[]): Promise<[Item, Item[]][]> => {
+    const cands = ids.filter((id) => {
+      const it = itemById(id);
+      return !it || (it.copyOf == null && it.linked);
+    });
+    if (!cands.length) return [];
+    const set = new Set(ids);
+    const res = await api.freeCopiesOf(cands);
+    const out: [Item, Item[]][] = [];
+    for (const [o, cs] of res) {
+      const rest = cs.filter((c) => !set.has(c.id));
+      if (rest.length) out.push([itemById(o) ?? (await api.getItem(o)), rest]);
+    }
+    return out;
   };
+  /** Delete things, asking first what to do with free copies of originals. */
+  const askTrash = async (fs: FolderCard[], ids: number[]) => {
+    const groups = ids.length ? await originalsWithCopies(ids).catch(() => []) : [];
+    if (groups.length) {
+      setDialog({ t: 'deleteOriginal', groups, ids, folders: fs });
+      return;
+    }
+    await deleteMany(fs, ids);
+  };
+  const trashItems = (ids: number[]) => askTrash([], ids);
   const trashFolder = async (f: FolderCard) => {
     await api.deleteFolder(f.id);
     did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
@@ -596,11 +672,14 @@ export function Library({ nav, view, setView, history, reveal }: {
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
     anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {},
+    clip: (_m: 'cut' | 'copy') => {}, paste: () => {},
   });
   keyActions.current = {
     selected,
     anySelected: () => selected.size > 0 || selFolders.size > 0,
     rename: () => askRename(),
+    clip: (m: 'cut' | 'copy') => clipSelection(m),
+    paste: () => { paste().catch((err) => setError(errText(err))); },
     openFolder: () => {
       if (selected.size || selFolders.size !== 1) return false;
       const [id] = selFolders;
@@ -703,6 +782,27 @@ export function Library({ nav, view, setView, history, reveal }: {
     return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt })), sort);
   }, [items, kind, sort, timeline, inTrash, smart, view.kind]);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
+  // Faces of the items shown, for face boxes and face-aware tiles.
+  const wantFaces = faceBoxesOn || look.faceCrop;
+  const faceKey = wantFaces ? shown.filter((i) => i.kind === 'image' || i.kind === 'gif').map((i) => i.id).join(',') : '';
+  useEffect(() => {
+    if (!faceKey) return;
+    let live = true;
+    const ids = faceKey.split(',').map(Number).filter((id) => !gridFaces.has(id));
+    if (!ids.length) return;
+    api.facesOfMany(ids.slice(0, 2000)).then((res) => {
+      if (!live) return;
+      setGridFaces((m) => {
+        const n = new Map(m);
+        for (const id of ids) if (!n.has(id)) n.set(id, []);
+        for (const [id, f] of res) n.set(id, f);
+        return n;
+      });
+    }).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [faceKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const cards = view.kind === 'folders' ? (everyFolder ? folders : folders.filter((f) => f.parentId === null)) : subfolders;
   const pinned = folders.filter((f) => f.pinned);
@@ -716,7 +816,7 @@ export function Library({ nav, view, setView, history, reveal }: {
     setSelected(new Set(shown.map((i) => i.id)));
     setAnchor(shown[0].id);
   }
-  const gridView = !['folders', 'stats', 'people', 'lookalikes'].includes(view.kind);
+  const gridView = !['folders', 'stats', 'people', 'lookalikes', 'memories'].includes(view.kind);
   const looks = view.kind === 'lookalikes';
 
   const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
@@ -729,6 +829,7 @@ export function Library({ nav, view, setView, history, reveal }: {
       auto,
       back: view,
       order: timeline ? undefined : sort,
+      fromRect: !auto && startId != null ? tileRect(startId) : undefined,
     });
   };
   const playItems = (auto: boolean, startId?: number, onlySelected = false) => {
@@ -757,6 +858,14 @@ export function Library({ nav, view, setView, history, reveal }: {
   };
 
   const openFolder = (id: number | null) => setView({ kind: 'folder', id });
+  /** The "›" in the folder path: the folders at that level, to jump sideways. */
+  const crumbJump = (e: React.MouseEvent, parent: number | null) => {
+    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+    const kids = folders.filter((f) => f.parentId === parent);
+    setCtx({ x: r.left, y: r.bottom + 4, title: parent == null ? 'Top level' : folders.find((f) => f.id === parent)?.name ?? 'Folders',
+      items: kids.length ? kids.map((f) => ({ label: f.name, checked: view.kind === 'folder' && view.id === f.id, hint: f.items ? f.items.toLocaleString() : undefined, onSelect: () => openFolder(f.id) }))
+        : [{ label: 'No folders here', disabled: true, onSelect: () => {} }] });
+  };
   /** Open an item's folder with the item highlighted. */
   const showInFolder = (it: Item) => {
     setView({ kind: 'folder', id: it.folderId });
@@ -817,11 +926,18 @@ export function Library({ nav, view, setView, history, reveal }: {
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+    ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
+    { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
+    { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
+    { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },
+    { label: 'Note…', hint: f.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: true, id: f.id, name: f.name, note: f.note }) },
+    { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
     { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
-    { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }) },
+    { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
+      sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])]) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
     { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
@@ -878,6 +994,7 @@ export function Library({ nav, view, setView, history, reveal }: {
   const moveMixed = async (fs: FolderCard[], ids: number[], target: number | null) => {
     const movedFolders = fs.filter((f) => f.parentId !== target);
     const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
+    bumpMoveStat(target);
     for (const f of movedFolders) await api.moveFolder(f.id, target);
     if (ids.length) await api.moveItems(ids, target);
     const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
@@ -911,6 +1028,187 @@ export function Library({ nav, view, setView, history, reveal }: {
       () => api.renameMany(pick('folder', false), pick('item', false)));
     await reload();
     nav.refresh().catch(() => {});
+  };
+
+  // ---- rubber-band selection: drag a box in empty space -------------------------------------
+  const rubberBand = (e: React.PointerEvent) => {
+    if (e.button !== 0) return;
+    const t = e.target as HTMLElement;
+    if (t.closest('button, a, input, select, textarea, [data-item], [data-card], .dropzone, .looks, .memories, .menu, [role=dialog]')) return;
+    const sc = scroller.current;
+    if (!sc) return;
+    // Not on the scrollbar.
+    const sr = sc.getBoundingClientRect();
+    if (e.clientX > sr.left + sc.clientWidth) return;
+    const additive = e.ctrlKey || e.metaKey || e.shiftKey;
+    const startSel = new Set(additive ? selected : []);
+    const startFolders = new Set(additive ? selFolders : []);
+    const x0 = e.clientX;
+    const y0 = e.clientY + sc.scrollTop;
+    let box: HTMLDivElement | null = null;
+    const move = (ev: PointerEvent) => {
+      const y1 = ev.clientY + sc.scrollTop;
+      if (!box && Math.hypot(ev.clientX - x0, y1 - y0) < 6) return;
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'rubber';
+        document.body.appendChild(box);
+      }
+      const top = Math.min(y0, y1) - sc.scrollTop;
+      const r = { left: Math.min(x0, ev.clientX), top, right: Math.max(x0, ev.clientX), bottom: top + Math.abs(y1 - y0) };
+      Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.right - r.left}px`, height: `${r.bottom - r.top}px` });
+      // Scroll when the box reaches the edge.
+      if (ev.clientY > sr.bottom - 30) sc.scrollTop += 20;
+      else if (ev.clientY < sr.top + 30) sc.scrollTop -= 20;
+      const hit = (el: Element) => {
+        const b = el.getBoundingClientRect();
+        return b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom;
+      };
+      const items = new Set(startSel);
+      sc.querySelectorAll<HTMLElement>('[data-item]').forEach((el) => { if (hit(el)) items.add(Number(el.dataset.item)); });
+      const fs = new Set(startFolders);
+      sc.querySelectorAll<HTMLElement>('[data-card]').forEach((el) => { if (hit(el)) fs.add(Number(el.dataset.card)); });
+      setSelected(items);
+      setSelFolders(fs);
+    };
+    const up = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      box?.remove();
+      if (!box && !additive) {
+        // A plain click on empty space clears the selection.
+        setSelected(new Set());
+        setSelFolders(view.kind === 'folder' && view.id != null ? new Set([view.id]) : new Set());
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  // ---- cut, copy, paste, free copies, merging, notes -------------------------------------
+
+  /** Ctrl+X / Ctrl+C: remember what is selected; Ctrl+C also offers it to Windows (desktop, Explorer). */
+  const clipSelection = (mode: 'cut' | 'copy') => {
+    if (inTrash || looks) return;
+    const fs = topMost(selFolders).map((f) => f.id);
+    const ids = [...selected];
+    if (!fs.length && !ids.length) return;
+    setClipboard({ mode, ids, folders: fs });
+    const what = [fs.length ? plural(fs.length, 'folder') : '', ids.length ? plural(ids.length, 'item') : ''].filter(Boolean).join(' and ');
+    setNote({ text: mode === 'cut' ? `Cut ${what}: open a folder and press Ctrl+V to move them there` : `Copied ${what}: Ctrl+V pastes them into another folder (or on the desktop)`, at: 0 });
+    if (mode === 'copy' && inTauri) copyOut(ids, fs).catch(() => {});
+  };
+  /** Where Ctrl+V puts things: a selected folder card / sidebar folder, else the folder you're in. */
+  const pasteTarget = (): number | null | undefined => {
+    if (selFolders.size === 1 && !selected.size) {
+      const [id] = selFolders;
+      return id;
+    }
+    if (view.kind === 'folder') return view.id;
+    if (view.kind === 'folders') return null;
+    return undefined;
+  };
+  const paste = async () => {
+    const t = pasteTarget();
+    // Files or a picture copied outside the app are imported.
+    if (inTauri) {
+      const p = await readPaste().catch(() => null);
+      if (p && !p.ours && (p.files.length || p.picture)) {
+        const to = t === undefined ? null : t;
+        if (p.files.length) await beginImport(p.files, to);
+        else if (p.picture) {
+          const id = await savePastedPicture(to, p.picture);
+          did('Pasted a picture', () => api.deleteItems([id]));
+          kickThumbnails();
+          await reload();
+        }
+        return;
+      }
+    }
+    if (!clipboard) return;
+    if (t === undefined) {
+      setNote({ text: 'Open a folder to paste into.', at: 0 });
+      return;
+    }
+    const fs = folders.filter((f) => clipboard.folders.includes(f.id));
+    if (clipboard.mode === 'cut') {
+      if (t != null && fs.some((f) => f.id === t || folders.find((x) => x.id === t)?.path.some((c) => c.id === f.id))) {
+        setError("A folder can't be moved into itself.");
+        return;
+      }
+      await moveMixed(fs, clipboard.ids, t);
+      setClipboard(null);
+      return;
+    }
+    setNote({ text: 'Copying…', at: 0 });
+    const r = await api.copyInto(clipboard.ids, clipboard.folders, t);
+    const what = [r.folders.length ? plural(r.folders.length, 'folder') : '', r.items.length ? plural(r.items.length, 'item') : ''].filter(Boolean).join(' and ');
+    did(`Copied ${what || 'nothing'}`, async () => {
+      if (r.items.length) await api.deleteItems(r.items);
+      for (const f of r.folders) await api.deleteFolder(f);
+    });
+    kickThumbnails();
+    await reload();
+    nav.refresh().catch(() => {});
+  };
+  const freeCopyTo = async (ids: number[], target: number | null) => {
+    const made = await api.freeCopy(ids, target);
+    const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
+    bumpMoveStat(target);
+    did(`Made ${plural(made.length, 'free copy', 'free copies')} in “${name}”`, async () => {
+      await api.deleteItems(made);
+      await api.deleteForever(made);
+    });
+    await reload();
+  };
+  /** Your most-used destination folders (the "Move to" submenu). */
+  const topFolders = (n: number, except: number[] = []) => {
+    const byId = new Map(folders.map((f) => [f.id, f]));
+    return Object.entries(moveStats.current)
+      .map(([id, c]) => [Number(id), c] as const)
+      .filter(([id]) => byId.has(id) && !except.includes(id))
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, n)
+      .map(([id]) => byId.get(id)!);
+  };
+  const moveSub = (go: (f: FolderCard) => void, except: number[] = []): MenuItem[] =>
+    topFolders(6, except).map((f) => ({ label: f.name, hint: f.path.map((c) => c.name).join(' › ') || undefined, onSelect: () => go(f) }));
+  const finishMerge = async (m: Merged, target: FolderCard, sources: FolderCard[]) => {
+    did(`Merged ${plural(sources.length, 'folder')} into “${target.name}”`, () => api.unmergeFolders(m));
+    if (view.kind === 'folder' && sources.some((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folder', id: target.id });
+    else await reload();
+    setSelFolders(new Set());
+    nav.refresh().catch(() => {});
+  };
+  const saveNote = async (isFolder: boolean, id: number, name: string, note: string | null) => {
+    const old = await api.setNote(isFolder, id, note);
+    did(note ? `Saved the note on “${name}”` : `Removed the note on “${name}”`, () => api.setNote(isFolder, id, old));
+    await reload();
+  };
+  const showCopies = async (it: Item) => {
+    const list = await api.itemCopies(it.id);
+    setDialog({ t: 'copies', item: it, list });
+  };
+  const askDragOut = () => new Promise<boolean>((resolve) => setDialog({ t: 'dragOut', resolve }));
+  const dragOut = (e: React.PointerEvent, ids: number[], fs: number[]) => {
+    if (!inTauri || e.button !== 0) return;
+    maybeDragOut(e.nativeEvent, ids, fs, askDragOut).then((r) => {
+      if (r === 'confirmed') setNote({ text: 'Now drag them out of the window again to copy them.', at: 0 });
+      else if (r === 'copied') setNote({ text: 'Copied out of the vault.', at: 0 });
+      else if (r === 'error') setError(lastDragOutError());
+    }).catch(() => {});
+  };
+  const pictures = (list: Item[]) => list.filter((i) => i.kind === 'image' || i.kind === 'gif');
+  const visualItems = (list: Item[]) => list.filter((i) => i.kind === 'image' || i.kind === 'gif' || i.kind === 'video');
+  const startSpeedRound = async (f: FolderCard | null, list?: Item[]) => {
+    const items = pictures(list ?? (await api.queryItems({ folder: f?.id ?? null, recursive: true })));
+    if (!items.length) return setNote({ text: 'No pictures to go through here.', at: 0 });
+    nav.go({ name: 'viewer', items: items.map(fromItem), title: `Speed round · ${f?.name ?? viewTitle(view, folder)}`, auto: true, back: view, speedRound: true });
+  };
+  const startDuel = async (f: FolderCard | null, list?: Item[]) => {
+    const items = visualItems(list ?? (await api.queryItems({ folder: f?.id ?? null, recursive: true })));
+    if (items.length < 2) return setNote({ text: 'Duels need at least two pictures.', at: 0 });
+    setDialog({ t: 'duel', items });
   };
 
   // ---- several folders ----------------------------------------------------------------
@@ -962,13 +1260,14 @@ export function Library({ nav, view, setView, history, reveal }: {
     if (!fs.length && !selected.size) return;
     setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
   };
-  const deleteMany = async (fs: FolderCard[], items: number[]) => {
+  const deleteMany = async (fs: FolderCard[], items: number[], links: CopyLinks[] = []) => {
     for (const f of fs) await api.deleteFolder(f.id);
     if (items.length) await api.deleteItems(items);
     const what = [fs.length ? plural(fs.length, 'folder') : '', items.length ? plural(items.length, 'item') : ''].filter(Boolean).join(' and ');
     did(`Moved ${what} to the trash`, async () => {
       for (const f of fs) await api.restoreFolder(f.id);
       if (items.length) await api.restoreItems(items);
+      for (const l of links) await api.restoreLinks(l);
     });
     setSelFolders(new Set());
     setSelected(new Set());
@@ -1033,12 +1332,40 @@ export function Library({ nav, view, setView, history, reveal }: {
         const target = folders.find((x) => x.id === to);
         return !!target && group.every((g) => g.id !== to && !target.path.some((c) => c.id === g.id));
       },
-      onDrop: (t) => {
+      edges: true,
+      onDrop: (t, edge) => {
         const to = targetFolder(t);
+        if (edge && to != null) {
+          reorderFolders(group, to, edge).catch((err) => setError(errText(err)));
+          return;
+        }
         if (group.length === 1) moveFolder(f, to).catch((err) => setError(errText(err)));
         else moveFolders(group, to).catch((err) => setError(errText(err)));
       },
     });
+    dragOut(e, [], group.map((g) => g.id));
+  };
+  /** Drop on a folder's top or bottom edge: put the dragged folders before / after it. */
+  const reorderFolders = async (group: FolderCard[], targetId: number, edge: 'before' | 'after') => {
+    const target = folders.find((x) => x.id === targetId);
+    if (!target || group.some((g) => g.id === targetId)) return;
+    if (group.some((g) => target.path.some((c) => c.id === g.id))) {
+      setError("A folder can't be moved into itself.");
+      return;
+    }
+    const parent = target.parentId;
+    const moving = group.filter((g) => g.parentId !== parent);
+    for (const g of moving) await api.moveFolder(g.id, parent);
+    const siblings = folders.filter((x) => x.parentId === parent && !group.some((g) => g.id === x.id));
+    const at = siblings.findIndex((x) => x.id === targetId) + (edge === 'after' ? 1 : 0);
+    const order = [...siblings.slice(0, at), ...group, ...siblings.slice(at)].map((x) => x.id);
+    const before = await api.setFolderOrder(order);
+    did(group.length === 1 ? `Moved “${group[0].name}”` : `Moved ${plural(group.length, 'folder')}`, async () => {
+      await api.restoreFolderOrder(before);
+      for (const g of moving) await api.moveFolder(g.id, g.parentId);
+    });
+    await reload();
+    nav.refresh().catch(() => {});
   };
 
   const folderContext = (e: React.MouseEvent, f: FolderCard) => {
@@ -1046,8 +1373,11 @@ export function Library({ nav, view, setView, history, reveal }: {
     if (selFolders.has(f.id) && selFolders.size > 1) {
       const fs = topMost(selFolders);
       setCtx({ x: e.clientX, y: e.clientY, title: plural(fs.length, 'folder'), items: [
-        { label: `Move ${plural(fs.length, 'folder')} to…`, onSelect: () => setDialog({ t: 'moveFolders', folders: fs }) },
+        { label: `Move ${plural(fs.length, 'folder')} to…`, onSelect: () => setDialog({ t: 'moveFolders', folders: fs }),
+          sub: moveSub((to) => { moveFolders(fs, to.id).catch((err) => setError(errText(err))); }, fs.map((x) => x.id)) },
+        { label: `Merge into one…`, hint: 'asks first', onSelect: () => setDialog({ t: 'merge', folders: fs }) },
         { label: `Rename ${plural(selFolders.size, 'folder')}…`, hint: 'F2', onSelect: askRename },
+        { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: fs.map((x) => x.id), what: plural(fs.length, 'folder') }) },
         { label: `Delete ${plural(fs.length, 'folder')}…`, danger: true, sepBefore: true, onSelect: askDeleteMany },
       ] });
       return;
@@ -1089,12 +1419,22 @@ export function Library({ nav, view, setView, history, reveal }: {
         { label: allFav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => setFav(ids, !allFav) },
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
-        { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }) },
+        { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }),
+          sub: moveSub((to) => { moveItems(ids, to.id).catch((err) => setError(errText(err))); }, it.folderId != null ? [it.folderId] : []) },
+        { label: 'Free copy to…', hint: 'no extra space', onSelect: () => setDialog({ t: 'freeCopy', ids }),
+          sub: moveSub((to) => { freeCopyTo(ids, to.id).catch((err) => setError(errText(err))); }) },
+        ...(!many && it.linked ? [{ label: it.copyOf != null ? 'Show the original and other copies' : 'Show its free copies', onSelect: () => { showCopies(it).catch((err) => setError(errText(err))); } }] : []),
         { label: 'Rename…', hint: 'F2', onSelect: () => {
           const list = shown.filter((x) => sel.has(x.id));
           setDialog({ t: 'renameMany', entries: list.map((x): RenameEntry => ({ kind: 'item', id: x.id, name: x.name, ext: x.ext })) });
         } },
+        ...(!many ? [{ label: 'Note…', hint: it.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: false, id: it.id, name: it.name, note: it.note }) }] : []),
         { label: 'Scan for faces', sepBefore: true, onSelect: () => scanFaces({ ids }, many ? `${ids.length} items` : `“${it.name}”`) },
+        ...(it.thumb === 'failed' && it.kind === 'video' ? [{ label: 'Make a playable copy', hint: 'converts to MP4', onSelect: () => setDialog({ t: 'convert', items: [it], target: 'mp4' }) }] : []),
+        { label: 'Convert to…', onSelect: () => setDialog({ t: 'convert', items: shown.filter((x) => sel.has(x.id)) }) },
+        ...(pictures(shown.filter((x) => sel.has(x.id))).length >= 2 ? [{ label: 'Create GIF or video…', onSelect: () => setDialog({ t: 'animation', items: pictures(shown.filter((x) => sel.has(x.id))) }) }] : []),
+        ...(many ? [{ label: 'Duel these', onSelect: () => { startDuel(null, shown.filter((x) => sel.has(x.id))); } }] : []),
+        { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids, folders: [], what: many ? `${ids.length} items` : `“${it.name}”` }) },
         { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { ids }, what: many ? `${ids.length} items` : `“${it.name}”` }) },
         ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
         { label: many ? `Delete ${ids.length} items` : 'Delete', hint: 'to the trash', danger: true, sepBefore: true, onSelect: () => trashItems(ids) },
@@ -1132,8 +1472,57 @@ export function Library({ nav, view, setView, history, reveal }: {
       return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
     }
     if (!f.cover) return <FolderIcon size={40} />;
+    // Stacked card: two more pictures from inside peek out behind the cover.
+    const behind = f.samples.filter((x) => x !== f.cover).slice(0, 2);
+    if (behind.length) {
+      return (
+        <span className="fstack">
+          {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
+          <img className="fstack-top" src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />
+        </span>
+      );
+    }
     return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
   };
+
+  // ---- the top bar: your buttons in your order (right-click → Customise top bar) ----------
+  const [topEdit, setTopEdit] = useState(false);
+  const topButtons: Record<string, { label: string; node: React.ReactNode }> = {
+    dice: { label: 'Random journey', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Random journey" title="Random journey: jump to a random item in a random folder" onClick={randomJourney}><DiceIcon /></button> },
+    faces: { label: 'Face boxes', node: <button type="button" className={`btn btn-icon btn-sm${faceBoxesOn ? ' accent-soft' : ''}`} aria-pressed={faceBoxesOn} aria-label="Face boxes"
+      title={faceBoxesOn ? 'Face boxes are on: squares and name tags around known faces. Click to turn off.' : 'Show squares and name tags around faces (in the grid and the viewer)'}
+      onClick={() => setFaceBoxes(!faceBoxesOn)}><FaceIcon size={15} /></button> },
+    preview: { label: 'Preview', node: <Dropdown label={`Preview: ${preview === 'all' ? 'all' : preview === 'hover' ? 'hover' : 'off'} ▾`} title="Play videos and GIFs in the grid (always muted)"
+      items={[
+        ...PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => saveCfg({ preview: p.id }) })),
+        { label: 'Show the whole video on hover', hint: 'uncropped', checked: !!cfg.wholeOnHover, sepBefore: true,
+          disabled: preview === 'off', onSelect: () => saveCfg({ wholeOnHover: !cfg.wholeOnHover }) },
+      ]} /> },
+    slideshow: { label: 'Slideshow', node: <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length || inTrash}
+      title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button> },
+    multi: { label: 'Multi-screen', node: <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'multi', back: view })}><GridIcon /> Multi-screen</button> },
+    import: { label: 'Import', node: <Dropdown className="btn btn-sm btn-primary" label={<><ImportIcon /> Import</>} items={[
+      { label: 'Files or .7z archives…', onSelect: () => pickAndImport(false) },
+      { label: 'Folders…', onSelect: () => pickAndImport(true) },
+    ]} /> },
+    tags: { label: 'Tags', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Tags" title="Tags: rename, merge, colour, delete" onClick={() => setDialog({ t: 'tags' })}><TagIcon /></button> },
+    stats: { label: 'Statistics', node: <button type="button" className={`btn btn-icon btn-sm${view.kind === 'stats' ? ' accent-soft' : ''}`} aria-label="Statistics" title="Statistics"
+      onClick={() => setView({ kind: 'stats' })}><ChartIcon /></button> },
+    help: { label: 'Shortcuts', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={showHelp}><HelpIcon /></button> },
+    settings: { label: 'Settings', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Settings" onClick={() => nav.go({ name: 'settings' })}><GearIcon /></button> },
+    lock: { label: 'Lock', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button> },
+  };
+  const TOP_DEFAULT = ['dice', 'faces', 'preview', 'slideshow', 'multi', 'import', 'stats', 'help', 'settings', 'lock'];
+  const savedTop = (look.topBar ?? []).filter((k) => topButtons[k]);
+  const topOrder = savedTop.length ? (savedTop.includes('settings') ? savedTop : [...savedTop, 'settings']) : TOP_DEFAULT;
+  const setTopOrder = (list: string[]) => saveCfg({ look: { ...look, topBar: list } });
+  const moveTop = (k: string, before: string) => {
+    if (!k || k === before) return;
+    const list = topOrder.filter((x) => x !== k);
+    list.splice(Math.max(0, list.indexOf(before)), 0, k);
+    setTopOrder(list);
+  };
+  const hiddenTop = Object.keys(topButtons).filter((k) => !topOrder.includes(k));
 
   // ---- the bottom bar: what is selected, and one set of actions for all of it ------------
 
@@ -1209,6 +1598,23 @@ export function Library({ nav, view, setView, history, reveal }: {
       actions.push({ key: 'look', label: 'Colour and emoji…', onClick: () => setDialog({ t: 'look', folder: fs[0] }) });
     }
     actions.push({ key: 'rename', label: 'Rename…', title: 'F2', onClick: askRename });
+    if (itemsOnly) actions.push({ key: 'free', label: 'Free copy to…', title: 'Copies that take no extra space', onClick: () => setDialog({ t: 'freeCopy', ids: selIds }) });
+    if (nF >= 2 && !nI) actions.push({ key: 'merge', label: 'Merge…', onClick: () => setDialog({ t: 'merge', folders: fs }) });
+    if (nF === 1 && !nI) actions.push({ key: 'qsort', label: 'Quick sort', onClick: () => setDialog({ t: 'quickSort', folder: fs[0] }) });
+    if (nF === 1 && !nI) actions.push({ key: 'note', label: 'Note…', onClick: () => setDialog({ t: 'note', folder: true, id: fs[0].id, name: fs[0].name, note: fs[0].note }) });
+    if (!nF && nI === 1) {
+      const it = itemById(selIds[0]);
+      if (it) actions.push({ key: 'note', label: 'Note…', onClick: () => setDialog({ t: 'note', folder: false, id: it.id, name: it.name, note: it.note }) });
+    }
+    actions.push({ key: 'share', label: 'Share as .7z…', title: 'A password-protected archive', onClick: () => setDialog({ t: 'share', ids: selIds, folders: fs.map((f) => f.id), what }) });
+    actions.push({ key: 'convert', label: 'Convert…', onClick: onMedia((list) => setDialog({ t: 'convert', items: list })) });
+    actions.push({ key: 'gif', label: 'Create GIF…', onClick: onMedia((list) => {
+      const p = pictures(list);
+      if (p.length < 2) setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 });
+      else setDialog({ t: 'animation', items: p });
+    }) });
+    actions.push({ key: 'speed', label: 'Speed round', title: 'Pictures flash by; press F to favourite', onClick: onMedia((list) => startSpeedRound(nF === 1 && !nI ? fs[0] : null, list)) });
+    actions.push({ key: 'duel', label: 'Duel', title: 'Pick the better of two; sets the weights', onClick: onMedia((list) => startDuel(null, list)) });
     actions.push({ key: 'faces', label: 'Scan for faces', onClick: onMedia((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) });
     actions.push({ key: 'delete', label: 'Delete', icon: <TrashIcon />, danger: true, pinned: true, title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
       onClick: () => (itemsOnly ? trashItems(selIds) : askDeleteMany()) });
@@ -1218,22 +1624,37 @@ export function Library({ nav, view, setView, history, reveal }: {
   // ---- render ---------------------------------------------------------------------------
 
   const visibleTree = folders.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
-  const sideView = (v: LibView, label: React.ReactNode, count?: number, icon?: React.ReactNode) => {
-    const on = v.kind === view.kind && (v.kind !== 'folder' || (view.kind === 'folder' && view.id === v.id));
+  const rail = !!cfg.look?.sidebarRail;
+  const sideView = (v: LibView, label: string, count?: number, icon?: React.ReactNode, onClick?: () => void) => {
+    const on = !onClick && v.kind === view.kind && (v.kind !== 'folder' || (view.kind === 'folder' && view.id === v.id))
+      && !(view.kind === 'timeline' && view.person != null);
     return (
-      <button type="button" className={`side-row${on ? ' on' : ''}`} onClick={() => setView(v)}>
-        {icon}{label}
-        {count != null && count > 0 && <span className="count">{count.toLocaleString()}</span>}
+      <button type="button" className={`side-row${on ? ' on' : ''}`} onClick={onClick ?? (() => setView(v))} title={rail ? label : undefined} aria-label={label}>
+        {icon}{!rail && label}
+        {!rail && count != null && count > 0 && <span className="count">{count.toLocaleString()}</span>}
       </button>
     );
   };
+  /** A folder's little picture (its cover), or the folder icon. */
+  const folderPic = (f: FolderCard, size: number) => f.cover
+    ? <img className="side-cover" src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} style={{ width: size, height: size }} />
+    : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
 
-  const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}` : viewTitle(view, folder);
+  const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
+    : view.kind === 'timeline' && view.person != null ? `${folders.find((f) => f.id === view.person)?.name ?? 'Person'} · timeline`
+    : viewTitle(view, folder);
   const totalImporting = Object.values(jobs);
   const showNote = !!note;
   return (
     <div className="library" ref={root}>
-      <header className="lib-top" ref={header}>
+      <header className="lib-top" ref={header} onContextMenu={(e) => {
+        if ((e.target as HTMLElement).closest('input, .search')) return;
+        e.preventDefault();
+        setCtx({ x: e.clientX, y: e.clientY, title: 'Top bar', items: [
+          { label: topEdit ? 'Done customising' : 'Customise top bar…', onSelect: () => setTopEdit(!topEdit) },
+          { label: 'Reset top bar', disabled: !savedTop.length, onSelect: () => setTopOrder([]) },
+        ] });
+      }}>
         <div className="brand">
           <LockIcon size={18} />
           <span>{s.name}</span>
@@ -1254,39 +1675,68 @@ export function Library({ nav, view, setView, history, reveal }: {
             : cfg.smartSearch ? 'Smart search is on: describe what you are looking for, in any language. Click to turn off.'
             : 'Smart search: find pictures by describing them (“beach at sunset”, “kırmızı araba”). Click to turn on.'}
           onClick={() => saveCfg({ smartSearch: !cfg.smartSearch })}><SparkleIcon /></button>
-        <nav className="row" style={{ gap: 8 }}>
-          <button type="button" className="btn btn-icon btn-sm" aria-label="Random journey" title="Random journey: jump to a random item in a random folder"
-            onClick={randomJourney}><DiceIcon /></button>
-          <Dropdown label={`Preview: ${preview === 'all' ? 'all' : preview === 'hover' ? 'hover' : 'off'} ▾`} title="Play videos and GIFs in the grid (always muted)"
-            items={[
-              ...PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => saveCfg({ preview: p.id }) })),
-              { label: 'Show the whole video on hover', hint: 'uncropped', checked: !!cfg.wholeOnHover, sepBefore: true,
-                disabled: preview === 'off', onSelect: () => saveCfg({ wholeOnHover: !cfg.wholeOnHover }) },
-            ]} />
-          <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length || inTrash}
-            title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button>
-          <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'multi', back: view })}><GridIcon /> Multi-screen</button>
-          <Dropdown className="btn btn-sm btn-primary" label={<><ImportIcon /> Import</>} items={[
-            { label: 'Files or .7z archives…', onSelect: () => pickAndImport(false) },
-            { label: 'Folders…', onSelect: () => pickAndImport(true) },
-          ]} />
-          <button type="button" className={`btn btn-icon btn-sm${view.kind === 'stats' ? ' accent-soft' : ''}`} aria-label="Statistics" title="Statistics"
-            onClick={() => setView({ kind: 'stats' })}><ChartIcon /></button>
-          <button type="button" className="btn btn-icon btn-sm" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={showHelp}><HelpIcon /></button>
-          <button type="button" className="btn btn-icon btn-sm" aria-label="Settings" onClick={() => nav.go({ name: 'settings' })}><GearIcon /></button>
-          <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button>
+        <nav className={`row topbar${topEdit ? ' editing' : ''}`} style={{ gap: 8 }}>
+          {topOrder.map((k) => {
+            const b = topButtons[k];
+            if (!b) return null;
+            return topEdit ? (
+              <span key={k} className="tb-item" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', k)}
+                onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); moveTop(e.dataTransfer.getData('text/plain'), k); }}>
+                <span className="tb-inner" aria-hidden="true">{b.node}</span>
+                {k !== 'settings' && <button type="button" className="tb-x" aria-label={`Hide ${b.label}`} onClick={() => setTopOrder(topOrder.filter((x) => x !== k))}>×</button>}
+              </span>
+            ) : <span key={k} className="tb-slot">{b.node}</span>;
+          })}
         </nav>
       </header>
+      {topEdit && (
+        <div className="tb-tray" role="toolbar" aria-label="Hidden top bar buttons">
+          <span className="faint">Drag buttons to reorder them · × hides one · hidden buttons:</span>
+          {hiddenTop.map((k) => (
+            <button key={k} type="button" className="btn btn-sm" draggable onDragStart={(e) => e.dataTransfer.setData('text/plain', k)}
+              onClick={() => setTopOrder([...topOrder.filter((x) => x !== 'settings' && x !== 'lock'), k, ...topOrder.filter((x) => x === 'settings' || x === 'lock')])}>+ {topButtons[k].label}</button>
+          ))}
+          {!hiddenTop.length && <span className="faint">none</span>}
+          <span style={{ marginLeft: 'auto' }} />
+          <button type="button" className="btn btn-sm" onClick={() => setTopOrder([])}>Reset</button>
+          <button type="button" className="btn btn-sm btn-primary" onClick={() => setTopEdit(false)}>Done</button>
+        </div>
+      )}
 
       <div className="lib-body">
-        <aside className="side" aria-label="Library" ref={side}>
-          {sideView({ kind: 'folders' }, 'All folders', folders.length)}
-          {sideView({ kind: 'all' }, 'All media', s.items)}
-          {sideView({ kind: 'favourites' }, 'Favourites')}
-          {sideView({ kind: 'recent' }, 'Recently added')}
-          {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon />)}
-          {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={14} />)}
-          {sideView({ kind: 'lookalikes', folder: null }, 'Look-alikes', undefined, <TwinIcon size={14} />)}
+        <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
+          <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
+            aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
+            <RailIcon size={15} open={rail} />{!rail && <span className="faint" style={{ fontSize: 12 }}>Compact</span>}
+          </button>
+          {sideView({ kind: 'folders' }, 'All folders', folders.length, rail ? <FolderIcon size={16} /> : undefined)}
+          {sideView({ kind: 'all' }, 'All media', s.items, rail ? <ImagesIcon size={16} /> : undefined)}
+          {sideView({ kind: 'favourites' }, 'Favourites', undefined, rail ? <HeartIcon size={16} /> : undefined)}
+          {sideView({ kind: 'recent' }, 'Recently added', undefined, rail ? <ImportIcon size={16} /> : undefined)}
+          {sideView({ kind: 'continue' }, 'Continue watching', undefined, <PlayIcon size={rail ? 16 : 13} />)}
+          {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon size={rail ? 16 : 14} />)}
+          {sideView({ kind: 'memories' }, 'Memories', undefined, <SparkleIcon size={rail ? 16 : 14} />)}
+          {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={rail ? 16 : 14} />)}
+          {sideView({ kind: 'lookalikes', folder: null }, 'Look-alikes', undefined, <TwinIcon size={rail ? 16 : 14} />)}
+          {sideView({ kind: 'folders' }, 'Tags', undefined, <TagIcon size={rail ? 16 : 14} />, () => setDialog({ t: 'tags' }))}
+          {rail && (
+            <div className="rail-folders">
+              {folders.map((f) => {
+                const parent = f.subfolders > 0;
+                return (
+                  <button key={f.id} type="button" data-drop={`folder:${f.id}`}
+                    className={`rail-folder${parent ? ' parent' : ''}${f.depth > 0 ? ' sub' : ''}${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`}
+                    title={f.path.map((c) => c.name).concat(f.name).join(' › ')} aria-label={f.name}
+                    onClick={(e) => folderClick(e, f, folders, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
+                    {parent && <span className="rail-shape" aria-hidden="true" />}
+                    {f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
+                    {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+          {!rail && <>
           {pinned.length > 0 && <div className="side-head"><PinIcon size={11} /> Pinned</div>}
           {pinned.map((f) => (
             <div key={`pin${f.id}`} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
@@ -1294,7 +1744,7 @@ export function Library({ nav, view, setView, history, reveal }: {
               <span className="twisty" />
               <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, pinned, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
                 title={`${f.path.map((c) => c.name).concat(f.name).join(' › ')} — drag onto another folder to move it`}>
-                {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
+                {folderPic(f, 18)}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
@@ -1306,7 +1756,8 @@ export function Library({ nav, view, setView, history, reveal }: {
             <FolderIcon size={15} /> Top level
           </button>
           {visibleTree.map((f) => (
-            <div key={f.id} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}`} data-drop={`folder:${f.id}`}
+            <div key={f.id} className={`side-row tree${view.kind === 'folder' && view.id === f.id ? ' on' : ''}${selFolders.has(f.id) ? ' fsel' : ''}${clipboard?.mode === 'cut' && clipboard.folders.includes(f.id) ? ' cut' : ''}`}
+              data-drop={`folder:${f.id}`} data-order={f.id}
               style={{ paddingLeft: 6 + f.depth * 16 }} onContextMenu={(e) => folderContext(e, f)}>
               {f.subfolders > 0 ? (
                 <button type="button" className="twisty" aria-label={collapsed.has(f.id) ? 'Expand' : 'Collapse'} onClick={() => setCollapsed((c) => {
@@ -1317,8 +1768,8 @@ export function Library({ nav, view, setView, history, reveal }: {
                 })}><ChevronIcon open={!collapsed.has(f.id)} /></button>
               ) : <span className="twisty" />}
               <button type="button" className="tree-name" onClick={(e) => folderClick(e, f, visibleTree, true)} onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)}
-                title="Click to open · Ctrl/Shift + click to select several · middle-click to play">
-                {!f.emoji && <FolderIcon size={15} />}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
+                title="Click to open · Ctrl/Shift + click to select several · middle-click to play · drag onto a folder to move it, onto its top or bottom edge to put it before or after">
+                {folderPic(f, 18)}<FolderMark f={f} /> <span className="ellipsis">{f.name}</span>
                 {f.person && <span className="person-mark" title="Person folder (face recognition)"><FaceIcon size={11} /></span>}
               </button>
               <span className="count">{f.items.toLocaleString()}</span>
@@ -1327,11 +1778,12 @@ export function Library({ nav, view, setView, history, reveal }: {
           <button type="button" className="side-row faint" onClick={() => setDialog({ t: 'newFolder', parent: view.kind === 'folder' ? view.id : null })}>
             <PlusIcon size={14} /> New folder
           </button>
+          </>}
           <div className="side-spacer" />
-          {sideView({ kind: 'trash' }, 'Trash', undefined, <TrashIcon size={14} />)}
+          {sideView({ kind: 'trash' }, 'Trash', undefined, <TrashIcon size={rail ? 16 : 14} />)}
         </aside>
 
-        <main className="lib-main" ref={scroller} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
+        <main className="lib-main" ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
           {login && <LoginBanner login={login} onClose={() => setLogin(null)} />}
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
@@ -1371,13 +1823,17 @@ export function Library({ nav, view, setView, history, reveal }: {
             {view.kind === 'folder' && (
               <span className="crumbs">
                 <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })}>All folders</button>
+                <button type="button" className="crumb-jump" aria-label="Folders at the top level" title="Jump to another folder at this level" onClick={(e) => crumbJump(e, null)}>›</button>
                 {folder?.path.map((c) => (
-                  <span key={c.id}> › <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)}>{c.name}</button></span>
+                  <span key={c.id}>
+                    <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)}>{c.name}</button>
+                    <button type="button" className="crumb-jump" aria-label={`Folders in ${c.name}`} title="Jump to another folder at this level" onClick={(e) => crumbJump(e, c.id)}>›</button>
+                  </span>
                 ))}
-                {' ›'}
               </span>
             )}
             <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
+            {folder?.note && <span className="folder-note" title={folder.note}><NoteIcon size={13} /> {folder.note}</span>}
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
                 : view.kind === 'stats' || view.kind === 'people' || looks ? ''
@@ -1393,6 +1849,9 @@ export function Library({ nav, view, setView, history, reveal }: {
                   </span>
                 ))}
                 <button type="button" className="chip dashed" onClick={() => setDialog({ t: 'folderTag', folder })}>+ tag folder</button>
+                <button type="button" className="btn btn-sm" title="Go through this folder one by one and send each item to a folder" onClick={() => setDialog({ t: 'quickSort', folder })}>
+                  <SortIcon size={14} /> Quick sort
+                </button>
                 <Dropdown className="btn btn-sm" label="Folder ▾" items={folderMenu(folder).slice(1)} />
               </div>
             )}
@@ -1420,15 +1879,16 @@ export function Library({ nav, view, setView, history, reveal }: {
                     items={(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) }))} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
                   <div role="group" aria-label="Tile shape" className="seg">
-                    <button type="button" className={!shape ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => saveCfg({ gridShape: false })}>Tiles</button>
-                    <button type="button" className={shape ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => saveCfg({ gridShape: true })}>True shape</button>
+                    <button type="button" className={!shape && !scrollMode ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => { setScrollMode(false); saveCfg({ gridShape: false }); }}>Tiles</button>
+                    <button type="button" className={shape && !scrollMode ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => { setScrollMode(false); saveCfg({ gridShape: true }); }}>True shape</button>
+                    <button type="button" className={scrollMode ? 'on' : ''} title="Scroll mode: one long column of big pictures; videos play as you scroll past" onClick={() => setScrollMode(!scrollMode)}>Scroll</button>
                   </div>
                 </>
               )}
               {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
                 <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
               )}
-              {view.kind !== 'stats' && view.kind !== 'people' && !looks && (
+              {view.kind !== 'stats' && view.kind !== 'people' && !looks && view.kind !== 'memories' && !scrollMode && (
                 <>
                   <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }} title="Ctrl + mouse wheel changes this too">Size · {cols} per row</label>
                   <input id="tile-size" type="range" min={2} max={12} step={1} value={cols} style={{ direction: 'rtl' }}
@@ -1446,7 +1906,7 @@ export function Library({ nav, view, setView, history, reveal }: {
           )}
 
           {view.kind === 'people' && (
-            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} />
+            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it)} onTimeline={(id) => setView({ kind: 'timeline', person: id })} />
           )}
           {smart && clip && clip.done + clip.failed < clip.total && (
             <div className="info" style={{ marginBottom: 12 }}>
@@ -1454,6 +1914,11 @@ export function Library({ nav, view, setView, history, reveal }: {
             </div>
           )}
 
+          {view.kind === 'memories' && (
+            <MemoriesView folders={folders} onPlay={(m: Memory) => nav.go({
+              name: 'viewer', items: m.items.map(fromItem), title: m.title, auto: true, back: view, kenBurns: true, titleCard: { title: m.title, subtitle: m.subtitle },
+            })} />
+          )}
           {view.kind === 'lookalikes' && (
             <LookAlikes folder={view.folder} folderName={folders.find((f) => f.id === view.folder)?.name ?? null}
               smartOk={smartOn} tick={lookTick} marked={selected} setMarked={setSelected}
@@ -1527,7 +1992,8 @@ export function Library({ nav, view, setView, history, reveal }: {
 
           {gridView && (
             shown.length ? (
-              <MediaGrid items={shown} columns={cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
+              <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
+              <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
                 keyboard={quick == null && !dialog && !ctx} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={(sel, a, additive) => {
                   setSelected(sel);
@@ -1537,11 +2003,18 @@ export function Library({ nav, view, setView, history, reveal }: {
                 }}
                 onOpen={(it) => playItems(false, it.id)}
                 onContext={itemContext}
-                preview={inTrash ? 'off' : preview}
-                wholeOnHover={!!cfg.wholeOnHover}
-                layout={shape ? 'shape' : 'grid'}
+                preview={inTrash ? 'off' : scrollMode ? 'all' : preview}
+                wholeOnHover={!!cfg.wholeOnHover && !scrollMode}
+                layout={shape || scrollMode ? 'shape' : 'grid'}
                 groups={groups}
+                hoverInfo={look.hoverInfo && !scrollMode}
+                faces={gridFaces} faceBoxes={faceBoxesOn} faceCrop={look.faceCrop}
+                personName={(id) => folders.find((f) => f.id === id)?.name}
+                dimmed={clipboard?.mode === 'cut' ? new Set(clipboard.ids) : undefined}
+                onDragStart={inTrash ? undefined : (e, ids) => dragOut(e, ids, [])}
+                gap={look.tileGap}
                 onDropOnFolder={inTrash ? undefined : (ids, target) => act(() => moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7))))} />
+              </div>
             ) : !loading && !(inTrash && trash?.folders.length) && (
               <div className="dropzone">
                 {inTrash ? <TrashIcon size={28} /> : <ImportIcon size={28} />}
@@ -1685,7 +2158,7 @@ export function Library({ nav, view, setView, history, reveal }: {
         ].filter(Boolean);
         return (
           <ConfirmDialog title={`Delete ${parts.join(' and ')}?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
-            onConfirm={() => deleteMany(dialog.folders, dialog.items)}>
+            onConfirm={() => askTrash(dialog.folders, dialog.items)}>
             {dialog.folders.length > 0 && <>{dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}{dialog.folders.length > 6 ? ' …' : ''}. </>}
             Everything goes to the trash, where you can restore it for 30 days, or press Ctrl+Z right away.
           </ConfirmDialog>
@@ -1695,6 +2168,70 @@ export function Library({ nav, view, setView, history, reveal }: {
         <FolderPicker title={`Move ${plural(dialog.folders.length, 'folder')} into…`} folders={folders} exclude={dialog.folders.map((f) => f.id)} confirm="Move"
           onClose={() => setDialog(null)} onPick={(p) => moveFolders(dialog.folders, p)} />
       )}
+      {dialog?.t === 'freeCopy' && (
+        <FolderPicker title={`Free copy ${plural(dialog.ids.length, 'item')} to…`} folders={folders} confirm="Make free copies"
+          onClose={() => setDialog(null)} onPick={(f) => freeCopyTo(dialog.ids, f)} />
+      )}
+      {dialog?.t === 'deleteOriginal' && (
+        <DeleteOriginalDialog groups={dialog.groups} onCancel={() => setDialog(null)}
+          onChoice={async (c) => {
+            const d = dialog;
+            setDialog(null);
+            try {
+              if (c.mode === 'all') await deleteMany(d.folders, [...d.ids, ...d.groups.flatMap(([, cs]) => cs.map((x) => x.id))]);
+              else {
+                const links: CopyLinks[] = [];
+                for (const [o] of d.groups) links.push(await api.promoteCopy(o.id, c.picks.get(o.id)!));
+                await deleteMany(d.folders, d.ids, links);
+              }
+            } catch (err) {
+              setError(errText(err));
+            }
+          }} />
+      )}
+      {dialog?.t === 'merge' && <MergeDialog folders={dialog.folders} onClose={() => setDialog(null)} onDone={(m, t, src) => { finishMerge(m, t, src); }} />}
+      {dialog?.t === 'note' && (
+        <NoteDialog name={dialog.name} note={dialog.note} onClose={() => setDialog(null)} onSave={(n) => saveNote(dialog.folder, dialog.id, dialog.name, n)} />
+      )}
+      {dialog?.t === 'copies' && (
+        <Modal title={dialog.item.copyOf != null ? 'The original and other free copies' : 'Free copies'} onClose={() => setDialog(null)}>
+          <p className="muted" style={{ margin: 0, fontSize: 14 }}>These share one stored file with “{dialog.item.name}”, so they take no extra space.</p>
+          <div className="picker">
+            {dialog.list.map((x) => (
+              <button key={x.id} type="button" className="picker-row" onClick={() => { setDialog(null); showInFolder(x); }}>
+                <FolderIcon size={15} /> {x.folderId == null ? 'Top level' : folders.find((f) => f.id === x.folderId)?.name ?? 'folder'}
+                <span className="faint" style={{ marginLeft: 'auto', fontSize: 12 }}>{x.copyOf == null ? 'original' : 'free copy'} · {x.name}</span>
+              </button>
+            ))}
+            {!dialog.list.length && <span className="faint">No other copies.</span>}
+          </div>
+          <div className="row" style={{ justifyContent: 'flex-end' }}><button type="button" className="btn" onClick={() => setDialog(null)}>Close</button></div>
+        </Modal>
+      )}
+      {dialog?.t === 'tags' && (
+        <TagManager onClose={() => setDialog(null)} did={did} onChanged={() => { reload(); }}
+          onSearch={(t) => { setDialog(null); setView({ kind: 'search', tags: [t], names: [], people: [] }); }} />
+      )}
+      {dialog?.t === 'quickSort' && (
+        <QuickSort source={dialog.folder} folders={folders} moveStats={moveStats.current} onMoved={bumpMoveStat} did={did} undo={undo}
+          onClose={(changed) => { setDialog(null); if (changed) { reload(); nav.refresh().catch(() => {}); } }} />
+      )}
+      {dialog?.t === 'duel' && <Duel items={dialog.items} onClose={() => { setDialog(null); reload(); }} />}
+      {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
+      {dialog?.t === 'convert' && (
+        <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />
+      )}
+      {dialog?.t === 'animation' && <AnimationDialog items={dialog.items} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />}
+      {dialog?.t === 'dragOut' && (() => {
+        const d = dialog;
+        let answered = false;
+        const answer = (ok: boolean) => { if (!answered) { answered = true; d.resolve(ok); } };
+        return (
+          <ConfirmDialog title="Copy out of the vault?" confirm="Yes, copy them" onClose={() => { answer(false); setDialog(null); }} onConfirm={() => answer(true)}>
+            Dragging items out of the window makes normal, unencrypted copies where you drop them (Explorer, the desktop). Only this time is asked; after that, drag them out again.
+          </ConfirmDialog>
+        );
+      })()}
       {dialog?.t === 'renameMany' && (
         <RenameDialog entries={dialog.entries} onClose={() => setDialog(null)} onRename={doRename} />
       )}

@@ -3,7 +3,11 @@
 //  - "shape": justified rows; every tile has its item's true shape
 // Optional groups (the timeline's months) start with a header row.
 
-export const GAP = 10;
+export let GAP = 10;
+/** Space between tiles (Settings → Appearance). */
+export function setGridGap(px: number) {
+  GAP = Math.max(0, Math.min(40, Math.round(px)));
+}
 export const HEADER_H = 46;
 
 export interface Box {

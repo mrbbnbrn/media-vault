@@ -8,7 +8,9 @@ export interface MoveDrag {
   label: (target: string | null) => string;
   /** Can it go there? Targets that say no are not highlighted. */
   canDrop?: (target: string) => boolean;
-  onDrop: (target: string) => void;
+  /** Targets with data-order: the top/bottom edge means "put it before/after" instead of "into". */
+  edges?: boolean;
+  onDrop: (target: string, edge: 'before' | 'after' | null) => void;
 }
 
 export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
@@ -17,6 +19,7 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
   const y0 = e.clientY;
   let active = false;
   let over: HTMLElement | null = null;
+  let edge: 'before' | 'after' | null = null;
   let ghost: HTMLDivElement | null = null;
   const move = (ev: PointerEvent) => {
     if (!active && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 7) return;
@@ -28,26 +31,34 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
       document.body.classList.add('dragging');
     }
     const hit = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>('[data-drop^="folder:"]') ?? null;
-    const el = hit && (!opts.canDrop || opts.canDrop(hit.dataset.drop!)) ? hit : null;
-    if (el !== over) {
-      over?.classList.remove('drop-over');
-      el?.classList.add('drop-over');
+    // Near the top or bottom edge of a sidebar folder: put it before / after it.
+    let ed: 'before' | 'after' | null = null;
+    if (opts.edges && hit?.dataset.order != null) {
+      const r = hit.getBoundingClientRect();
+      const f = (ev.clientY - r.top) / r.height;
+      ed = f < 0.28 ? 'before' : f > 0.72 ? 'after' : null;
+    }
+    const el = hit && (ed || !opts.canDrop || opts.canDrop(hit.dataset.drop!)) ? hit : null;
+    if (el !== over || ed !== edge) {
+      over?.classList.remove('drop-over', 'drop-before', 'drop-after');
+      el?.classList.add(ed ? `drop-${ed}` : 'drop-over');
       over = el;
+      edge = el ? ed : null;
     }
     if (ghost) {
       ghost.style.left = `${ev.clientX + 14}px`;
       ghost.style.top = `${ev.clientY + 10}px`;
-      ghost.textContent = opts.label(el?.dataset.drop ?? null);
+      ghost.textContent = edge ? 'Put it here' : opts.label(el?.dataset.drop ?? null);
     }
   };
   const up = () => {
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
-    over?.classList.remove('drop-over');
+    over?.classList.remove('drop-over', 'drop-before', 'drop-after');
     ghost?.remove();
     document.body.classList.remove('dragging');
-    if (active && over?.dataset.drop) opts.onDrop(over.dataset.drop);
+    if (active && over?.dataset.drop) opts.onDrop(over.dataset.drop, edge);
     if (active) {
       // The end of a drag is not a click.
       const block = (ce: MouseEvent) => {

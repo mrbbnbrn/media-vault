@@ -26,6 +26,8 @@ export interface ViewPrefs {
   sort?: Order;
   kind?: Kind | 'any';
   cols?: number;
+  /** Scroll mode: one long column of full-width pictures. */
+  scroll?: boolean;
 }
 
 let prefs: Record<string, ViewPrefs> = {};

@@ -55,8 +55,26 @@ export interface AppConfig {
   smartIndex: boolean;
   /** Hide the app's windows from screenshots, screen recording and screen sharing. */
   blockCapture: boolean;
+  look: LookSettings;
   vaults: { path: string }[];
   lastVault: string | null;
+}
+
+export const DEFAULT_LOOK: LookSettings = {
+  sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [],
+};
+
+export interface LookSettings {
+  sidebarRail: boolean;
+  hoverInfo: boolean;
+  faceCrop: boolean;
+  /** 0.5–2, 1 = normal. */
+  uiScale: number;
+  style: 'default' | 'oled' | 'graphite' | 'midnight';
+  tileGap: number;
+  tileRadius: number;
+  /** Top-bar buttons in order; empty = default. */
+  topBar: string[];
 }
 
 export interface VaultEntry {
@@ -287,6 +305,9 @@ export interface FolderCard {
   emoji: string | null;
   /** A person folder (face recognition learns this person from it). */
   person: boolean;
+  /** Up to three pictures from inside (stacked cards). */
+  samples: number[];
+  note: string | null;
 }
 
 export interface FolderView {
@@ -533,6 +554,28 @@ export const api = {
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
   setCover: (folder: number, media: number | null) => call<void>('set_cover', { folder, media }),
   allTags: () => call<TagCount[]>('all_tags'),
+  // ---- organising
+  freeCopy: (ids: number[], folder: number | null) => call<number[]>('free_copy', { ids, folder }),
+  itemCopies: (id: number) => call<Item[]>('item_copies', { id }),
+  freeCopiesOf: (ids: number[]) => call<[number, Item[]][]>('free_copies_of', { ids }),
+  promoteCopy: (old: number, next: number) => call<CopyLinks>('promote_copy', { old, new: next }),
+  restoreLinks: (links: CopyLinks) => call<void>('restore_links', { links }),
+  /** Real copies; 'copy-progress' [done, total] while it works. */
+  copyInto: (ids: number[], folders: number[], target: number | null) => call<{ items: number[]; folders: number[] }>('copy_into', { ids, folders, target }),
+  mergePlan: (target: number, sources: number[]) => call<Item[][]>('merge_plan', { target, sources }),
+  mergeFolders: (target: number, sources: number[], trash: number[]) => call<Merged>('merge_folders', { target, sources, trash }),
+  unmergeFolders: (merged: Merged) => call<void>('unmerge_folders', { merged }),
+  setFolderOrder: (ids: number[]) => call<[number, number][]>('set_folder_order', { ids }),
+  restoreFolderOrder: (before: [number, number][]) => call<void>('restore_folder_order', { before }),
+  tagList: () => call<TagInfo[]>('tag_list'),
+  renameTag: (old: string, next: string) => call<TagUse>('rename_tag', { old, new: next }),
+  deleteTag: (name: string) => call<TagUse>('delete_tag', { name }),
+  restoreTag: (before: TagUse, current: string | null) => call<void>('restore_tag', { before, current }),
+  setTagColor: (name: string, color: string | null) => call<string | null>('set_tag_color', { name, color }),
+  setNote: (folder: boolean, id: number, note: string | null) => call<string | null>('set_note', { folder, id, note }),
+  continueWatching: () => call<Item[]>('continue_watching'),
+  suggestFolders: (item: number) => call<{ folder: number; reason: 'face' | 'look'; score: number }[]>('suggest_folders', { item }),
+  exactGroups: (folder: number | null) => call<Item[][]>('exact_groups', { folder }),
   itemTags: (id: number) => call<{ own: string[]; inherited: [string, string][] }>('item_tags', { id }),
   /** Returns, per tag, the items that newly got it. */
   tagItems: (ids: number[], tags: string[]) => call<[string, number[]][]>('tag_items', { ids, tags }),
@@ -802,12 +845,13 @@ const mock = {
       preview: 'hover',
       wholeOnHover: false,
       gridShape: false,
-      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0 },
+      viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0, ambient: false, faceBoxes: false },
       builtinEngine: true,
       smartSearch: false,
       makePreviews: true,
       smartIndex: true,
       blockCapture: true,
+      look: { sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [] },
       vaults: [{ path: 'D:\\Vaults\\Photos' }, { path: 'D:\\Vaults\\Archive' }, { path: 'F:\\Vault backup' }],
       lastVault: 'D:\\Vaults\\Photos',
     },
@@ -931,3 +975,9 @@ export const winshell = {
   /** Save a pasted picture as a new item (the same path as saving a video frame). */
   importImageBytes: (folder: number | null, name: string, bytes: Uint8Array) => api.addFileBytes(folder, name, bytes),
 };
+
+// ---- organising -------------------------------------------------------------------------
+export interface CopyLinks { items: [number, number | null][] }
+export interface Merged { items: [number, number | null][]; folders: [number, number | null][]; emptied: number[]; trashed: number[] }
+export interface TagInfo { name: string; color: string | null; items: number; folders: number }
+export interface TagUse { name: string; color: string | null; items: number[]; folders: number[] }

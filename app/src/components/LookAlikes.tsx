@@ -10,14 +10,15 @@ import { onClipProgress } from '../ml/smart';
 import { formatBytes } from '../theme';
 import { plural } from '../undo';
 
-const LEVELS: { id: SimilarLevel; label: string; hint: string }[] = [
+const LEVELS: { id: SimilarLevel | 'exact'; label: string; hint: string }[] = [
+  { id: 'exact', label: 'Exact copies', hint: 'byte-for-byte the same file' },
   { id: 'strict', label: 'Strict', hint: 'nearly identical only' },
   { id: 'normal', label: 'Normal', hint: 're-saved, resized and burst shots' },
   { id: 'loose', label: 'Loose', hint: 'catches more, with more mistakes' },
 ];
 
 // Kept while the app is open.
-let lastLevel: SimilarLevel = 'normal';
+let lastLevel: SimilarLevel | 'exact' = 'normal';
 let lastSmart = false;
 let lastVideos = false;
 
@@ -34,7 +35,7 @@ export function LookAlikes(props: {
   onOpen: (group: Item[], id: number) => void;
   onAllFolders: () => void;
 }) {
-  const [level, setLevelState] = useState<SimilarLevel>(lastLevel);
+  const [level, setLevelState] = useState<SimilarLevel | 'exact'>(lastLevel);
   const [smartWanted, setSmart] = useState(lastSmart);
   const [videos, setVideos] = useState(lastVideos);
   const smart = smartWanted && props.smartOk;
@@ -45,7 +46,7 @@ export function LookAlikes(props: {
   const [clip, setClip] = useState<{ total: number; done: number; failed: number } | null>(null);
   const [fpTick, setFpTick] = useState(0);
 
-  const setLevel = (l: SimilarLevel) => {
+  const setLevel = (l: SimilarLevel | 'exact') => {
     lastLevel = l;
     setLevelState(l);
   };
@@ -73,7 +74,7 @@ export function LookAlikes(props: {
     let live = true;
     setBusy(true);
     setErr(null);
-    api.similarGroups(level, smart, props.folder, videos)
+    (level === 'exact' ? api.exactGroups(props.folder) : api.similarGroups(level, smart, props.folder, videos))
       .then((g) => {
         if (!live) return;
         setGroups(g);

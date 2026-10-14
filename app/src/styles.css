@@ -163,3 +163,8 @@ select.input { min-height: 42px; font-size: 14px; width: auto; }
   .print-only h1 { font-family: var(--sans); font-size: 20px; margin-bottom: 4px; }
   .print-only ol { columns: 3; font-size: 15px; line-height: 2; padding-left: 28px; }
 }
+
+/* Dark styles (Settings → Appearance) */
+:root[data-style="oled"] { --ground: #000000; --panel: #050506; --card: #0b0c0e; --raised: #121316; --line: #17191c; --line-2: #22252a; }
+:root[data-style="graphite"] { --ground: #17181a; --panel: #1c1d20; --card: #222327; --raised: #28292e; --line: #2c2e33; --line-2: #383a40; }
+:root[data-style="midnight"] { --ground: #0b0f17; --panel: #0f1420; --card: #141a28; --raised: #1a2131; --line: #1e2638; --line-2: #2a3447; }

@@ -6,7 +6,8 @@
 // optionally in groups with a header (the timeline's months).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { mediaUrl, previewUrl, thumbUrl, type Item } from '../api';
+import { mediaUrl, previewUrl, thumbUrl, type FaceBox, type Item } from '../api';
+import { formatBytes } from '../theme';
 import {
   clipFpsChanged, onPreviewMade, playClip, preferPreviews, setWantedVideos, stopClip, unwatchVideo, usePreviewMode, watchVideo,
 } from '../previews';
@@ -47,6 +48,20 @@ export function MediaGrid(props: {
   keyboard?: boolean;
   /** Scroll this item into view and flash it. */
   reveal?: { id: number; n: number } | null;
+  /** Name, size and length along the bottom of the hovered tile. */
+  hoverInfo?: boolean;
+  /** Faces per item (face boxes / face-aware cropping). */
+  faces?: Map<number, FaceBox[]>;
+  faceBoxes?: boolean;
+  faceCrop?: boolean;
+  /** Person folder id → name, for the tags on face boxes. */
+  personName?: (id: number) => string | undefined;
+  /** Cut (Ctrl+X) items show faded. */
+  dimmed?: Set<number>;
+  /** Also called when an item drag starts (drag out of the window to Explorer). */
+  onDragStart?: (e: React.PointerEvent, ids: number[]) => void;
+  /** Space between tiles (re-layout when it changes). */
+  gap?: number;
 }) {
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
@@ -72,7 +87,7 @@ export function MediaGrid(props: {
 
   const layout = useMemo(
     () => layoutGrid(props.items, width, Math.max(40, (width + GAP) / Math.max(1, props.columns) - GAP - 0.01), mode, props.groups),
-    [props.items, width, props.columns, mode, props.groups],
+    [props.items, width, props.columns, mode, props.groups, props.gap],
   );
 
   useEffect(() => {
@@ -243,6 +258,29 @@ export function MediaGrid(props: {
       canDrop: (t) => t !== 'folder:' + (item.folderId ?? 'top') || ids.length > 1,
       onDrop: (t) => props.onDropOnFolder?.(ids, t),
     });
+    props.onDragStart?.(e, ids);
+  };
+
+  /** Where the picture sits inside a cropped tile: object-position (0–1) and its drawn size. */
+  const placement = (it: Item, w: number, h: number) => {
+    if (!it.width || !it.height) return null;
+    const s0 = mode === 'shape' ? Math.min(w / it.width, h / it.height) : Math.max(w / it.width, h / it.height);
+    const dw = it.width * s0;
+    const dh = it.height * s0;
+    let px = 0.5;
+    let py = 0.5;
+    const fs = props.faces?.get(it.id);
+    if (props.faceCrop && mode !== 'shape' && fs?.length) {
+      // Centre the biggest face (as far as the crop allows).
+      const f = fs.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+      const cx = f.x + f.w / 2;
+      const cy = f.y + f.h / 2;
+      const ox = Math.min(0, Math.max(w - dw, w / 2 - cx * dw));
+      const oy = Math.min(0, Math.max(h - dh, h / 2 - cy * dh));
+      px = dw > w ? ox / (w - dw) : 0.5;
+      py = dh > h ? oy / (h - dh) : 0.5;
+    }
+    return { px, py, dw, dh, ox: (w - dw) * px, oy: (h - dh) * py };
   };
 
   // The hovered video/GIF uncropped: same scale as in its tile, the tile
@@ -279,9 +317,10 @@ export function MediaGrid(props: {
         const sel = props.selected.has(it.id);
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
         const asClip = playing && it.kind === 'video' && clipMode.clips;
+        const place = (props.faceBoxes || props.faceCrop) && props.faces?.has(it.id) ? placement(it, b.w, b.h) : null;
         return (
-          <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.name}
-            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${flashId === it.id ? ' flash' : ''}`}
+          <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
+            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${flashId === it.id ? ' flash' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
             style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
             onClick={(e) => { click(e, it, i); props.onCursor?.(it.id); }} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
@@ -291,7 +330,8 @@ export function MediaGrid(props: {
             }}
             onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
             {hasThumb && it.thumb !== 'failed' ? (
-              <img src={`${thumbUrl(it.id)}?v=${ready.has(it.id) ? 1 : 0}`} alt="" loading="lazy" draggable={false} />
+              <img src={`${thumbUrl(it.id)}?v=${ready.has(it.id) ? 1 : 0}`} alt="" loading="lazy" draggable={false}
+                style={place && props.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
             ) : it.thumb === 'failed' ? (
               <span className="tile-msg"><BrokenIcon /> Can't play</span>
             ) : (
@@ -306,6 +346,26 @@ export function MediaGrid(props: {
             )}
             {asClip && hasPreview(it) && <Clip id={it.id} w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} />}
             {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
+            {props.faceBoxes && place && (it.kind === 'image' || it.kind === 'gif') && props.faces?.get(it.id)?.map((f) => {
+              const known = f.person != null;
+              const name = known ? props.personName?.(f.person!) : undefined;
+              const small = b.w < 120;
+              const left = place.ox + f.x * place.dw;
+              const top = place.oy + f.y * place.dh;
+              return (
+                <span key={f.id} className={`tile-face${known ? '' : ' unknown'}${small ? ' small' : ''}`} aria-hidden="true"
+                  style={{ left, top, width: f.w * place.dw, height: f.h * place.dh }}>
+                  {(known ? name : !small) && <span className="tile-face-tag">{known ? name : '?'}</span>}
+                </span>
+              );
+            })}
+            {props.hoverInfo && (
+              <span className="tile-info" aria-hidden="true">
+                <span className="ellipsis">{it.name}</span>
+                <span className="faint">{[it.width && it.height ? `${it.width}×${it.height}` : '', formatBytes(it.size)].filter(Boolean).join(' · ')}</span>
+              </span>
+            )}
+            {it.linked && <span className="linked" title={it.copyOf != null ? 'A free copy (shares the original’s stored file)' : 'Has free copies'}>⧉</span>}
             {sel && <span className="tick" aria-hidden="true">✓</span>}
             {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
             {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}

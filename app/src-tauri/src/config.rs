@@ -111,11 +111,48 @@ pub struct AppConfig {
     /// Hide the app's windows from screenshots, screen recording and screen
     /// sharing (on Windows they show up black).
     pub block_capture: bool,
+    /// How the library looks: sidebar, tiles, interface size, top bar.
+    pub look: LookSettings,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
 }
 
 pub const DEFAULT_ACCENT: &str = "#2ec4b6";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct LookSettings {
+    /// The sidebar shows only icons and folder pictures.
+    pub sidebar_rail: bool,
+    /// Name, size and length show on the hovered tile.
+    pub hover_info: bool,
+    /// Square tiles are cropped around faces.
+    pub face_crop: bool,
+    /// Interface size (1 = normal).
+    pub ui_scale: f64,
+    /// "default", "oled", "graphite" or "midnight".
+    pub style: String,
+    /// Space between tiles (px) and corner roundness (px).
+    pub tile_gap: u32,
+    pub tile_radius: u32,
+    /// Top-bar buttons in your order; hidden ones are left out. Empty = the default bar.
+    pub top_bar: Vec<String>,
+}
+
+impl Default for LookSettings {
+    fn default() -> Self {
+        Self {
+            sidebar_rail: false,
+            hover_info: true,
+            face_crop: false,
+            ui_scale: 1.0,
+            style: "default".into(),
+            tile_gap: 10,
+            tile_radius: 8,
+            top_bar: Vec::new(),
+        }
+    }
+}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -132,6 +169,7 @@ impl Default for AppConfig {
             make_previews: true,
             smart_index: true,
             block_capture: true,
+            look: LookSettings::default(),
             vaults: Vec::new(),
             last_vault: None,
         }
@@ -148,6 +186,14 @@ impl AppConfig {
         if !["all", "hover", "off"].contains(&self.preview.as_str()) {
             self.preview = "hover".into();
         }
+        let l = &mut self.look;
+        l.ui_scale = if l.ui_scale.is_finite() { (l.ui_scale * 20.0).round().clamp(10.0, 40.0) / 20.0 } else { 1.0 };
+        if !["default", "oled", "graphite", "midnight"].contains(&l.style.as_str()) {
+            l.style = "default".into();
+        }
+        l.tile_gap = l.tile_gap.min(40);
+        l.tile_radius = l.tile_radius.min(24);
+        l.top_bar.truncate(40);
         let v = &mut self.viewer;
         let clamp =
             |x: f64, lo: f64, hi: f64, d: f64| if x.is_finite() { x.clamp(lo, hi) } else { d };

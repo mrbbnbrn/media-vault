@@ -56,7 +56,7 @@ function useScanStatus() {
   return { review, err, load };
 }
 
-export function PeopleView(props: { folders: FolderCard[]; onChanged: () => void; onOpenItem: (it: Item) => void }) {
+export function PeopleView(props: { folders: FolderCard[]; onChanged: () => void; onOpenItem: (it: Item) => void; onTimeline?: (person: number) => void }) {
   const { review, err, load } = useScanStatus();
   const [paused, setPaused] = useState(faceScanPaused());
   const [msg, setMsg] = useState<string | null>(null);
@@ -126,7 +126,7 @@ export function PeopleView(props: { folders: FolderCard[]; onChanged: () => void
         <PersonCard key={g.person.folder} g={g} onTeach={() => setTeach({ folder: g.person.folder, name: g.person.name })}
           onAccept={(ids) => done(api.facesAccept(ids, g.person.folder), `${plural(ids.length, 'picture')} added to ${g.person.name}.`)}
           onReject={(ids) => done(api.facesReject(ids, g.person.folder), `Got it — ${plural(ids.length, 'face')} marked as not ${g.person.name}.`)}
-          onOpenItem={props.onOpenItem} />
+          onOpenItem={props.onOpenItem} onTimeline={props.onTimeline ? () => props.onTimeline!(g.person.folder) : undefined} />
       ))}
 
       {review && review.unknown.length > 0 && (
@@ -178,6 +178,7 @@ function PersonCard(props: {
   onReject: (ids: number[]) => void;
   onTeach: () => void;
   onOpenItem: (it: Item) => void;
+  onTimeline?: () => void;
 }) {
   const { person, suggestions } = props.g;
   const [ticked, setTicked] = useState<Set<number>>(new Set());
@@ -197,6 +198,7 @@ function PersonCard(props: {
           learned from {plural(person.known, 'face')}
           {person.known < 3 && ' — add a few more clear pictures for better suggestions'}
         </span>
+        {props.onTimeline && <button type="button" className="btn btn-sm" onClick={props.onTimeline}>Timeline</button>}
         {person.unsure > 0 && (
           <button type="button" className="link" onClick={props.onTeach}>
             {plural(person.unsure, 'picture')} with several people — show which one is {person.name}

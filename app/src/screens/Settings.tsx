@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api, DEFAULT_VIEWER, onEvent, type AppConfig, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
+import { api, DEFAULT_LOOK, DEFAULT_VIEWER, onEvent, type AppConfig, type LookSettings, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
 import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
@@ -10,6 +10,7 @@ import { startCheck, useTasks } from '../tasks';
 import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, ScanStatus, StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
+import { STYLES } from '../look';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
@@ -28,6 +29,8 @@ export function Settings({ nav }: { nav: Nav }) {
       setError((e as Error).message);
     }
   }
+  const look = { ...DEFAULT_LOOK, ...(cfg.look ?? {}) };
+  const setLook = (patch: Partial<LookSettings>) => update({ ...cfg, look: { ...look, ...patch } });
   const setLock = (patch: Partial<AppConfig['lock']>) => update({ ...cfg, lock: { ...cfg.lock, ...patch } });
   const viewer = { ...DEFAULT_VIEWER, ...(cfg.viewer ?? {}) };
   const setViewer = (patch: Partial<ViewerSettings>) => update({ ...cfg, viewer: { ...viewer, ...patch } });
@@ -79,6 +82,53 @@ export function Settings({ nav }: { nav: Nav }) {
                     <input type="color" value={cfg.accent} aria-label="Custom accent colour"
                       onChange={(e) => update({ ...cfg, accent: e.target.value.toLowerCase() })} />
                   </label>
+                </div>
+              </section>
+
+              <div className="divider" />
+
+              <section className="section">
+                <h2>Look</h2>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="style">Background</label>
+                    <span className="desc">Always dark; choose how dark and which tint.</span>
+                  </div>
+                  <select id="style" className="input" value={look.style} onChange={(e) => setLook({ style: e.target.value as LookSettings['style'] })}>
+                    {STYLES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                  </select>
+                </div>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="uiscale">Interface size · {Math.round(look.uiScale * 100)}%</label>
+                    <span className="desc">Also Ctrl + plus and Ctrl + minus anywhere; Ctrl + 0 or Ctrl + * resets it.</span>
+                  </div>
+                  <input id="uiscale" type="range" min={0.5} max={2} step={0.05} value={look.uiScale} onChange={(e) => setLook({ uiScale: Number(e.target.value) })} />
+                </div>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="tgap">Space between tiles · {look.tileGap}px</label>
+                  </div>
+                  <input id="tgap" type="range" min={0} max={30} step={1} value={look.tileGap} onChange={(e) => setLook({ tileGap: Number(e.target.value) })} />
+                </div>
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="trad">Tile corners · {look.tileRadius === 0 ? 'square' : `${look.tileRadius}px round`}</label>
+                  </div>
+                  <input id="trad" type="range" min={0} max={20} step={1} value={look.tileRadius} onChange={(e) => setLook({ tileRadius: Number(e.target.value) })} />
+                </div>
+                <Toggle title="Show name, size and length on the tile under the mouse" desc="Shown along the bottom of the tile; the badges move out of its way."
+                  on={look.hoverInfo} set={(v) => setLook({ hoverInfo: v })} />
+                <Toggle title="Crop square tiles around faces" desc="Uses face recognition: tiles keep faces in view instead of the middle of the picture."
+                  on={look.faceCrop} set={(v) => setLook({ faceCrop: v })} />
+                <Toggle title="Compact sidebar" desc="Only icons and folder pictures; names show when you point at them. The button at the top of the sidebar switches it too."
+                  on={look.sidebarRail} set={(v) => setLook({ sidebarRail: v })} />
+                <div className="setting">
+                  <div className="text">
+                    <span className="title">Top bar buttons</span>
+                    <span className="desc">Right-click the top bar in the library and choose “Customise top bar” to hide buttons or change their order.</span>
+                  </div>
+                  <button type="button" className="btn btn-sm" disabled={!look.topBar.length} onClick={() => setLook({ topBar: [] })}>Reset top bar</button>
                 </div>
               </section>
 

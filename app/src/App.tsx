@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, onEvent, onLocked, type AppState, type LockReason } from './api';
 import { applyAccent } from './theme';
 import { setPrefsConfig } from './prefs';
+import { applyLook, setZoom, zoomKey } from './look';
 import { clearUndo } from './undo';
 import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
@@ -146,14 +147,36 @@ export function App() {
   goBackRef.current = goBack;
   goForwardRef.current = goForward;
 
+  const lookConfig = useRef<AppState['config'] | null>(null);
+  // Interface size: Ctrl+plus / Ctrl+minus, Ctrl+0 or Ctrl+* resets. Remembered.
+  useEffect(() => {
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const onKey = (e: KeyboardEvent) => {
+      const z = zoomKey(e);
+      if (z == null) return;
+      e.preventDefault();
+      setZoom(z);
+      if (t) clearTimeout(t);
+      t = setTimeout(() => {
+        const c = lookConfig.current;
+        if (c?.look) api.saveConfig({ ...c, look: { ...c.look, uiScale: z } }).then(() => refreshRef.current?.()).catch(() => {});
+      }, 600);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+  const refreshRef = useRef<(() => Promise<unknown>) | null>(null);
   const refresh = useCallback(async () => {
     const s = await api.getState();
     setApp(s);
     setPrefsConfig(s.config);
     applyAccent(s.config.accent);
+    applyLook(s.config.look);
+    lookConfig.current = s.config;
     return s;
   }, []);
 
+  refreshRef.current = refresh;
   useEffect(() => {
     runSelfTestIfRequested().catch(() => {});
     // The window is up: the built-in web engine (if used) works.

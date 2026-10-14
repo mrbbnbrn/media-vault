@@ -184,6 +184,8 @@ export interface MenuItem {
   disabled?: boolean;
   /** Draw a divider line above this item. */
   sepBefore?: boolean;
+  /** A submenu that opens to the side on hover, straight away. Clicking the item still runs onSelect. */
+  sub?: MenuItem[];
   onSelect: () => void;
 }
 
@@ -242,7 +244,20 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
 /** Right-click menu at the pointer. Same items as the "⋯" buttons. */
 export function ContextMenu(props: { x: number; y: number; title?: string; items: MenuItem[]; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const subRef = useRef<HTMLDivElement>(null);
   const [pos, setPos] = useState({ left: props.x, top: props.y });
+  const [sub, setSub] = useState<{ items: MenuItem[]; left: number; top: number; key: string } | null>(null);
+  // Keep the submenu on screen: to the left if there's no room on the right, and up if needed.
+  useLayoutEffect(() => {
+    const el = subRef.current;
+    if (!el || !sub) return;
+    const r = el.getBoundingClientRect();
+    let left = sub.left;
+    let top = sub.top;
+    if (r.right > window.innerWidth - 8) left = (ref.current?.getBoundingClientRect().left ?? left) - r.width + 4;
+    if (r.bottom > window.innerHeight - 8) top = Math.max(8, window.innerHeight - r.height - 8);
+    if (left !== sub.left || top !== sub.top) setSub({ ...sub, left, top });
+  }, [sub]);
   // Keep the whole menu on screen (measured before it is shown).
   useLayoutEffect(() => {
     const place = () => {
@@ -263,7 +278,7 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
     const el = ref.current;
     if (el) el.querySelector<HTMLElement>('button')?.focus({ preventScroll: true });
     const close = (e: Event) => {
-      if (!ref.current?.contains(e.target as Node)) props.onClose();
+      if (!ref.current?.contains(e.target as Node) && !subRef.current?.contains(e.target as Node)) props.onClose();
     };
     const key = (e: KeyboardEvent) => e.key === 'Escape' && props.onClose();
     window.addEventListener('mousedown', close, true);
@@ -283,8 +298,14 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
       {props.title && <div className="menu-title ellipsis">{props.title}</div>}
       {props.items.map((it) => [
         it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
-        <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
-          className={`menu-item${it.danger ? ' danger' : ''}`}
+        <button key={it.label} type="button" role="menuitem" disabled={it.disabled} aria-haspopup={it.sub ? 'menu' : undefined}
+          className={`menu-item${it.danger ? ' danger' : ''}${sub?.key === it.label ? ' on' : ''}`}
+          onPointerEnter={(e) => {
+            if (it.sub?.length) {
+              const r = e.currentTarget.getBoundingClientRect();
+              setSub({ items: it.sub, left: r.right - 4, top: r.top - 5, key: it.label });
+            } else setSub(null);
+          }}
           onClick={() => {
             props.onClose();
             it.onSelect();
@@ -292,8 +313,24 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
           <span className="tick">{it.checked ? '✓' : ''}</span>
           {it.label}
           {it.hint && <span className="hint">{it.hint}</span>}
+          {it.sub?.length ? <span className="hint">›</span> : null}
         </button>,
       ])}
+      {sub && (
+        <div ref={subRef} className="menu context sub" role="menu" style={{ left: sub.left, top: sub.top }}>
+          {sub.items.map((it) => (
+            <button key={it.label} type="button" role="menuitem" disabled={it.disabled} className={`menu-item${it.danger ? ' danger' : ''}`}
+              onClick={() => {
+                props.onClose();
+                it.onSelect();
+              }}>
+              <span className="tick">{it.checked ? '✓' : ''}</span>
+              {it.label}
+              {it.hint && <span className="hint">{it.hint}</span>}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

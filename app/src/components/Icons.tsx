@@ -324,3 +324,23 @@ export const ExpandIcon = ({ size = 16 }: P) => (
     <path d="M4 20l7-7" />
   </svg>
 );
+/** Sidebar folds into icons / opens again. */
+export const RailIcon = ({ size = 16, open = false }: P & { open?: boolean }) => (
+  <svg {...base(size)}>
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <path d="M9 4v16" />
+    <path d={open ? 'M13 10l2 2-2 2' : 'M16 10l-2 2 2 2'} />
+  </svg>
+);
+export const NoteIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M5 4h10l4 4v12H5z" />
+    <path d="M9 12h6M9 16h4" />
+  </svg>
+);
+export const SortIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M4 6h10M4 12h7M4 18h4" />
+    <path d="M17 5v14M14 16l3 3 3-3" />
+  </svg>
+);
