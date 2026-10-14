@@ -32,6 +32,11 @@ mod storage;
 mod videotool;
 mod winshell;
 mod windowstate;
+// "Why is this here?" for search results, and the slot machine's data.
+mod explain;
+mod slots;
+#[cfg(test)]
+mod folder_order_tests;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -1874,6 +1879,9 @@ pub fn run() {
             duel_ratings,
             duel_result,
             duel_restore,
+            // why is this here? (explain.rs) and the slot machine (slots.rs)
+            explain::explain_match,
+            slots::slot_machine_data,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

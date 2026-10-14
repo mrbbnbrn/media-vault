@@ -114,13 +114,9 @@ pub struct Hit {
     pub score: f32,
 }
 
-/// The items closest in meaning to `query`, best first, optionally only
-/// inside a folder (with its subfolders). Weak matches are left out, keeping
-/// at least a few results so a search never looks broken.
-pub fn search(conn: &Connection, query: &[f32], folder: Option<i64>, limit: usize) -> R<Vec<Hit>> {
-    let Some(q) = normalized(query) else {
-        return Err("Smart search couldn't understand those words.".into());
-    };
+/// How close each analysed (not deleted) item is to the query, best first.
+/// `q` must be normalized. Shared with "Why is this here?" (explain.rs).
+pub fn score_all(conn: &Connection, q: &[f32]) -> R<Vec<(i64, f32)>> {
     let mut scored: Vec<(i64, f32)> = conn
         .prepare("SELECT c.media_id, c.vec FROM clip c JOIN media m ON m.id = c.media_id WHERE m.deleted_at IS NULL")
         .map_err(e)?
@@ -131,18 +127,36 @@ pub fn search(conn: &Connection, query: &[f32], folder: Option<i64>, limit: usiz
             let v = from_blob(&b);
             let best = v
                 .chunks(DIM)
-                .map(|c| c.iter().zip(&q).map(|(a, b)| a * b).sum::<f32>())
+                .map(|c| c.iter().zip(q).map(|(a, b)| a * b).sum::<f32>())
                 .fold(f32::MIN, f32::max);
             (id, best)
         })
         .collect();
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+    Ok(scored)
+}
+
+/// CLIP scores sit close together; results keep what is near the best match.
+pub const CUT_BELOW_BEST: f32 = 0.05;
+/// ...but always at least this many results, so a search never looks broken.
+pub const MIN_RESULTS: usize = 8;
+
+/// The query as a unit vector, or the error smart search shows.
+pub fn query_vector(query: &[f32]) -> R<Vec<f32>> {
+    normalized(query).ok_or_else(|| "Smart search couldn't understand those words.".into())
+}
+
+/// The items closest in meaning to `query`, best first, optionally only
+/// inside a folder (with its subfolders). Weak matches are left out, keeping
+/// at least a few results so a search never looks broken.
+pub fn search(conn: &Connection, query: &[f32], folder: Option<i64>, limit: usize) -> R<Vec<Hit>> {
+    let q = query_vector(query)?;
+    let scored = score_all(conn, &q)?;
     if scored.is_empty() {
         return Ok(Vec::new());
     }
-    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-    // CLIP scores sit close together; keep what is near the best match.
     let best = scored[0].1;
-    let cut = best - 0.05;
+    let cut = best - CUT_BELOW_BEST;
     let items = library::query_items(
         conn,
         &library::ItemFilter { folder: folder.map(Some), recursive: folder.is_some(), ..Default::default() },
@@ -150,7 +164,7 @@ pub fn search(conn: &Connection, query: &[f32], folder: Option<i64>, limit: usiz
     let by_id: std::collections::HashMap<i64, Item> = items.into_iter().map(|i| (i.id, i)).collect();
     let mut out = Vec::new();
     for (id, score) in scored {
-        if out.len() >= limit || (score < cut && out.len() >= 8) {
+        if out.len() >= limit || (score < cut && out.len() >= MIN_RESULTS) {
             break;
         }
         if let Some(item) = by_id.get(&id) {

@@ -130,10 +130,15 @@ pub struct FolderCard {
     pub samples: Vec<i64>,
     /// Your note.
     pub note: Option<String>,
+    /// When the folder was made (seconds).
+    pub created_at: i64,
+    /// Size of everything inside, subfolders included (bytes).
+    pub bytes: i64,
 }
 
 struct FolderRow {
     note: Option<String>,
+    created_at: i64,
     id: i64,
     parent: Option<i64>,
     name: String,
@@ -149,7 +154,7 @@ struct FolderRow {
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
         .prepare(
-            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note FROM folders f \
+            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note, f.created_at FROM folders f \
              LEFT JOIN media m ON m.id = f.cover_media_id AND m.deleted_at IS NULL \
              WHERE f.deleted_at IS NULL ORDER BY f.sort_order, f.name COLLATE NOCASE",
         )
@@ -165,6 +170,7 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 emoji: r.get(6)?,
                 person: r.get::<_, i64>(7)? != 0,
                 note: r.get(8)?,
+                created_at: r.get(9)?,
             })
         })
         .map_err(e)?
@@ -172,13 +178,14 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         .map_err(e)?;
 
     let mut direct: HashMap<i64, i64> = HashMap::new();
+    let mut direct_bytes: HashMap<i64, i64> = HashMap::new();
     let mut first_thumb: HashMap<i64, i64> = HashMap::new();
     {
         let mut st = conn
             .prepare(
                 "SELECT folder_id, COUNT(*), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' \
-                 AND kind = 'image' THEN id END), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' THEN id END) \
-                 FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL GROUP BY folder_id",
+                 AND kind = 'image' THEN id END), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' THEN id END), \
+                 IFNULL(SUM(size), 0) FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL GROUP BY folder_id",
             )
             .map_err(e)?;
         let it = st
@@ -188,12 +195,14 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                     r.get::<_, i64>(1)?,
                     r.get::<_, Option<i64>>(2)?,
                     r.get::<_, Option<i64>>(3)?,
+                    r.get::<_, i64>(4)?,
                 ))
             })
             .map_err(e)?;
         for row in it {
-            let (f, n, img, any) = row.map_err(e)?;
+            let (f, n, img, any, bytes) = row.map_err(e)?;
             direct.insert(f, n);
+            direct_bytes.insert(f, bytes);
             if let Some(t) = img.or(any) {
                 first_thumb.insert(f, t);
             }
@@ -268,9 +277,11 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     }
 
     let mut total: HashMap<i64, i64> = HashMap::new();
+    let mut total_bytes: HashMap<i64, i64> = HashMap::new();
     let mut cover_below: HashMap<i64, i64> = HashMap::new();
     for (id, _) in order.iter().rev() {
         let mut t = *direct.get(id).unwrap_or(&0);
+        let mut b = *direct_bytes.get(id).unwrap_or(&0);
         let mut cov = first_thumb.get(id).copied();
         for k in children
             .get(&Some(*id))
@@ -278,11 +289,13 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             .unwrap_or(&[])
         {
             t += total.get(k).copied().unwrap_or(0);
+            b += total_bytes.get(k).copied().unwrap_or(0);
             if cov.is_none() {
                 cov = cover_below.get(k).copied();
             }
         }
         total.insert(*id, t);
+        total_bytes.insert(*id, b);
         if let Some(c) = cov {
             cover_below.insert(*id, c);
         }
@@ -332,6 +345,8 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 person: r.person,
                 samples: samples.remove(&id).unwrap_or_default(),
                 note: r.note.clone(),
+                created_at: r.created_at,
+                bytes: total_bytes.get(&id).copied().unwrap_or(0),
             }
         })
         .collect())
@@ -566,13 +581,21 @@ pub fn query_items(conn: &Connection, f: &ItemFilter) -> R<Vec<Item>> {
         .filter(|n| !n.is_empty())
         .collect();
     if !names.is_empty() {
-        items.retain(|i| {
-            // Your notes count as part of the name for searching.
-            let n = fold(&format!("{} {}", i.name, i.note.as_deref().unwrap_or("")));
-            names.iter().all(|q| n.contains(q.as_str()))
-        });
+        items.retain(|i| names_match(i, &names));
     }
     Ok(items)
+}
+
+/// What a name search looks in: the file name and your note (folded).
+/// Shared with "Why is this here?" (explain.rs) so the two can't drift apart.
+pub fn name_haystack(i: &Item) -> String {
+    fold(&format!("{} {}", i.name, i.note.as_deref().unwrap_or("")))
+}
+
+/// Does the item match every (already folded, non-empty) searched word?
+pub fn names_match(i: &Item, folded: &[String]) -> bool {
+    let n = name_haystack(i);
+    folded.iter().all(|q| n.contains(q.as_str()))
 }
 
 /// Lower-case for searching: "İ", "I", "ı" and "i" all match each other.
@@ -635,9 +658,17 @@ pub fn create_folder(conn: &Connection, parent: Option<i64>, name: &str) -> R<i6
     if find_child(conn, parent, &name)?.is_some() {
         return Err(format!("There is already a folder called “{name}” here."));
     }
+    // New folders go to the end of their level (in your own order).
+    let last: i64 = conn
+        .query_row(
+            "SELECT IFNULL(MAX(sort_order), 0) FROM folders WHERE IFNULL(parent_id, 0) = IFNULL(?1, 0) AND deleted_at IS NULL",
+            params![parent],
+            |r| r.get(0),
+        )
+        .map_err(e)?;
     conn.execute(
-        "INSERT INTO folders(parent_id, name, created_at) VALUES (?1, ?2, ?3)",
-        params![parent, name, now_secs()],
+        "INSERT INTO folders(parent_id, name, created_at, sort_order) VALUES (?1, ?2, ?3, ?4)",
+        params![parent, name, now_secs(), last + 1],
     )
     .map_err(e)?;
     Ok(conn.last_insert_rowid())

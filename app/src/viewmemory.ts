@@ -3,6 +3,7 @@
 // and items per row, plus where you left off.
 
 import { api, type Kind } from './api';
+import type { FolderSort } from './foldersort';
 import type { Order } from './playlist';
 import type { LibView } from './screens/Library';
 
@@ -55,6 +56,8 @@ export interface ViewPrefs {
   cols?: number;
   /** Scroll mode: one long column of full-width pictures. */
   scroll?: boolean;
+  /** How the folder cards here are sorted (default: like the sidebar). */
+  folderSort?: FolderSort;
 }
 
 let prefs: Record<string, ViewPrefs> = {};

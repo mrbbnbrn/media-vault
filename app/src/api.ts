@@ -4,6 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import { demoCall, demoOn, NOT_DEMO } from './mockdemo';
 
 export interface LockSettings {
   idleMinutes: number;
@@ -308,6 +309,10 @@ export interface FolderCard {
   /** Up to three pictures from inside (stacked cards). */
   samples: number[];
   note: string | null;
+  /** When the folder was made (seconds). */
+  createdAt: number;
+  /** Size of everything inside, subfolders included (bytes). */
+  bytes: number;
 }
 
 export interface FolderView {
@@ -683,7 +688,36 @@ export const api = {
   duelResult: (winner: number, loser: number) => call<DuelOutcome>('duel_result', { winner, loser }),
   /** Undo: put items back as they were (`before` of a DuelOutcome). */
   duelRestore: (states: DuelState[]) => call<void>('duel_restore', { states }),
+
+  // "Why is this here?" (explain.rs): the search's own rules, item by item.
+  // `smart` is the smart-search query vector (searched in `smartFolder`).
+  explainMatch: (id: number, filter: ItemFilter, smart?: number[] | null, smartFolder?: number | null) =>
+    call<Explanation>('explain_match', { id, filter, smart: smart ?? null, smartFolder: smartFolder ?? null }),
+  // the slot machine (slots.rs): pictures of a folder and its subfolders, with people and tag groups
+  slotData: (folder: number | null) => call<SlotData>('slot_machine_data', { folder }),
 };
+
+// ---- why is this here? / slot machine ----------------------------------------------
+
+/** Character ranges [start, end) in the original text (count with Array.from). */
+export type Ranges = [number, number][];
+
+export interface Explanation {
+  item: Item;
+  /** Passes every rule of the search (the same answer the search gives). */
+  matched: boolean;
+  folderPath: string[];
+  names: { word: string; found: boolean; inName: Ranges; inNote: Ranges; inFolderPath: boolean }[];
+  tags: { tag: string; found: boolean; own: boolean; fromFolders: string[] }[];
+  people: { id: number; name: string; found: boolean; inFolder: boolean; faces: number }[];
+  filters: { filter: 'kind' | 'favourites' | 'recent' | 'folder' | 'trash'; passed: boolean; wants: string; has: string }[];
+  smart: { score: number | null; best: number; cut: number; minResults: number; rank: number | null; kept: boolean } | null;
+}
+
+export interface SlotData {
+  items: Item[];
+  groups: { kind: 'person' | 'tag'; key: string; label: string; items: number[] }[];
+}
 
 // ---- duel mode -----------------------------------------------------------------
 
@@ -866,6 +900,11 @@ const mock = {
   pickFolder: async () => 'D:\\Vaults',
   async call(cmd: string, a: Record<string, unknown>): Promise<unknown> {
     await new Promise((r) => setTimeout(r, cmd.startsWith('unlock') || cmd === 'create_vault' ? 600 : 50));
+    // Preview with sample folders, people and tags: open the page with ?demo.
+    if (demoOn()) {
+      const d = demoCall(cmd, a);
+      if (d !== NOT_DEMO) return d;
+    }
     const s = this.state;
     const session = (path: string, needsNewPassword = false): SessionInfo => ({
       path,
