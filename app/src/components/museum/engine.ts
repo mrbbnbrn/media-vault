@@ -109,7 +109,7 @@ function cover(t: THREE.Texture, iw: number, ih: number, w: number, h: number) {
 }
 
 export class MuseumEngine {
-  private renderer: THREE.WebGLRenderer;
+  private canvas: HTMLCanvasElement;
   private scene = new THREE.Scene();
   private camera: THREE.PerspectiveCamera;
   private composer: EffectComposer | null = null;
@@ -143,8 +143,21 @@ export class MuseumEngine {
   /** Frames rendered, for tests and the preview's fps readout. */
   frames = 0;
 
+  /** One renderer per canvas, shared by the wings shown on it (shaders compile once). */
+  static createRenderer(canvas: HTMLCanvasElement, quality: Quality): THREE.WebGLRenderer {
+    const high = quality === 'high';
+    // High quality smooths edges in the glow pass (multisampled target) instead.
+    const r = new THREE.WebGLRenderer({ canvas, antialias: !high, powerPreference: 'high-performance', stencil: false });
+    r.setPixelRatio(Math.min(window.devicePixelRatio || 1, high ? 1.5 : 1));
+    r.outputColorSpace = THREE.SRGBColorSpace;
+    r.toneMapping = THREE.ACESFilmicToneMapping;
+    r.toneMappingExposure = 0.9;
+    r.info.autoReset = false;
+    return r;
+  }
+
   constructor(
-    private canvas: HTMLCanvasElement,
+    private renderer: THREE.WebGLRenderer,
     readonly layout: WingLayout,
     private quality: Quality,
     private sources: Sources,
@@ -152,17 +165,12 @@ export class MuseumEngine {
     private events: EngineEvents,
   ) {
     this.pose = { ...start };
+    this.canvas = renderer.domElement;
     const high = quality === 'high';
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: !high, powerPreference: 'high-performance', stencil: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, high ? 1.5 : 1));
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 0.9;
-    this.renderer.info.autoReset = false;
     this.anisotropy = Math.min(8, this.renderer.capabilities.getMaxAnisotropy());
     this.maxFull = high ? 2048 : 1280;
-    const w = canvas.clientWidth || 800;
-    const h = canvas.clientHeight || 600;
+    const w = this.canvas.clientWidth || 800;
+    const h = this.canvas.clientHeight || 600;
     this.renderer.setSize(w, h, false);
     this.camera = new THREE.PerspectiveCamera(68, w / h, 0.05, 75);
     this.camera.rotation.order = 'YXZ';
@@ -199,7 +207,7 @@ export class MuseumEngine {
     }
 
     this.resizeObs = new ResizeObserver(() => this.resize());
-    this.resizeObs.observe(canvas);
+    this.resizeObs.observe(this.canvas);
     this.applyPose();
     this.stream(true);
     this.updateLights(true);
@@ -247,6 +255,7 @@ export class MuseumEngine {
     else if (hit?.kind === 'door') this.events.onDoor(hit.door);
   }
 
+  /** Frees this wing's GPU resources (the renderer belongs to the caller). */
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.raf);
@@ -260,8 +269,7 @@ export class MuseumEngine {
     for (const d of this.disposables) d.dispose();
     this.composer?.dispose();
     this.mirror?.dispose();
-    this.renderer.dispose();
-    this.renderer.forceContextLoss();
+    this.renderer.setRenderTarget(null);
   }
 
   // ---- materials -----------------------------------------------------------------------
@@ -706,7 +714,7 @@ export class MuseumEngine {
     // Plaque below (on the panelling).
     const py = Math.max(0.78, f.z - f.h / 2 - f.border - 0.2);
     const pa = c.clone().setY(py).addScaledVector(n, 0.035);
-    const plw = f.featured ? 0.5 : 0.36;
+    const plw = f.featured ? 0.6 : 0.46;
     const plh = plw * 0.3125;
     put(f.hall, 'plaque', this.wallBox({ x: pa.x - n.x * 0.015, y: pa.z - n.z * 0.015 }, { x: right.x, y: right.z }, plw + 0.03, 0.02, py - plh / 2 - 0.015, py + plh / 2 + 0.015, 0.3));
 
@@ -1153,7 +1161,7 @@ export class MuseumEngine {
     const t = new THREE.CanvasTexture(tex.plaque(name, detail));
     t.colorSpace = THREE.SRGBColorSpace;
     t.anisotropy = this.anisotropy;
-    const plw = s.frame.featured ? 0.5 : 0.36;
+    const plw = s.frame.featured ? 0.6 : 0.46;
     const g = quad(s.plaqueAt, s.right, s.normal, plw, plw * 0.3125);
     const m = new THREE.MeshStandardMaterial({ map: t, metalness: 0.55, roughness: 0.32, envMapIntensity: 1.2, emissive: new THREE.Color('#ffffff'), emissiveMap: t, emissiveIntensity: 0.12 });
     s.plaque = new THREE.Mesh(g, m);

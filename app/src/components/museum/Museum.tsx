@@ -6,6 +6,7 @@
 // the mouse; Esc again (or "Leave museum") leaves.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { WebGLRenderer } from 'three';
 import { MuseumEngine, type Aim, type Pose, type Quality, type Sources } from './engine';
 import { hallAt, layoutWing, planWings, roman, wingContent, type Door, type Frame, type MuseumItem, type WingLayout } from './layout';
 import './museum.css';
@@ -57,6 +58,8 @@ export default function Museum(props: MuseumProps) {
   const mapRef = useRef<HTMLCanvasElement>(null);
   const engine = useRef<MuseumEngine | null>(null);
   const startPose = useRef<Pose>(props.resume?.pose ?? { ...layout.spawn, pitch: 0 });
+  /** Where to stand in the next wing (wins over the pose saved when the old wing closes). */
+  const nextPose = useRef<Pose | null>(null);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState<string | null>(null);
   const [locked, setLocked] = useState(false);
@@ -68,6 +71,17 @@ export default function Museum(props: MuseumProps) {
   const [fading, setFading] = useState(false);
   const [showMap, setShowMap] = useState(true);
   const lockedRef = useRef(false);
+  const everLocked = useRef(false);
+  /** Set while walking through a door: the next wing reuses the canvas (and keeps the mouse captured). */
+  const keepContext = useRef(false);
+  const renderer = useRef<WebGLRenderer | null>(null);
+  const dropRenderer = () => {
+    const r = renderer.current;
+    if (!r) return;
+    r.dispose();
+    r.forceContextLoss();
+    renderer.current = null;
+  };
   const props_ = useRef(props);
   props_.current = props;
 
@@ -80,7 +94,13 @@ export default function Museum(props: MuseumProps) {
     // Let the "Polishing the marble…" card paint before the (synchronous) build.
     const t = setTimeout(() => {
       try {
-        eng = new MuseumEngine(canvas, layout, quality, props_.current.sources, startPose.current, {
+        const start = nextPose.current ?? startPose.current;
+        nextPose.current = null;
+        if (renderer.current?.domElement !== canvas) {
+          dropRenderer();
+          renderer.current = MuseumEngine.createRenderer(canvas, quality);
+        }
+        eng = new MuseumEngine(renderer.current, layout, quality, props_.current.sources, start, {
           onAim: setAim,
           onOpen: (f: Frame) => open(f),
           onDoor: (d: Door) => throughDoor(d),
@@ -116,6 +136,9 @@ export default function Museum(props: MuseumProps) {
         startPose.current = eng.getPose();
         eng.dispose();
       }
+      // Walking into the next wing keeps the canvas, its renderer and the captured mouse.
+      if (!keepContext.current) dropRenderer();
+      keepContext.current = false;
       if (engine.current === eng) engine.current = null;
     };
   }, [layout, quality]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -135,8 +158,8 @@ export default function Museum(props: MuseumProps) {
       const c = wingContent(plan, next);
       const l = layoutWing(c.gallery, { featured: c.featured, hasPrev: next > 0, hasNext: next < plan.wings.length - 1, wing: next });
       const s = d.kind === 'next' ? l.spawn : l.spawnBack;
-      startPose.current = { x: s.x, y: s.y, yaw: s.yaw, pitch: 0 };
-      engine.current?.clearKeys();
+      nextPose.current = { x: s.x, y: s.y, yaw: s.yaw, pitch: 0 };
+      keepContext.current = true;
       setWing(next);
     }, 350);
   };
@@ -146,6 +169,7 @@ export default function Museum(props: MuseumProps) {
     const onChange = () => {
       const on = document.pointerLockElement === canvasRef.current;
       lockedRef.current = on;
+      if (on) everLocked.current = true;
       setLocked(on);
       if (!on) engine.current?.clearKeys();
     };
@@ -165,6 +189,7 @@ export default function Museum(props: MuseumProps) {
     const c = canvasRef.current;
     if (!c) return;
     setEntered(true);
+    if (!c.requestPointerLock) return setDragMode(true);
     try {
       // unadjustedMovement isn't everywhere; fall back to the plain call.
       try {
@@ -173,7 +198,9 @@ export default function Museum(props: MuseumProps) {
         await (c.requestPointerLock as () => Promise<void> | void)();
       }
     } catch {
-      setDragMode(true);
+      // Right after Esc the browser refuses for a moment; only give up on capturing
+      // the mouse (and drag to look instead) if it never worked.
+      if (!everLocked.current) setDragMode(true);
     }
   };
 
@@ -282,7 +309,8 @@ export default function Museum(props: MuseumProps) {
 
   return (
     <div className="museum" role="application" aria-label={`Museum of ${props.title}`}>
-      <canvas ref={canvasRef} className={`museum-canvas${locked ? ' locked' : ''}`}
+      {/* A fresh canvas for each quality: a WebGL context can't be reused once it is let go. */}
+      <canvas key={quality} ref={canvasRef} className={`museum-canvas${locked ? ' locked' : ''}`}
         onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} />
 
       <div className={`museum-fade${fading || !ready ? ' on' : ''}`} />

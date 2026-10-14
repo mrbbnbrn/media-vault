@@ -648,7 +648,7 @@ export function plaque(name: string, detail: string, w = 512, h = 160): HTMLCanv
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   const maxW = w - 110;
-  const s = fitText(ctx, name, maxW, 54, '700');
+  const s = fitText(ctx, name, maxW, 62, '700');
   ctx.font = `700 ${s}px ${SERIF}`;
   const nm = ellipsize(ctx, name, maxW);
   const y1 = detail ? h * 0.42 : h / 2;
@@ -658,7 +658,7 @@ export function plaque(name: string, detail: string, w = 512, h = 160): HTMLCanv
   ctx.fillStyle = '#3a2508';
   ctx.fillText(nm, w / 2, y1);
   if (detail) {
-    ctx.font = `italic 500 30px ${SERIF}`;
+    ctx.font = `italic 600 34px ${SERIF}`;
     const d = ellipsize(ctx, detail, maxW);
     ctx.fillStyle = 'rgba(255,240,200,0.6)';
     ctx.fillText(d, w / 2, h * 0.73 + 1.5);
