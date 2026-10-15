@@ -43,6 +43,7 @@ export function Viewer(props: {
   onShowFolder?: (item: PlayItem) => void;
   /** Everything of a person (their person folder id), from a face box. */
   onShowPerson?: (folderId: number) => void;
+  onOpenPerson?: (folderId: number) => void;
   /** Shown as the small mini player over the library. */
   mini?: boolean;
   /** Shrink into the mini player (button and M). */
@@ -224,6 +225,7 @@ export function Viewer(props: {
         mini={mini ? { onExpand: () => props.onExpand?.(), onClose: () => props.onCloseMini?.() } : undefined}
         onMinimize={props.onMinimize && vault ? minimize : undefined}
         onShowPerson={props.onShowPerson}
+        onOpenPerson={props.onOpenPerson}
         person={props.person}
         onCurrent={(it) => { current.current = it; }}
         onClose={() => (clean ? toggleClean() : back())}

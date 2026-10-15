@@ -26,7 +26,7 @@ import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
 import { beatFilled, clockFrac, gifSegments, newClock, remainingWait, videoFrac, type RingInfo } from '../slidering';
 import { SlideRing } from './SlideRing';
 import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
-import { ContextMenu, Dropdown } from './Dialogs';
+import { ConfirmDialog, ContextMenu, Dropdown } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
@@ -98,6 +98,8 @@ export interface PlayerProps {
   hold?: boolean;
   /** A known face was clicked: show everything of that person (folder id). */
   onShowPerson?: (folderId: number) => void;
+  /** Opens a person in a new tab behind this one (middle-click on a face). */
+  onOpenPerson?: (folderId: number) => void;
   /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
   person?: number | null;
   ref?: Ref<PlayerHandle>;
@@ -154,6 +156,9 @@ export function Player(props: PlayerProps) {
   // While you're saying who a face is, the shown faces stay.
   const [faceAsking, setFaceAsking] = useState(false);
   const [faceReload, setFaceReload] = useState(0);
+  // "Show 'not important' faces too" (to fix one marked by mistake).
+  const [hiddenFaces, setHiddenFaces] = useState(false);
+  const [resetAsk, setResetAsk] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const panMoved = useRef(false);
   const kbRef = useRef<HTMLDivElement>(null);
@@ -690,11 +695,11 @@ export function Player(props: PlayerProps) {
   useEffect(() => {
     if (!showFaces || item?.itemId == null) return;
     let alive = true;
-    api.facesOf(item.itemId).then((f) => alive && setFaces(f)).catch(() => {});
+    api.facesOf(item.itemId, hiddenFaces).then((f) => alive && setFaces(f)).catch(() => {});
     return () => {
       alive = false;
     };
-  }, [showFaces, item?.key, faceReload]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [showFaces, item?.key, faceReload, hiddenFaces]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!faceFlash || faceAsking) return;
     const t = setTimeout(() => setFaceFlash(false), 3000);
@@ -704,7 +709,7 @@ export function Player(props: PlayerProps) {
   const flashFaces = async () => {
     if (item?.itemId == null) return;
     const id = item.itemId;
-    const list = await api.facesOf(id).catch(() => [] as FaceBox[]);
+    const list = await api.facesOf(id, hiddenFaces).catch(() => [] as FaceBox[]);
     if (listRef.current?.current()?.itemId !== id) return;
     setFaces(list);
     if (list.length) {
@@ -712,22 +717,27 @@ export function Player(props: PlayerProps) {
       setFaceReload((n) => n + 1);
     } else setFlash(`No faces found in this ${what}`);
   };
-  const scanFaces = async () => {
+  /** Looks for faces again; `reset` first forgets every face (names, "not
+   *  important") in this item so they can all be marked again. */
+  const scanFaces = async (reset = false) => {
     if (item?.itemId == null) return;
     const id = item.itemId;
     const token = ++scanToken.current;
     try {
-      await api.facesQueue({ ids: [id], again: true });
+      if (reset) {
+        await api.facesReset([id]);
+        setFaces([]);
+      } else await api.facesQueue({ ids: [id], again: true });
       kickFaceScanner();
     } catch (e) {
       setFlash(`Couldn't look for faces: ${e instanceof Error ? e.message : String(e)}`);
       return;
     }
-    setFlash(`Looking for faces in this ${what}…`);
+    setFlash(reset ? `Faces forgotten · looking again in this ${what}…` : `Looking for faces in this ${what}…`);
     for (let i = 0; i < 10; i++) {
       await new Promise((r) => setTimeout(r, 1500));
       if (token !== scanToken.current) return; // moved on to another item
-      const list = await api.facesOf(id).catch(() => [] as FaceBox[]);
+      const list = await api.facesOf(id, hiddenFaces).catch(() => [] as FaceBox[]);
       if (token !== scanToken.current) return;
       if (list.length) {
         setFaces(list);
@@ -740,6 +750,16 @@ export function Player(props: PlayerProps) {
     if (token === scanToken.current) setFlash(`No faces found in this ${what}`);
   };
   const shownFaces = showFaces ? facesAt(faces, isVideo, time.at).map((f) => turnBox(f, rot)) : [];
+  const toggleHiddenFaces = () => {
+    const on = !hiddenFaces;
+    setHiddenFaces(on);
+    setFlash(on ? "Showing 'not important' faces too" : "'Not important' faces hidden");
+    if (on && !prefs.faceBoxes) {
+      setFaceFlash(true);
+      setFaceReload((n) => n + 1);
+    }
+  };
+  const faceTools = { showHidden: hiddenFaces, setShowHidden: () => toggleHiddenFaces(), reset: () => setResetAsk(true) };
 
   // The offline AI upscaler (still pictures in the vault, full viewer only).
   const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
@@ -1189,7 +1209,7 @@ export function Player(props: PlayerProps) {
             )}
             {up.src && up.compare && <UpscaleCompare layer={upLayer} drawn={drawn} label={up.label} keys={!!props.keys} />}
             {drawn && shownFaces.length > 0 && (
-              <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson}
+              <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson} onOpenPerson={props.onOpenPerson} tools={faceTools}
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />
             )}
           </div>
@@ -1227,9 +1247,22 @@ export function Player(props: PlayerProps) {
           ...(faceCapable ? [
             { label: 'Show faces', hint: 'for a moment', sepBefore: true, onSelect: () => { setMenu(null); flashFaces(); } },
             { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
+            { label: "Show 'not important' faces too", checked: hiddenFaces, onSelect: () => { setMenu(null); toggleHiddenFaces(); } },
+            { label: 'Reset faces and scan again…', hint: 'mark them again', onSelect: () => { setMenu(null); setResetAsk(true); } },
             { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
           ] : []),
         ]} />
+      )}
+      {resetAsk && (
+        <ConfirmDialog title="Reset faces and scan again?" confirm="Reset and scan" danger
+          onClose={() => setResetAsk(false)}
+          onConfirm={() => {
+            setResetAsk(false);
+            scanFaces(true);
+          }}>
+          Every face found in this {what} is forgotten — who they are, “not important”, “this isn't…” — and the {what} is
+          scanned again, so you can mark them all again. Other pictures and the person folders don't change.
+        </ConfirmDialog>
       )}
       {miniControls}
 

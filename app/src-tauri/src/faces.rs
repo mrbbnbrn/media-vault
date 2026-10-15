@@ -1220,18 +1220,61 @@ pub struct FaceBox {
     pub person: Option<i64>,
     /// Named automatically (not by you).
     pub auto: bool,
+    /// Marked "not important" (only listed when asked for).
+    pub hidden: bool,
 }
 
 /// Faces found in one item (for "which one is them?").
 pub fn faces_of(conn: &Connection, media: i64) -> R<Vec<FaceBox>> {
-    conn.prepare("SELECT id, frame_ms, x, y, w, h, person_id, auto FROM faces WHERE media_id = ? AND hidden = 0 ORDER BY x")
+    faces_of_with(conn, media, false)
+}
+
+/// Faces of one item, the "not important" ones too when `hidden` is set
+/// (so one marked by mistake can be fixed).
+pub fn faces_of_with(conn: &Connection, media: i64, hidden: bool) -> R<Vec<FaceBox>> {
+    let sql = if hidden {
+        "SELECT id, frame_ms, x, y, w, h, person_id, auto, hidden FROM faces WHERE media_id = ? ORDER BY x"
+    } else {
+        "SELECT id, frame_ms, x, y, w, h, person_id, auto, hidden FROM faces WHERE media_id = ? AND hidden = 0 ORDER BY x"
+    };
+    conn.prepare(sql)
         .map_err(e)?
         .query_map([media], |r| {
-            Ok(FaceBox { id: r.get(0)?, frame_ms: r.get(1)?, x: r.get(2)?, y: r.get(3)?, w: r.get(4)?, h: r.get(5)?, person: r.get(6)?, auto: r.get::<_, i64>(7)? != 0 })
+            Ok(FaceBox {
+                id: r.get(0)?,
+                frame_ms: r.get(1)?,
+                x: r.get(2)?,
+                y: r.get(3)?,
+                w: r.get(4)?,
+                h: r.get(5)?,
+                person: r.get(6)?,
+                auto: r.get::<_, i64>(7)? != 0,
+                hidden: r.get::<_, i64>(8)? != 0,
+            })
         })
         .map_err(e)?
         .collect::<rusqlite::Result<Vec<_>>>()
         .map_err(e)
+}
+
+/// "Reset and re-scan": forget every face found in these items (names,
+/// "not important", "this isn't X" answers) and scan them again from
+/// scratch. Returns how many faces were forgotten.
+pub fn reset(conn: &Connection, media: &[i64]) -> R<usize> {
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    let mut n = 0;
+    for &m in media {
+        tx.execute("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id = ?1)", [m]).map_err(e)?;
+        tx.execute(
+            "DELETE FROM face_not_same WHERE a IN (SELECT id FROM faces WHERE media_id = ?1) OR b IN (SELECT id FROM faces WHERE media_id = ?1)",
+            [m],
+        )
+        .map_err(e)?;
+        n += tx.execute("DELETE FROM faces WHERE media_id = ?", [m]).map_err(e)?;
+        tx.execute("UPDATE media SET faces_state = 2 WHERE id = ? AND kind IN ('image', 'gif', 'video')", [m]).map_err(e)?;
+    }
+    tx.commit().map_err(e)?;
+    Ok(n)
 }
 
 /// Faces of many items at once (for face boxes on the grid), by item.
@@ -1512,6 +1555,36 @@ mod tests {
         assert_eq!(r.hidden.len(), 1);
         hide(&l.conn(), &r.hidden[0].face_ids, false).unwrap();
         assert_eq!(review(&l, &ReviewRequest::default()).unwrap().unknown.len(), 1);
+    }
+
+    #[test]
+    fn reset_forgets_every_face_and_scans_again() {
+        let l = lib(db::create_empty().unwrap());
+        let c = l.conn();
+        let p = library::create_folder(&c, None, "P").unwrap();
+        set_person(&c, p, true).unwrap();
+        let m = add(&c, None);
+        queue(&c, &ScanRequest { ids: vec![m], folder: None, all: false, again: false }).unwrap();
+        let mut left = face(0.0, 0.0);
+        left.x = 0.1;
+        let mut right = face(2.0, 0.0);
+        right.x = 0.6;
+        save(&c, m, &[left.clone(), right.clone()], FACEAPI).unwrap();
+        let f = faces_of(&c, m).unwrap();
+        accept(&c, &[f[0].id], p).unwrap();
+        hide(&c, &[f[1].id], true).unwrap();
+        assert_eq!(faces_of(&c, m).unwrap().len(), 1);
+        let all = faces_of_with(&c, m, true).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(all.iter().any(|x| x.hidden));
+        assert_eq!(reset(&c, &[m]).unwrap(), 2);
+        assert!(faces_of_with(&c, m, true).unwrap().is_empty());
+        assert_eq!(needed(&c, 10).unwrap().len(), 1, "queued again");
+        // Found again: nobody is named or hidden any more.
+        save(&c, m, &[left, right], FACEAPI).unwrap();
+        let again = faces_of_with(&c, m, true).unwrap();
+        assert_eq!(again.len(), 2);
+        assert!(again.iter().all(|x| x.person.is_none() && !x.hidden));
     }
 
     #[test]

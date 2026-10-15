@@ -224,6 +224,8 @@ export interface FaceBox {
   person: number | null;
   /** Named automatically (not by you). */
   auto?: boolean;
+  /** Marked "not important" (only listed when asked for). */
+  hidden?: boolean;
 }
 
 export interface Suggestion {
@@ -834,7 +836,10 @@ export const api = {
   facesReject: (faceIds: number[], person: number) => call<void>('faces_reject', { faceIds, person }),
   facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>
     call<{ folder: number; accepted: { moved: number; tagged: number } }>('faces_new_person', { name, parent, faceIds }),
-  facesOf: (media: number) => call<FaceBox[]>('faces_of', { media }),
+  /** `hidden`: the "not important" faces too (marked with `hidden`). */
+  facesOf: (media: number, hidden = false) => call<FaceBox[]>('faces_of', { media, hidden }),
+  /** "Reset and re-scan": forget every face in these items and look again. */
+  facesReset: (media: number[]) => call<number>('faces_reset', { media }),
   facesOfMany: (media: number[]) => call<[number, FaceBox[]][]>('faces_of_many', { media }),
   setResume: (id: number, ms: number | null) => call<void>('set_resume', { id, ms }),
   facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),

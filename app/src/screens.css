@@ -523,6 +523,8 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 .face-box:hover { background: rgba(255, 255, 255, 0.06); }
 .face-tag { position: absolute; left: -2px; top: calc(100% + 4px); padding: 2px 8px; border-radius: 6px; background: #2EC4B6; color: #04211e; font-size: 12px; font-weight: 600; white-space: nowrap; line-height: 1.5; }
 .face-box.unknown .face-tag { background: #EF9F27; color: #2a1800; }
+.face-box.hidden-face { border: 2px dashed rgba(200, 200, 200, 0.45); opacity: 0.8; }
+.face-box.hidden-face .face-tag { background: #3a3d42; color: #c9c7c2; font-weight: 500; }
 .who-pop { position: fixed; z-index: 72; width: 250px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); color: var(--text); font-size: 13px; animation: pop-in 0.12s ease-out; }
 .who-list { display: flex; flex-direction: column; gap: 2px; max-height: 200px; overflow: auto; }
 .who-row { padding: 6px 8px; border: none; border-radius: 8px; background: transparent; color: #d6d4cf; font: inherit; text-align: left; cursor: pointer; }

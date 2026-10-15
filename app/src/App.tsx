@@ -327,6 +327,7 @@ export function App() {
               goView({ kind: 'search', tags: [], names: [], people: [person] });
               setScreen({ name: 'library' });
             } : undefined}
+            onOpenPerson={app.session ? (person) => tabs.open({ kind: 'search', tags: [], names: [], people: [person] }, true) : undefined}
             onMinimize={app.session && !viewerRoute.speedRound ? () => {
               // Keep this viewer (same object, same component) and show the library under it.
               setMini(viewerRoute);

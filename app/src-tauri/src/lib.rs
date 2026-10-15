@@ -1715,8 +1715,16 @@ async fn faces_new_person(
 }
 
 #[tauri::command]
-async fn faces_of(state: State<'_, Shared>, media: i64) -> Result<Vec<faces::FaceBox>, String> {
-    read_db(state.inner(), move |c| faces::faces_of(c, media)).await
+async fn faces_of(state: State<'_, Shared>, media: i64, hidden: Option<bool>) -> Result<Vec<faces::FaceBox>, String> {
+    read_db(state.inner(), move |c| faces::faces_of_with(c, media, hidden.unwrap_or(false))).await
+}
+
+/// "Reset and re-scan" the faces of these items (viewer right-click).
+#[tauri::command]
+async fn faces_reset(state: State<'_, Shared>, media: Vec<i64>) -> Result<usize, String> {
+    let n = edit_db(state.inner(), move |c| faces::reset(c, &media)).await?;
+    analyse::kick();
+    Ok(n)
 }
 
 #[tauri::command]
@@ -2333,6 +2341,7 @@ pub fn run() {
             faces_reject,
             faces_new_person,
             faces_of,
+            faces_reset,
             faces_unsure,
             faces_of_many,
             faces_auto,
