@@ -163,15 +163,17 @@ impl Manifest {
 /// The models the app knows about, so the ones not installed can be offered
 /// too: (id, name, model, download).
 pub const FAST: &str = "v2-small";
-pub const BALANCED: &str = "da3-base";
 pub const BEST: &str = "da3-mono-large";
-const KNOWN: [(&str, &str, &str, &str); 3] = [
+/// Models no longer offered: "Balanced" (Depth Anything 3 Base, build 42) had no sky
+/// detection, so skies and back walls came out half-near — flatter than Fast. A
+/// pack left installed is ignored (its folder can be deleted).
+pub const RETIRED: [&str; 1] = ["da3-base"];
+const KNOWN: [(&str, &str, &str, &str); 2] = [
     (FAST, "Fast", "Depth Anything V2 Small", "MediaVault-depth-windows.zip"),
-    (BALANCED, "Balanced", "Depth Anything 3 Base", "MediaVault-depth-da3-base-windows.zip"),
     (BEST, "Best", "Depth Anything 3 Mono Large", "MediaVault-depth-da3-mono-large-windows.zip"),
 ];
 /// When nothing is chosen (or the choice isn't installed): the best one there is.
-const PREFERENCE: [&str; 3] = [BEST, BALANCED, FAST];
+const PREFERENCE: [&str; 2] = [BEST, FAST];
 
 /// An installed (or half-installed) pack.
 #[derive(Debug, Clone)]
@@ -231,8 +233,8 @@ fn read_pack(dir: &Path) -> Option<Pack> {
 pub fn scan(base: Option<&Path>, any_name: bool, single: Option<&Path>, others: &[PathBuf]) -> Vec<Pack> {
     let mut packs: Vec<Pack> = Vec::new();
     let mut add = |p: Pack| {
-        // The first folder with an id wins (a copy left beside it is ignored).
-        if !packs.iter().any(|q| q.manifest.id == p.manifest.id) {
+        // The first folder with an id wins (a copy left beside it is ignored); retired models are left out.
+        if !RETIRED.contains(&p.manifest.id.as_str()) && !packs.iter().any(|q| q.manifest.id == p.manifest.id) {
             packs.push(p);
         }
     };
@@ -384,7 +386,7 @@ fn friendly(e: &str) -> String {
     e.replace("The upscaler", "3D photos").replace("the upscaler", "3D photos")
 }
 
-/// The known models (installed or not) and any other packs found, in the order Fast, Balanced, Best, others.
+/// The known models (installed or not) and any other packs found, in the order Fast, Best, others.
 pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
     let broken = BROKEN.lock().unwrap().clone();
     let entry = |p: &Pack, zip: Option<&str>| ModelEntry {
@@ -413,10 +415,10 @@ pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
                 installed: false,
                 problem: Some(format!("Not installed: get {zip} from the Releases page and unzip it next to the app.")),
                 size_bytes: 0,
-                dynamic: id != FAST,
+                dynamic: false,
                 zip: Some(zip.into()),
                 standard_side: DEFAULT_SIDE,
-                high_side: if id == FAST { DEFAULT_SIDE } else { 756 },
+                high_side: DEFAULT_SIDE,
                 licence: None,
             },
         })
@@ -682,7 +684,16 @@ fn blur_line(src: &[f32], dst: &mut [f32], w: usize, h: usize, r: usize, rows: b
 ///  - near things grown by a few pixels, so the stretching the effect needs
 ///    at their edges happens in the background, not on a face or an outline,
 ///  - softened, so edges stretch smoothly instead of tearing.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn finish(raw: &[f32], w: usize, h: usize) -> Vec<u8> {
+    finish_soft(raw, w, h, 1.0)
+}
+
+/// [`finish`] with more or less softening: 1 = as designed, smaller = sharper
+/// edges (more of a good model's detail shows, edges stretch a little more),
+/// larger = softer. Held within 0.25–2.
+pub fn finish_soft(raw: &[f32], w: usize, h: usize, soft: f32) -> Vec<u8> {
+    let soft_k = if soft.is_finite() { soft.clamp(0.25, 2.0) } else { 1.0 };
     let n = w * h;
     if n == 0 || raw.len() != n {
         return Vec::new();
@@ -699,8 +710,8 @@ pub fn finish(raw: &[f32], w: usize, h: usize) -> Vec<u8> {
     let mut b = vec![0.0f32; n];
     // Sizes relative to a 518-pixel map.
     let scale = w.max(h) as f32 / 518.0;
-    let grow = ((3.0 * scale).round() as usize).max(1);
-    let soft = ((4.0 * scale).round() as usize).max(1);
+    let grow = ((3.0 * scale * soft_k).round() as usize).max(1);
+    let soft = ((4.0 * scale * soft_k).round() as usize).max(1);
     max_line(&a, &mut b, w, h, grow, true);
     max_line(&b, &mut a, w, h, grow, false);
     for _ in 0..2 {
@@ -730,7 +741,7 @@ impl DepthMap {
 }
 
 /// One picture through the loaded model.
-fn run_once(m: &mut Loaded, rgba: &[u8], w: usize, h: usize) -> Result<DepthMap, String> {
+fn run_once(m: &mut Loaded, rgba: &[u8], w: usize, h: usize, soft: f32) -> Result<DepthMap, String> {
     let (sh, sw) = m.side;
     let input = model_input(rgba, w, h, sw, sh, &m.mean, &m.std);
     let t = ort::value::Tensor::from_array(([1usize, 3, sh, sw], input)).map_err(|e| format!("3D photos couldn't run ({e})."))?;
@@ -747,11 +758,11 @@ fn run_once(m: &mut Loaded, rgba: &[u8], w: usize, h: usize) -> Result<DepthMap,
         return Err("3D photos got something unexpected back.".into());
     }
     let data = match m.output {
-        Output::Nearness => finish(v, ow, oh),
+        Output::Nearness => finish_soft(v, ow, oh, soft),
         Output::Depth => {
             let mut near = v.to_vec();
             depth_to_nearness(&mut near);
-            finish(&near, ow, oh)
+            finish_soft(&near, ow, oh, soft)
         }
     };
     Ok(DepthMap { w: ow, h: oh, data })
@@ -767,13 +778,13 @@ fn pack_for(wanted: &str) -> Result<Pack, String> {
 }
 
 /// The depth of an RGBA picture, with the chosen model ("" = best installed) and detail.
-pub fn estimate(rgba: &[u8], w: usize, h: usize, wanted: &str, detail: Detail) -> Result<DepthMap, String> {
+pub fn estimate(rgba: &[u8], w: usize, h: usize, wanted: &str, detail: Detail, soft: f32) -> Result<DepthMap, String> {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || w.checked_mul(h).and_then(|p| p.checked_mul(4)) != Some(rgba.len()) {
         return Err("The picture didn't arrive whole.".into());
     }
     let pack = pack_for(wanted)?;
     let mut load_ms = 0.0;
-    with_model(&pack, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h))
+    with_model(&pack, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft))
 }
 
 /// The result of a speed test.
@@ -820,10 +831,10 @@ pub fn benchmark(id: &str, detail: Detail) -> Result<Benchmark, String> {
     let mut device = false;
     let ms = with_model(pack, detail, &mut load_ms, &mut |m| {
         device = m.gpu;
-        run_once(m, &picture, side, side)?;
+        run_once(m, &picture, side, side, 1.0)?;
         let start = Instant::now();
         for _ in 0..2 {
-            run_once(m, &picture, side, side)?;
+            run_once(m, &picture, side, side, 1.0)?;
         }
         Ok(start.elapsed().as_secs_f64() * 1000.0 / 2.0)
     })?;
@@ -842,6 +853,9 @@ pub struct DepthRequest {
     pub model: String,
     #[serde(default)]
     pub detail: Option<String>,
+    /// Edge softening (1 = as designed; smaller = sharper). Absent = 1.
+    #[serde(default)]
+    pub soft: Option<f32>,
 }
 
 /// Body: 4 bytes (little-endian) of JSON length, the request as JSON, then RGBA.
@@ -876,7 +890,7 @@ pub async fn depth_estimate(request: tauri::ipc::Request<'_>) -> Result<tauri::i
     let (req, rgba) = split_body(body)?;
     let rgba = Zeroizing::new(rgba.to_vec());
     let detail = Detail::from_name(req.detail.as_deref());
-    let map = tauri::async_runtime::spawn_blocking(move || estimate(&rgba, req.width, req.height, &req.model, detail)).await.map_err(|e| e.to_string())??;
+    let map = tauri::async_runtime::spawn_blocking(move || estimate(&rgba, req.width, req.height, &req.model, detail, req.soft.unwrap_or(1.0))).await.map_err(|e| e.to_string())??;
     Ok(tauri::ipc::Response::new(map.to_bytes()))
 }
 
@@ -897,7 +911,9 @@ pub async fn depth_forget() -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const DA3: &str = r#"{"id":"da3-base","name":"Balanced","model":"Depth Anything 3 Base","file":"model.onnx","output":"depth","patch":14,"standardSide":518,"highSide":756,"mean":[0.485,0.456,0.406],"std":[0.229,0.224,0.225],"licence":"Apache-2.0"}"#;
+    /// A test pack that takes any size (id "da3-test").
+    const BAL: &str = "da3-test";
+    const DA3: &str = r#"{"id":"da3-test","name":"Balanced","model":"Depth Anything 3 Base","file":"model.onnx","output":"depth","patch":14,"standardSide":518,"highSide":756,"mean":[0.485,0.456,0.406],"std":[0.229,0.224,0.225],"licence":"Apache-2.0"}"#;
 
     /// A pack folder: `files` are created empty; `manifest` written as depth.json when given.
     fn make_pack(base: &Path, name: &str, manifest: Option<&str>, files: &[&str]) -> PathBuf {
@@ -917,7 +933,7 @@ mod tests {
     }
 
     fn manifest_for(id: &str, name: &str) -> String {
-        DA3.replace("da3-base", id).replace("Balanced", name)
+        DA3.replace("da3-test", id).replace("Balanced", name)
     }
 
     #[test]
@@ -931,19 +947,34 @@ mod tests {
         assert!(split_body(&body[..6]).is_err());
         assert!(split_body(&[]).is_err());
         // With a model and detail.
-        let json = br#"{"width":1,"height":1,"model":"da3-base","detail":"high"}"#;
+        let json = br#"{"width":1,"height":1,"model":"da3-base","detail":"high","soft":0.5}"#;
         let mut body = (json.len() as u32).to_le_bytes().to_vec();
         body.extend_from_slice(json);
         body.extend_from_slice(&[0, 0, 0, 255]);
         let (r, _) = split_body(&body).unwrap();
         assert_eq!((r.model.as_str(), Detail::from_name(r.detail.as_deref())), ("da3-base", Detail::High));
+        assert_eq!(r.soft, Some(0.5));
+    }
+
+    #[test]
+    fn less_softening_keeps_edges_steeper() {
+        // A near square on a far background, at the models' usual size.
+        let (w, h) = (518, 518);
+        let raw: Vec<f32> = (0..w * h).map(|i| if (160..360).contains(&(i % w)) && (160..360).contains(&(i / w)) { 1.0 } else { 0.0 }).collect();
+        let steepest = |d: &[u8]| (1..w).map(|x| (d[259 * w + x] as i32 - d[259 * w + x - 1] as i32).abs()).max().unwrap();
+        let (sharp, normal, soft) = (finish_soft(&raw, w, h, 0.25), finish_soft(&raw, w, h, 1.0), finish_soft(&raw, w, h, 2.0));
+        assert_eq!(normal, finish(&raw, w, h));
+        assert!(steepest(&sharp) > steepest(&normal) && steepest(&normal) >= steepest(&soft), "{} {} {}", steepest(&sharp), steepest(&normal), steepest(&soft));
+        // Odd values are held in range.
+        assert_eq!(finish_soft(&raw, w, h, f32::NAN), normal);
+        assert_eq!(finish_soft(&raw, w, h, 0.0), sharp);
     }
 
     #[test]
     fn broken_pictures_are_refused_before_any_model() {
-        assert!(estimate(&[0; 7], 1, 1, "", Detail::Standard).is_err());
-        assert!(estimate(&[], 0, 0, "", Detail::Standard).is_err());
-        assert!(estimate(&vec![0; 4 * 4096], 4096, 1, "", Detail::Standard).is_err());
+        assert!(estimate(&[0; 7], 1, 1, "", Detail::Standard, 1.0).is_err());
+        assert!(estimate(&[], 0, 0, "", Detail::Standard, 1.0).is_err());
+        assert!(estimate(&vec![0; 4 * 4096], 4096, 1, "", Detail::Standard, 1.0).is_err());
     }
 
     #[test]
@@ -1016,7 +1047,7 @@ mod tests {
     #[test]
     fn manifests_are_read_and_checked() {
         let m = Manifest::parse(DA3.as_bytes()).unwrap();
-        assert_eq!((m.id.as_str(), m.name.as_str(), m.file.as_str(), m.output, m.patch), ("da3-base", "Balanced", "model.onnx", Output::Depth, Some(14)));
+        assert_eq!((m.id.as_str(), m.name.as_str(), m.file.as_str(), m.output, m.patch), ("da3-test", "Balanced", "model.onnx", Output::Depth, Some(14)));
         assert_eq!((m.standard_side, m.high_side, m.licence.as_deref()), (Some(518), Some(756), Some("Apache-2.0")));
         assert!(m.dynamic());
         // Colour settings may be left out: ImageNet's.
@@ -1028,7 +1059,7 @@ mod tests {
             "not json".to_string(),
             DA3.replace("model.onnx", "..\\\\..\\\\evil.onnx"),
             DA3.replace("model.onnx", "model.exe"),
-            DA3.replace("da3-base", "DA3 base!"),
+            DA3.replace("da3-test", "DA3 base!"),
             DA3.replace("756", "750"),
             DA3.replace("\"highSide\":756", "\"highSide\":504"),
             DA3.replace("\"patch\":14", "\"patch\":0"),
@@ -1068,7 +1099,7 @@ mod tests {
         // Fast: the old pack, no manifest, with the runtime.
         make_pack(base, "depth", None, &[MODEL_FILE, rt]);
         // Balanced: its own runtime.
-        make_pack(base, "depth-da3-base", Some(DA3), &["model.onnx", rt]);
+        make_pack(base, "depth-da3-test", Some(DA3), &["model.onnx", rt]);
         // Best: no runtime of its own (borrows Fast's).
         make_pack(base, "depth-da3-mono-large", Some(&manifest_for(BEST, "Best")), &["model.onnx"]);
         // Model missing; manifest damaged; a folder that isn't a depth pack; one not named depth-* at all.
@@ -1076,14 +1107,16 @@ mod tests {
         make_pack(base, "depth-damaged", Some("{ nope"), &["model.onnx"]);
         make_pack(base, "upscaler", None, &[rt]);
         make_pack(base, "other", Some(&manifest_for("other", "Other")), &["model.onnx", rt]);
+        make_pack(base, "depth-da3-base", Some(&manifest_for("da3-base", "Balanced")), &["model.onnx", rt]);
 
         let packs = scan(Some(base), false, None, &[]);
         let ids: Vec<&str> = packs.iter().map(|p| p.manifest.id.as_str()).collect();
-        // Sorted by folder name ("depth" < "depth-da3-base" < "depth-da3-mono-large" < "depth-damaged" < "depth-nomodel").
-        assert_eq!(ids, [FAST, BALANCED, BEST, "damaged", "nomodel"], "{ids:?}");
+        // Sorted by folder name ("depth" < "depth-da3-mono-large" < "depth-da3-test" < "depth-damaged" < "depth-nomodel");
+        // the retired Balanced pack is left out.
+        assert_eq!(ids, [FAST, BEST, BAL, "damaged", "nomodel"], "{ids:?}");
         let by = |id: &str| packs.iter().find(|p| p.manifest.id == id).unwrap();
         assert!(by(FAST).problem.is_none() && by(FAST).runtime.as_deref() == Some(&*base.join("depth")));
-        assert!(by(BALANCED).problem.is_none() && by(BALANCED).runtime.as_deref() == Some(&*base.join("depth-da3-base")));
+        assert!(by(BAL).problem.is_none() && by(BAL).runtime.as_deref() == Some(&*base.join("depth-da3-test")));
         assert!(by(BEST).problem.is_none(), "{:?}", by(BEST).problem);
         assert!(by(BEST).runtime.as_deref().is_some_and(|r| r != base.join("depth-da3-mono-large")), "borrowed from another depth pack");
         assert!(by("nomodel").problem.as_deref().unwrap().contains("model is missing"));
@@ -1101,7 +1134,7 @@ mod tests {
         let t = tempfile::tempdir().unwrap();
         let base = t.path().join("tools");
         std::fs::create_dir_all(&base).unwrap();
-        make_pack(&base, "depth-da3-base", Some(DA3), &["model.onnx"]);
+        make_pack(&base, "depth-da3-test", Some(DA3), &["model.onnx"]);
         // No runtime anywhere: reported.
         let p = scan(Some(&base), false, None, &[]);
         assert!(p[0].problem.as_deref().unwrap().contains("onnxruntime"));
@@ -1122,13 +1155,14 @@ mod tests {
         let base = t.path();
         let rt = runtime_file();
         make_pack(base, "depth", None, &[MODEL_FILE, rt]);
-        make_pack(base, "depth-da3-base", Some(DA3), &["model.onnx", rt]);
+        make_pack(base, "depth-da3-test", Some(DA3), &["model.onnx", rt]);
         let packs = scan(Some(base), false, None, &[]);
         let pick = |w: &str| choose(&packs, w).map(|p| p.manifest.id.clone());
-        assert_eq!(pick("").as_deref(), Some(BALANCED), "nothing chosen: the best there is");
-        assert_eq!(pick(FAST).as_deref(), Some(FAST), "the choice when it's there");
-        assert_eq!(pick(BEST).as_deref(), Some(BALANCED), "Best isn't installed: the next best");
-        assert_eq!(pick("nonsense").as_deref(), Some(BALANCED));
+        assert_eq!(pick("").as_deref(), Some(FAST), "nothing chosen: the best there is");
+        assert_eq!(pick(BAL).as_deref(), Some(BAL), "the choice when it's there");
+        assert_eq!(pick(BEST).as_deref(), Some(FAST), "Best isn't installed: the next best");
+        assert_eq!(pick("nonsense").as_deref(), Some(FAST));
+        assert_eq!(pick("da3-base").as_deref(), Some(FAST), "the retired Balanced: the best there is");
         // With Best there too, it wins.
         make_pack(base, "depth-da3-mono-large", Some(&manifest_for(BEST, "Best")), &["model.onnx"]);
         let packs = scan(Some(base), false, None, &[]);
@@ -1136,7 +1170,7 @@ mod tests {
         // A broken one is skipped.
         let mut packs = packs;
         packs.iter_mut().find(|p| p.manifest.id == BEST).unwrap().problem = Some("broken".into());
-        assert_eq!(choose(&packs, BEST).map(|p| p.manifest.id.as_str()), Some(BALANCED));
+        assert_eq!(choose(&packs, BEST).map(|p| p.manifest.id.as_str()), Some(FAST));
         // Nothing usable: nothing.
         assert!(choose(&[], "").is_none());
     }
@@ -1145,20 +1179,21 @@ mod tests {
     fn the_catalogue_lists_every_known_model() {
         let t = tempfile::tempdir().unwrap();
         let base = t.path();
-        make_pack(base, "depth-da3-base", Some(DA3), &["model.onnx", runtime_file()]);
+        make_pack(base, "depth-da3-test", Some(DA3), &["model.onnx", runtime_file()]);
         make_pack(base, "depth-extra", Some(&manifest_for("extra", "Extra")), &["model.onnx", runtime_file()]);
         let packs = scan(Some(base), false, None, &[]);
         let list = catalogue(&packs, Some(base));
         let ids: Vec<&str> = list.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, [FAST, BALANCED, BEST, "extra"]);
+        assert_eq!(ids, [FAST, BEST, BAL, "extra"]);
         let fast = &list[0];
         assert!(!fast.installed && !fast.dynamic && fast.zip.as_deref() == Some("MediaVault-depth-windows.zip"));
         assert!(fast.problem.as_deref().unwrap().contains("MediaVault-depth-windows.zip"));
         assert!(fast.folder.as_deref().unwrap().ends_with("depth"));
-        let bal = &list[1];
+        let bal = &list[2];
         assert!(bal.installed && bal.problem.is_none() && bal.dynamic && bal.size_bytes > 0);
         assert_eq!((bal.standard_side, bal.high_side), (518, 756));
-        assert!(!list[2].installed && list[2].folder.as_deref().unwrap().ends_with("depth-da3-mono-large"));
+        assert!(!list[1].installed && list[1].folder.as_deref().unwrap().ends_with("depth-da3-mono-large"));
+        assert!(!list[1].dynamic && list[1].high_side == DEFAULT_SIDE, "the published Best is fixed-size");
     }
 
     #[test]
@@ -1188,7 +1223,8 @@ mod tests {
             let (w, h) = img.dimensions();
             let small = image::imageops::resize(&img, s, s, image::imageops::FilterType::Triangle);
             let start = Instant::now();
-            let map = estimate(small.as_raw(), s as usize, s as usize, &wanted, detail).unwrap();
+            let soft = std::env::var("MV_DEPTH_SOFT").ok().and_then(|v| v.parse().ok()).unwrap_or(1.0);
+            let map = estimate(small.as_raw(), s as usize, s as usize, &wanted, detail, soft).unwrap();
             eprintln!("{p}: {}x{} depth in {:?}", map.w, map.h, start.elapsed());
             // Back to the picture's shape, for looking at.
             let grey = image::GrayImage::from_raw(map.w as u32, map.h as u32, map.data.clone()).unwrap();

@@ -1,8 +1,8 @@
 // 3D photos: still pictures move with gentle depth parallax (in slideshows,
 // and over and over while a picture is simply open; View ▾ → 3D photos).
 //
-// The depth of a picture comes from an optional depth pack (Fast, Balanced or
-// Best, chosen in Settings → 3D photos; run natively: depth.rs). The window
+// The depth of a picture comes from an optional depth pack (Fast or Best,
+// chosen in Settings → 3D photos; run natively: depth.rs). The window
 // decodes the picture in memory, scales it to the size the chosen model wants
 // and sends the pixels; the depth map comes back and is kept here, in memory
 // only, for the session (dropped on lock, and when another model or detail is
@@ -10,9 +10,9 @@
 // are worked out ahead, so slideshows and browsing by hand don't wait.
 //
 // The camera path (this file) is pure maths, drawn by components/Depth3D.tsx:
-// every loop of the movement starts and ends exactly as the still picture,
-// so fades and "Line up faces" work as usual and loops join without a jump,
-// and it moves a few per cent in between.
+// one camera moves on and on along the chosen shape, never stopping and never
+// starting again at the next picture (each picture takes over where the
+// camera is), like moving the mouse yourself with the 3D button.
 
 import { api, onLocked, type DepthDetail, type DepthInfo, type DepthMap, type ViewerSettings } from './api';
 import { viewerPrefs } from './prefs';
@@ -25,12 +25,11 @@ const KEEP = 48;
 const AHEAD_MAX = 3;
 
 export const NO_DEPTH_PACK =
-  '3D photos need a depth pack: get MediaVault-depth-windows.zip (Fast), MediaVault-depth-da3-base-windows.zip (Balanced) or MediaVault-depth-da3-mono-large-windows.zip (Best) from the Releases page and unzip it next to the app.';
+  '3D photos need a depth pack: get MediaVault-depth-windows.zip (Fast) or MediaVault-depth-da3-mono-large-windows.zip (Best) from the Releases page and unzip it next to the app.';
 
 /** The download each known model comes in (for "not installed" hints). */
 export const DEPTH_ZIPS: Record<string, string> = {
   'v2-small': 'MediaVault-depth-windows.zip',
-  'da3-base': 'MediaVault-depth-da3-base-windows.zip',
   'da3-mono-large': 'MediaVault-depth-da3-mono-large-windows.zip',
 };
 
@@ -41,29 +40,42 @@ export function depthChoice(p: Pick<ViewerSettings, 'depthModel' | 'depthDetail'
   return { model: typeof p.depthModel === 'string' ? p.depthModel : '', detail: p.depthDetail === 'high' ? 'high' : 'standard' };
 }
 
-/** What the depth maps in memory were made with: the model actually used and the picture size sent. */
+/** What the depth maps in memory were made with: the model actually used, the picture size sent and the edge softening. */
 export interface DepthSetup {
   model: string;
   side: number;
   detail: DepthDetail;
+  /** Edge softening (1 = as designed, smaller = sharper; absent = 1). */
+  soft?: number;
 }
 
-/** A depth map belongs to one picture and one model at one size: a map from another model is never mixed in. */
+/** Edge softening used when "Edges" is left automatic: Best's more accurate edges are softened half as much. */
+export function autoSoft(model: string): number {
+  return model === 'da3-mono-large' ? 0.5 : 1;
+}
+
+/** The "Edges" setting read safely (undefined = automatic). */
+export function edgesSetting(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(2, Math.max(0.25, v)) : undefined;
+}
+
+/** A depth map belongs to one picture and one model at one size and softening: a map from another is never mixed in. */
 export function depthKey(src: string, s: DepthSetup): string {
-  return `${s.model}@${s.side}|${src}`;
+  return `${s.model}@${s.side}~${s.soft ?? 1}|${src}`;
 }
 
-/** The setup from what depth_info said (null when there's no usable model). */
-export function setupOf(i: DepthInfo | null): DepthSetup | null {
+/** The setup from what depth_info said (null when there's no usable model); `edges` = the Edges setting. */
+export function setupOf(i: DepthInfo | null, edges?: number): DepthSetup | null {
   if (!i?.available) return null;
-  return { model: i.model ?? '', side: i.inputSide && i.inputSide > 0 ? i.inputSide : DEPTH_SIDE, detail: i.detail === 'high' ? 'high' : 'standard' };
+  const model = i.model ?? '';
+  return { model, side: i.inputSide && i.inputSide > 0 ? i.inputSide : DEPTH_SIDE, detail: i.detail === 'high' ? 'high' : 'standard', soft: edgesSetting(edges) ?? autoSoft(model) };
 }
 
 let setup: DepthSetup | null = null;
 
 /** Use this setup from now on; another model or size forgets the maps made with the old one. */
 export function applyDepthSetup(next: DepthSetup | null) {
-  const same = !!next && !!setup && next.model === setup.model && next.side === setup.side;
+  const same = !!next && !!setup && next.model === setup.model && next.side === setup.side && (next.soft ?? 1) === (setup.soft ?? 1);
   if (same) return;
   if (setup) forgetDepth();
   setup = next;
@@ -83,12 +95,13 @@ let infoFor = '';
 export function depthPack(again = false, choice?: { model: string; detail: DepthDetail }): Promise<DepthInfo | null> {
   // Settings passes its own copy of the choice (the shared one follows once it's saved).
   const c = choice ?? depthChoice(viewerPrefs());
-  const want = `${c.model}|${c.detail}`;
+  const edges = edgesSetting(viewerPrefs().depthEdges);
+  const want = `${c.model}|${c.detail}|${edges ?? 'auto'}`;
   if (!info || again || want !== infoFor) {
     infoFor = want;
     const p: Promise<DepthInfo | null> = api.depthInfo(c.model, c.detail).catch(() => null).then((i) => {
       // Only the latest answer counts (a slower, older one doesn't undo a newer choice).
-      if (info === p) applyDepthSetup(setupOf(i));
+      if (info === p) applyDepthSetup(setupOf(i, edges));
       return i;
     });
     info = p;
@@ -283,7 +296,7 @@ async function computeReal(src: string, s: DepthSetup): Promise<DepthMap | null>
     if (!ctx) return null;
     ctx.drawImage(bmp, 0, 0);
     const px = ctx.getImageData(0, 0, side, side).data;
-    return await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
+    return await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail, soft: s.soft ?? 1 }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
   } finally {
     bmp.close();
   }
@@ -321,11 +334,11 @@ export function speedText(r: SpeedResult): string {
 // ---- the camera path -----------------------------------------------------------------------------
 
 /** The shapes the automatic movement can follow (View ▾ → 3D photos → Motion shape). */
-export type MotionShape = 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'spiral' | 'pendulum';
-/** A shape, or a different one for each picture. */
+export type MotionShape = 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'drift' | 'spiral' | 'pendulum';
+/** A shape, or Random: wandering about like a hand moving the mouse. */
 export type MotionChoice = MotionShape | 'random';
 
-export const MOTION_SHAPES: MotionShape[] = ['circle', 'infinity', 'side', 'updown', 'diagonal', 'zoom', 'spiral', 'pendulum'];
+export const MOTION_SHAPES: MotionShape[] = ['circle', 'infinity', 'side', 'updown', 'diagonal', 'zoom', 'drift', 'spiral', 'pendulum'];
 
 /** Names for the chooser. */
 export const MOTION_LABELS: Record<MotionChoice, string> = {
@@ -336,6 +349,7 @@ export const MOTION_LABELS: Record<MotionChoice, string> = {
   updown: 'Up and down',
   diagonal: 'Diagonal',
   zoom: 'Zoom in and out',
+  drift: 'Zoom drift',
   spiral: 'Spiral',
   pendulum: 'Pendulum',
 };
@@ -343,15 +357,6 @@ export const MOTION_LABELS: Record<MotionChoice, string> = {
 /** A saved choice read back safely (anything unknown is Random). */
 export function motionChoice(v: unknown): MotionChoice {
   return v === 'random' || MOTION_SHAPES.includes(v as MotionShape) ? (v as MotionChoice) : 'random';
-}
-
-/** One loop of the movement: its shape and which way round it goes this time. */
-export interface MotionLoop {
-  shape: MotionShape;
-  /** Clockwise or not; towards one side or the other first. */
-  turn: 1 | -1;
-  /** Direction of the circle and spiral (radians); the other shapes keep their own direction. */
-  angle: number;
 }
 
 export interface Pose {
@@ -366,91 +371,79 @@ export interface Pose {
 export const SHIFT = 0.022;
 /** How much nearer things grow at 100% during a zoom (share per unit of depth). */
 export const DOLLY = 0.07;
-/** No shape goes further than this from the still pose (times SHIFT × amount). */
+/** No shape goes further than this from the middle (times SHIFT × amount). */
 export const SHAPE_REACH = 1.2;
-/** One loop outside slideshows at 100% speed (ms): slow enough to feel calm. */
+/** Once round a shape at 100% speed (ms): slow enough to feel calm. */
 export const LOOP_MS = 9000;
 
-/** The shape for a picture: the chosen one, or (Random) one of the real shapes. */
-export function pickShape(choice: MotionChoice, rand: () => number = Math.random): MotionShape {
-  if (choice !== 'random') return choice;
-  return MOTION_SHAPES[Math.min(MOTION_SHAPES.length - 1, Math.floor(rand() * MOTION_SHAPES.length))];
-}
-
-/** A small repeatable random number (0–1) from two whole numbers, so a loop's direction is fixed once picked. */
-function hash01(a: number, b: number): number {
-  let h = (Math.imul(a | 0, 0x9e3779b1) ^ Math.imul((b | 0) + 0x7f4a7c15, 0x85ebca6b)) >>> 0;
-  h = Math.imul(h ^ (h >>> 15), 0x2c1b3c6d) >>> 0;
-  h = Math.imul(h ^ (h >>> 12), 0x297a2d39) >>> 0;
-  return ((h ^ (h >>> 15)) >>> 0) / 4294967296;
-}
-
-/** Loop number `loop` of a picture (`seed` is the picture's own): a new direction each time round. */
-export function loopOf(shape: MotionShape, seed: number, loop: number): MotionLoop {
-  const turn = hash01(seed, loop * 2) < 0.5 ? 1 : -1;
-  // Mostly sideways for the circle and spiral: that's where parallax looks best.
-  const angle = (hash01(seed, loop * 2 + 1) - 0.5) * 1.2 + (hash01(seed + 1, loop) < 0.5 ? 0 : Math.PI);
-  return { shape, turn, angle };
-}
-
-/** 0 → 1 with no speed at either end. */
+/** 0 → 1 with no speed at either end (Zoom in and out only: it rests at the still picture each time). */
 const settle = (u: number) => u - Math.sin(2 * Math.PI * u) / (2 * Math.PI);
 
 /**
- * Where the camera is, `v` (0–1) of the way through one loop, at 100%. Every
- * shape is exactly still at 0 and at 1 and leaves and arrives with no speed,
- * so one loop runs into the next without a jump, and a slideshow picture
- * matches the plain still picture when it fades in and out.
+ * Where the camera is after `phase` times round (any number, growing for
+ * ever), at 100%. Every shape is an endless smooth path: no stops, no
+ * restarts, so a picture can take over wherever the camera happens to be.
+ * Zoom in and out is the one exception (as before): it rests at the still
+ * picture between zooms.
  */
-export function shapePose(v: number, l: MotionLoop): Pose {
-  const t = settle(Math.min(1, Math.max(0, v)));
-  const a = 2 * Math.PI * t;
+export function motionPose(choice: MotionChoice, phase: number): Pose {
+  const p = Number.isFinite(phase) ? phase : 0;
+  const a = 2 * Math.PI * p;
   const S = SHIFT;
-  const c = Math.cos(l.angle);
-  const s = Math.sin(l.angle);
-  const rot = (x: number, y: number, dolly: number): Pose => ({ x: x * c - y * s, y: x * s + y * c, dolly });
-  switch (l.shape) {
-    case 'circle': {
-      // Once round a circle that passes through the still pose, coming a little closer halfway.
-      const r = S * 0.6;
-      return rot(r * Math.sin(a), r * (1 - Math.cos(a)) * l.turn, DOLLY * 0.25 * Math.sin(Math.PI * t));
-    }
+  switch (choice) {
+    case 'circle':
+      // Round and round the middle, like circling the mouse.
+      return { x: S * 0.85 * Math.cos(a), y: S * 0.85 * Math.sin(a), dolly: 0 };
     case 'infinity':
-      // A figure of eight, crossing at the still pose.
-      return { x: S * Math.sin(a) * l.turn, y: S * 0.5 * Math.sin(2 * a), dolly: 0 };
+      // A figure of eight through the middle.
+      return { x: S * Math.sin(a), y: S * 0.5 * Math.sin(2 * a), dolly: 0 };
     case 'side':
-      return { x: S * Math.sin(a) * l.turn, y: 0, dolly: 0 };
+      return { x: S * Math.sin(a), y: 0, dolly: 0 };
     case 'updown':
-      return { x: 0, y: S * 0.8 * Math.sin(a) * l.turn, dolly: 0 };
+      return { x: 0, y: S * 0.8 * Math.sin(a), dolly: 0 };
     case 'diagonal': {
-      // Corner to corner; which diagonal changes from loop to loop.
-      const k = (S * Math.sin(a) * l.turn) / Math.SQRT2;
-      return { x: k, y: c >= 0 ? k : -k, dolly: 0 };
+      const k = (S * Math.sin(a)) / Math.SQRT2;
+      return { x: k, y: k, dolly: 0 };
     }
-    case 'zoom':
-      // Towards the picture and back, with no sideways drift.
-      return { x: 0, y: 0, dolly: DOLLY * (1 - Math.cos(a)) * 0.5 };
+    case 'zoom': {
+      // Towards the picture and back, resting at the still picture in between.
+      const t = settle(p - Math.floor(p));
+      return { x: 0, y: 0, dolly: DOLLY * (1 - Math.cos(2 * Math.PI * t)) * 0.5 };
+    }
+    case 'drift':
+      // In and out without resting, with a slow sway so the camera never stands still.
+      return { x: S * 0.35 * Math.sin(a * 0.5), y: S * 0.25 * Math.sin(a * 0.5 + 1.3), dolly: DOLLY * (0.5 - 0.5 * Math.cos(a)) };
     case 'spiral': {
-      // Out from the middle in two turns while coming closer, then back in.
-      const r = S * Math.sin(Math.PI * t);
-      const b = 4 * Math.PI * t * l.turn;
-      return rot(r * Math.sin(b), r * Math.cos(b), DOLLY * 0.6 * Math.sin(Math.PI * t));
+      // Round and round, the circle slowly widening and narrowing, closer when wide.
+      const w = 0.5 - 0.5 * Math.cos(a / 3);
+      const r = S * (0.3 + 0.7 * w);
+      return { x: r * Math.cos(a), y: r * Math.sin(a), dolly: DOLLY * 0.5 * w };
     }
     case 'pendulum': {
-      // Along a hanging arc: lowest in the middle, rising and slowing at each end.
+      // Along a hanging arc: lowest in the middle, rising towards each end.
       const k = Math.sin(a);
-      return { x: S * k * l.turn, y: -S * 0.4 * k * k, dolly: 0 };
+      return { x: S * k, y: S * 0.4 * (0.5 - k * k), dolly: 0 };
+    }
+    case 'random':
+    default: {
+      // Wandering: a few slow swings at unrelated speeds added up, so it never repeats
+      // and never jerks (like a hand moving the mouse about).
+      const x = 0.6 * Math.sin(a * 0.71 + 1.1) + 0.4 * Math.sin(a * 1.17 + 4.0);
+      const y = 0.6 * Math.sin(a * 0.53 + 2.3) + 0.4 * Math.sin(a * 0.97 + 0.4);
+      const z = 0.5 + 0.5 * Math.sin(a * 0.31 + 0.9);
+      return { x: S * 0.95 * x, y: S * 0.65 * y, dolly: DOLLY * 0.25 * z };
     }
   }
 }
 
 /**
- * The shape drawn small for the chooser: `n` points of one loop, fitted into
- * a `w` × `h` box with a margin, and how much it zooms (0–1) at each point.
+ * The shape drawn small for the chooser: `n` points of one time round (two for the
+ * slower shapes), fitted into a `w` × `h` box with a margin, and how much it zooms (0–1) at each point.
  */
-export function shapeOutline(shape: MotionShape, w: number, h: number, n = 48): { x: number; y: number; zoom: number }[] {
-  const loop: MotionLoop = { shape, turn: 1, angle: 0 };
-  const pts = Array.from({ length: n + 1 }, (_, i) => shapePose(i / n, loop));
+export function shapeOutline(shape: MotionChoice, w: number, h: number, n = 48): { x: number; y: number; zoom: number }[] {
+  const turns = shape === 'spiral' ? 3 : shape === 'drift' ? 2 : shape === 'random' ? 6 : 1;
+  const m = n * turns;
+  const pts = Array.from({ length: m + 1 }, (_, i) => motionPose(shape, (i / m) * turns));
   const xs = pts.map((p) => p.x);
   const ys = pts.map((p) => p.y);
   const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
@@ -459,38 +452,68 @@ export function shapeOutline(shape: MotionShape, w: number, h: number, n = 48): 
   return pts.map((p) => ({ x: w / 2 + (p.x - (x0 + x1) / 2) * k, y: h / 2 + (p.y - (y0 + y1) / 2) * k, zoom: p.dolly / DOLLY }));
 }
 
-/** How many loops a slideshow picture gets: more with a faster speed, always whole so it ends still. */
-export function slideLoops(speed: number): number {
-  return Math.max(1, Math.round(Number.isFinite(speed) ? speed : 1));
-}
-
-/** One loop's length outside slideshows (ms): faster speed, shorter loop. */
+/** One time round (ms): faster speed, shorter. */
 export function loopMs(speed: number): number {
   const k = Number.isFinite(speed) ? Math.min(8, Math.max(0.1, speed)) : 1;
   return LOOP_MS / k;
 }
 
-/**
- * Where a slideshow picture is in its movement, `u` (0–1) of the way through
- * its time: which loop, and how far through it. At 1 it is the end of the
- * last loop (still).
- */
-export function slidePhase(u: number, loops: number): { loop: number; v: number } {
-  const n = Math.max(1, Math.round(loops));
-  const w = Math.min(1, Math.max(0, u)) * n;
-  if (w >= n) return { loop: n - 1, v: 1 };
-  const loop = Math.floor(w);
-  return { loop, v: w - loop };
+/** How long a change of shape takes to blend in (ms). */
+export const BLEND_MS = 1200;
+/** The longest step the camera takes at once (ms): after a pause or a hidden window it carries on, never jumps. */
+const MAX_STEP_MS = 50;
+
+/** The one camera all pictures share: where it is on its path, and a shape it is blending away from. */
+export interface Camera {
+  phase: number;
+  last: number;
+  choice: MotionChoice | null;
+  from: MotionChoice | null;
+  blendStart: number;
 }
 
-/**
- * The endless movement outside slideshows, moved on by `dtMs` at this speed.
- * It is a running count of loops (2.25 = a quarter into the third), added up
- * frame by frame so a change of speed never makes it jump.
- */
-export function advancePhase(phase: number, dtMs: number, speed: number): number {
-  return phase + Math.max(0, dtMs) / loopMs(speed);
+export function newCamera(): Camera {
+  return { phase: 0, last: Number.NaN, choice: null, from: null, blendStart: 0 };
 }
+
+/** Smooth 0 → 1. */
+const smooth = (u: number) => {
+  const t = Math.min(1, Math.max(0, u));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * The camera at time `t` (ms, any steady clock): moved on by the time since
+ * it was last asked (if `running`), at this speed and along this shape. Asking
+ * twice at the same moment (two pictures crossfading) moves it once. A new
+ * shape blends in from the old one over BLEND_MS, so nothing jumps.
+ */
+export function cameraAt(c: Camera, choice: MotionChoice, speed: number, t: number, running: boolean): Pose {
+  if (Number.isFinite(c.last) && running) {
+    const dt = Math.min(MAX_STEP_MS, Math.max(0, t - c.last));
+    c.phase += dt / loopMs(speed);
+  }
+  c.last = t;
+  if (c.choice !== choice) {
+    if (c.choice !== null) {
+      c.from = c.choice;
+      c.blendStart = t;
+    }
+    c.choice = choice;
+  }
+  const to = motionPose(choice, c.phase);
+  if (c.from === null) return to;
+  const k = smooth((t - c.blendStart) / BLEND_MS);
+  if (k >= 1) {
+    c.from = null;
+    return to;
+  }
+  const was = motionPose(c.from, c.phase);
+  return { x: was.x + (to.x - was.x) * k, y: was.y + (to.y - was.y) * k, dolly: was.dolly + (to.dolly - was.dolly) * k };
+}
+
+/** The camera the viewer's pictures share (it keeps going from one picture to the next). */
+export const sharedCamera: Camera = newCamera();
 
 /** A pose made stronger or weaker (Settings: 3D depth, 1 = as designed). */
 export function scalePose(p: Pose, amount: number): Pose {
@@ -584,11 +607,4 @@ export function pivotOf(m: DepthMap): number {
     }
   const v = n ? sum / n / 255 : 0.5;
   return Math.min(0.85, Math.max(0.25, v));
-}
-
-/** The camera's timing: how far through (0–1) after `ms` of a picture's own time. */
-export function progress(ms: number, startMs: number, endMs: number): number {
-  const len = endMs - startMs;
-  if (len <= 0) return 1;
-  return (ms - startMs) / len;
 }

@@ -49,7 +49,14 @@ describe('3D photos: depth maps per model', () => {
     expect(setupOf(null)).toBeNull();
     expect(setupOf({ available: false, problem: 'x', folder: null, device: null, deviceKnown: false, sharedRuntime: false })).toBeNull();
     expect(setupOf({ available: true, problem: null, folder: null, device: 'gpu', deviceKnown: false, sharedRuntime: false, model: 'da3-base', inputSide: 756, detail: 'high' }))
-      .toEqual(BAL_HIGH);
+      .toEqual({ ...BAL_HIGH, soft: 1 });
+    // Best's edges are softened half as much unless "Edges" says otherwise; the setting is held in range.
+    const best = { available: true, problem: null, folder: null, device: 'gpu' as const, deviceKnown: false, sharedRuntime: false, model: 'da3-mono-large', inputSide: 518 };
+    expect(setupOf(best)?.soft).toBe(0.5);
+    expect(setupOf(best, 1.5)?.soft).toBe(1.5);
+    expect(setupOf(best, 9)?.soft).toBe(2);
+    expect(setupOf(best, 0)?.soft).toBe(0.5);
+    expect(depthKey('a.jpg', { ...FAST, soft: 0.5 })).not.toBe(depthKey('a.jpg', FAST));
     // An older answer without a size: the Fast size.
     expect(setupOf({ available: true, problem: null, folder: null, device: 'gpu', deviceKnown: false, sharedRuntime: false })?.side).toBe(518);
     expect(depthChoice({})).toEqual({ model: '', detail: 'standard' });

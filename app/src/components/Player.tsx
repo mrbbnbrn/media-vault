@@ -34,7 +34,7 @@ import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage'
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
-import { depthAhead, depthPack, motionChoice, NO_DEPTH_PACK, pickAhead } from '../depth';
+import { depthAhead, depthPack, depthSetup, motionChoice, NO_DEPTH_PACK, pickAhead } from '../depth';
 import { lazyPart } from '../lazypart';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
@@ -302,6 +302,20 @@ export function Player(props: PlayerProps) {
     };
     // ---- time to next slide (end) ----
   }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Very short video stays (under 2 s, down to 0.1 s): checked often, not only when the player reports its time.
+  useEffect(() => {
+    const max = s.videoMaxSeconds;
+    if (!item || item.kind !== 'video' || !slideshow || halted || beatDriving || !(max > 0 && max < 2)) return;
+    let done = false;
+    const t = setInterval(() => {
+      const v = videoRef.current;
+      if (done || !v || v.paused || v.currentTime - videoStart.current < max) return;
+      done = true;
+      go('next', true);
+    }, 25);
+    return () => clearInterval(t);
+  }, [item?.key, tick, slideshow, halted, beatDriving, s.videoMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- time to next slide (begin): what the ring by the Slideshow button shows ----
   const ringOn = prefs.slideRing !== false && slideshow && !mini && !props.compact;
@@ -797,12 +811,12 @@ export function Player(props: PlayerProps) {
     depthPack().then((i) => {
       if (!alive) return;
       setDepthPackOk(!!i?.available);
-      setDepthModelKey(i?.available ? `${i.model ?? ''}@${i.inputSide ?? ''}` : '');
+      setDepthModelKey(i?.available ? `${i.model ?? ''}@${i.inputSide ?? ''}~${depthSetup()?.soft ?? 1}` : '');
     });
     return () => {
       alive = false;
     };
-  }, [depthAuto, prefs.depthMouse, prefs.depthModel, prefs.depthDetail]);
+  }, [depthAuto, prefs.depthMouse, prefs.depthModel, prefs.depthDetail, prefs.depthEdges]);
   /** The model and size in use: the picture starts again with the new model's depth when it changes. */
   const [depthModelKey, setDepthModelKey] = useState('');
   // Just viewing (no slideshow), the movement goes on for as long as the picture is open; only

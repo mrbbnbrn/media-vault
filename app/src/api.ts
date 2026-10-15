@@ -48,10 +48,12 @@ export interface ViewerSettings {
   /** …how far they move (1 = as designed; 0.3–4), how fast (1 = as designed; 0.25–4) and along which shape. */
   depthMotion?: number;
   depthSpeed?: number;
-  depthShape?: 'random' | 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'spiral' | 'pendulum';
+  depthShape?: 'random' | 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'drift' | 'spiral' | 'pendulum';
+  /** 3D photos: how much the depth map's edges are softened (0.25 sharp – 2 soft; absent = automatic: Best 0.5, Fast 1). */
+  depthEdges?: number; // 0 = automatic
   /** The old slideshow setting "3D photos" has been carried over to depthAuto (done once). */
   depthAutoMigrated?: boolean;
-  /** 3D photos: which depth model ('v2-small' Fast, 'da3-base' Balanced, 'da3-mono-large' Best; '' = the best one installed). */
+  /** 3D photos: which depth model ('v2-small' Fast, 'da3-mono-large' Best; '' = the best one installed; the retired 'da3-base' falls back to the best installed). */
   depthModel?: string;
   /** 3D photos: 'high' sends bigger pictures to models that take any size (more detail, about twice as slow). */
   depthDetail?: 'standard' | 'high';
@@ -82,7 +84,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1,
-  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthAutoMigrated: false,
+  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
@@ -1779,22 +1781,23 @@ export interface DepthRequest {
   /** The chosen model ('' = the best installed) and detail. */
   model?: string;
   detail?: DepthDetail;
+  /** Edge softening (1 = as designed, smaller = sharper). */
+  soft?: number;
 }
 
-/** Preview: Fast and Balanced installed, Best not (add ?nodepth to see none installed). */
+/** Preview: Fast and Best installed (add ?nodepth to see none installed). */
 function mockDepthModels(): DepthModel[] {
   const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nodepth');
   const root = 'C:\\MediaVault\\tools\\';
   return [
     { id: 'v2-small', name: 'Fast', model: 'Depth Anything V2 Small', folder: `${root}depth`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 99_000_000, dynamic: false, zip: 'MediaVault-depth-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
-    { id: 'da3-base', name: 'Balanced', model: 'Depth Anything 3 Base', folder: `${root}depth-da3-base`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-da3-base-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 420_000_000, dynamic: true, zip: 'MediaVault-depth-da3-base-windows.zip', standardSide: 518, highSide: 756, licence: 'Apache-2.0' },
-    { id: 'da3-mono-large', name: 'Best', model: 'Depth Anything 3 Mono Large', folder: `${root}depth-da3-mono-large`, installed: false, problem: 'Not installed: get MediaVault-depth-da3-mono-large-windows.zip from the Releases page and unzip it next to the app.', sizeBytes: 0, dynamic: true, zip: 'MediaVault-depth-da3-mono-large-windows.zip', standardSide: 518, highSide: 756, licence: null },
+    { id: 'da3-mono-large', name: 'Best', model: 'Depth Anything 3 Mono Large', folder: `${root}depth-da3-mono-large`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-da3-mono-large-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 1_350_000_000, dynamic: false, zip: 'MediaVault-depth-da3-mono-large-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
   ];
 }
 
 function mockDepthInfo(model: string, detail: DepthDetail): DepthInfo {
   const ready = mockDepthModels().filter((m) => m.installed && !m.problem);
-  const pick = ready.find((m) => m.id === model) ?? ['da3-mono-large', 'da3-base', 'v2-small'].map((id) => ready.find((m) => m.id === id)).find(Boolean);
+  const pick = ready.find((m) => m.id === model) ?? ['da3-mono-large', 'v2-small'].map((id) => ready.find((m) => m.id === id)).find(Boolean);
   if (!pick) return { available: false, problem: "The depth pack isn't installed.", folder: 'C:\\MediaVault\\tools\\depth', device: null, deviceKnown: false, sharedRuntime: false, model: null, modelName: null, inputSide: 518, detail: 'standard', dynamic: false };
   const d = pick.dynamic ? detail : 'standard';
   return { available: true, problem: null, folder: pick.folder, device: 'gpu', deviceKnown: false, sharedRuntime: false, model: pick.id, modelName: pick.name, inputSide: d === 'high' ? pick.highSide ?? 518 : pick.standardSide ?? 518, detail: d, dynamic: pick.dynamic };

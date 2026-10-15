@@ -307,8 +307,8 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
         <h2>Slideshow settings</h2>
         <div className="form-grid">
           <label htmlFor="ps-img">Pictures stay for</label>
-          <span className="row"><input id="ps-img" className="input small" type="number" min={1} value={s.imageSeconds}
-            onChange={(e) => set({ imageSeconds: Math.max(1, num(e.target.value)) })} /> seconds</span>
+          <span className="row"><input id="ps-img" className="input small" type="number" min={0.1} step="any" value={s.imageSeconds}
+            onChange={(e) => set({ imageSeconds: Math.max(0.1, num(e.target.value)) })} /> seconds <span className="faint">(as little as 0.1)</span></span>
 
           {/* time to next slide (begin) */}
           <span />
@@ -338,7 +338,7 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           </span>
 
           <label htmlFor="ps-vmax">Videos play for at most</label>
-          <span className="row"><input id="ps-vmax" className="input small" type="number" min={0} value={s.videoMaxSeconds}
+          <span className="row"><input id="ps-vmax" className="input small" type="number" min={0} step="any" value={s.videoMaxSeconds}
             onChange={(e) => set({ videoMaxSeconds: Math.max(0, num(e.target.value)) })} /> seconds <span className="faint">(0 = to the end)</span></span>
 
           <span>Videos start</span>
@@ -349,7 +349,7 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           <label htmlFor="ps-loops">GIFs play</label>
           <span className="row"><input id="ps-loops" className="input small" type="number" min={0} value={s.gifLoops}
             onChange={(e) => set({ gifLoops: Math.max(0, Math.round(num(e.target.value))) })} /> loops, at most
-            <input aria-label="GIF maximum seconds" className="input small" type="number" min={0} value={s.gifMaxSeconds}
+            <input aria-label="GIF maximum seconds" className="input small" type="number" min={0} step="any" value={s.gifMaxSeconds}
               onChange={(e) => set({ gifMaxSeconds: Math.max(0, num(e.target.value)) })} /> seconds</span>
 
           {beats && (

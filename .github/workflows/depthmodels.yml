@@ -1,7 +1,7 @@
 name: depth models
 
-# Builds the optional "Balanced" and "Best" 3D-photo depth models (Depth
-# Anything 3 Base and Mono Large — both Apache-2.0) as their own downloads,
+# Builds the optional "Best" 3D-photo depth model (Depth Anything 3 Mono
+# Large, Apache-2.0; "Balanced" = DA3 Base was retired: no sky detection) as its own download,
 # MediaVault-depth-<id>-windows.zip, each unzipping to MediaVault\tools\depth-<id>\
 # with model.onnx, depth.json (what the app reads), ONNX Runtime + DirectML,
 # and the licences. The "Fast" model stays the depth pack (depthpack.yml).
@@ -15,7 +15,7 @@ on:
       model:
         description: Which model
         type: choice
-        options: [da3-mono-large, da3-base]
+        options: [da3-mono-large]
         required: true
       tag:
         description: Release tag (default depth-models-<today>)
@@ -44,8 +44,6 @@ jobs:
           case "${{ github.event.inputs.model }}" in
             da3-mono-large) echo "CFG=da3mono-large" >> "$GITHUB_ENV"; echo "HF=depth-anything/DA3MONO-LARGE" >> "$GITHUB_ENV"
                             echo "NAME=Best" >> "$GITHUB_ENV"; echo "TITLE=Depth Anything 3 Mono Large" >> "$GITHUB_ENV" ;;
-            da3-base)       echo "CFG=da3-base" >> "$GITHUB_ENV"; echo "HF=depth-anything/DA3-BASE" >> "$GITHUB_ENV"
-                            echo "NAME=Balanced" >> "$GITHUB_ENV"; echo "TITLE=Depth Anything 3 Base" >> "$GITHUB_ENV" ;;
             *) echo "unknown model"; exit 1 ;;
           esac
           echo "ID=${{ github.event.inputs.model }}" >> "$GITHUB_ENV"
@@ -164,7 +162,7 @@ jobs:
           zip_name="MediaVault-depth-$ID-windows.zip"
           (cd z && zip -qr -6 "../$zip_name" MediaVault)
           ls -la "$zip_name"
-          notes="Optional 3D-photo depth models (Depth Anything 3, Apache-2.0). Unzip into the same place as the app, then choose the model in Settings → 3D photos → Depth model. Fast = the depth pack (depth-2026-10-15); Balanced = depth-da3-base; Best = depth-da3-mono-large."
+          notes="Optional 3D-photo depth models (Depth Anything 3, Apache-2.0). Unzip into the same place as the app, then choose the model in Settings → 3D photos → Depth model. Fast = the depth pack (depth-2026-10-15); Best = depth-da3-mono-large."
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
           else

@@ -1,6 +1,6 @@
 // The depth model chooser for 3D photos (Settings → 3D photos, and the
 // viewer's View ▾ → "3D photo settings…"): which model works out the depth
-// (Fast, Balanced, Best; the ones not installed are greyed with the download
+// (Fast, Best; the ones not installed are greyed with the download
 // they come in), how much detail, and in Settings a speed test per model so
 // you can see what your PC manages.
 
@@ -18,7 +18,6 @@ function sizeText(b: number): string {
 /** One line on what each known model is good for. */
 const ABOUT: Record<string, string> = {
   'v2-small': 'quickest, fine on most PCs',
-  'da3-base': 'cleaner edges, a little slower',
   'da3-mono-large': 'the most accurate depth, needs a good graphics card',
 };
 

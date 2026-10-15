@@ -79,11 +79,13 @@ pub struct ViewerSettings {
     pub depth_motion: f64,
     /// 3D photos: how fast it moves (1 = as designed; 0.25–4).
     pub depth_speed: f64,
-    /// 3D photos: the movement's shape ("random", "circle", "infinity", "side", "updown", "diagonal", "zoom", "spiral", "pendulum").
+    /// 3D photos: the movement's shape ("random", "circle", "infinity", "side", "updown", "diagonal", "zoom", "drift", "spiral", "pendulum").
     pub depth_shape: String,
+    /// 3D photos: how much depth-map edges are softened (0.25 sharp – 2 soft; 0 = automatic: Best 0.5, Fast 1).
+    pub depth_edges: f64,
     /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
     pub depth_auto_migrated: bool,
-    /// 3D photos: which depth model ("v2-small", "da3-base", "da3-mono-large"; "" = the best one installed).
+    /// 3D photos: which depth model ("v2-small", "da3-mono-large"; "" = the best one installed; the retired "da3-base" falls back to it).
     pub depth_model: String,
     /// 3D photos: "standard" or "high" (more detail, about twice as slow; models of any size only).
     pub depth_detail: String,
@@ -141,6 +143,7 @@ impl Default for ViewerSettings {
             depth_motion: 1.0,
             depth_speed: 1.0,
             depth_shape: "random".into(),
+            depth_edges: 0.0,
             depth_auto_migrated: false,
             depth_model: String::new(),
             depth_detail: "standard".into(),
@@ -350,6 +353,7 @@ impl AppConfig {
         if !id_ok {
             v.depth_model.clear();
         }
+        v.depth_edges = if v.depth_edges.is_finite() && v.depth_edges > 0.0 { v.depth_edges.clamp(0.25, 2.0) } else { 0.0 };
         if v.depth_detail != "high" {
             v.depth_detail = "standard".into();
         }

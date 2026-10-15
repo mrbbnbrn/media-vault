@@ -66,7 +66,7 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     typeof v === 'number' && Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : d;
   return {
     ...s,
-    imageSeconds: num(s.imageSeconds, 6, 1, 3600),
+    imageSeconds: num(s.imageSeconds, 6, 0.1, 3600),
     videoMaxSeconds: num(s.videoMaxSeconds, 0, 0, 24 * 3600),
     gifLoops: Math.round(num(s.gifLoops, 3, 0, 1000)),
     gifMaxSeconds: num(s.gifMaxSeconds, 20, 0, 3600),
@@ -85,9 +85,9 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
 /** How long a GIF should stay, given one loop's length in ms (0 = unknown). */
 export function gifShowMs(s: PlaybackSettings, loopMs: number): number {
   const cap = s.gifMaxSeconds > 0 ? s.gifMaxSeconds * 1000 : Infinity;
-  if (s.gifLoops > 0 && loopMs > 0) return Math.min(cap, Math.max(loopMs * s.gifLoops, 1500));
-  if (cap !== Infinity) return cap;
-  return Math.max(s.imageSeconds * 1000, loopMs || 0);
+  if (s.gifLoops > 0 && loopMs > 0) return Math.max(100, Math.min(cap, loopMs * s.gifLoops));
+  if (cap !== Infinity) return Math.max(100, cap);
+  return Math.max(100, s.imageSeconds * 1000, loopMs || 0);
 }
 
 /**
