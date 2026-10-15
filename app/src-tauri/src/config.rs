@@ -73,6 +73,16 @@ pub struct ViewerSettings {
     pub depth_amount: f64,
     /// 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way; 0.3–3).
     pub depth_react: f64,
+    /// 3D photos (View ▾): still pictures move gently in depth, in slideshows and while just open.
+    pub depth_auto: bool,
+    /// 3D photos: how far the automatic movement goes (1 = as designed; 0.3–4).
+    pub depth_motion: f64,
+    /// 3D photos: how fast it moves (1 = as designed; 0.25–4).
+    pub depth_speed: f64,
+    /// 3D photos: the movement's shape ("random", "circle", "infinity", "side", "updown", "diagonal", "zoom", "spiral", "pendulum").
+    pub depth_shape: String,
+    /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
+    pub depth_auto_migrated: bool,
     /// Discovery river: the current's speed (0.1–8, 1 = normal).
     pub river_flow: f64,
     /// Discovery river: how many items flow (0.4–2.5, 1 = as designed).
@@ -101,6 +111,11 @@ impl Default for ViewerSettings {
             depth_mouse: false,
             depth_amount: 1.0,
             depth_react: 1.0,
+            depth_auto: false,
+            depth_motion: 1.0,
+            depth_speed: 1.0,
+            depth_shape: "random".into(),
+            depth_auto_migrated: false,
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
@@ -410,6 +425,21 @@ mod tests {
         assert_eq!(c.accent, DEFAULT_ACCENT);
         assert_eq!(c.lock.idle_minutes, 5);
         assert!(c.lock.on_system_lock);
+    }
+
+    #[test]
+    fn depth_motion_settings_default_for_older_config_files_and_round_trip() {
+        let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
+        assert!(!v.depth_auto && !v.depth_auto_migrated);
+        assert_eq!((v.depth_motion, v.depth_speed, v.depth_shape.as_str()), (1.0, 1.0, "random"));
+        let v: ViewerSettings = serde_json::from_str(
+            r#"{"depthAuto":true,"depthMotion":3.5,"depthSpeed":0.25,"depthShape":"spiral","depthAutoMigrated":true}"#,
+        )
+        .unwrap();
+        assert!(v.depth_auto && v.depth_auto_migrated);
+        assert_eq!((v.depth_motion, v.depth_speed, v.depth_shape.as_str()), (3.5, 0.25, "spiral"));
+        let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
     }
 
     #[test]

@@ -9,13 +9,12 @@ import { Dropdown, PromptDialog } from '../components/Dialogs';
 import { BackIcon } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
 import { lazyPart } from '../lazypart';
-import { depthPack, NO_DEPTH_PACK } from '../depth';
 import { drawnRect, type Box } from '../flip';
 import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
 import type { PlayItem } from '../media';
 import type { Order } from '../playlist';
-import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
-import { saveViewerPrefs, useViewerPrefs, withSound } from '../prefs';
+import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } from '../presets';
+import { saveViewerPrefs, useViewerPrefs, viewerPrefs, withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
 
 let lastSettings: PlaybackSettings = DEFAULT_PLAYBACK;
@@ -101,7 +100,12 @@ export function Viewer(props: {
   const vault = !!props.nav.app.session;
 
   useEffect(() => {
-    if (vault) api.listNamed<PlaybackSettings>('preset').then(setPresets).catch(() => {});
+    if (vault) api.listNamed<PlaybackSettings>('preset').then((list) => {
+      setPresets(list);
+      // 3D photos used to be a slideshow setting: if it was on anywhere, turn the new View ▾ setting on (once).
+      const old = list.map((p) => p.settings);
+      if (depthToCarryOver(viewerPrefs(), [lastSettings, ...old])) saveViewerPrefs({ depthAuto: true, depthAutoMigrated: true });
+    }).catch(() => {});
   }, [vault]);
   useEffect(() => {
     lastSettings = settings;
@@ -258,7 +262,7 @@ export function Viewer(props: {
       )}
       {saving && (
         <PromptDialog title="Save preset" label="Name" confirm="Save" onClose={() => setSaving(false)}
-          hint="Saves picture duration, video and GIF timing, order, repeat, speed, sound, beat sync, slow pan and zoom and 3D photos."
+          hint="Saves picture duration, video and GIF timing, order, repeat, speed, sound, beat sync and slow pan and zoom."
           onSubmit={async (name) => {
             await api.saveNamed('preset', { id: null, name, settings });
             setPresets(await api.listNamed<PlaybackSettings>('preset'));
@@ -289,16 +293,6 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
   const num = (v: string) => (v === '' ? 0 : Number(v));
   const [beats, setBeats] = useState(false);
   const prefs = useViewerPrefs();
-  // 3D photos: whether the depth pack is there (asked anew when the box is ticked).
-  const [depthOk, setDepthOk] = useState<boolean | null>(null);
-  useEffect(() => {
-    if (!s.depth3d) return;
-    let alive = true;
-    depthPack(true).then((i) => alive && setDepthOk(i ? i.available : null));
-    return () => {
-      alive = false;
-    };
-  }, [s.depth3d]);
   useEffect(() => {
     let alive = true;
     beatsOk ??= api.beatsSupported().catch(() => false);
@@ -330,31 +324,9 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
             <label className="check"><input type="checkbox" checked={s.kenBurns} onChange={(e) => set({ kenBurns: e.target.checked })} /> Slow pan and zoom</label>
           </span>
 
+          {/* 3D photos moved to View ▾ → 3D photos (a viewer setting, also when not in a slideshow). */}
           <span />
-          <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
-            <label className="check"><input type="checkbox" checked={s.depth3d} onChange={(e) => set({ depth3d: e.target.checked })} /> 3D photos (gentle depth motion)</label>
-            {s.depth3d && (
-              <span className="faint" style={{ fontSize: 12 }}>
-                {depthOk === false ? NO_DEPTH_PACK
-                  : `Still pictures move gently in depth, the near things against the far ones${s.kenBurns || prefs.alignFaces ? `, on top of ${s.kenBurns && prefs.alignFaces ? 'slow pan and zoom and lined-up faces' : s.kenBurns ? 'the slow pan and zoom' : 'lined-up faces'}` : ''}. Pictures without a depth map show as usual.`}
-              </span>
-            )}
-          </span>
-
-          {/* 3D strength (begin): for the slideshow motion and the 3D button (the picture follows the mouse) */}
-          <label htmlFor="ps-depth">3D depth</label>
-          <span className="row" style={{ gap: 8 }}>
-            <input id="ps-depth" type="range" min={0.3} max={3} step={0.1} value={prefs.depthAmount ?? 1}
-              onChange={(e) => saveViewerPrefs({ depthAmount: Number(e.target.value) })} style={{ flex: 1 }} />
-            <span className="faint" style={{ minWidth: 40, fontSize: 12 }}>{Math.round((prefs.depthAmount ?? 1) * 100)}%</span>
-          </span>
-          <label htmlFor="ps-react">3D mouse reaction</label>
-          <span className="row" style={{ gap: 8 }} title="With the 3D button on: how far you move the mouse for the picture to lean all the way (higher = less mouse movement needed)">
-            <input id="ps-react" type="range" min={0.3} max={3} step={0.1} value={prefs.depthReact ?? 1}
-              onChange={(e) => saveViewerPrefs({ depthReact: Number(e.target.value) })} style={{ flex: 1 }} />
-            <span className="faint" style={{ minWidth: 40, fontSize: 12 }}>{Math.round((prefs.depthReact ?? 1) * 100)}%</span>
-          </span>
-          {/* 3D strength (end) */}
+          <span className="faint" style={{ fontSize: 12 }}>3D photos: under <b>View ▾</b> (they move in slideshows and while just viewing).</span>
 
           <span>Faces</span>
           <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>

@@ -29,7 +29,11 @@ export interface PlaybackSettings {
   beatMinSeconds: number;
   /** Pictures slowly pan and zoom while they show. */
   kenBurns: boolean;
-  /** 3D photos: still pictures move with gentle depth parallax (needs the depth pack). */
+  /**
+   * Old: 3D photos used to be a slideshow setting. It is now a viewer setting
+   * (View ▾ → 3D photos, ViewerSettings.depthAuto); this is still read so old
+   * presets load, and carried over once (depthToCarryOver).
+   */
   depth3d: boolean;
 }
 
@@ -84,4 +88,16 @@ export function gifShowMs(s: PlaybackSettings, loopMs: number): number {
   if (s.gifLoops > 0 && loopMs > 0) return Math.min(cap, Math.max(loopMs * s.gifLoops, 1500));
   if (cap !== Infinity) return cap;
   return Math.max(s.imageSeconds * 1000, loopMs || 0);
+}
+
+/**
+ * Whether the old slideshow setting "3D photos" should turn on the viewer
+ * setting that replaced it: once only (so turning it off later sticks), and
+ * only if it was on in the current slideshow settings or a saved preset.
+ */
+export function depthToCarryOver(
+  viewer: { depthAutoMigrated?: boolean },
+  settings: (Partial<PlaybackSettings> | null | undefined)[],
+): boolean {
+  return !viewer.depthAutoMigrated && settings.some((s) => s?.depth3d === true);
 }
