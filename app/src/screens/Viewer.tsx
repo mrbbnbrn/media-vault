@@ -8,7 +8,7 @@ import { BeatStatusLine } from '../components/BeatStatus';
 import { Dropdown, PromptDialog } from '../components/Dialogs';
 import { BackIcon } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
-import { SpeedRound } from '../components/SpeedRound';
+import { lazyPart } from '../lazypart';
 import { depthPack, NO_DEPTH_PACK } from '../depth';
 import { drawnRect, type Box } from '../flip';
 import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
@@ -27,6 +27,8 @@ export interface TitleCard {
 }
 
 const TITLE_CARD_MS = 2500;
+
+const SpeedRound = lazyPart(() => import('../components/SpeedRound').then((m) => m.SpeedRound));
 
 /** What the viewer showed when it was closed, for the shrink back into the grid (viewerflip.ts). */
 export interface ViewerClose {

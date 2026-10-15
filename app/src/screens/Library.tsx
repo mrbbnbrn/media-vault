@@ -11,28 +11,18 @@ import {
 } from '../api';
 import type { Nav } from '../App';
 import { ActionBar, type BarAction } from '../components/ActionBar';
-import { ContactSheet } from '../components/ContactSheet';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
   ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
   ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
-import { LookAlikes } from '../components/LookAlikes';
-import { PeopleView, PersonAlso } from '../components/People';
 import { FaceSortOffer } from '../components/FaceSort';
 import { peopleInText } from '../peoplelogic';
-import { RenameDialog, type RenameEntry } from '../components/RenameDialog';
-import { QuickSort } from '../components/QuickSort';
-import { TagManager } from '../components/TagManager';
-import { DeleteOriginalDialog, MergeDialog, NoteDialog } from '../components/OrganizeDialogs';
-import { MemoriesView, type Memory } from '../components/Memories';
+import type { RenameEntry } from '../components/RenameDialog';
+import type { Memory } from '../components/Memories';
 import { ShareDialog } from '../components/ShareDialog';
-import { ConvertDialog } from '../components/ConvertDialog';
-import { AnimationDialog } from '../components/AnimationDialog';
-import { Duel } from '../components/Duel';
-import { SlotMachine } from '../components/SlotMachine';
-import { WhyHere, type WhyQuery } from '../components/WhyHere';
+import type { WhyQuery } from '../components/WhyHere';
 import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortTree, type FolderSort } from '../foldersort';
 import { useFolderPrefs } from '../folderprefs';
 import { MuseumHost, museumOpen, openFolderMuseum, openMuseum } from '../components/museum/launch';
@@ -51,7 +41,6 @@ import { CoverVideo } from '../components/VideoPreview';
 import { setPreviewCover } from '../previewgate';
 import { RoundCover } from '../components/RoundCover';
 import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
-import { StatsView } from '../components/StatsView';
 import { TodaysPickCard, useTodaysPick } from '../components/TodaysPick';
 import { setDropHandler } from '../drop';
 import { startMoveDrag, targetFolder } from '../dragmove';
@@ -67,6 +56,26 @@ import { sorted, type Order } from '../playlist';
 import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
+import { lazyPart } from '../lazypart';
+
+// Views and dialogs that load when first opened (lazypart.tsx).
+const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
+const LookAlikes = lazyPart(() => import('../components/LookAlikes').then((m) => m.LookAlikes));
+const PeopleView = lazyPart(() => import('../components/People').then((m) => m.PeopleView));
+const PersonAlso = lazyPart(() => import('../components/People').then((m) => m.PersonAlso));
+const RenameDialog = lazyPart(() => import('../components/RenameDialog').then((m) => m.RenameDialog));
+const QuickSort = lazyPart(() => import('../components/QuickSort').then((m) => m.QuickSort));
+const TagManager = lazyPart(() => import('../components/TagManager').then((m) => m.TagManager));
+const DeleteOriginalDialog = lazyPart(() => import('../components/OrganizeDialogs').then((m) => m.DeleteOriginalDialog));
+const MergeDialog = lazyPart(() => import('../components/OrganizeDialogs').then((m) => m.MergeDialog));
+const NoteDialog = lazyPart(() => import('../components/OrganizeDialogs').then((m) => m.NoteDialog));
+const MemoriesView = lazyPart(() => import('../components/Memories').then((m) => m.MemoriesView));
+const ConvertDialog = lazyPart(() => import('../components/ConvertDialog').then((m) => m.ConvertDialog));
+const AnimationDialog = lazyPart(() => import('../components/AnimationDialog').then((m) => m.AnimationDialog));
+const Duel = lazyPart(() => import('../components/Duel').then((m) => m.Duel));
+const SlotMachine = lazyPart(() => import('../components/SlotMachine').then((m) => m.SlotMachine));
+const WhyHere = lazyPart(() => import('../components/WhyHere').then((m) => m.WhyHere));
+const StatsView = lazyPart(() => import('../components/StatsView').then((m) => m.StatsView));
 
 export type LibView =
   | { kind: 'folders' }
