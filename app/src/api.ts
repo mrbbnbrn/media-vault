@@ -32,11 +32,13 @@ export interface ViewerSettings {
   alignFaces?: boolean;
   /** The picture grows out of its tile when opened and shrinks back into it when closed. */
   openCloseAnim?: boolean;
+  /** Slideshow: a small ring by the Slideshow button shows the time to the next item. */
+  slideRing?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
-  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true,
+  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true,
 };
 
 export interface AppConfig {

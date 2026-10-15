@@ -23,6 +23,8 @@ import { captureVideoFrame, derivedName } from '../clips';
 import { formatTime, kickThumbnails, noteItemsChanged, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
+import { beatFilled, clockFrac, gifSegments, newClock, remainingWait, videoFrac, type RingInfo } from '../slidering';
+import { SlideRing } from './SlideRing';
 import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
 import { ContextMenu, Dropdown } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
@@ -261,6 +263,7 @@ export function Player(props: PlayerProps) {
   const beat = useBeatSync({ enabled: beatOn, everyBeats: s.beatEvery, minSeconds: s.beatMinSeconds, onAdvance: () => go('next', true) });
   beatMark.current = beat.markAdvanced;
   const beatDriving = beatOn && !beat.silent && !zoomed;
+  const slideClock = useRef(newClock()); // time to next slide
 
   // Pictures and GIFs advance on a timer while the slideshow runs.
   useEffect(() => {
@@ -273,9 +276,43 @@ export function Player(props: PlayerProps) {
       if (!imgInfo) return;
       ms = gifShowMs(s, imgInfo.loopMs);
     } else return;
-    const t = setTimeout(() => go('next', true), ms);
-    return () => clearTimeout(t);
+    // ---- time to next slide (begin): the time already shown carries over a pause ----
+    const c = slideClock.current;
+    const key = `${item.key}:${tick}`;
+    if (c.key !== key) Object.assign(c, newClock(), { key });
+    c.ms = ms;
+    c.segments = item.kind === 'gif' && !failed && imgInfo ? gifSegments(s, imgInfo.loopMs) : 1;
+    c.since = performance.now();
+    const t = setTimeout(() => go('next', true), remainingWait(c));
+    return () => {
+      clearTimeout(t);
+      if (c.since != null) c.used += performance.now() - c.since;
+      c.since = null;
+    };
+    // ---- time to next slide (end) ----
   }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- time to next slide (begin): what the ring by the Slideshow button shows ----
+  const ringOn = prefs.slideRing !== false && slideshow && !mini && !props.compact;
+  const beatBase = useRef(0);
+  useEffect(() => {
+    beatBase.current = beat.pulse;
+  }, [item?.key, tick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const ringNow = useRef<() => RingInfo | null>(() => null);
+  ringNow.current = () => {
+    if (!item) return null;
+    if (beatDriving && !failed) return { mode: 'beat', every: s.beatEvery, filled: beatFilled(beat.pulse, beatBase.current, s.beatEvery), running: !halted };
+    const c = slideClock.current;
+    if (c.key === `${item.key}:${tick}` && c.ms > 0) return { mode: 'time', frac: clockFrac(c, performance.now()), running: c.since != null, segments: c.segments };
+    const v = videoRef.current;
+    if (isVideo && v && (loop.a == null || loop.b == null)) {
+      const f = videoFrac(v.currentTime, videoStart.current, v.duration, s.videoMaxSeconds);
+      if (f != null) return { mode: 'time', frac: f, running: !v.paused && !halted, segments: 1 };
+    }
+    return null;
+  };
+  const readRing = useCallback(() => ringNow.current(), []);
+  // ---- time to next slide (end) ----
 
   // ---- decoding ahead (picturecache.ts) --------------------------------------------------
   // Once this item shows, the next two in the direction you are going (and one
@@ -1266,9 +1303,11 @@ export function Player(props: PlayerProps) {
           {timeline}
           <div className="row" style={{ gap: 8 }}>
             <button type="button" className="pbtn lg" aria-label="Previous" title={isVideo || isGif ? 'Previous (Shift+Space)' : 'Previous (←)'} onClick={() => go('prev')}><PrevIcon /></button>
-            <button type="button" className="btn btn-primary slideshow" aria-pressed={slideshow && !paused} onClick={toggleSlideshow}
+            <button type="button" className={`btn btn-primary slideshow${ringOn ? ' ringed' : ''}`} aria-pressed={slideshow && !paused} onClick={toggleSlideshow}
               title={isVideo || isGif ? 'Slideshow' : 'Slideshow (Space)'}>
-              {slideshow && !paused ? <PauseIcon /> : <PlayIcon />} Slideshow
+              {ringOn ? (
+                <SlideRing read={readRing} pulse={beat.pulse}>{slideshow && !paused ? <PauseIcon size={12} /> : <PlayIcon size={12} />}</SlideRing>
+              ) : slideshow && !paused ? <PauseIcon /> : <PlayIcon />} Slideshow
             </button>
             <button type="button" className="pbtn lg" aria-label="Next" title={isVideo || isGif ? 'Next (Ctrl+Space)' : 'Next (→)'} onClick={() => go('next')}><NextIcon /></button>
             {(isVideo || isGif) && !slideshow && (
