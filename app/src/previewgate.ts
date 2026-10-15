@@ -12,7 +12,14 @@ let minimised = false;
 let paused = false;
 const subs = new Set<(paused: boolean) => void>();
 
+const windowSubs = new Set<(resting: boolean) => void>();
+let windowResting = hidden;
+
 function update() {
+  if ((hidden || minimised) !== windowResting) {
+    windowResting = hidden || minimised;
+    windowSubs.forEach((s) => s(windowResting));
+  }
   const p = hidden || minimised || covers.size > 0;
   if (p === paused) return;
   paused = p;
@@ -28,6 +35,16 @@ export function onPreviewsPaused(cb: (paused: boolean) => void): () => void {
   subs.add(cb);
   return () => subs.delete(cb);
 }
+
+/**
+ * Only the window being hidden or minimised (not the viewer or the river
+ * covering the library): the discovery river rests its own players with this.
+ */
+export function onWindowResting(cb: (resting: boolean) => void): () => void {
+  windowSubs.add(cb);
+  return () => windowSubs.delete(cb);
+}
+export const isWindowResting = () => windowResting;
 
 /** Something covers the library (the viewer): `key` names who, so several can. */
 export function setPreviewCover(key: string, on: boolean) {

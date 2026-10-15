@@ -13,7 +13,7 @@ import { onPreviewsPaused, previewsPaused } from '../previewgate';
 
 // ---- the player pool ------------------------------------------------------------------------
 
-function makePlayer(): HTMLVideoElement {
+export function makePlayer(): HTMLVideoElement {
   const v = document.createElement('video');
   v.muted = true;
   v.defaultMuted = true;

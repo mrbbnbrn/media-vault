@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { CoverPos } from './coverframe';
+import type { RiverFace } from './riverplay';
 
 export interface LockSettings {
   idleMinutes: number;
@@ -48,6 +49,10 @@ export interface ViewerSettings {
   riverLayers?: number;
   /** Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed). */
   poorFaces?: boolean;
+  /** Discovery river: pictures, or round faces of known people (whose: riverPeople, empty = everyone; smallest face in px: riverFaceMin). */
+  riverMode?: 'pictures' | 'faces';
+  riverPeople?: number[];
+  riverFaceMin?: number;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
@@ -55,6 +60,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1, riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
+  riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
 };
 
 export interface AppConfig {
@@ -784,6 +790,8 @@ export const api = {
   // folder banners (banner.rs): media null removes it; y = where to look, 0 top … 1 bottom
   folderBanner: (folder: number) => call<FolderBanner | null>('folder_banner', { folder }),
   setBanner: (folder: number, media: number | null, y?: number) => call<void>('set_banner', { folder, media, y: y ?? null }),
+  // faces river (riverfaces.rs): known faces of these people (empty = everyone), no hidden ones, no videos
+  riverFaces: (people: number[]) => call<RiverFace[]>('river_faces', { people }),
   allTags: () => call<TagCount[]>('all_tags'),
   // ---- organising
   freeCopy: (ids: number[], folder: number | null) => call<number[]>('free_copy', { ids, folder }),
@@ -1417,6 +1425,7 @@ const mock = {
       case 'clip_needed':
       case 'similar_needed':
       case 'faces_of':
+      case 'river_faces':
       case 'smart_search':
         return [];
       case 'engine_info':

@@ -50,6 +50,7 @@ mod library;
 mod meta;
 mod protocol;
 mod rotate;
+mod riverfaces; // the faces river
 mod selftest;
 mod session;
 mod share7z;
@@ -830,6 +831,13 @@ async fn set_banner(state: State<'_, Shared>, folder: i64, media: Option<i64>, y
     edit_db(state.inner(), move |c| banner::set(c, folder, media, y)).await
 }
 // ---- folder banners (end) ----
+
+// ---- faces river (begin) ----
+#[tauri::command]
+async fn river_faces(state: State<'_, Shared>, people: Vec<i64>) -> Result<Vec<riverfaces::RiverFace>, String> {
+    read_db(state.inner(), move |c| riverfaces::list(c, &people)).await
+}
+// ---- faces river (end) ----
 
 #[tauri::command]
 async fn all_tags(state: State<'_, Shared>) -> Result<Vec<library::TagCount>, String> {
@@ -2394,6 +2402,7 @@ pub fn run() {
             set_cover_frame,
             folder_banner,
             set_banner,
+            river_faces,
             all_tags,
             item_tags,
             tag_items,

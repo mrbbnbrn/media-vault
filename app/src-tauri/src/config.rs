@@ -81,6 +81,12 @@ pub struct ViewerSettings {
     pub river_layers: u32,
     /// Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed).
     pub poor_faces: bool,
+    /// Discovery river: "pictures" or "faces" (round bubbles of known people).
+    pub river_mode: String,
+    /// Faces river: whose faces (person folder ids; empty = everyone).
+    pub river_people: Vec<i64>,
+    /// Faces river: leave out faces smaller than this (px tall in the original picture; 0 = all).
+    pub river_face_min: u32,
 }
 
 impl Default for ViewerSettings {
@@ -107,6 +113,9 @@ impl Default for ViewerSettings {
             river_density: 1.0,
             river_layers: 5,
             poor_faces: false,
+            river_mode: "pictures".into(),
+            river_people: Vec::new(),
+            river_face_min: 0,
         }
     }
 }
@@ -290,6 +299,11 @@ impl AppConfig {
         v.sound_volume = clamp(v.sound_volume, 0.0, 1.0, 0.0);
         v.grid_columns = v.grid_columns.min(16);
         self.poor_faces = self.poor_faces.clone().sanitized();
+        if v.river_mode != "faces" {
+            v.river_mode = "pictures".into();
+        }
+        v.river_people.truncate(500);
+        v.river_face_min = v.river_face_min.min(5000);
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();
@@ -384,6 +398,14 @@ pub fn save(dir: &Path, cfg: &AppConfig) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn river_faces_settings_are_kept_sane() {
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverMode":"faces","riverPeople":[3,9],"riverFaceMin":120}}"#).unwrap().sanitized();
+        assert_eq!((c.viewer.river_mode.as_str(), c.viewer.river_people.clone(), c.viewer.river_face_min), ("faces", vec![3, 9], 120));
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverMode":"other","riverFaceMin":99999}}"#).unwrap().sanitized();
+        assert_eq!((c.viewer.river_mode.as_str(), c.viewer.river_face_min), ("pictures", 5000));
+    }
 
     #[test]
     fn defaults_are_teal_and_idle_15() {
