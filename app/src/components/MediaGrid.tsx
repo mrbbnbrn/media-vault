@@ -90,6 +90,8 @@ export function MediaGrid(props: {
   // ---- video previews ----
   const made = useMadePreviews();
   const realBudget = useRealBudget();
+  /** Tiles playing the real video last time: they keep it (no swapping back and forth while scrolling). */
+  const wasReal = useRef<Set<number>>(new Set());
   // ---- end video previews ----
 
   useLayoutEffect(() => {
@@ -248,10 +250,11 @@ export function MediaGrid(props: {
     const it = props.items[i];
     if (it.kind !== 'video' || !onScreen(i) || !live(it, props.preview, hover)) continue;
     const b = layout.boxes[i];
-    wants.push({ id: it.id, hasTiny: hasTiny(it), hasStrip: hasStrip(it), hovered: hover === it.id, rank: Math.abs(b.y + b.h / 2 - mid) });
+    wants.push({ id: it.id, hasTiny: hasTiny(it), hasStrip: hasStrip(it), hovered: hover === it.id, rank: Math.abs(b.y + b.h / 2 - mid) - (wasReal.current.has(it.id) ? 100_000 : 0) });
   }
   const layers = chooseLayers(wants, realBudget, props.previewQuality ?? 'auto');
   const realCount = [...layers.values()].filter((l) => l === 'real').length;
+  wasReal.current = new Set([...layers].filter(([, l]) => l === 'real').map(([id]) => id));
   const wantKey = wants.map((x) => `${x.id}${x.hasTiny ? 't' : ''}${x.hasStrip ? 's' : ''}`).join(',');
   useEffect(() => {
     reportPlan(wants.length, realCount);

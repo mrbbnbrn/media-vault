@@ -191,6 +191,7 @@ function flipTime(duration: number): number {
 // ---- a playing tile ----------------------------------------------------------------------------------
 
 const ORDER: Layer[] = ['flip', 'tiny', 'real'];
+const RANK: Record<Layer, number> = { thumb: 0, flip: 1, tiny: 2, real: 3 };
 const FADE_MS = 240;
 const SETTLE_MS = 160;
 
@@ -223,15 +224,24 @@ export function VideoPreview(props: {
   const want: Layer = settled || props.eager ? props.layer : 'thumb';
   const duration = (props.durationMs ?? 0) / 1000;
 
-  // The wanted layer is ready: it fades in over the old one, which then goes.
+  // While the wanted layer loads, a lighter one stands in if it is better than what shows
+  // (hover: the tiny clip at once, then the real video).
+  const standIn: Layer | null = want === 'real' ? (props.hasTiny ? 'tiny' : props.hasStrip ? 'flip' : null) : want === 'tiny' && props.hasStrip ? 'flip' : null;
+  const interim = standIn && !ready.has(want) && RANK[top] < RANK[standIn] ? standIn : null;
+
+  // The wanted layer (or the stand-in) is ready: it fades in over the old one, which then goes.
   useEffect(() => {
-    if (want === top) return;
-    if (want !== 'thumb' && !ready.has(want)) return;
+    const next = want === 'thumb' || ready.has(want) ? want : interim && ready.has(interim) ? interim : null;
+    if (!next || next === top) return;
     setUnder(top === 'thumb' ? null : top);
-    setTop(want);
+    setTop(next);
+  }, [want, interim, ready, top]);
+  // The old layer goes once the new one has faded in.
+  useEffect(() => {
+    if (!under) return;
     const t = setTimeout(() => setUnder(null), FADE_MS + 40);
     return () => clearTimeout(t);
-  }, [want, ready, top]);
+  }, [under, top]);
 
   const markReady = (l: Layer) => setReady((r) => (r.has(l) ? r : new Set(r).add(l)));
   const unready = (l: Layer) => setReady((r) => {
@@ -241,13 +251,13 @@ export function VideoPreview(props: {
     return n;
   });
   // A layer that goes away must show its first picture again before it counts as ready.
-  const mounted = new Set<Layer>([want, top, ...(under ? [under] : [])].filter((l) => l !== 'thumb'));
+  const mounted = new Set<Layer>([want, top, ...(under ? [under] : []), ...(interim ? [interim] : [])].filter((l) => l !== 'thumb'));
   const mountedKey = ORDER.filter((l) => mounted.has(l)).join(',');
   useEffect(() => {
     for (const l of ORDER) if (!mounted.has(l)) unready(l);
   }, [mountedKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const z = (l: Layer) => (l === want && l !== top ? 3 : l === top ? 2 : 1);
+  const z = (l: Layer) => (l === top ? 2 : l === under ? 1 : 3);
   const cls = (l: Layer) => `vlayer${ready.has(l) ? ' ready' : ''}`;
   const realStart = () => {
     const tv = tinyEl.current;
@@ -256,7 +266,7 @@ export function VideoPreview(props: {
     return 0;
   };
   return (
-    <span className="vstack" aria-hidden="true">
+    <span className="vstack" aria-hidden="true" data-top={top}>
       {mounted.has('flip') && props.hasStrip && (
         <span className={cls('flip')} style={{ zIndex: z('flip') }} ref={(el) => { if (el) markReady('flip'); }}>
           <FlipBook id={props.id} w={props.w} h={props.h} aspect={props.aspect} />

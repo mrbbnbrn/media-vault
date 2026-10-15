@@ -3,8 +3,9 @@
 // from the encrypted vault and from ordinary files.
 
 import { invoke } from '@tauri-apps/api/core';
-import { makePreviewStrip } from './previews';
-import { api, inTauri, localUrl, mediaUrl, onEvent, previewUrl, thumbUrl, type DamageReport, type ExportDone, type Kind, type LocalItem } from './api';
+import { makePreviewStrip, tinyPieces } from './previews';
+import { makeVideoPreviews } from './tinyclip';
+import { api, inTauri, localUrl, mediaUrl, onEvent, previewUrl, thumbUrl, tinyUrl, type DamageReport, type ExportDone, type Kind, type LocalItem } from './api';
 import { animationMs, makeThumb } from './media';
 import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
@@ -222,6 +223,36 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       if (!(await api.getItem(vid.id)).preview) throw new Error('not marked as having a clip');
       const c = await api.cacheInfo();
       return `${bytes.length} bytes, ${got}, made in ${Math.round(performance.now() - t)} ms; ${c.previews} clip(s) ${c.previewBytes} bytes`;
+    });
+    await step('tiny preview clip (grid previews)', async () => {
+      const t = performance.now();
+      const item = await api.getItem(vid.id);
+      const plan = tinyPieces((item.durationMs ?? 0) / 1000);
+      let how = 'video tool';
+      if (!(await api.makeTinyWithTool(vid.id, plan.starts, plan.piece).catch(() => false))) {
+        how = 'window';
+        const m = await makeVideoPreviews(mediaUrl(vid.id), { strip: false, tiny: true });
+        if (!m.tiny) throw new Error('this window has no video encoder (VP9/VP8)');
+        await api.saveTiny(vid.id, Array.from(m.tiny));
+      }
+      const made = Math.round(performance.now() - t);
+      if (!(await api.getItem(vid.id)).tiny) throw new Error('not marked as having a tiny clip');
+      const v = document.createElement('video');
+      v.muted = true;
+      v.src = tinyUrl(vid.id);
+      try {
+        await Promise.race([
+          new Promise<void>((res, rej) => {
+            v.onloadeddata = () => res();
+            v.onerror = () => rej(new Error("the tiny clip doesn't play"));
+          }),
+          new Promise((_, rej) => setTimeout(() => rej(new Error('the tiny clip took too long to load')), 10_000)),
+        ]);
+        return `made by the ${how} in ${made} ms; plays: ${v.videoWidth}×${v.videoHeight}, ${v.duration.toFixed(1)} s`;
+      } finally {
+        v.removeAttribute('src');
+        v.load();
+      }
     });
     await step('bookmarks, trash and restore', async () => {
       const b = await api.addBookmark(vid.id, 1500, 'selftest');

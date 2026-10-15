@@ -432,7 +432,7 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
         </div>
       )}
       <Toggle title="Make preview clips" on={cfg.makePreviews !== false} set={(v) => update({ ...cfg, makePreviews: v })}
-        desc="Small, low-resolution clips of each video, made in the background. When too many videos play in a grid at once, all of them switch to these clips so it stays smooth." />
+        desc="A few seconds of small, silent video and a strip of little frames for each video, made once in the background. Grid tiles play them straight away and switch to the real video when your PC keeps up." />
       <div className="setting">
         <div className="text">
           <span className="title">Delete preview clips</span>
