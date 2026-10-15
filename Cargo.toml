@@ -8,9 +8,27 @@ edition = "2024"
 rust-version = "1.97"
 license = "MIT"
 
+# The app as shipped (and `cargo test --release` in CI, which uses this profile too).
 [profile.release]
-lto = true
+# Whole-program optimisation across all crates. "fat" over "thin": measured on
+# CI the Windows app build takes 7-8 minutes with it (warm cache), so it isn't
+# worth giving up; locally thin LTO linked no faster (vault-export: 26 s fat,
+# 28 s thin).
+lto = "fat"
 codegen-units = 1
+# No debug info, no symbol table: a smaller MediaVault.exe. (Panic messages
+# still say what went wrong; backtraces just lose their function names.)
+debug = false
+strip = true
+# panic stays "unwind" on purpose: work runs on background threads (imports,
+# analysis, thumbnails, the vault: protocol) and Tauri commands, and a panic
+# there must only end that piece of work, not close the whole app with the
+# vault open. The code relies on that (poisoned locks are recovered, thread
+# results are checked), so "abort" would not be safe.
+#
+# No target-cpu either: the hot paths (AES-GCM, SHA-256, JPEG decoding) already
+# pick the computer's fastest instructions at run time, so x86-64-v2 would
+# gain next to nothing and only make the app crash at start on an old CPU.
 
 # Keep password hashing and encryption fast in debug builds too.
 [profile.dev.package."*"]

@@ -91,7 +91,8 @@ pub fn sketch_from_encoded(bytes: &[u8]) -> Option<String> {
     (!s.is_empty()).then_some(s)
 }
 
-/// Is this a well-formed sketch? (For tests and for checking input.)
+/// Is this a well-formed sketch?
+#[cfg(test)]
 pub fn is_valid(s: &str) -> bool {
     let b = s.as_bytes();
     if b.len() < 2 {
@@ -170,7 +171,7 @@ mod tests {
         assert!(is_valid(&s), "{s}");
         assert_eq!(s.len(), 38);
         assert_eq!(&s[..2], "43");
-        assert!(s[2..].as_bytes().chunks(3).all(|c| c == b"f08"), "{s}");
+        assert!(s.as_bytes()[2..].chunks(3).all(|c| c == b"f08"), "{s}");
     }
 
     #[test]
@@ -186,7 +187,7 @@ mod tests {
         }
         let s = sketch_from_rgb(w, h, &rgb);
         assert_eq!(&s[..2], "34");
-        let cells: Vec<&[u8]> = s[2..].as_bytes().chunks(3).collect();
+        let cells: Vec<&[u8]> = s.as_bytes()[2..].chunks(3).collect();
         assert_eq!(cells.len(), 12);
         for r in 0..4 {
             assert_eq!(cells[r * 3], b"fff");
@@ -201,7 +202,7 @@ mod tests {
         let (w, h) = (30u32, 30u32);
         let rgb: Vec<u8> = (0..w * h).flat_map(|i| { let v = if (i % w + i / w) % 2 == 0 { 255 } else { 0 }; [v, v, v] }).collect();
         let s = sketch_from_rgb(w, h, &rgb);
-        assert!(s[2..].as_bytes().chunks(3).all(|c| c == b"bbb"), "{s}");
+        assert!(s.as_bytes()[2..].chunks(3).all(|c| c == b"bbb"), "{s}");
     }
 
     #[test]
@@ -226,7 +227,7 @@ mod tests {
             .unwrap();
         let s = sketch_from_encoded(&jpg).unwrap();
         assert_eq!(&s[..2], "43");
-        assert!(s[2..].as_bytes().chunks(3).all(|c| c == b"0cf"), "{s}");
+        assert!(s.as_bytes()[2..].chunks(3).all(|c| c == b"0cf"), "{s}");
         assert_eq!(sketch_from_encoded(b"not a picture"), None);
     }
 }
