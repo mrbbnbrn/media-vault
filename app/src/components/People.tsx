@@ -14,6 +14,7 @@ import { Dropdown, Modal, PromptDialog, type MenuItem } from './Dialogs';
 import { CloseIcon, FaceIcon } from './Icons';
 import type { LibView } from '../screens/Library';
 import { RoundCover } from './RoundCover';
+import { PoorFacesSection } from './PoorFaces';
 import './people.css';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
@@ -260,6 +261,11 @@ export function PeopleView(props: {
             ))}
           </div>
         </details>
+      )}
+
+      {review && (
+        <PoorFacesSection review={review} onOpenItem={props.onOpenItem} onError={setError}
+          onDone={(m) => done(Promise.resolve(), m)} onMore={() => setReq((r) => ({ ...r, poor: (r.poor ?? 60) + 60 }))} />
       )}
 
       {naming && (

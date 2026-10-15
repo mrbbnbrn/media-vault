@@ -28,6 +28,7 @@ import { SlideRing } from './SlideRing';
 import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
 import { ConfirmDialog, ContextMenu, Dropdown } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
+import { visibleFaces } from '../poorfaces';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
@@ -159,6 +160,8 @@ export function Player(props: PlayerProps) {
   // "Show 'not important' faces too" (to fix one marked by mistake). Remembered.
   const hiddenFaces = prefs.hiddenFaces === true;
   const setHiddenFaces = (on: boolean) => saveViewerPrefs({ hiddenFaces: on });
+  // "Show poor faces too" (too small, blurry or turned; dimmed). Remembered.
+  const poorFaces = prefs.poorFaces === true;
   const [resetAsk, setResetAsk] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const panMoved = useRef(false);
@@ -713,7 +716,7 @@ export function Player(props: PlayerProps) {
     const list = await api.facesOf(id, hiddenFaces).catch(() => [] as FaceBox[]);
     if (listRef.current?.current()?.itemId !== id) return;
     setFaces(list);
-    if (list.length) {
+    if (visibleFaces(list, poorFaces).length) {
       setFaceFlash(true);
       setFaceReload((n) => n + 1);
     } else setFlash(`No faces found in this ${what}`);
@@ -740,17 +743,18 @@ export function Player(props: PlayerProps) {
       if (token !== scanToken.current) return; // moved on to another item
       const list = await api.facesOf(id, hiddenFaces).catch(() => [] as FaceBox[]);
       if (token !== scanToken.current) return;
-      if (list.length) {
+      if (visibleFaces(list, poorFaces).length) {
+        const n = visibleFaces(list, poorFaces).length;
         setFaces(list);
         setFaceFlash(true);
-        setFaceReload((n) => n + 1);
-        setFlash(list.length === 1 ? 'Found 1 face' : `Found ${list.length} faces`);
+        setFaceReload((k) => k + 1);
+        setFlash(n === 1 ? 'Found 1 face' : `Found ${n} faces`);
         return;
       }
     }
     if (token === scanToken.current) setFlash(`No faces found in this ${what}`);
   };
-  const shownFaces = showFaces ? facesAt(faces, isVideo, time.at).map((f) => turnBox(f, rot)) : [];
+  const shownFaces = showFaces ? visibleFaces(facesAt(faces, isVideo, time.at), poorFaces).map((f) => turnBox(f, rot)) : [];
   const toggleHiddenFaces = () => {
     const on = !hiddenFaces;
     setHiddenFaces(on);
@@ -760,7 +764,19 @@ export function Player(props: PlayerProps) {
       setFaceReload((n) => n + 1);
     }
   };
-  const faceTools = { showHidden: hiddenFaces, setShowHidden: () => toggleHiddenFaces(), reset: () => setResetAsk(true) };
+  const togglePoorFaces = () => {
+    const on = !poorFaces;
+    saveViewerPrefs({ poorFaces: on });
+    setFlash(on ? 'Showing poor faces too (small, blurry or turned)' : 'Poor faces hidden');
+    if (on && !prefs.faceBoxes) {
+      setFaceFlash(true);
+      setFaceReload((n) => n + 1);
+    }
+  };
+  const faceTools = {
+    showHidden: hiddenFaces, setShowHidden: () => toggleHiddenFaces(), reset: () => setResetAsk(true),
+    showPoor: poorFaces, setShowPoor: () => togglePoorFaces(),
+  };
 
   // The offline AI upscaler (still pictures in the vault, full viewer only).
   const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
@@ -1265,6 +1281,7 @@ export function Player(props: PlayerProps) {
             { label: 'Show faces', hint: 'for a moment', sepBefore: true, onSelect: () => { setMenu(null); flashFaces(); } },
             { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
             { label: "Show 'not important' faces too", checked: hiddenFaces, onSelect: () => { setMenu(null); toggleHiddenFaces(); } },
+            { label: 'Show poor faces too', hint: 'small, blurry, turned', checked: poorFaces, onSelect: () => { setMenu(null); togglePoorFaces(); } },
             { label: 'Reset faces and scan again…', hint: 'mark them again', onSelect: () => { setMenu(null); setResetAsk(true); } },
             { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
           ] : []),

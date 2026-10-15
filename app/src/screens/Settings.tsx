@@ -7,6 +7,7 @@ import { DamageReportView, ExportDialog } from '../components/Safety';
 import { UpscalerSection } from '../components/Upscale';
 import { DepthSection } from '../components/Depth3D';
 import { FaceSection } from '../components/FaceEngine';
+import { PoorFaceSettingsView } from '../components/PoorFaceSettings';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
 import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, SmartEngine, StorageTask } from '../api';
@@ -238,7 +239,7 @@ export function Settings({ nav }: { nav: Nav }) {
           {section === 'vault' && <VaultSection nav={nav} />}
           {section === 'storage' && <StorageSection cfg={cfg} update={update} />}
           {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
-          {section === 'smart' && <SmartSection />}
+          {section === 'smart' && <SmartSection poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (
             <section className="section">
               <h2>Media Vault 0.1.0</h2>
@@ -609,7 +610,7 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
   );
 }
 
-function SmartSection() {
+function SmartSection(props: { poor?: React.ReactNode }) {
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [models, setModels] = useState<boolean | null>(null);
   const [engine, setEngine] = useState<SmartEngine | null>(null);
@@ -623,6 +624,8 @@ function SmartSection() {
   return (
     <>
       <FaceSection />
+
+      {props.poor && <><div className="divider" />{props.poor}</>}
 
       <div className="divider" />
 

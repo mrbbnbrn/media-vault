@@ -242,6 +242,8 @@ pub struct Found {
     pub score: f32,
     /// 512 numbers, unit length.
     pub embedding: Vec<f32>,
+    /// The five face points (eyes, nose tip, mouth corners), for how turned it is.
+    pub kps: [[f32; 2]; 5],
 }
 
 /// Find the faces in an RGBA picture and fingerprint them.
@@ -278,7 +280,7 @@ pub fn analyse(rgba: &[u8], w: usize, h: usize) -> Result<Vec<Found>, String> {
             let from = ci * BATCH * per;
             let embs = run_rec(&mut m.rec, &crops[from..from + chunk.len() * per], chunk.len())?;
             for (d, e) in chunk.iter().zip(embs) {
-                out.push(Found { bbox: d.bbox, score: d.score, embedding: e });
+                out.push(Found { bbox: d.bbox, score: d.score, embedding: e, kps: d.kps });
             }
         }
         Ok(out)
@@ -288,6 +290,13 @@ pub fn analyse(rgba: &[u8], w: usize, h: usize) -> Result<Vec<Found>, String> {
 /// The upscaler (GFPGAN): the five face points (eyes, nose tip, mouth
 /// corners) of every face in an RGBA picture, in its pixels.
 pub fn points(rgba: &[u8], w: usize, h: usize) -> Result<Vec<[[f32; 2]; 5]>, String> {
+    Ok(detections(rgba, w, h)?.into_iter().map(|d| d.1).collect())
+}
+
+/// Only the face finder (no fingerprints): every face's box (x1, y1, x2, y2)
+/// and five points, in the picture's pixels. Used to measure how turned
+/// faces found earlier are (poorfaces.rs) and by the upscaler.
+pub fn detections(rgba: &[u8], w: usize, h: usize) -> Result<Vec<crate::poorfaces::Detected>, String> {
     if w.checked_mul(h).and_then(|p| p.checked_mul(4)) != Some(rgba.len()) {
         return Err("The picture didn't arrive whole.".into());
     }
@@ -300,7 +309,7 @@ pub fn points(rgba: &[u8], w: usize, h: usize) -> Result<Vec<[[f32; 2]; 5]>, Str
     with_models(&mut |m| {
         let mut dets: Vec<Detection> = run_det(&mut m.det, input.clone(), &plan)?.into_iter().map(|d| d.unscaled(plan.scale)).collect();
         dets.truncate(MAX_FACES);
-        Ok(dets.into_iter().map(|d| d.kps).collect())
+        Ok(dets.into_iter().map(|d| (d.bbox, d.kps)).collect())
     })
 }
 
@@ -347,6 +356,11 @@ pub fn faces_in(rgba: &[u8], width: usize, height: usize, frame_ms: i64) -> Resu
                 h: (y2 - y1) / h,
                 score: f.score,
                 descriptor: f.embedding,
+                // Poor faces: measured now, while the picture is here (px is
+                // replaced by the item's own pixels when it is saved).
+                px: Some(y2 - y1),
+                sharp: crate::poorfaces::crop_sharpness(rgba, width, height, [x1, y1, x2, y2]),
+                turn: Some(crate::poorfaces::turn_degrees(&f.kps)),
             }
         })
         .collect())

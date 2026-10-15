@@ -185,6 +185,13 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   against the faces (by a checksum of each fingerprint) and rebuilds what doesn't match
 - `folders.banner_media_id`, `folders.banner_y` (v15) — a folder's banner: the item shown wide at the
   top of the folder and where in it to look (0 = top, 1 = bottom); NULL = no banner.
+- `faces.px`, `faces.sharp`, `faces.turn` (v17) — what tells a "poor face" (too small, too
+  blurry or turned too far away to be trusted): the face's height in the item's own pixels,
+  its sharpness (variance of the Laplacian of a grey crop at most 64 px across; -1 = couldn't
+  be measured) and how far it is turned (degrees; 0 = straight at the camera, 90 = side on,
+  from the five face points). NULL = not measured yet and counts as fine. Whether a face is
+  poor is not stored: the app decides it from its settings each time, so changing them never
+  changes these rows. The upgrade fills `px` from `media.height`; the rest is measured later.
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

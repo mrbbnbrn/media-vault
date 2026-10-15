@@ -1,0 +1,18 @@
+/* Poor faces (too small, blurry or turned): dim and dotted, so they read as
+   "not to be trusted" — unlike unknown faces (amber, dashed) and
+   "not important" ones (grey, dashed). */
+.face-box.poor-face { border: 2px dotted rgba(150, 165, 220, 0.7); opacity: 0.72; }
+.face-box.poor-face:hover { opacity: 1; }
+.face-box.poor-face .face-tag { background: #2b3045; color: #c3cbee; font-weight: 500; }
+
+/* People → Poor faces: round crops with quick actions. */
+.poor-faces .poor-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 12px; }
+.poor-faces .poor-tile { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 92px; }
+.poor-faces .poor-tile .found-face { border-radius: 50%; overflow: hidden; opacity: 0.85; }
+.poor-faces .poor-tile .found-face:hover { opacity: 1; }
+.poor-faces .poor-why { font-size: 11px; text-align: center; line-height: 1.3; }
+.poor-faces .poor-actions { display: flex; gap: 4px; }
+.poor-faces .poor-actions .btn { padding: 2px 7px; font-size: 11px; }
+
+/* Settings → Faces → Poor faces. */
+.poor-settings input[type='range'] { min-width: 180px; }

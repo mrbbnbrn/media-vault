@@ -1,6 +1,8 @@
 // Boxes around found faces, drawn over the picture in the viewer. Known people
 // get a teal box with their name (click: everything of that person); unknown
-// faces an amber dashed box "Who is it?" (click: say who it is). Middle-click
+// faces an amber dashed box "Who is it?" (click: say who it is); poor faces
+// (too small, blurry or turned, only when asked for) a dim dotted box
+// "Poor face" that works like an unknown one. Middle-click
 // opens the person in a new tab behind this one, Ctrl+middle-click marks a
 // face "not important", right-click has everything else.
 
@@ -9,6 +11,8 @@ import { createPortal } from 'react-dom';
 import { api, type FaceBox, type FolderCard } from '../api';
 import type { Box } from '../flip';
 import { ContextMenu, PromptDialog } from './Dialogs';
+import { faceKind } from '../poorfaces';
+import './poorfaces.css';
 
 // Person folder names, loaded once and shared by every viewer.
 let people: Promise<FolderCard[]> | null = null;
@@ -29,6 +33,9 @@ export interface FaceTools {
   setShowHidden: (on: boolean) => void;
   /** Forget every face in this picture and look again. */
   reset: () => void;
+  /** Poor faces (too small, blurry or turned) are shown too (dimmed). */
+  showPoor?: boolean;
+  setShowPoor?: (on: boolean) => void;
 }
 
 /** Takes a face's name off (so it isn't suggested for them again) and hides
@@ -108,16 +115,19 @@ export function FaceLayer(props: {
     <div className="face-layer">
       {props.faces.map((f) => {
         const known = f.person != null;
+        const kind = faceKind(f);
         const left = r.left + f.x * r.width;
         const top = r.top + f.y * r.height;
-        const name = f.hidden ? 'Not important' : known ? nameOf(f)! : 'Who is it?';
-        const hint = f.hidden
+        const name = kind === 'hidden' ? 'Not important' : kind === 'poor' ? 'Poor face' : known ? nameOf(f)! : 'Who is it?';
+        const hint = kind === 'hidden'
           ? 'Not important · Ctrl+middle-click: important again'
-          : known
-            ? `${name} · double-click: see all · middle-click: new tab · right-click: more`
-            : 'Who is it? · click to say · right-click: more';
+          : kind === 'poor'
+            ? "Poor face: too small, blurry or turned away, so it isn't used to learn anyone · click to say who it is · right-click: more"
+            : known
+              ? `${name} · double-click: see all · middle-click: new tab · right-click: more`
+              : 'Who is it? · click to say · right-click: more';
         return (
-          <button key={f.id} type="button" className={`face-box ${f.hidden ? 'hidden-face' : known ? 'known' : 'unknown'}`}
+          <button key={f.id} type="button" className={`face-box ${kind === 'hidden' ? 'hidden-face' : kind === 'poor' ? 'poor-face' : known ? 'known' : 'unknown'}`}
             ref={(el) => {
               if (el) boxEls.current.set(f.id, el);
               else boxEls.current.delete(f.id);
@@ -162,7 +172,7 @@ export function FaceLayer(props: {
       })}
       {menu && mf && createPortal(
         <div onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-          <ContextMenu x={menu.x} y={menu.y} title={mf.hidden ? 'Not important face' : mname ?? 'Unknown face'} onClose={() => setMenu(null)} items={[
+          <ContextMenu x={menu.x} y={menu.y} title={mf.hidden ? 'Not important face' : mname ?? (faceKind(mf) === 'poor' ? 'Poor face' : 'Unknown face')} onClose={() => setMenu(null)} items={[
             ...(mf.person != null && mname && !mf.hidden ? [
               { label: `See everything of ${mname}`, hint: 'double-click', onSelect: () => { setMenu(null); props.onShowPerson?.(mf.person!); } },
               ...(props.onOpenPerson ? [{ label: `Open ${mname} in a new tab`, hint: 'middle-click', onSelect: () => { setMenu(null); openBehind(mf); } }] : []),
@@ -191,6 +201,7 @@ export function FaceLayer(props: {
             { label: mf.hidden ? 'Important after all' : 'Not important', hint: 'Ctrl+middle-click', onSelect: () => { setMenu(null); important(mf); } },
             ...(props.tools ? [
               { label: "Show 'not important' faces too", checked: props.tools.showHidden, sepBefore: true, onSelect: () => { setMenu(null); props.tools!.setShowHidden(!props.tools!.showHidden); } },
+              ...(props.tools.setShowPoor ? [{ label: 'Show poor faces too', hint: 'small, blurry, turned', checked: !!props.tools.showPoor, onSelect: () => { setMenu(null); props.tools!.setShowPoor!(!props.tools!.showPoor); } }] : []),
               { label: 'Reset faces in this picture and scan again…', onSelect: () => { setMenu(null); props.tools!.reset(); } },
             ] : []),
           ]} />
@@ -212,7 +223,8 @@ export function FaceLayer(props: {
   );
 }
 
-function WhoIsIt(props: {
+/** "Who is this?" for one face: people most like it first, a new person, or not important. */
+export function WhoIsIt(props: {
   face: FaceBox; left: number; top: number; onClose: () => void; onDone: (msg: string) => void;
   /** The face already has a name: the box offers to change or remove it. */
   current?: { id: number; name: string } | null;

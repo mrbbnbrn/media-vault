@@ -79,6 +79,8 @@ pub struct ViewerSettings {
     pub river_density: f64,
     /// Discovery river: how many depth layers (2–8).
     pub river_layers: u32,
+    /// Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed).
+    pub poor_faces: bool,
 }
 
 impl Default for ViewerSettings {
@@ -104,6 +106,7 @@ impl Default for ViewerSettings {
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
+            poor_faces: false,
         }
     }
 }
@@ -154,7 +157,40 @@ pub struct AppConfig {
     pub notify_done: bool,
     pub vaults: Vec<KnownVault>,
     pub last_vault: Option<String>,
+    /// Settings → Faces → "Poor faces": when a face is too small, blurry or turned to be trusted.
+    pub poor_faces: PoorFaceSettings,
 }
+
+// ---- poor faces settings (begin) ----
+/// A face below these is a "poor face": never named on its own and never
+/// learned from (unless you name it). Judged when asked, so changing these
+/// re-sorts faces at once without scanning again.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", default)]
+pub struct PoorFaceSettings {
+    /// Faces shorter than this (pixels of the item itself) are poor. 0 = off.
+    pub min_px: f64,
+    /// Faces less sharp than this (a friendly 0–100 scale, see poorfaces.rs) are poor. 0 = off.
+    pub blur: f64,
+    /// Faces turned further away than this (degrees) are poor. 90 = off.
+    pub turn: f64,
+}
+
+impl Default for PoorFaceSettings {
+    fn default() -> Self {
+        Self { min_px: 40.0, blur: 25.0, turn: 60.0 }
+    }
+}
+
+impl PoorFaceSettings {
+    /// Anything out of range (or not a number) is brought back in.
+    pub fn sanitized(self) -> Self {
+        let d = Self::default();
+        let c = |x: f64, lo: f64, hi: f64, def: f64| if x.is_finite() { x.clamp(lo, hi) } else { def };
+        Self { min_px: c(self.min_px, 0.0, 400.0, d.min_px), blur: c(self.blur, 0.0, 95.0, d.blur), turn: c(self.turn, 15.0, 90.0, d.turn) }
+    }
+}
+// ---- poor faces settings (end) ----
 
 pub const DEFAULT_ACCENT: &str = "#2ec4b6";
 
@@ -220,6 +256,7 @@ impl Default for AppConfig {
             notify_done: true,
             vaults: Vec::new(),
             last_vault: None,
+            poor_faces: PoorFaceSettings::default(),
         }
     }
 }
@@ -252,6 +289,7 @@ impl AppConfig {
         v.seek_big_seconds = clamp(v.seek_big_seconds, 1.0, 3600.0, 30.0);
         v.sound_volume = clamp(v.sound_volume, 0.0, 1.0, 0.0);
         v.grid_columns = v.grid_columns.min(16);
+        self.poor_faces = self.poor_faces.clone().sanitized();
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
         let mut seen = std::collections::HashSet::new();

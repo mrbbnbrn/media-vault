@@ -162,7 +162,7 @@ pub fn status(conn: &Connection) -> R<ScanStatus> {
     })
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct FaceIn {
     #[serde(default)]
@@ -173,6 +173,14 @@ pub struct FaceIn {
     pub h: f32,
     pub score: f32,
     pub descriptor: Vec<f32>,
+    /// Poor faces (poorfaces.rs): height in pixels of the picture looked at,
+    /// sharpness of the face, how turned it is (degrees). None = not measured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub px: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sharp: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn: Option<f32>,
 }
 
 /// Overlap of two boxes given as [x, y, w, h] (parts of the picture).
@@ -233,6 +241,9 @@ pub fn save(conn: &Connection, media: i64, faces: &[FaceIn], model: i64) -> R<us
             .collect::<rusqlite::Result<_>>()
             .map_err(e)?;
     }
+    // Poor faces: a face's height in the item's own pixels (the picture
+    // looked at may have been made smaller first).
+    let item_h: Option<f64> = conn.query_row("SELECT height FROM media WHERE id = ?", [media], |r| r.get(0)).optional().map_err(e)?.flatten();
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute("DELETE FROM faces WHERE media_id = ?", [media]).map_err(e)?;
     let mut used: HashSet<i64> = HashSet::new();
@@ -259,10 +270,15 @@ pub fn save(conn: &Connection, media: i64, faces: &[FaceIn], model: i64) -> R<us
         };
         let keep = old.iter().filter(|o| !used.contains(&o.id)).map(|o| (o, same(o))).filter(|(_, s)| *s >= 0.3).max_by(|a, b| a.1.total_cmp(&b.1)).map(|x| x.0);
         let (person, auto, named_at, hidden) = keep.map(|o| (o.person, o.auto, o.named_at, o.hidden)).unwrap_or((None, false, None, false));
+        let px = item_h.filter(|v| *v > 0.0).map(|v| v * rect[3] as f64).or(f.px.map(|v| v as f64)).filter(|v| v.is_finite());
+        let fin = |v: Option<f32>| v.filter(|x| x.is_finite());
         tx.execute(
-            "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden) \
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            params![media, f.frame_ms, rect[0], rect[1], rect[2], rect[3], f.score, to_blob(&f.descriptor), person, model, auto as i64, named_at, hidden as i64],
+            "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden, px, sharp, turn) \
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            params![
+                media, f.frame_ms, rect[0], rect[1], rect[2], rect[3], f.score, to_blob(&f.descriptor), person, model, auto as i64, named_at, hidden as i64,
+                px, fin(f.sharp), fin(f.turn)
+            ],
         )
         .map_err(e)?;
         let id = tx.last_insert_rowid();
@@ -462,10 +478,11 @@ struct Facts {
 fn facts(conn: &Connection) -> R<Facts> {
     let mut faces: HashMap<i64, Vec<FaceMeta>> = HashMap::new();
     let mut st = conn
-        .prepare(
-            "SELECT f.id, f.media_id, m.folder_id, f.person_id, f.auto, f.hidden, m.kind, f.model FROM faces f \
+        .prepare(&format!(
+            "SELECT f.id, f.media_id, m.folder_id, f.person_id, f.auto, f.hidden, m.kind, f.model, {} FROM faces f \
              JOIN media m ON m.id = f.media_id WHERE m.deleted_at IS NULL ORDER BY f.id",
-        )
+            crate::poorfaces::poor_sql("f")
+        ))
         .map_err(e)?;
     let rows = st
         .query_map([], |r| {
@@ -479,6 +496,7 @@ fn facts(conn: &Connection) -> R<Facts> {
                     auto: r.get::<_, i64>(4)? != 0,
                     hidden: r.get::<_, i64>(5)? != 0,
                     video: r.get::<_, String>(6)? == "video",
+                    poor: r.get::<_, i64>(8)? != 0,
                 },
             ))
         })
@@ -545,7 +563,7 @@ fn fingerprint(model: i64, f: &Facts) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     model.hash(&mut h);
     for x in f.faces.get(&model).map(|v| &v[..]).unwrap_or(&[]) {
-        (x.id, x.media, x.folder, if x.auto { None } else { x.person }, x.hidden).hash(&mut h);
+        (x.id, x.media, x.folder, if x.auto { None } else { x.person }, x.hidden, x.poor).hash(&mut h);
     }
     let mut people: Vec<(i64, Vec<i64>)> = f.people.iter().map(|p| {
         let mut v: Vec<i64> = p.inside.iter().copied().collect();
@@ -751,6 +769,9 @@ pub struct Review {
     pub unknown: Vec<UnknownGroup>,
     pub unknown_total: usize,
     pub hidden: Vec<UnknownGroup>,
+    /// Faces too small, blurry or turned to be trusted, newest first (People → Poor faces).
+    pub poor: Vec<PoorFace>,
+    pub poor_total: usize,
     pub merges: Vec<MergeHint>,
     pub status: ScanStatus,
     pub engine: EngineStatus,
@@ -772,6 +793,39 @@ pub struct ReviewRequest {
     /// How many unknown groups.
     #[serde(default)]
     pub groups: Option<usize>,
+    /// How many poor faces.
+    #[serde(default)]
+    pub poor: Option<usize>,
+}
+
+/// A poor face (poorfaces.rs) and why it is one.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PoorFace {
+    #[serde(flatten)]
+    pub face: Suggestion,
+    pub small: bool,
+    pub blurry: bool,
+    pub turned: bool,
+}
+
+const POOR: usize = 60;
+
+/// Poor faces not marked "not important" (newest first, at most `n`):
+/// (face, model, px, sharp, turn), and how many there are in all.
+#[allow(clippy::type_complexity)]
+fn poor_faces(conn: &Connection, n: usize) -> R<(Vec<(i64, i64, Option<f64>, Option<f64>, Option<f64>)>, usize)> {
+    let poor = crate::poorfaces::poor_sql("f");
+    let from = format!("FROM faces f JOIN media m ON m.id = f.media_id WHERE m.deleted_at IS NULL AND f.hidden = 0 AND {poor}");
+    let total: i64 = conn.query_row(&format!("SELECT COUNT(*) {from}"), [], |r| r.get(0)).map_err(e)?;
+    let rows = conn
+        .prepare(&format!("SELECT f.id, f.model, f.px, f.sharp, f.turn {from} ORDER BY f.id DESC LIMIT ?"))
+        .map_err(e)?
+        .query_map([n as i64], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    Ok((rows, total as usize))
 }
 
 const SUGGESTIONS: usize = 24;
@@ -921,6 +975,8 @@ pub fn review(lib: &dyn Lib, req: &ReviewRequest) -> R<Review> {
     for (g, _) in &shown_groups {
         wanted.extend(g.faces.iter().take(60).map(|x| x.0));
     }
+    let (poor_rows, poor_total) = poor_faces(&conn, req.poor.unwrap_or(POOR))?;
+    wanted.extend(poor_rows.iter().map(|x| x.0));
     let b = Builder::new(&conn, &wanted)?;
 
     let mut out_people = Vec::new();
@@ -960,6 +1016,15 @@ pub fn review(lib: &dyn Lib, req: &ReviewRequest) -> R<Review> {
     };
     let unknown = shown_groups.iter().filter(|g| !g.0.hidden).map(|g| group(g.0, g.1)).collect();
     let hidden = shown_groups.iter().filter(|g| g.0.hidden).map(|g| group(g.0, g.1)).collect();
+    let rule = crate::poorfaces::rule();
+    let poor = poor_rows
+        .iter()
+        .filter_map(|&(f, model, px, sharp, turn)| {
+            let mut s = b.get(f, 0.0, model)?;
+            (s.confidence, s.sure) = (0, false);
+            Some(PoorFace { face: s, small: rule.small(px), blurry: rule.blurry(sharp), turned: rule.turned(turn) })
+        })
+        .collect();
     let mut merges = Vec::new();
     let mut seen = HashSet::new();
     for v in &views {
@@ -974,6 +1039,8 @@ pub fn review(lib: &dyn Lib, req: &ReviewRequest) -> R<Review> {
         unknown,
         unknown_total: all_groups.iter().filter(|g| !g.0.hidden).count(),
         hidden,
+        poor,
+        poor_total,
         merges,
         status: status(&conn)?,
         engine: engine_status(&conn)?,
@@ -1222,6 +1289,9 @@ pub struct FaceBox {
     pub auto: bool,
     /// Marked "not important" (only listed when asked for).
     pub hidden: bool,
+    /// Too small, blurry or turned to be trusted (poorfaces.rs); the viewer
+    /// shows these only when asked. Never set for a face you named.
+    pub poor: bool,
 }
 
 /// Faces found in one item (for "which one is them?").
@@ -1232,12 +1302,12 @@ pub fn faces_of(conn: &Connection, media: i64) -> R<Vec<FaceBox>> {
 /// Faces of one item, the "not important" ones too when `hidden` is set
 /// (so one marked by mistake can be fixed).
 pub fn faces_of_with(conn: &Connection, media: i64, hidden: bool) -> R<Vec<FaceBox>> {
-    let sql = if hidden {
-        "SELECT id, frame_ms, x, y, w, h, person_id, auto, hidden FROM faces WHERE media_id = ? ORDER BY x"
-    } else {
-        "SELECT id, frame_ms, x, y, w, h, person_id, auto, hidden FROM faces WHERE media_id = ? AND hidden = 0 ORDER BY x"
-    };
-    conn.prepare(sql)
+    let sql = format!(
+        "SELECT id, frame_ms, x, y, w, h, person_id, auto, hidden, {} FROM faces WHERE media_id = ?{} ORDER BY x",
+        crate::poorfaces::poor_sql("faces"),
+        if hidden { "" } else { " AND hidden = 0" }
+    );
+    conn.prepare(&sql)
         .map_err(e)?
         .query_map([media], |r| {
             Ok(FaceBox {
@@ -1250,6 +1320,7 @@ pub fn faces_of_with(conn: &Connection, media: i64, hidden: bool) -> R<Vec<FaceB
                 person: r.get(6)?,
                 auto: r.get::<_, i64>(7)? != 0,
                 hidden: r.get::<_, i64>(8)? != 0,
+                poor: r.get::<_, i64>(9)? != 0,
             })
         })
         .map_err(e)?
@@ -1306,11 +1377,13 @@ pub fn unsure_items(conn: &Connection, person: i64) -> R<Vec<Item>> {
 /// outside `except_media` (named by you first, then the newest).
 fn person_centres(conn: &Connection, except_media: i64) -> R<Vec<(i64, i64, Vec<f32>)>> {
     let mut by: HashMap<(i64, i64), Vec<Vec<f32>>> = HashMap::new();
+    // Poor faces named automatically don't teach (ones you named do).
     let mut st = conn
-        .prepare(
+        .prepare(&format!(
             "SELECT f.person_id, f.model, f.descriptor FROM faces f JOIN folders d ON d.id = f.person_id JOIN media m ON m.id = f.media_id \
-             WHERE d.person = 1 AND d.deleted_at IS NULL AND m.deleted_at IS NULL AND f.hidden = 0 AND f.media_id <> ? ORDER BY f.auto, f.id DESC",
-        )
+             WHERE d.person = 1 AND d.deleted_at IS NULL AND m.deleted_at IS NULL AND f.hidden = 0 AND f.media_id <> ? AND NOT {} ORDER BY f.auto, f.id DESC",
+            crate::poorfaces::poor_sql("f")
+        ))
         .map_err(e)?;
     let rows = st.query_map([except_media], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, from_blob(&r.get::<_, Vec<u8>>(2)?)))).map_err(e)?;
     for r in rows {
@@ -1362,7 +1435,7 @@ pub fn face_matches(conn: &Connection, face: i64) -> R<Vec<(i64, u32)>> {
 /// faces are most like (their average face, same model only), best first.
 pub fn person_matches(conn: &Connection, media: i64) -> R<Vec<(i64, f32)>> {
     let mine: Vec<(Option<i64>, i64, Vec<f32>)> = conn
-        .prepare("SELECT f.person_id, f.model, f.descriptor FROM faces f WHERE f.media_id = ? AND f.hidden = 0")
+        .prepare(&format!("SELECT f.person_id, f.model, f.descriptor FROM faces f WHERE f.media_id = ? AND f.hidden = 0 AND NOT {}", crate::poorfaces::poor_sql("f")))
         .map_err(e)?
         .query_map([media], |r| Ok((r.get(0)?, r.get(1)?, from_blob(&r.get::<_, Vec<u8>>(2)?))))
         .map_err(e)?
@@ -1424,7 +1497,7 @@ mod tests {
         let mut d = vec![0.0f32; DIM];
         d[0] = base;
         d[1] = wobble;
-        FaceIn { frame_ms: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.9, descriptor: d }
+        FaceIn { frame_ms: 0, x: 0.1, y: 0.1, w: 0.2, h: 0.2, score: 0.9, descriptor: d, ..Default::default() }
     }
 
     /// A new (ArcFace) fingerprint for person `p`, at a place in the picture.
@@ -1437,7 +1510,7 @@ mod tests {
             *k += ((s >> 33) as f32 / (1u64 << 31) as f32 - 0.5) * 0.06;
         }
         crate::faceid_math::normalize(&mut v);
-        FaceIn { frame_ms: 0, x, y: 0.12, w: 0.15, h: 0.2, score: 0.9, descriptor: v }
+        FaceIn { frame_ms: 0, x, y: 0.12, w: 0.15, h: 0.2, score: 0.9, descriptor: v, ..Default::default() }
     }
 
     fn lib(c: Connection) -> Mutex<Connection> {
@@ -1853,6 +1926,129 @@ mod tests {
         assert_eq!(both, HashSet::from([ids["examples_two_people.jpg"], ids["test_obama_and_biden.jpg"]]), "the two of them together");
         assert!(review(&l, &ReviewRequest::default()).unwrap().merges.is_empty());
     }
+
+    // ---- poor faces tests (begin) ----
+    fn poor(mut f: FaceIn, px: Option<f32>, sharp: Option<f32>, turn: Option<f32>) -> FaceIn {
+        (f.px, f.sharp, f.turn) = (px, sharp, turn);
+        f
+    }
+
+    #[test]
+    fn poor_faces_are_never_named_or_learned_from_unless_you_name_them() {
+        use crate::poorfaces::{PoorRule, set_test_rule};
+        let strict = PoorRule { min_px: 40.0, min_sharp: 5.0, max_turn: 60.0 };
+        set_test_rule(Some(strict));
+        let l = lib(db::create_empty().unwrap());
+        let (baran, ana, turned, small_kit, good_kit, strangers);
+        {
+            let c = l.conn();
+            baran = library::create_folder(&c, None, "Baran").unwrap();
+            set_person(&c, baran, true).unwrap();
+            for k in 0..3u64 {
+                let m = add(&c, None);
+                save(&c, m, &[poor(arc(0, k, 0.2), Some(300.0), Some(80.0), Some(5.0))], ARCFACE).unwrap();
+                accept(&c, &[faces_of(&c, m).unwrap()[0].id], baran).unwrap();
+            }
+            // Baran, but turned away.
+            let m = add(&c, None);
+            save(&c, m, &[poor(arc(0, 10, 0.2), Some(300.0), Some(80.0), Some(75.0))], ARCFACE).unwrap();
+            turned = faces_of(&c, m).unwrap()[0].id;
+            // Someone tiny in four photos (in Ana's folder: no owner is found from them).
+            ana = library::create_folder(&c, None, "Ana").unwrap();
+            set_person(&c, ana, true).unwrap();
+            let mut v = Vec::new();
+            for k in 0..4u64 {
+                let m = add(&c, Some(ana));
+                save(&c, m, &[poor(arc(2, 20 + k, 0.5), Some(18.0), None, None)], ARCFACE).unwrap();
+                v.push(faces_of(&c, m).unwrap()[0].id);
+            }
+            strangers = v;
+            // Kit: one blurry face, one fine one.
+            let m = add(&c, None);
+            save(&c, m, &[poor(arc(1, 30, 0.2), Some(200.0), Some(1.0), Some(3.0))], ARCFACE).unwrap();
+            small_kit = faces_of(&c, m).unwrap()[0].id;
+            let m = add(&c, None);
+            save(&c, m, &[poor(arc(1, 31, 0.2), Some(200.0), Some(90.0), Some(3.0))], ARCFACE).unwrap();
+            good_kit = faces_of(&c, m).unwrap()[0].id;
+        }
+        let measures = |id: i64| -> (Option<f64>, Option<f64>, Option<f64>) {
+            l.conn().query_row("SELECT px, sharp, turn FROM faces WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap()
+        };
+        let person_of = |id: i64| -> (Option<i64>, bool) {
+            l.conn().query_row("SELECT person_id, auto FROM faces WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? != 0))).unwrap()
+        };
+        let before = measures(turned);
+
+        // Never named automatically, suggested, grouped or offered as a folder owner.
+        refresh(&l).unwrap();
+        assert_eq!(person_of(turned), (None, false));
+        let r = review(&l, &ReviewRequest::default()).unwrap();
+        let gb = r.people.iter().find(|g| g.person.folder == baran).unwrap();
+        assert!(gb.suggestions.iter().all(|s| s.face_id != turned) && gb.recent.is_empty());
+        assert!(r.unknown.iter().all(|u| u.face_ids.iter().all(|f| !strangers.contains(f))), "tiny faces aren't a group");
+        assert!(r.people.iter().find(|g| g.person.folder == ana).unwrap().owner.is_none());
+        // They wait under Poor faces, with why.
+        let ids: HashSet<i64> = r.poor.iter().map(|p| p.face.face_id).collect();
+        assert_eq!(r.poor_total, 6);
+        assert!(ids.contains(&turned) && ids.contains(&small_kit) && strangers.iter().all(|f| ids.contains(f)));
+        let p = r.poor.iter().find(|p| p.face.face_id == turned).unwrap();
+        assert!(p.turned && !p.small && !p.blurry);
+        assert!(r.poor.iter().find(|p| p.face.face_id == small_kit).unwrap().blurry);
+        // The viewer is told which faces are poor.
+        let media_of = |id: i64| -> i64 { l.conn().query_row("SELECT media_id FROM faces WHERE id = ?", [id], |r| r.get(0)).unwrap() };
+        // (Looked up first: the library is locked by one caller at a time.)
+        let (m_turned, m_good, m_small) = (media_of(turned), media_of(good_kit), media_of(small_kit));
+        assert!(faces_of_with(&l.conn(), m_turned, false).unwrap()[0].poor);
+        assert!(!faces_of_with(&l.conn(), m_good, false).unwrap()[0].poor);
+        // Quick sort doesn't go by a poor face either.
+        assert!(person_matches(&l.conn(), m_turned).unwrap().is_empty());
+
+        // Moving the sliders re-sorts at once: nothing stored changes but the name.
+        set_test_rule(Some(PoorRule { max_turn: 90.0, ..strict }));
+        refresh(&l).unwrap();
+        assert_eq!(person_of(turned), (Some(baran), true), "now named automatically");
+        assert_eq!(measures(turned), before);
+        assert_eq!(review(&l, &ReviewRequest::default()).unwrap().poor_total, 5);
+        assert!(!person_matches(&l.conn(), m_turned).unwrap().is_empty());
+        set_test_rule(Some(strict));
+        refresh(&l).unwrap();
+        assert_eq!(person_of(turned), (None, false), "the automatic name is taken back");
+        assert_eq!(measures(turned), before);
+
+        // Named by you, a poor face counts: it isn't poor any more and teaches the app.
+        assert!(face_matches(&l.conn(), good_kit).unwrap().is_empty(), "nobody known looks like Kit yet");
+        let (kit, _) = new_person(&l.conn(), "Kit", None, &[small_kit]).unwrap();
+        assert!(!faces_of_with(&l.conn(), m_small, false).unwrap()[0].poor);
+        assert_eq!(face_matches(&l.conn(), good_kit).unwrap().first().map(|x| x.0), Some(kit));
+        let r = review(&l, &ReviewRequest::default()).unwrap();
+        assert!(r.poor.iter().all(|p| p.face.face_id != small_kit));
+        assert_eq!(r.people.iter().find(|g| g.person.folder == kit).unwrap().person.known, 1);
+        // You named it: stricter settings never take that away.
+        set_test_rule(Some(PoorRule { min_sharp: 1000.0, ..strict }));
+        refresh(&l).unwrap();
+        assert_eq!(person_of(small_kit), (Some(kit), false));
+        set_test_rule(None);
+    }
+
+    #[test]
+    fn saving_keeps_poor_face_measures_in_the_items_own_pixels() {
+        let c = db::create_empty().unwrap();
+        let m = add(&c, None);
+        c.execute("UPDATE media SET height = 2000 WHERE id = ?", [m]).unwrap();
+        save(&c, m, &[poor(arc(0, 1, 0.2), Some(9.0), Some(12.5), Some(33.0))], ARCFACE).unwrap();
+        let (px, sharp, turn): (f64, f64, f64) = c.query_row("SELECT px, sharp, turn FROM faces", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert!((px - 400.0).abs() < 0.01, "0.2 of 2000 px, not the smaller picture looked at: {px}");
+        assert_eq!((sharp, turn), (12.5, 33.0));
+        // Without the item's size, the height measured when found.
+        let m = add(&c, None);
+        save(&c, m, &[poor(arc(0, 2, 0.2), Some(9.0), None, None)], ARCFACE).unwrap();
+        let px: f64 = c.query_row("SELECT px FROM faces WHERE media_id = ?", [m], |r| r.get(0)).unwrap();
+        assert_eq!(px, 9.0);
+        // A window that sends no measures (older) still saves.
+        let j: FaceIn = serde_json::from_str(r#"{"x":0.1,"y":0.1,"w":0.2,"h":0.2,"score":0.9,"descriptor":[]}"#).unwrap();
+        assert_eq!((j.px, j.sharp, j.turn), (None, None, None));
+    }
+    // ---- poor faces tests (end) ----
 
     #[test]
     fn confidence_scale() {

@@ -434,6 +434,10 @@ pub struct FaceMeta {
     /// "Not important".
     pub hidden: bool,
     pub video: bool,
+    /// Too small, blurry or turned to be trusted (poorfaces.rs; never set for
+    /// a face you named): never named on its own, suggested, grouped or
+    /// learned from.
+    pub poor: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -557,6 +561,7 @@ fn owner_of(ctx: &Ctx, input: &Input, person: i64, refs: &HashMap<i64, Vec<usize
             let f = &ctx.faces[**k];
             f.folder.is_some_and(|x| pm.inside.contains(&x))
                 && !f.hidden
+                && !f.poor
                 && !input.rejects.contains(&(f.id, person))
                 && (ctx.confirmed(f).is_none_or(|p| p == person))
                 && !ctx.named_elsewhere(f)
@@ -683,6 +688,10 @@ pub fn analyse(g: &Graph, input: &Input) -> Analysis {
         }
         if f.hidden {
             leftover.push(i);
+            continue;
+        }
+        // Poor faces wait in People → Poor faces until you name them.
+        if f.poor {
             continue;
         }
         let mut all: HashMap<i64, f32> = HashMap::new();
@@ -886,7 +895,7 @@ mod tests {
                 let id = self.next;
                 self.next += 1;
                 self.g.add(vec![(id, fp(p, id as u64))]);
-                self.faces.push(FaceMeta { id, media, folder, person: None, auto: false, hidden: false, video: false });
+                self.faces.push(FaceMeta { id, media, folder, person: None, auto: false, hidden: false, video: false, poor: false });
                 ids.push(id);
             }
             ids
