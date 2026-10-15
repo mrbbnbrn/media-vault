@@ -185,6 +185,10 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   against the faces (by a checksum of each fingerprint) and rebuilds what doesn't match
 - `folders.banner_media_id`, `folders.banner_y` (v15) — a folder's banner: the item shown wide at the
   top of the folder and where in it to look (0 = top, 1 = bottom); NULL = no banner.
+- `folders.cover_x`, `folders.cover_y`, `folders.cover_zoom` (v16) — the hand-set framing of a folder's
+  cover ("Adjust cover…"): the point of the picture kept in view (0–1 across and down, placed like CSS
+  `object-position`) and the zoom (1 = just fills the card, up to 8). All three NULL = automatic
+  (centred, or centred on the face for person folders). Cleared when the cover changes to another item.
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

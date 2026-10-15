@@ -808,6 +808,14 @@ async fn set_cover(
     edit_db(state.inner(), move |c| library::set_cover(c, folder, media)).await
 }
 
+// ---- cover framing (begin) ----
+/// The hand-set framing of a folder's cover; `pos` None = automatic again.
+#[tauri::command]
+async fn set_cover_frame(state: State<'_, Shared>, folder: i64, media: Option<i64>, pos: Option<library::CoverPos>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| library::set_cover_frame(c, folder, media, pos)).await
+}
+// ---- cover framing (end) ----
+
 // ---- folder banners (begin) ----
 #[tauri::command]
 async fn folder_banner(state: State<'_, Shared>, folder: i64) -> Result<Option<banner::Banner>, String> {
@@ -2379,6 +2387,7 @@ pub fn run() {
             set_favourite,
             set_weight,
             set_cover,
+            set_cover_frame,
             folder_banner,
             set_banner,
             all_tags,

@@ -147,7 +147,22 @@ pub struct FolderCard {
     /// Person folders: the face in the cover picture ([x, y, w, h] as parts of
     /// its width and height), so the round cover can be centred on it.
     pub cover_face: Option<[f32; 4]>,
+    /// The hand-set framing of the cover ("Adjust cover…"); None = automatic.
+    pub cover_pos: Option<CoverPos>,
 }
+
+/// Which part of a folder's cover shows on its card: the point of the picture
+/// kept in view (`x`, `y`, 0–1, placed like CSS `object-position`) and how far
+/// to zoom in (1 = the picture just fills the card).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+pub struct CoverPos {
+    pub x: f64,
+    pub y: f64,
+    pub zoom: f64,
+}
+
+/// Highest zoom the cover editor offers (and the most we store).
+pub const COVER_ZOOM_MAX: f64 = 8.0;
 
 struct FolderRow {
     note: Option<String>,
@@ -160,6 +175,7 @@ struct FolderRow {
     color: Option<String>,
     emoji: Option<String>,
     person: bool,
+    cover_pos: Option<CoverPos>,
 }
 
 /// Every folder with counts, covers and tags, in tree order (parents before
@@ -167,7 +183,7 @@ struct FolderRow {
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
         .prepare(
-            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note, f.created_at FROM folders f \
+            "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note, f.created_at, f.cover_x, f.cover_y, f.cover_zoom FROM folders f \
              LEFT JOIN media m ON m.id = f.cover_media_id AND m.deleted_at IS NULL \
              WHERE f.deleted_at IS NULL ORDER BY f.sort_order, f.name COLLATE NOCASE",
         )
@@ -184,6 +200,10 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 person: r.get::<_, i64>(7)? != 0,
                 note: r.get(8)?,
                 created_at: r.get(9)?,
+                cover_pos: match (r.get::<_, Option<f64>>(10)?, r.get::<_, Option<f64>>(11)?, r.get::<_, Option<f64>>(12)?) {
+                    (Some(x), Some(y), Some(zoom)) => Some(CoverPos { x, y, zoom }),
+                    _ => None,
+                },
             })
         })
         .map_err(e)?
@@ -339,6 +359,9 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             };
             FolderCard {
                 cover_face,
+                // The framing was made for the chosen cover; if that item is
+                // gone (the cover fell back to another picture) it doesn't fit.
+                cover_pos: if r.cover.is_some() { r.cover_pos } else { None },
                 cover_kind: cover.and_then(|c| kinds.get(&c).cloned()),
                 id,
                 name: r.name.clone(),
@@ -1360,11 +1383,44 @@ pub fn set_folder_look(
 }
 
 pub fn set_cover(conn: &Connection, folder: i64, media: Option<i64>) -> R<()> {
+    // A framing made for another picture wouldn't fit the new one, so it goes
+    // (SQLite works out every SET from the old row, so the CASEs see the old cover).
     conn.execute(
-        "UPDATE folders SET cover_media_id = ? WHERE id = ?",
+        "UPDATE folders SET \
+           cover_x = CASE WHEN cover_media_id IS ?1 THEN cover_x END, \
+           cover_y = CASE WHEN cover_media_id IS ?1 THEN cover_y END, \
+           cover_zoom = CASE WHEN cover_media_id IS ?1 THEN cover_zoom END, \
+           cover_media_id = ?1 WHERE id = ?2",
         params![media, folder],
     )
     .map_err(e)?;
+    Ok(())
+}
+
+/// Sets (or with `pos` None clears) the hand-set framing of a folder's cover.
+/// `media` is the picture the framing was made for (the cover on screen): it
+/// becomes the folder's chosen cover, so an automatic cover can't later change
+/// under the framing.
+pub fn set_cover_frame(conn: &Connection, folder: i64, media: Option<i64>, pos: Option<CoverPos>) -> R<()> {
+    match pos {
+        None => {
+            conn.execute("UPDATE folders SET cover_x = NULL, cover_y = NULL, cover_zoom = NULL WHERE id = ?", [folder]).map_err(e)?;
+        }
+        Some(p) => {
+            if ![p.x, p.y, p.zoom].iter().all(|v| v.is_finite()) {
+                return Err("That cover framing isn't valid.".into());
+            }
+            let media = match media {
+                Some(m) => m,
+                None => return Err("This folder has no cover to adjust.".into()),
+            };
+            conn.execute(
+                "UPDATE folders SET cover_media_id = ?, cover_x = ?, cover_y = ?, cover_zoom = ? WHERE id = ?",
+                params![media, p.x.clamp(0.0, 1.0), p.y.clamp(0.0, 1.0), p.zoom.clamp(1.0, COVER_ZOOM_MAX), folder],
+            )
+            .map_err(e)?;
+        }
+    }
     Ok(())
 }
 
@@ -1698,6 +1754,34 @@ mod tests {
         )
         .unwrap();
         conn.last_insert_rowid()
+    }
+
+    #[test]
+    fn cover_framing_is_kept_until_the_cover_changes() {
+        let c = db::create_empty().unwrap();
+        let trips = create_folder(&c, None, "Trips").unwrap();
+        let a = add(&c, "a", Some(trips), "image");
+        let b = add(&c, "b", Some(trips), "video");
+        let card = || all_folders(&c).unwrap().into_iter().find(|f| f.id == trips).unwrap();
+        assert_eq!(card().cover, Some(a));
+        assert_eq!(card().cover_pos, None);
+        // Framing an automatic cover makes it the chosen one; values are kept in range.
+        set_cover_frame(&c, trips, Some(a), Some(CoverPos { x: 1.5, y: 0.25, zoom: 9.0 })).unwrap();
+        assert_eq!(card().cover_pos, Some(CoverPos { x: 1.0, y: 0.25, zoom: COVER_ZOOM_MAX }));
+        let chosen: Option<i64> = c.query_row("SELECT cover_media_id FROM folders WHERE id = ?", [trips], |r| r.get(0)).unwrap();
+        assert_eq!(chosen, Some(a));
+        // Choosing the same cover again keeps it; another picture clears it.
+        set_cover(&c, trips, Some(a)).unwrap();
+        assert!(card().cover_pos.is_some());
+        set_cover(&c, trips, Some(b)).unwrap();
+        assert_eq!(card().cover_pos, None);
+        assert_eq!(card().cover, Some(b));
+        // Clearing goes back to automatic; nonsense is refused.
+        set_cover_frame(&c, trips, Some(b), Some(CoverPos { x: 0.5, y: 0.5, zoom: 2.0 })).unwrap();
+        set_cover_frame(&c, trips, Some(b), None).unwrap();
+        assert_eq!(card().cover_pos, None);
+        assert!(set_cover_frame(&c, trips, Some(b), Some(CoverPos { x: f64::NAN, y: 0.5, zoom: 1.0 })).is_err());
+        assert!(set_cover_frame(&c, trips, None, Some(CoverPos { x: 0.5, y: 0.5, zoom: 1.0 })).is_err());
     }
 
     #[test]

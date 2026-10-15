@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 15;
+pub const SCHEMA_VERSION: i64 = 16;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -556,6 +556,34 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- folder banners (end) ----
+    // ---- cover framing (begin) ----
+    if v < 16 || !has_column(conn, "folders", "cover_x")? || !has_column(conn, "folders", "cover_y")? || !has_column(conn, "folders", "cover_zoom")? {
+        // v16: which part of a folder's cover shows on its card, set by hand
+        // in "Adjust cover…": the point of the picture to keep in view (x, y,
+        // 0–1) and how far to zoom in (1 = the whole card filled, no more).
+        // NULL = automatic (centred, or on the face for person folders).
+        // Each column only if it isn't there yet, so this is safe to run again.
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            for col in ["cover_x", "cover_y", "cover_zoom"] {
+                if !has_column(conn, "folders", col)? {
+                    conn.execute_batch(&format!("ALTER TABLE folders ADD COLUMN {col} REAL;"))?;
+                }
+            }
+            if v < 16 {
+                conn.execute_batch("PRAGMA user_version = 16;")?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
+    // ---- cover framing (end) ----
     Ok(())
 }
 
@@ -1000,5 +1028,29 @@ mod tests {
         c.execute("DELETE FROM media", []).unwrap();
         let b: Option<i64> = c.query_row("SELECT banner_media_id FROM folders", [], |r| r.get(0)).unwrap();
         assert_eq!(b, None);
+    }
+
+    #[test]
+    fn v16_adds_cover_framing() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO folders(name, created_at, note) VALUES ('Alex', 0, 'Friend')", []).unwrap();
+        c.execute_batch("ALTER TABLE folders DROP COLUMN cover_zoom; ALTER TABLE folders DROP COLUMN cover_x; PRAGMA user_version = 15;").unwrap();
+        migrate(&c).unwrap();
+        let (x, y, z, n): (Option<f64>, Option<f64>, Option<f64>, String) =
+            c.query_row("SELECT cover_x, cover_y, cover_zoom, note FROM folders", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+        assert_eq!((x, y, z, n.as_str()), (None, None, None, "Friend"));
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        // A framing that is there survives running it again (from 15, or with a column missing).
+        c.execute("UPDATE folders SET cover_x = 0.25, cover_y = 0.75, cover_zoom = 2.0", []).unwrap();
+        c.execute_batch("PRAGMA user_version = 15;").unwrap();
+        migrate(&c).unwrap();
+        c.execute_batch("ALTER TABLE folders DROP COLUMN cover_zoom;").unwrap();
+        migrate(&c).unwrap();
+        assert!(has_column(&c, "folders", "cover_zoom").unwrap());
+        let (x, y): (f64, f64) = c.query_row("SELECT cover_x, cover_y FROM folders", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((x, y), (0.25, 0.75));
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
     }
 }
