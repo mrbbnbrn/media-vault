@@ -69,6 +69,8 @@ uniform float uDolly;
 uniform float uScale;
 uniform float uPivot;
 uniform vec2 uFocus;
+uniform vec2 uPx;
+uniform float uSharp;
 const int N = ${STEPS};
 void main() {
   vec2 p = 0.5 + (vUv - 0.5) / uScale;
@@ -93,7 +95,16 @@ void main() {
     prevDiff = diff;
     prevZ = z;
   }
-  gl_FragColor = texture2D(uImg, clamp(hit, 0.0, 1.0));
+  vec2 h = clamp(hit, 0.0, 1.0);
+  vec4 c = texture2D(uImg, h);
+  if (uSharp > 0.0) {
+    // The same light sharpening as the plain picture (0 -a 0 / -a 1+4a -a / 0 -a 0), one screen pixel apart.
+    vec2 d = uPx / uScale;
+    vec3 n = texture2D(uImg, h + vec2(d.x, 0.0)).rgb + texture2D(uImg, h - vec2(d.x, 0.0)).rgb
+      + texture2D(uImg, h + vec2(0.0, d.y)).rgb + texture2D(uImg, h - vec2(0.0, d.y)).rgb;
+    c.rgb = clamp(c.rgb * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
+  }
+  gl_FragColor = vec4(c.rgb, 1.0);
 }`;
 
 type Gl = WebGLRenderingContext;
@@ -104,7 +115,73 @@ interface Scene {
   buf: WebGLBuffer;
   img: WebGLTexture;
   depth: WebGLTexture;
-  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth', WebGLUniformLocation | null>;
+  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp', WebGLUniformLocation | null>;
+}
+
+/**
+ * One drawing surface (canvas + WebGL) shared by every picture: making a new
+ * one for each picture made some graphics cards flash white for a frame when
+ * going to the next picture. The canvas moves into whichever picture is
+ * showing; only a second 3D picture at the same time gets its own.
+ */
+let shared: { canvas: HTMLCanvasElement; scene: Scene } | null = null;
+let sharedBusy = false;
+
+function newCanvas(): HTMLCanvasElement {
+  const c = document.createElement('canvas');
+  c.className = 'depth3d';
+  c.setAttribute('aria-hidden', 'true');
+  return c;
+}
+
+/** A surface to draw on: the shared one when it's free, else one of its own (`own`). */
+function takeSurface(): { canvas: HTMLCanvasElement; scene: Scene; own: boolean } | null {
+  if (shared && !sharedBusy && !shared.scene.gl.isContextLost()) {
+    sharedBusy = true;
+    return { ...shared, own: false };
+  }
+  const own = !!shared && sharedBusy;
+  const canvas = newCanvas();
+  const scene = makeScene(canvas);
+  if (!scene) return null;
+  if (!own) {
+    shared = { canvas, scene };
+    sharedBusy = true;
+    canvas.addEventListener('webglcontextlost', () => {
+      if (shared?.canvas === canvas) {
+        shared = null;
+        sharedBusy = false;
+      }
+    });
+  }
+  return { canvas, scene, own };
+}
+
+/** Done with a surface: the shared one is emptied and kept; one of its own is freed. */
+function giveBack(t: { canvas: HTMLCanvasElement; scene: Scene; own: boolean }) {
+  const { gl } = t.scene;
+  if (!gl.isContextLost()) {
+    gl.viewport(0, 0, t.canvas.width, t.canvas.height);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+  }
+  t.canvas.remove();
+  if (t.own) dropScene(t.scene);
+  else if (shared?.canvas === t.canvas) sharedBusy = false;
+}
+
+/** This picture and its depth map into the surface's textures. */
+function upload(s: Scene, picture: ImageBitmap, map: DepthMap) {
+  const { gl } = s;
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, s.img);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, picture);
+  gl.activeTexture(gl.TEXTURE1);
+  gl.bindTexture(gl.TEXTURE_2D, s.depth);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.w, map.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
 }
 
 function compile(gl: Gl, type: number, text: string): WebGLShader | null {
@@ -130,7 +207,7 @@ function texture(gl: Gl): WebGLTexture | null {
   return t;
 }
 
-function makeScene(canvas: HTMLCanvasElement, picture: ImageBitmap, map: DepthMap): Scene | null {
+function makeScene(canvas: HTMLCanvasElement): Scene | null {
   const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false }) as Gl | null;
   if (!gl) return null;
   const vs = compile(gl, gl.VERTEX_SHADER, VERT);
@@ -151,17 +228,12 @@ function makeScene(canvas: HTMLCanvasElement, picture: ImageBitmap, map: DepthMa
   const loc = gl.getAttribLocation(prog, 'aPos');
   gl.enableVertexAttribArray(loc);
   gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
   gl.activeTexture(gl.TEXTURE0);
   const img = texture(gl);
   if (!img) return null;
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, picture);
   gl.activeTexture(gl.TEXTURE1);
   const depth = texture(gl);
   if (!depth) return null;
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.w, map.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
   const u = {
     shift: gl.getUniformLocation(prog, 'uShift'),
     dolly: gl.getUniformLocation(prog, 'uDolly'),
@@ -170,6 +242,8 @@ function makeScene(canvas: HTMLCanvasElement, picture: ImageBitmap, map: DepthMa
     focus: gl.getUniformLocation(prog, 'uFocus'),
     img: gl.getUniformLocation(prog, 'uImg'),
     depth: gl.getUniformLocation(prog, 'uDepth'),
+    px: gl.getUniformLocation(prog, 'uPx'),
+    sharp: gl.getUniformLocation(prog, 'uSharp'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
@@ -222,7 +296,9 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
 }
 
 export function Depth3D(props: Props) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** Where the drawing surface goes (the shared canvas is moved in here). */
+  const hostRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [live, setLive] = useState(false);
   /** Draw again (and keep moving) once something changed. */
   const kick = useRef<() => void>(() => {});
@@ -244,13 +320,20 @@ export function Depth3D(props: Props) {
   useEffect(() => {
     let alive = true;
     let scene: Scene | null = null;
+    let surface: ReturnType<typeof takeSurface> = null;
     let raf = 0;
     let picture: ImageBitmap | null = null;
     let stopMouse = () => {};
+    let stopLost = () => {};
     const give = (ok: boolean) => alive && propsRef.current.onLive?.(ok);
     (async () => {
-      const canvas = canvasRef.current;
-      if (!canvas || !nw || !nh) return give(false);
+      const host = hostRef.current;
+      if (!host || !nw || !nh) return give(false);
+      surface = takeSurface();
+      if (!surface) return give(false);
+      const canvas = surface.canvas;
+      host.appendChild(canvas);
+      canvasRef.current = canvas;
       // The picture at the size it's drawn (never bigger than it is).
       const W = canvas.clientWidth || 1;
       const H = canvas.clientHeight || 1;
@@ -268,14 +351,16 @@ export function Depth3D(props: Props) {
       if (!alive) return;
       if (!map || !bmp) return give(false);
       const byMouse = !!propsRef.current.mouse;
-      scene = makeScene(canvas, bmp, map);
+      scene = surface.scene;
+      upload(scene, bmp, map);
       bmp.close();
       picture = null;
-      if (!scene) return give(false);
-      canvas.addEventListener('webglcontextlost', () => {
+      const onLost = () => {
         cancelAnimationFrame(raf);
-        setLive(false);
-      });
+        if (alive) setLive(false);
+      };
+      canvas.addEventListener('webglcontextlost', onLost);
+      stopLost = () => canvas.removeEventListener('webglcontextlost', onLost);
       // The automatic movement: one camera shared by every picture, moving on and on
       // (it carries on from the last picture; a new shape blends in). The 3D button:
       // the camera follows the mouse, also kept from picture to picture.
@@ -322,6 +407,8 @@ export function Depth3D(props: Props) {
         gl.uniform1f(s.u.scale, f.scale);
         gl.uniform1f(s.u.pivot, pivot);
         gl.uniform2f(s.u.focus, 0.5, 0.5);
+        gl.uniform2f(s.u.px, 1 / Math.max(1, vw), 1 / Math.max(1, vh));
+        gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
         const moving = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) > 0.0005
@@ -370,7 +457,9 @@ export function Depth3D(props: Props) {
       kick.current = () => {};
       stopMouse();
       picture?.close();
-      if (scene) dropScene(scene);
+      stopLost();
+      if (surface) giveBack(surface);
+      canvasRef.current = null;
     };
   }, [props.src, nw, nh, !!props.mouse]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -379,7 +468,7 @@ export function Depth3D(props: Props) {
     kick.current();
   }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape]);
   useEffect(() => {
-    const el = canvasRef.current;
+    const el = hostRef.current;
     if (!el) return;
     const ro = new ResizeObserver(() => kick.current());
     ro.observe(el);
@@ -387,7 +476,6 @@ export function Depth3D(props: Props) {
   }, []);
 
   return (
-    <canvas ref={canvasRef} className={`depth3d${live ? ' live' : ''}`} aria-hidden="true"
-      style={{ filter: props.sharpen ? 'url(#mv-sharpen)' : undefined }} />
+    <div ref={hostRef} className={`depth3d-host${live ? ' live' : ''}`} aria-hidden="true" />
   );
 }
