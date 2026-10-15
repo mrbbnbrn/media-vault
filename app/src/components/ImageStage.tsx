@@ -7,10 +7,15 @@
 // which also gives pause, single-frame steps and A–B loops. Engines without
 // ImageDecoder fall back to a plain <img>.
 //
+// Big photos are decoded off the main thread at about screen size, and the
+// whole picture only once you zoom in past that (picturecache.ts, which also
+// keeps the last few decoded and the next ones decoded ahead of time).
+//
 // Everything stays in memory; nothing is written to disk.
 
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { animationMs } from '../media';
+import { cachedPicture, fullPicture, holdPicture, loadPicture, resizedPicture, type Picture } from '../picturecache';
 import type { ViewerSettings } from '../api';
 import { turnedSize, turnedStyle, turnMatrix, type Quarter } from '../rotation';
 
@@ -50,6 +55,8 @@ interface Props {
   zoom: Zoom;
   /** Shown turned this many clockwise quarter turns (rotation.ts). */
   rot?: Quarter;
+  /** The picture's size if known (lets a big photo be decoded at screen size). */
+  size?: { w: number; h: number } | null;
   prefs: ViewerSettings;
   paused: boolean;
   className?: string;
@@ -83,6 +90,13 @@ export function ImageStage(props: Props) {
 
   // What is drawn: a still bitmap, or the current GIF frame.
   const still = useRef<ImageBitmap | null>(null);
+  /** The decoded picture `still` comes from (owned by the picture cache unless `ownStill`). */
+  const picture = useRef<Picture | null>(null);
+  const ownStill = useRef(false);
+  /** The whole picture, decoded once zoomed in past the screen-sized copy. */
+  const full = useRef<ImageBitmap | null>(null);
+  const fullAsked = useRef<Promise<void> | null>(null);
+  const stillSrc = () => full.current ?? still.current;
   const frame = useRef<VideoFrameLike | null>(null);
   const hq = useRef<{ w: number; h: number; bmp: ImageBitmap } | null>(null);
   const natural = useRef({ w: 0, h: 0 });
@@ -95,7 +109,7 @@ export function ImageStage(props: Props) {
 
   const draw = () => {
     const c = canvasRef.current;
-    const src: CanvasImageSource | null = frame.current ?? still.current;
+    const src: CanvasImageSource | null = frame.current ?? stillSrc();
     const { w: nw, h: nh } = natural.current;
     if (!c || !src || !nw || !nh) return;
     const p = propsRef.current;
@@ -125,37 +139,60 @@ export function ImageStage(props: Props) {
     const iw = r % 2 ? h : w;
     const ih = r % 2 ? w : h;
     const shrinking = iw < nw - 0.5;
+    // Zoomed in past what the screen-sized copy holds: decode the whole picture (off the main thread).
+    const pic = picture.current;
+    if (pic && !pic.full && !full.current && !fullAsked.current && still.current && iw > still.current.width * 1.05) loadFull();
     const smooth = shrinking ? p.prefs.smoothFit : p.prefs.smoothZoom;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
     ctx.imageSmoothingEnabled = smooth;
     ctx.imageSmoothingQuality = 'high';
     const pre = hq.current;
-    if (shrinking && smooth && pre && Math.abs(pre.w - iw) < 1.5 && Math.abs(pre.h - ih) < 1.5 && !frame.current) {
+    const preFits = !!pre && Math.abs(pre.w - iw) < 1.5 && Math.abs(pre.h - ih) < 1.5;
+    // Between screen size and full size, until the sharp resample (made in the worker) is there:
+    // the screen-sized copy, a little soft, rather than shrinking the whole big picture here.
+    const img: CanvasImageSource = !frame.current && full.current && still.current && shrinking && smooth && !preFits && iw <= 8192 && ih <= 8192 ? still.current : src;
+    if (shrinking && smooth && pre && preFits && !frame.current) {
       // Whole pixels, so the resampled picture stays sharp.
       const bw = r % 2 ? pre.h : pre.w;
       const bh = r % 2 ? pre.w : pre.h;
       ctx.setTransform(...turnMatrix(r, Math.round(x), Math.round(y), bw, bh));
       ctx.drawImage(pre.bmp, 0, 0);
+    } else if (r === 0 && typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap && (x < 0 || y < 0 || x + w > cw || y + h > ch)) {
+      // Zoomed in: draw only the part of the picture that is on screen (a 50 MP picture is mostly off screen).
+      const kx = img.width / w;
+      const ky = img.height / h;
+      const sx0 = Math.max(0, Math.floor(Math.max(0, -x) * kx) - 1);
+      const sy0 = Math.max(0, Math.floor(Math.max(0, -y) * ky) - 1);
+      const sx1 = Math.min(img.width, Math.ceil(Math.min(w, cw - x) * kx) + 1);
+      const sy1 = Math.min(img.height, Math.ceil(Math.min(h, ch - y) * ky) + 1);
+      if (sx1 > sx0 && sy1 > sy0) ctx.drawImage(img, sx0, sy0, sx1 - sx0, sy1 - sy0, x + sx0 / kx, y + sy0 / ky, (sx1 - sx0) / kx, (sy1 - sy0) / ky);
     } else {
       ctx.setTransform(...turnMatrix(r, x, y, w, h));
-      ctx.drawImage(src, 0, 0, iw, ih);
+      ctx.drawImage(img, 0, 0, iw, ih);
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     c.style.filter = p.prefs.sharpen && smooth ? 'url(#mv-sharpen)' : '';
     // A high-quality resample for this size is made once the zoom settles.
-    if (shrinking && smooth && !frame.current && still.current && (!pre || Math.abs(pre.w - iw) >= 1.5 || Math.abs(pre.h - ih) >= 1.5)) scheduleHq(iw, ih);
+    // (Only from a source with at least that many pixels: blowing up the screen-sized copy gains nothing.)
+    const base = stillSrc();
+    if (shrinking && smooth && !frame.current && base && base.width >= iw - 1 && !preFits) scheduleHq(iw, ih);
   };
 
   const hqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const scheduleHq = (w: number, h: number) => {
     if (hqTimer.current) clearTimeout(hqTimer.current);
     hqTimer.current = setTimeout(async () => {
-      const bmp = still.current;
+      const bmp = stillSrc();
       if (!bmp || w < 1 || h < 1 || w > 8192 || h > 8192) return;
       try {
-        const r = await createImageBitmap(bmp, { resizeWidth: Math.round(w), resizeHeight: Math.round(h), resizeQuality: 'high' });
-        if (still.current !== bmp) return r.close();
+        // From the whole picture: resampled in the worker, from the file (a 50 MP resample here would freeze the window).
+        const pic = picture.current;
+        const r = pic && bmp === full.current
+          ? await resizedPicture(pic, w, h)
+          : await createImageBitmap(bmp, { resizeWidth: Math.round(w), resizeHeight: Math.round(h), resizeQuality: 'high' });
+        if (!r) return;
+        if (stillSrc() !== bmp) return r.close();
         hq.current?.bmp.close();
         hq.current = { w: Math.round(w), h: Math.round(h), bmp: r };
         draw();
@@ -163,6 +200,27 @@ export function ImageStage(props: Props) {
         /* the plain draw stays */
       }
     }, 140);
+  };
+
+  /** Decode the whole picture once (it is drawn from then on); resolves when it is there or failed. */
+  const loadFull = (): Promise<void> => {
+    const pic = picture.current;
+    if (!pic) return Promise.resolve();
+    if (fullAsked.current) return fullAsked.current;
+    fullAsked.current = fullPicture(pic)
+      .then((bmp) => {
+        if (!bmp) return;
+        if (picture.current !== pic) return bmp.close();
+        full.current = bmp;
+        // A resample made from the smaller copy is redone from the whole picture.
+        hq.current?.bmp.close();
+        hq.current = null;
+        draw();
+      })
+      .catch(() => {
+        /* the screen-sized copy stays */
+      });
+    return fullAsked.current;
   };
 
   useEffect(draw); // every render: zoom, fit, prefs, size
@@ -186,12 +244,12 @@ export function ImageStage(props: Props) {
     const st = anim.current;
     st.gen += 1;
     const gen = st.gen;
+    const unhold = holdPicture(props.src);
     (async () => {
-      const r = await fetch(props.src);
-      if (!r.ok) throw new Error(String(r.status));
-      const bytes = new Uint8Array(await r.arrayBuffer());
+      const got = await loadPicture(props.src, props.kind, props.kind === 'image' ? props.size : null);
       if (cancelled) return;
-      if (props.kind === 'gif') {
+      if ('gif' in got) {
+        const bytes = got.bytes;
         const loopMs = animationMs(bytes);
         const Dec = (window as unknown as { ImageDecoder?: new (o: { data: Uint8Array; type: string }) => DecoderLike }).ImageDecoder;
         if (!hasDecoder || !Dec) {
@@ -222,29 +280,30 @@ export function ImageStage(props: Props) {
         draw();
         schedule(first.image.duration);
       } else {
-        const blob = new Blob([bytes]);
-        let bmp: ImageBitmap;
-        try {
-          bmp = await createImageBitmap(blob, { imageOrientation: 'from-image' });
-        } catch {
-          bmp = await createImageBitmap(blob);
-        }
-        if (cancelled) return bmp.close();
-        still.current = bmp;
-        natural.current = { w: bmp.width, h: bmp.height };
-        props.onInfo?.({ width: bmp.width, height: bmp.height, frames: 0, loopMs: 0 });
+        // Kept by the picture cache (shared with going back and forth), unless it was forgotten meanwhile.
+        ownStill.current = cachedPicture(props.src) !== got;
+        picture.current = got;
+        still.current = got.bmp;
+        natural.current = got.natural;
+        props.onInfo?.({ width: got.natural.w, height: got.natural.h, frames: 0, loopMs: 0 });
         draw();
       }
     })().catch(() => !cancelled && props.onError?.());
     return () => {
       cancelled = true;
+      unhold();
       st.gen += 1;
       clearTimeout(st.timer);
       if (hqTimer.current) clearTimeout(hqTimer.current);
       frame.current?.close();
       frame.current = null;
-      still.current?.close();
+      if (ownStill.current) still.current?.close();
       still.current = null;
+      ownStill.current = false;
+      picture.current = null;
+      full.current?.close();
+      full.current = null;
+      fullAsked.current = null;
       hq.current?.bmp.close();
       hq.current = null;
       decoder.current?.close();
@@ -327,7 +386,9 @@ export function ImageStage(props: Props) {
       if (decoder.current) show(Math.max(0, Math.min(st.count - 1, Math.round(i))));
     },
     capture: async () => {
-      const src: CanvasImageSource | null = frame.current ?? still.current;
+      // At full size: decode the whole picture first if only the screen-sized copy is there.
+      if (!frame.current && !full.current && picture.current && !picture.current.full) await loadFull();
+      const src: CanvasImageSource | null = frame.current ?? stillSrc();
       const { w, h } = natural.current;
       if (!src || !w || !h) return null;
       // Turned as it is shown.

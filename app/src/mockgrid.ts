@@ -31,8 +31,29 @@ function kindOf(id: number): Kind {
   return 'image';
 }
 
-function item(id: number, folderId: number | null): Item {
+/** A made-up colour sketch for demo picture `id` (the UI tests draw thumbnails in the same colours). */
+export function demoSketch(id: number): string {
   const [w, h] = SIZES[id % 4];
+  const cols = w / h >= 1.2 ? 4 : h / w >= 1.2 ? 3 : 3;
+  const rows = w / h >= 1.2 ? 3 : h / w >= 1.2 ? 4 : 3;
+  let out = `${cols}${rows}`;
+  for (let r = 0; r < rows; r++)
+    for (let c = 0; c < cols; c++) {
+      const v = (k: number) => ((id * k + r * 5 + c * 3) % 16).toString(16);
+      out += v(7) + v(3) + v(11);
+    }
+  return out;
+}
+
+/** `?gridscale=5`: pictures that many times bigger (to try very big photos in the viewer). */
+function demoScale(): number {
+  const m = typeof location === 'undefined' ? null : /[?&]gridscale=(\d+)/.exec(location.search);
+  return m ? Math.max(1, Math.min(10, Number(m[1]))) : 1;
+}
+
+function item(id: number, folderId: number | null): Item {
+  const k = demoScale();
+  const [w, h] = SIZES[id % 4].map((x) => x * k);
   const kind = kindOf(id);
   const long = kind === 'video' && id % 2 === 0;
   return {
@@ -41,6 +62,7 @@ function item(id: number, folderId: number | null): Item {
     durationMs: kind === 'video' ? (long ? 600_000 + id * 1000 : 45_000) : null, favourite: id % 13 === 0, weight: 1, thumb: 'ok',
     importedAt: 1_700_000_000 - id * 3600 * 7, folderId, takenAt: 1_700_000_000 - id * 3600 * 7, views: 0, deletedAt: null, preview: false,
     copyOf: null, linked: false, note: null, resumeMs: long && id % 4 === 0 ? Math.round((600_000 + id * 1000) * (((id * 7) % 9) + 1) / 10) : null,
+    sketch: demoSketch(id),
   };
 }
 

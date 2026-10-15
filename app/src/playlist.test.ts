@@ -139,3 +139,22 @@ describe('peek', () => {
     expect(new Playlist(items, 'random').peek(3)).toEqual([]);
   });
 });
+
+describe('peekBack', () => {
+  it('shows the items before, nearest first, wrapping with repeat all', () => {
+    const p = new Playlist(items, 'nameAsc', 'all', 'a10.jpg');
+    expect(p.peekBack(2).map((x) => x.key)).toEqual(['a2.jpg', 'b2.jpg']);
+    const off = new Playlist(items, 'nameAsc', 'off', 'a10.jpg');
+    expect(off.peekBack(5).map((x) => x.key)).toEqual(['a2.jpg']);
+    expect(off.peekBack(1)[0].key).toBe(off.prev()!.key);
+  });
+
+  it('in random modes, what was shown before', () => {
+    const p = new Playlist(items, 'random', 'all', 'a2.jpg', seeded(3));
+    expect(p.peekBack(1)).toEqual([]);
+    const second = p.next()!.key;
+    p.next();
+    expect(p.peekBack(2).map((x) => x.key)).toEqual([second, 'a2.jpg']);
+    expect(p.prev()!.key).toBe(second);
+  });
+});

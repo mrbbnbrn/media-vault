@@ -21,6 +21,8 @@ import { wantsMinimap, watchedShare } from '../tilemaths';
 import { resumeOf, useResumeChanges } from '../resumebus';
 import { clickPick, moveFrom, movePick } from '../selection';
 import { useGridReveal } from '../viewerflip';
+import { lookAhead, thumbQueue, tilePriority } from '../loadqueue';
+import { sketchUrl } from '../sketch';
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
 function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
@@ -76,7 +78,8 @@ export function MediaGrid(props: {
   const [hover, setHover] = useState<number | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
-  const [view, setView] = useState({ top: 0, bottom: 1200 });
+  // dir: which way the scroll last went (+1 down, −1 up); ahead: how far past the view to draw tiles that way.
+  const [view, setView] = useState({ top: 0, bottom: 1200, dir: 1, ahead: 600 });
   // Thumbnails made (again) while this grid shows: how many times, so a remade one (e.g. after a saved rotation) loads afresh.
   const [ready, setReady] = useState<Map<number, number>>(new Map());
   const mode = props.layout ?? 'grid';
@@ -106,15 +109,34 @@ export function MediaGrid(props: {
     const sc = props.scroller.current;
     const el = ref.current;
     if (!sc || !el) return;
+    // Scroll speed (px per ms, smoothed): the faster it goes, the further ahead tiles are drawn and their thumbnails asked for.
+    let lastT = 0;
+    let lastY = sc.scrollTop;
+    let speed = 0;
+    let dir = 1;
+    let idle: ReturnType<typeof setTimeout> | null = null;
     const update = () => {
+      const now = performance.now();
+      const y = sc.scrollTop;
+      const dt = now - lastT;
+      speed = lastT && dt > 0 && dt < 250 ? speed * 0.6 + ((y - lastY) / dt) * 0.4 : 0;
+      if (Math.abs(speed) > 0.05) dir = speed > 0 ? 1 : -1;
+      lastT = now;
+      lastY = y;
       const top = el.getBoundingClientRect().top - sc.getBoundingClientRect().top + sc.scrollTop;
       const t = sc.scrollTop - top;
-      setView({ top: t, bottom: t + sc.clientHeight });
+      setView({ top: t, bottom: t + sc.clientHeight, dir, ahead: lookAhead(speed) });
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => {
+        speed = 0;
+        setView((v) => (v.ahead === 600 ? v : { ...v, ahead: 600 }));
+      }, 300);
     };
     update();
     sc.addEventListener('scroll', update, { passive: true });
     window.addEventListener('resize', update);
     return () => {
+      if (idle) clearTimeout(idle);
       sc.removeEventListener('scroll', update);
       window.removeEventListener('resize', update);
     };
@@ -229,7 +251,7 @@ export function MediaGrid(props: {
     return () => window.removeEventListener('keydown', onKey);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [from, to] = visibleRange(layout.boxes, view.top - 600, view.bottom + 600);
+  const [from, to] = visibleRange(layout.boxes, view.top - (view.dir < 0 ? view.ahead : 600), view.bottom + (view.dir > 0 ? view.ahead : 600));
   // Only tiles really on screen play; the rest just show their thumbnail.
   const onScreen = (i: number) => {
     const b = layout.boxes[i];
@@ -342,7 +364,7 @@ export function MediaGrid(props: {
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
             className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
-            style={{ left: b.x, top: b.y, width: b.w, height: b.h }}
+            style={{ left: b.x, top: b.y, width: b.w, height: b.h, ...sketchStyle(it, place && props.faceCrop ? place : null) }}
             onClick={(e) => click(e, it)} onDoubleClick={() => props.onOpen(it)}
             onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
             onContextMenu={(e) => {
@@ -351,7 +373,7 @@ export function MediaGrid(props: {
             }}
             onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
             {hasThumb && it.thumb !== 'failed' ? (
-              <img src={`${thumbUrl(it.id)}?v=${ready.get(it.id) ?? 0}`} alt="" loading="lazy" draggable={false}
+              <QueuedThumb key={ready.get(it.id) ?? 0} url={`${thumbUrl(it.id)}?v=${ready.get(it.id) ?? 0}`} prio={tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
                 style={place && props.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
             ) : it.thumb === 'failed' ? (
               <span className="tile-msg"><BrokenIcon /> Can't play</span>
@@ -408,6 +430,50 @@ export function MediaGrid(props: {
         </div>
       )}
     </div>
+  );
+}
+
+// ---- instant colour sketches and queued thumbnails (sketch.ts, loadqueue.ts) -------------
+
+/** The tile's background until its thumbnail is in: the item's colour sketch, softly stretched. */
+function sketchStyle(it: Item, place: { px: number; py: number } | null): React.CSSProperties | undefined {
+  const url = it.thumb === 'ok' ? sketchUrl(it.sketch) : null;
+  if (!url) return undefined;
+  return {
+    backgroundImage: `url("${url}")`,
+    backgroundSize: 'cover',
+    backgroundPosition: place ? `${place.px * 100}% ${place.py * 100}%` : 'center',
+  };
+}
+
+/**
+ * A grid thumbnail that waits for its turn (loadqueue.ts: on screen first,
+ * then where the scroll is heading), then fades in over the sketch.
+ */
+function QueuedThumb(props: { url: string; prio: number; style?: React.CSSProperties }) {
+  const { url, prio } = props;
+  const [go, setGo] = useState(false);
+  useEffect(() => {
+    if (!go) thumbQueue.want(url, prio, () => setGo(true));
+  }, [url, prio, go]);
+  // (A new address is a new component: the caller keys it by url.)
+  useEffect(() => () => thumbQueue.drop(url), [url]);
+  if (!go) return null;
+  const done = () => thumbQueue.done(url);
+  return (
+    <img className="thumb" src={url} alt="" draggable={false} style={props.style}
+      ref={(el) => {
+        // Already there (from memory): show it at once, without the fade.
+        if (el?.complete && el.naturalWidth > 0) {
+          el.classList.add('in');
+          done();
+        }
+      }}
+      onLoad={(e) => {
+        e.currentTarget.classList.add('in');
+        done();
+      }}
+      onError={done} />
   );
 }
 
