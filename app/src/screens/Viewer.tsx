@@ -351,8 +351,8 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
                     ))}
                   </div>
                   <label htmlFor="ps-beatmin">At least</label>
-                  <span className="row"><input id="ps-beatmin" className="input small" type="number" min={0.5} max={60} step={0.5} value={s.beatMinSeconds}
-                    onChange={(e) => set({ beatMinSeconds: Math.min(60, Math.max(0.5, num(e.target.value))) })} /> seconds per item</span>
+                  <span className="row"><input id="ps-beatmin" className="input small" type="number" min={0.1} max={60} step={0.1} value={s.beatMinSeconds}
+                    onChange={(e) => set({ beatMinSeconds: Math.min(60, Math.max(0.1, num(e.target.value))) })} /> seconds per item</span>
                   <span />
                   <span className="faint" style={{ fontSize: 12 }}>
                     Listens to the music playing on your computer (nothing is recorded). When it's quiet, the normal timing above is used.
@@ -374,6 +374,16 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
             <button type="button" className={s.transition === 'none' ? 'on' : ''} onClick={() => set({ transition: 'none' })}>None</button>
             <button type="button" className={s.transition === 'fade' ? 'on' : ''} onClick={() => set({ transition: 'fade' })}>Fade</button>
           </div>
+          {s.transition === 'fade' && (
+            <>
+              <label htmlFor="ps-fade">Fade speed</label>
+              <span className="row" style={{ gap: 10 }}>
+                <input id="ps-fade" type="range" min={50} max={2000} step={50} value={s.fadeMs} style={{ flex: 1 }}
+                  onChange={(e) => set({ fadeMs: Number(e.target.value) })} />
+                <span className="faint" style={{ minWidth: 52, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{(s.fadeMs / 1000).toFixed(2)} s</span>
+              </span>
+            </>
+          )}
         </div>
         <div className="row" style={{ justifyContent: 'flex-end' }}>
           <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>

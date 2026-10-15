@@ -86,6 +86,8 @@ export interface LookSettings {
   topBar: string[];
   /** The scroll preview strip beside the grid's scrollbar (long grids only). */
   minimap?: boolean;
+  /** Stacked folder cards fan out to the sides on hover. */
+  fanCards?: boolean;
 }
 
 export interface VaultEntry {

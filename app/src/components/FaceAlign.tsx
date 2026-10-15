@@ -13,7 +13,6 @@ import type { PlayItem } from '../media';
 
 /** Faces per item, kept for the session (also for upcoming items). */
 const faceCache = new Map<number, FaceBox[]>();
-const CROSSFADE_MS = 700;
 const GENTLE_ZOOM = 1.06;
 
 function pictureId(it: PlayItem | null | undefined): number | null {
@@ -21,6 +20,8 @@ function pictureId(it: PlayItem | null | undefined): number | null {
 }
 
 export function useFaceAlign(o: {
+  /** Crossfade length (ms); 0 = the transition is "None": switch instantly, no ghost. */
+  fadeMs: number;
   /** The setting is on and the slideshow is running. */
   on: boolean;
   item: PlayItem | null;
@@ -89,7 +90,7 @@ export function useFaceAlign(o: {
     el.style.transform = css;
     let a: Animation | null = null;
     if (end !== css && typeof el.animate === 'function') {
-      a = el.animate([{ transform: css }, { transform: end }], { duration: Math.max(1500, o.showMs + CROSSFADE_MS), easing: 'ease-in-out', fill: 'both' });
+      a = el.animate([{ transform: css }, { transform: end }], { duration: Math.max(1500, o.showMs + o.fadeMs), easing: 'ease-in-out', fill: 'both' });
       if (o.halted) a.pause();
     }
     anim.current = a;
@@ -111,12 +112,12 @@ export function useFaceAlign(o: {
   const ready = !o.on || id == null || o.blocked || aligned != null;
   useEffect(() => {
     if (!ghost || ghost.fading) return;
-    const t = setTimeout(() => setGhost((g) => (g && g.n === ghost.n ? { ...g, fading: true } : g)), ready ? 30 : 1500);
+    const t = setTimeout(() => setGhost((g) => (g && g.n === ghost.n ? { ...g, fading: true } : g)), ready ? 30 : 400);
     return () => clearTimeout(t);
   }, [ready, ghost]);
   useEffect(() => {
     if (!ghost?.fading) return;
-    const t = setTimeout(() => setGhost((g) => (g && g.n === ghost.n ? null : g)), CROSSFADE_MS + 50);
+    const t = setTimeout(() => setGhost((g) => (g && g.n === ghost.n ? null : g)), o.fadeMs + 50);
     return () => clearTimeout(t);
   }, [ghost]);
   useEffect(() => {
@@ -125,7 +126,7 @@ export function useFaceAlign(o: {
 
   /** Call right before moving to another item: keeps a copy of the picture on screen for the crossfade. */
   const snap = () => {
-    if (!o.on) return;
+    if (!o.on || o.fadeMs <= 0) return;
     const el = o.layer.current;
     const cv = el?.querySelector('canvas');
     if (!el || !cv || !cv.width || !cv.height) return;
@@ -145,7 +146,7 @@ export function useFaceAlign(o: {
 
   const ghostNode = ghost && (
     <div key={ghost.n} className={`align-ghost${ghost.fading ? ' fading' : ''}`} aria-hidden="true"
-      style={{ transform: ghost.transform, transformOrigin: '0 0', animationDuration: `${CROSSFADE_MS}ms` }}
+      style={{ transform: ghost.transform, transformOrigin: '0 0', animationDuration: `${o.fadeMs}ms` }}
       ref={(div) => {
         if (div && ghost.canvas.parentNode !== div) {
           ghost.canvas.style.width = `${ghost.w}px`;

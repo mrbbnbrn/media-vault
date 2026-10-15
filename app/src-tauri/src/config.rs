@@ -151,6 +151,8 @@ pub struct LookSettings {
     pub top_bar: Vec<String>,
     /// The scroll preview strip beside the grid's scrollbar (long grids only).
     pub minimap: bool,
+    /// Stacked folder cards fan out to the sides on hover (off: the front card just cycles).
+    pub fan_cards: bool,
 }
 
 impl Default for LookSettings {
@@ -165,6 +167,7 @@ impl Default for LookSettings {
             tile_radius: 8,
             top_bar: Vec::new(),
             minimap: true,
+            fan_cards: false,
         }
     }
 }

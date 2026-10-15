@@ -126,6 +126,8 @@ export function Player(props: PlayerProps) {
   const [help, setHelp] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const lastWheel = useRef(0);
+  const lastWheelStep = useRef(0);
+  const wheelAcc = useRef(0);
   const zoomed = zoom.s > 1.001;
   const halted = paused || !!props.hold;
   const mini = !!props.mini;
@@ -256,8 +258,14 @@ export function Player(props: PlayerProps) {
     return () => clearTimeout(t);
   }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // How long a fade takes: the setting, but with beat sync never longer than
+  // about a third of the time between changes, so it keeps up with fast music.
+  const fadeMs = s.transition !== 'fade' ? 0
+    : beatDriving && beat.bpm ? Math.max(60, Math.min(s.fadeMs, (60000 / beat.bpm) * s.beatEvery * 0.35)) : s.fadeMs;
+
   // "Line up faces": the main face stays at the same place and size from picture to picture.
   const align = useFaceAlign({
+    fadeMs,
     on: !!prefs.alignFaces && slideshow && !mini,
     item,
     natural: isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null,
@@ -347,10 +355,19 @@ export function Player(props: PlayerProps) {
       }
       if (doc) return; // scroll inside the text / PDF
       e.preventDefault();
+      // Every notch of a mouse wheel moves one item; touchpads (many small
+      // deltas) move one item per ~half a notch of scrolling.
       const now = Date.now();
-      if (now - lastWheel.current < 280 || Math.abs(e.deltaY) < 4) return;
+      const px = e.deltaMode === 1 ? e.deltaY * 40 : e.deltaMode === 2 ? e.deltaY * 800 : e.deltaY;
+      if (now - lastWheel.current > 250 || Math.sign(px) !== Math.sign(wheelAcc.current)) wheelAcc.current = 0;
       lastWheel.current = now;
-      go(e.deltaY > 0 ? 'next' : 'prev');
+      wheelAcc.current += px;
+      if (Math.abs(wheelAcc.current) < 50) return;
+      if (now - lastWheelStep.current < 45) return; // one physical notch sometimes arrives as two events
+      lastWheelStep.current = now;
+      const dir = wheelAcc.current > 0 ? 'next' : 'prev';
+      wheelAcc.current = 0;
+      go(dir);
     };
     el.addEventListener('wheel', onWheel, { passive: false });
     return () => el.removeEventListener('wheel', onWheel);
@@ -786,8 +803,14 @@ export function Player(props: PlayerProps) {
         const dir = k === 'arrowright' ? 1 : -1;
         e.preventDefault();
         if (e.ctrlKey && timed) stepFrame(dir);
-        else if (isVideo) seekBy(dir * (e.shiftKey ? prefs.seekBigSeconds : prefs.seekSeconds));
-        else go(dir > 0 ? 'next' : 'prev');
+        else if (isVideo) {
+          // At the very end, → goes on to the next item; at the very start, ← to the previous one.
+          const v = videoRef.current;
+          const d = v && Number.isFinite(v.duration) ? v.duration : 0;
+          if (v && dir > 0 && (v.ended || (d > 0 && v.currentTime >= d - 0.3))) go('next');
+          else if (v && dir < 0 && v.currentTime <= 0.3) go('prev');
+          else seekBy(dir * (e.shiftKey ? prefs.seekBigSeconds : prefs.seekSeconds));
+        } else go(dir > 0 ? 'next' : 'prev');
       } else if (k === 'a' && timed && !e.ctrlKey) setLoopPoint('a');
       else if (k === 'b' && timed && !e.ctrlKey) setLoopPoint('b');
       else if (k === 'x' && timed && !e.ctrlKey) clearLoop();
@@ -950,6 +973,7 @@ export function Player(props: PlayerProps) {
 
   return (
     <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi && !mini ? '' : ' idle'}${mini ? ' mini' : ''}${ambient ? ' ambient' : ''}`}
+      style={{ ['--fade-ms' as string]: `${fadeMs}ms` }}
       onMouseMove={poke} onMouseDown={poke}>
       {ambient && item?.thumb && <div key={item.key} className="ambient-glow" style={{ backgroundImage: `url("${item.thumb}")` }} aria-hidden="true" />}
       <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}`} onPointerDown={onStagePointerDown}

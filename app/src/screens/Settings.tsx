@@ -128,6 +128,8 @@ export function Settings({ nav }: { nav: Nav }) {
                   on={look.faceCrop} set={(v) => setLook({ faceCrop: v })} />
                 <Toggle title="Scroll preview beside the scrollbar" desc="In long folders, a wider strip next to the scrollbar: point at it to see small pictures from that spot, click or drag on it to jump there."
                   on={look.minimap !== false} set={(v) => setLook({ minimap: v })} />
+                <Toggle title="Fan out folder cards on hover" desc="Folders with several pictures spread their back cards out to the sides while you point at them."
+                  on={!!look.fanCards} set={(v) => setLook({ fanCards: v })} />
                 <Toggle title="Compact sidebar" desc="Only icons and folder pictures; names show when you point at them. The button at the top of the sidebar switches it too."
                   on={look.sidebarRail} set={(v) => setLook({ sidebarRail: v })} />
                 <div className="setting">

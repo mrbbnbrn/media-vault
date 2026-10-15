@@ -916,17 +916,17 @@ canvas.flip-in-ghost { display: block; }
 .fstack img.cycle { animation: fadein 0.35s ease; }
 /* Room to fan out: the cover lets the back cards out, and the hovered card
    sits above its neighbours (and stays there until the cards are back). */
-.fcover:has(> .fstack) { overflow: visible; }
-.fcard:has(.fstack) { position: relative; transition: z-index 0s linear 0.34s; transition-behavior: allow-discrete; }
-.fcard:has(.fstack):hover { z-index: 5; transition-delay: 0s; }
-.fcard:hover .fstack .fstack-1 { transform: translate(-56%, -2%) rotate(-11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
-.fcard:hover .fstack .fstack-2 { transform: translate(56%, -2%) rotate(11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
-.fcard:hover .fstack .fstack-top { transform: scale(1.07); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.75); }
+:root[data-fan="on"] .fcover:has(> .fstack) { overflow: visible; }
+:root[data-fan="on"] .fcard:has(.fstack) { position: relative; transition: z-index 0s linear 0.34s; transition-behavior: allow-discrete; }
+:root[data-fan="on"] .fcard:has(.fstack):hover { z-index: 5; transition-delay: 0s; }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-1 { transform: translate(-56%, -2%) rotate(-11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-2 { transform: translate(56%, -2%) rotate(11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-top { transform: scale(1.07); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.75); }
 /* First and last column: fan less towards the window edge
    (sized so they stay within the card's padding and the page margin at any
    card size, so the page never gets a sideways scrollbar). */
-.fcard:hover .fstack.edge-l .fstack-1 { transform: translate(calc(-15% - 20px), -3%) rotate(-8deg) scale(0.8); }
-.fcard:hover .fstack.edge-r .fstack-2 { transform: translate(calc(15% + 20px), -3%) rotate(8deg) scale(0.8); }
+:root[data-fan="on"] .fcard:hover .fstack.edge-l .fstack-1 { transform: translate(calc(-15% - 20px), -3%) rotate(-8deg) scale(0.8); }
+:root[data-fan="on"] .fcard:hover .fstack.edge-r .fstack-2 { transform: translate(calc(15% + 20px), -3%) rotate(8deg) scale(0.8); }
 
 /* Person folders: the circle opens into the card's square while hovered
    (the picture eases from the face close-up to the whole cover); holding
@@ -1008,3 +1008,6 @@ canvas.flip-in-ghost { display: block; }
 .beat-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); font-size: 11.5px; line-height: 1.45; max-height: 150px; overflow: auto; user-select: text; }
 .beat-tip { font-size: 12px; }
 .beat-badge.problem { color: #f2b8a0; }
+
+/* Slideshow fades follow the "Fade speed" setting (shorter with fast beat sync). */
+.player .fade-in { animation-duration: var(--fade-ms, 350ms); }

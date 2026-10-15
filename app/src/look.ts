@@ -20,6 +20,7 @@ export function applyLook(l: LookSettings | undefined) {
   if (!l) return;
   const root = document.documentElement;
   root.dataset.style = l.style;
+  root.dataset.fan = l.fanCards ? 'on' : 'off';
   root.style.setProperty('--tile-radius', `${l.tileRadius}px`);
   setGridGap(l.tileGap);
   setZoom(l.uiScale);

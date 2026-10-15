@@ -17,6 +17,8 @@ export interface PlaybackSettings {
   speed: number;
   fit: 'contain' | 'cover';
   transition: 'none' | 'fade';
+  /** How long a fade between items takes (ms). With beat sync it gets shorter to keep up with fast music. */
+  fadeMs: number;
   volume: number;
   muted: boolean;
   /** Move on with the music heard on the computer (falls back to the timer when silent). */
@@ -40,11 +42,12 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   speed: 1,
   fit: 'contain',
   transition: 'fade',
+  fadeMs: 350,
   volume: 0.8,
   muted: false,
   beatSync: false,
   beatEvery: 1,
-  beatMinSeconds: 2,
+  beatMinSeconds: 0.3,
   kenBurns: false,
 };
 
@@ -64,7 +67,9 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     volume: num(s.volume, 0.8, 0, 1),
     beatSync: s.beatSync === true,
     beatEvery: s.beatEvery === 2 || s.beatEvery === 4 ? s.beatEvery : 1,
-    beatMinSeconds: num(s.beatMinSeconds, 2, 0.5, 60),
+    // 2 s was the old default: it made "every beat" wait about 4 beats at 120 BPM.
+    beatMinSeconds: s.beatMinSeconds === 2 ? 0.3 : num(s.beatMinSeconds, 0.3, 0.1, 60),
+    fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
     kenBurns: s.kenBurns === true,
   };
 }

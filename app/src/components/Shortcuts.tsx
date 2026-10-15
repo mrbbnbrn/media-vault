@@ -82,7 +82,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
   {
     group: 'Videos and GIFs',
     keys: [
-      ['← / →', `Jump back / forward ${seek} s (change in Settings)`],
+      ['← / →', `Jump back / forward ${seek} s (change in Settings); at the end → goes to the next item, at the start ← to the previous`],
       ['Shift + ← / →', `Jump back / forward ${big} s (change in Settings)`],
       ['Ctrl + ← / →', 'One frame back / forward (pauses)'],
       ['Ctrl + Space', 'Next item'],

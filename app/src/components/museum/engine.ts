@@ -60,8 +60,8 @@ const RADIUS = 0.32;
 const LOOK = 0.0022;
 const FOV = 66;
 /** Walking and hurrying (Shift), metres per second. */
-export const WALK = 4.2;
-export const RUN = 10.5;
+export const WALK = 5.25;
+export const RUN = 13.1;
 const WALK_KEYS = ['KeyW', 'KeyA', 'KeyS', 'KeyD', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
 const DIRS = [1, -1] as const;
 
@@ -1326,7 +1326,7 @@ export class MuseumEngine {
     const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
     const length = curve.getLength();
     this.glide = {
-      curve, t: 0, dur: Math.min(2.6, Math.max(0.55, 0.4 + length / 12)),
+      curve, t: 0, dur: Math.min(1.1, Math.max(0.22, 0.16 + length / 32)),
       yaw0: this.pose.yaw, yaw1: to.yaw, pitch0: this.pose.pitch, pitch1: to.pitch, eye0: this.eye, eye1: to.eye, follow: way.length > 2,
     };
   }
