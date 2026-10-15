@@ -298,7 +298,7 @@ impl Graph {
         if n > b.len() / 16 {
             return None;
         }
-        let mut saved: Vec<(i64, u64, Vec<(u32, f32)>)> = Vec::with_capacity(n);
+        let mut saved: Vec<SavedFace> = Vec::with_capacity(n);
         for _ in 0..n {
             let (id, check, deg) = (r.i64()?, r.u64()?, r.u32()? as usize);
             if deg > KEEP * 8 {
@@ -341,6 +341,9 @@ impl Graph {
         Some(g)
     }
 }
+
+/// A saved face: id, fingerprint checksum, look-alikes.
+type SavedFace = (i64, u64, Vec<(u32, f32)>);
 
 const SAVED_MAGIC: &[u8; 4] = b"MVFG";
 const SAVED_VERSION: u8 = 1;
