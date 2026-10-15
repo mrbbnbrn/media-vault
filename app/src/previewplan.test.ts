@@ -96,7 +96,7 @@ class FakePlayer implements PoolPlayer {
 
 describe('player pool', () => {
   it('hands players leaving the screen to tiles coming in instead of making new ones', () => {
-    const pool = new PlayerPool(() => new FakePlayer());
+    const pool = new PlayerPool(() => new FakePlayer(), () => null);
     // 12 tiles on screen.
     let shown = Array.from({ length: 12 }, (_, i) => {
       const p = pool.acquire(`v${i}`);
@@ -124,17 +124,24 @@ describe('player pool', () => {
   });
 
   it('grows to as many as are needed, and lets go of spares when far bigger', () => {
-    const pool = new PlayerPool(() => new FakePlayer());
+    let tidy: (() => void) | null = null;
+    const pool = new PlayerPool(() => new FakePlayer(), (fn) => {
+      tidy = fn;
+      return null;
+    });
     const many = Array.from({ length: 60 }, (_, i) => pool.acquire(`v${i}`));
     expect(pool.stats.inUse).toBe(60);
     many.slice(0, 56).forEach((p) => pool.release(p));
-    // 4 in use: keep MIN_SPARE spares (more while many are in use).
+    // Spares are kept for a moment (a burst of tiles coming in takes them)…
+    expect(pool.stats.spare).toBe(56);
+    // …then 4 in use keep MIN_SPARE spares (more while many are in use).
+    tidy!();
     expect(pool.stats.spare).toBe(MIN_SPARE);
     expect(pool.stats.dropped).toBe(56 - MIN_SPARE);
   });
 
   it('prefers a spare that already has the video loaded', () => {
-    const pool = new PlayerPool(() => new FakePlayer());
+    const pool = new PlayerPool(() => new FakePlayer(), () => null);
     const a = pool.acquire('a');
     a.src = 'a';
     const b = pool.acquire('b');
@@ -146,7 +153,7 @@ describe('player pool', () => {
   });
 
   it('pauses everything and carries on with what was playing', () => {
-    const pool = new PlayerPool(() => new FakePlayer());
+    const pool = new PlayerPool(() => new FakePlayer(), () => null);
     const a = pool.acquire('a');
     const b = pool.acquire('b');
     pool.play(a);

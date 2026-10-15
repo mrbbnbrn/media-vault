@@ -372,7 +372,7 @@ export function MediaGrid(props: {
               <span className="tile-msg"><span className="spinner small" /></span>
             )}
             {playing && it.kind === 'video' && (
-              <VideoPreview id={it.id} layer={layerOf(it.id)} hasStrip={hasStrip(it)} hasTiny={hasTiny(it)} durationMs={it.durationMs}
+              <VideoPreview id={it.id} layer={layerOf(it.id)} eager={hover === it.id} hasStrip={hasStrip(it)} hasTiny={hasTiny(it)} durationMs={it.durationMs}
                 w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} fit={mode === 'shape' ? 'contain' : 'cover'} />
             )}
             {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
@@ -412,7 +412,7 @@ export function MediaGrid(props: {
           {pop.item.kind === 'video'
             ? <>
                 <img src={thumbUrl(pop.item.id)} alt="" draggable={false} />
-                <VideoPreview key={pop.item.id} id={pop.item.id} layer="real" hasStrip={hasStrip(pop.item)} hasTiny={hasTiny(pop.item)} durationMs={pop.item.durationMs}
+                <VideoPreview key={pop.item.id} id={pop.item.id} layer="real" eager hasStrip={hasStrip(pop.item)} hasTiny={hasTiny(pop.item)} durationMs={pop.item.durationMs}
                   w={pop.w} h={pop.h} aspect={pop.w / pop.h} fit="contain" />
               </>
             : <img key={pop.item.id} src={mediaUrl(pop.item.id)} alt="" draggable={false} />}

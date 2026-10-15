@@ -9,7 +9,7 @@ const FFMPEG = ['/usr/bin/ffmpeg', '/usr/local/bin/ffmpeg'].find((p) => existsSy
 const FFPROBE = FFMPEG?.replace(/ffmpeg$/, 'ffprobe');
 
 function make(args: string[]): Uint8Array {
-  const r = spawnSync(FFMPEG!, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25:duration=12', ...args, 'pipe:1'], { maxBuffer: 64 << 20 });
+  const r = spawnSync(FFMPEG!, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=12', ...args, 'pipe:1'], { maxBuffer: 64 << 20 });
   if (r.status !== 0) throw new Error(String(r.stderr));
   return new Uint8Array(r.stdout);
 }
@@ -41,7 +41,7 @@ const be = (...xs: number[]) => {
   return out;
 };
 
-describe('keyframe index', () => {
+describe('keyframe index', { timeout: 60_000 }, () => {
   it('reads keyframes from sample tables (with a composition offset and an edit list)', () => {
     // 10 samples of 1000 ticks at 10000/s, keyframes at samples 1 and 6 (1-based), offset 2000, edit list shift 2000.
     const hdlr = box('hdlr', be(0, 0), new TextEncoder().encode('vide'), be(0, 0, 0), new Uint8Array([0]));
@@ -68,6 +68,8 @@ describe('keyframe index', () => {
     expect(keyframeNear('all', 3, 1)).toBe(3);
     expect(keyframeNear(null, 3, 1)).toBe(3);
     expect(keyframeNear([0, 9.99], 9.9, 1, 10)).toBe(9.9);
+    // Not the black first frame when something later is close enough.
+    expect(keyframeNear([0, 6], 2.5, 5, 60, 1)).toBeCloseTo(6.001);
   });
 
   /** Encode the test pattern into a file (in a temporary folder) and read it back. */
@@ -75,7 +77,7 @@ describe('keyframe index', () => {
     const dir = mkdtempSync(join(tmpdir(), 'mv-kf-'));
     try {
       const f = join(dir, `a.${ext}`);
-      const r = spawnSync(FFMPEG!, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=320x180:rate=25:duration=12', ...args, f]);
+      const r = spawnSync(FFMPEG!, ['-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=size=160x90:rate=25:duration=12', ...args, f]);
       if (r.status !== 0) throw new Error(String(r.stderr));
       const p = spawnSync(FFPROBE!, ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'packet=pts_time,flags', '-of', 'csv=p=0', f]);
       const keys = String(p.stdout).split('\n').filter((l) => l.includes('K')).map((l) => Number(l.split(',')[0])).sort((a, z) => a - z);
@@ -106,7 +108,7 @@ describe('keyframe index', () => {
   it.skipIf(!FFMPEG)('reads WebM cues (keyframes at cluster starts)', async () => {
     const { bytes, keys } = file('webm', ['-c:v', 'libvpx', '-deadline', 'realtime', '-g', '75']);
     const cues = await readKeyframes(reader(bytes));
-    expect(Array.isArray(cues) && cues.length).toBeTruthy();
+    expect(Array.isArray(cues) && cues.length).toBeGreaterThanOrEqual(3);
     for (const t of cues as number[]) expect(keys.some((k) => Math.abs(k - t) < 0.01)).toBe(true);
   });
 });

@@ -212,6 +212,15 @@ function readVint(b: Bytes, p: number, keepMarker: boolean): { value: number; le
   return { value: !keepMarker && allOnes ? -1 : value, len };
 }
 
+/** The element starting at `p`: its id, where its data starts and its declared size (-1 = unknown). */
+export function elementHeader(b: Bytes, p: number): { id: number; start: number; size: number } | null {
+  const id = readVint(b, p, true);
+  if (!id) return null;
+  const size = readVint(b, p + id.len, false);
+  if (!size) return null;
+  return { id: id.value, start: p + id.len + size.len, size: size.value };
+}
+
 /** The elements directly inside [start, end). Unknown sizes run to `end`. */
 export function children(b: Bytes, start: number, end: number): EbmlElement[] {
   const out: EbmlElement[] = [];

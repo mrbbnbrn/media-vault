@@ -211,7 +211,7 @@ export async function thumbMoment(src: string, duration: number): Promise<number
   const at = Math.min(duration * 0.1, 5);
   if (at <= 0.05) return 0;
   const index = await withTimeout(readKeyframes(httpRanges(src)), 4000).catch(() => null);
-  return keyframeNear(index, at, Math.max(2.5, duration * 0.05), duration);
+  return keyframeNear(index, at, Math.max(5, duration * 0.05), duration, Math.min(1, at / 2));
 }
 
 async function videoThumb(id: number) {

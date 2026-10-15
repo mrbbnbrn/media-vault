@@ -39,13 +39,24 @@ export class PlayerPool<P extends PoolPlayer> {
   private paused = false;
   readonly stats: PoolStats = { created: 0, reused: 0, warm: 0, dropped: 0, inUse: 0, spare: 0 };
 
-  constructor(private make: () => P) {}
+  private trimTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /**
+   * `later` runs the clean-up of spare players a moment after the last
+   * release, so a burst of tiles leaving and coming (a fast scroll, a layout
+   * change) swaps players instead of dropping and making them.
+   */
+  constructor(
+    private make: () => P,
+    private later: (fn: () => void) => ReturnType<typeof setTimeout> | null = (fn) => setTimeout(fn, 2500),
+  ) {}
 
   /** A player for `src`: a spare one that already has it, else any spare one, else a new one. */
   acquire(src: string): P {
     let i = this.spare.findIndex((p) => p.src === src);
     const warm = i >= 0;
-    if (i < 0 && this.spare.length) i = this.spare.length - 1;
+    // Otherwise the one waiting longest (least likely to be scrolled back to).
+    if (i < 0 && this.spare.length) i = 0;
     let p: P;
     if (i >= 0) {
       p = this.spare.splice(i, 1)[0];
@@ -68,8 +79,12 @@ export class PlayerPool<P extends PoolPlayer> {
     this.resting.delete(p);
     // Most recently used last, so a tile scrolled back finds its video still loaded.
     this.spare.push(p);
-    this.trim();
     this.count();
+    if (this.trimTimer) clearTimeout(this.trimTimer);
+    this.trimTimer = this.later(() => {
+      this.trimTimer = null;
+      this.trim();
+    });
   }
 
   /** Let go of spare players beyond what's sensible for the players in use. */

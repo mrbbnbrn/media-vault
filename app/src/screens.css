@@ -400,6 +400,8 @@ body.clean-fs .toast { display: none; }
 .clip-frame { overflow: hidden; display: block; position: absolute; inset: 0; }
 /* Video tiles: flip-book, tiny clip and real video stacked over the thumbnail; each fades in once its first picture is drawn. */
 .vstack, .vlayer, .vslot { position: absolute; inset: 0; display: block; pointer-events: none; }
+/* Its own stack, so badges, ticks and hearts stay on top. */
+.vstack { z-index: 0; }
 .vlayer { opacity: 0; transition: opacity 0.24s ease; overflow: hidden; }
 .vlayer.ready { opacity: 1; }
 .vslot video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }

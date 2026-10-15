@@ -15,7 +15,7 @@ function vp9Frames(seconds: number, gop: number): { data: Uint8Array; timestampU
   while (p + 12 <= b.length) {
     const size = b[p] | (b[p + 1] << 8) | (b[p + 2] << 16) | (b[p + 3] << 24);
     const data = b.slice(p + 12, p + 12 + size);
-    // VP9 uncompressed header: frame_type bit (0 = key) after marker/profile/show_existing.
+    // ffmpeg was asked for a keyframe every `gop` frames.
     out.push({ data, timestampUs: Math.round((i * 1e6) / 24), key: i % gop === 0 });
     p += 12 + size;
     i++;
@@ -23,7 +23,7 @@ function vp9Frames(seconds: number, gop: number): { data: Uint8Array; timestampU
   return out;
 }
 
-describe('WebM writer', () => {
+describe('WebM writer', { timeout: 60_000 }, () => {
   it('writes sizes in the shortest form', () => {
     expect([...vint(0)]).toEqual([0x80]);
     expect([...vint(126)]).toEqual([0xfe]);

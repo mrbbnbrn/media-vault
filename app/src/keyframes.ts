@@ -7,7 +7,7 @@
 // Only byte ranges of the encrypted item are fetched (the vault protocol
 // decrypts just those chunks); nothing is written anywhere.
 
-import { WEBM_IDS, children, readUint } from './webm';
+import { WEBM_IDS, children, elementHeader, readUint } from './webm';
 
 type Bytes = Uint8Array;
 
@@ -227,13 +227,10 @@ async function webmIndex(read: RangeReader, first: { bytes: Bytes; total: number
   }
   if (cuesAt == null || cuesAt >= first.total) return null;
   const h = await read(cuesAt, Math.min(first.total, cuesAt + 16));
-  const el = children(h.bytes, 0, h.bytes.length)[0];
-  if (!el || el.id !== WEBM_IDS.Cues) return null;
-  const len = el.end - el.start;
-  if (len > MAX_INDEX) return null;
-  const all = await read(cuesAt, Math.min(first.total, cuesAt + el.start + len));
-  const c = children(all.bytes, 0, all.bytes.length)[0];
-  return c ? webmCueTimes(all.bytes, c, scale) : null;
+  const el = elementHeader(h.bytes, 0);
+  if (!el || el.id !== WEBM_IDS.Cues || el.size < 0 || el.size > MAX_INDEX) return null;
+  const all = await read(cuesAt, Math.min(first.total, cuesAt + el.start + el.size));
+  return webmCueTimes(all.bytes, { start: el.start, end: all.bytes.length }, scale);
 }
 
 /** Keyframe times of a video, from its index. Null when they can't be found cheaply. */
@@ -247,16 +244,17 @@ export async function readKeyframes(read: RangeReader): Promise<KeyframeIndex | 
 
 /**
  * The time to seek to for a picture near `target`: the closest keyframe, if
- * one is within `slack` seconds (a tiny bit after it, so the seek lands on it
- * and not on the frame before), else `target` itself.
+ * one is within `slack` seconds and not before `earliest` (the very start is
+ * often black), a tiny bit after it so the seek lands on it and not on the
+ * frame before; else `target` itself.
  */
-export function keyframeNear(index: KeyframeIndex | null, target: number, slack: number, duration = Infinity): number {
+export function keyframeNear(index: KeyframeIndex | null, target: number, slack: number, duration = Infinity, earliest = 0): number {
   if (!index || index === 'all' || !index.length) return target;
   let best = -1;
   let bestD = Infinity;
   for (const k of index) {
     const d = Math.abs(k - target);
-    if (d < bestD && k < duration - 0.05) {
+    if (d < bestD && k < duration - 0.05 && k >= earliest) {
       bestD = d;
       best = k;
     }

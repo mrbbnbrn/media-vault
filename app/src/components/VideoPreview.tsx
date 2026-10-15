@@ -30,8 +30,14 @@ export const players = new PlayerPool<HTMLVideoElement>(makePlayer);
 onPreviewsPaused((p) => (p ? players.pauseAll() : players.resumeAll()));
 if (previewsPaused()) players.pauseAll();
 
-/** For measurements in dev tools: `__mvPool.stats`. */
+/** For measurements in dev tools: `__mvPool.stats`, and `__mvPinBudget(n)` (null = automatic again). */
 (globalThis as unknown as { __mvPool?: PlayerPool<HTMLVideoElement> }).__mvPool = players;
+let pinned: number | null = null;
+(globalThis as unknown as { __mvPinBudget?: (n: number | null) => void }).__mvPinBudget = (n) => {
+  pinned = n;
+  budgetNow = n ?? budget.budget;
+  budgetSubs.forEach((s) => s());
+};
 
 // ---- watching how well the real videos play ------------------------------------------------------
 
@@ -95,7 +101,7 @@ function startMonitor() {
           lastQ.set(v, { total: q.totalVideoFrames, dropped: q.droppedVideoFrames });
         }
         const b = budget.look({ real: realAsked, wanted, frames: total, dropped, slowShare: slow / frames, avgFrameMs: sum / frames }, now);
-        if (b !== budgetNow) {
+        if (pinned == null && b !== budgetNow) {
           budgetNow = b;
           budgetSubs.forEach((s) => s());
         }
@@ -186,6 +192,7 @@ function flipTime(duration: number): number {
 
 const ORDER: Layer[] = ['flip', 'tiny', 'real'];
 const FADE_MS = 240;
+const SETTLE_MS = 160;
 
 export function VideoPreview(props: {
   id: number;
@@ -198,13 +205,22 @@ export function VideoPreview(props: {
   h: number;
   aspect: number;
   fit?: 'cover' | 'contain';
+  /** Start players at once (hover); otherwise only once the tile has stayed on screen a moment. */
+  eager?: boolean;
 }) {
+  // Tiles flying past in a fast scroll never start a player.
+  const [settled, setSettled] = useState(!!props.eager);
+  useEffect(() => {
+    if (settled) return;
+    const t = setTimeout(() => setSettled(true), SETTLE_MS);
+    return () => clearTimeout(t);
+  }, [settled]);
   // `top`: the layer on screen; `under`: the one it replaced, kept for the fade.
   const [top, setTop] = useState<Layer>('thumb');
   const [under, setUnder] = useState<Layer | null>(null);
   const [ready, setReady] = useState<Set<Layer>>(() => new Set());
   const tinyEl = useRef<HTMLVideoElement | null>(null);
-  const want = props.layer;
+  const want: Layer = settled || props.eager ? props.layer : 'thumb';
   const duration = (props.durationMs ?? 0) / 1000;
 
   // The wanted layer is ready: it fades in over the old one, which then goes.

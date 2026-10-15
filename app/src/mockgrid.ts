@@ -25,8 +25,11 @@ export function demoFace(id: number): FaceBox {
   };
 }
 
+/** `&gridvideos` makes every other demo item a video (for trying video previews). */
+const manyVideos = typeof location !== 'undefined' && /[?&]gridvideos\b/.test(location.search);
+
 function kindOf(id: number): Kind {
-  if (id % 7 === 0) return 'video';
+  if (id % 7 === 0 || (manyVideos && id % 2 === 0)) return 'video';
   if (id % 11 === 0) return 'gif';
   return 'image';
 }
@@ -39,7 +42,10 @@ function item(id: number, folderId: number | null): Item {
     id, kind, name: `${kind === 'video' ? 'clip' : 'photo'}-${String(id).padStart(5, '0')}.${kind === 'video' ? 'mp4' : kind === 'gif' ? 'gif' : 'jpg'}`,
     ext: kind === 'video' ? 'mp4' : kind === 'gif' ? 'gif' : 'jpg', size: 1_000_000 + id * 997, width: w, height: h,
     durationMs: kind === 'video' ? (long ? 600_000 + id * 1000 : 45_000) : null, favourite: id % 13 === 0, weight: 1, thumb: 'ok',
-    importedAt: 1_700_000_000 - id * 3600 * 7, folderId, takenAt: 1_700_000_000 - id * 3600 * 7, views: 0, deletedAt: null, preview: false,
+    importedAt: 1_700_000_000 - id * 3600 * 7, folderId, takenAt: 1_700_000_000 - id * 3600 * 7, views: 0, deletedAt: null,
+    // Videos: some have a frame strip and a tiny clip already, some only a strip, some nothing yet.
+    preview: kind === 'video' && (id % 14 === 0 || id % 21 === 0 || (manyVideos && (id % 4 === 0 || id % 6 === 0))),
+    tiny: kind === 'video' && (id % 14 === 0 || (manyVideos && id % 4 === 0)),
     copyOf: null, linked: false, note: null, resumeMs: long && id % 4 === 0 ? Math.round((600_000 + id * 1000) * (((id * 7) % 9) + 1) / 10) : null,
   };
 }
