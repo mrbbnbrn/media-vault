@@ -6,7 +6,7 @@
 // optionally in groups with a header (the timeline's months).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { mediaUrl, thumbUrl, type FaceBox, type Item } from '../api';
+import { itemThumbUrl, mediaUrl, smallEnough, thumbUrl, type FaceBox, type Item } from '../api';
 import { formatBytes } from '../theme';
 // ---- video previews (VideoPreview.tsx, previewplan.ts) ----
 import { preferPreviews, useMadePreviews } from '../previews';
@@ -23,7 +23,8 @@ import { wantsMinimap, watchedShare } from '../tilemaths';
 import { resumeOf, useResumeChanges } from '../resumebus';
 import { clickPick, moveFrom, movePick } from '../selection';
 import { useGridReveal } from '../viewerflip';
-import { lookAhead, thumbQueue, tilePriority } from '../loadqueue';
+import { lookAhead, ON_SCREEN, thumbQueue, tilePriority } from '../loadqueue';
+import * as thumbCache from '../thumbcache';
 import { sketchUrl } from '../sketch';
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
@@ -377,6 +378,8 @@ export function MediaGrid(props: {
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
         const place = (props.faceBoxes || props.faceCrop) && props.faces?.has(it.id) ? placement(it, b.w, b.h) : null;
         const watched = watchedShare(it.kind, it.durationMs, resumeOf(it));
+        // Its thumbnail's address (a new address is a new QueuedThumb).
+        const turl = tileThumbUrl(it, b.w, b.h, ready.get(it.id));
         return (
           <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
             className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
@@ -389,7 +392,7 @@ export function MediaGrid(props: {
             }}
             onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
             {hasThumb && it.thumb !== 'failed' ? (
-              <QueuedThumb key={ready.get(it.id) ?? 0} url={`${thumbUrl(it.id)}?v=${ready.get(it.id) ?? 0}`} prio={tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
+              <QueuedThumb key={turl} url={turl} prio={tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)} flinging={view.ahead > 900}
                 style={place && props.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
             ) : it.thumb === 'failed' ? (
               <span className="tile-msg"><BrokenIcon /> Can't play</span>
@@ -436,7 +439,7 @@ export function MediaGrid(props: {
         <div className="whole-pop" style={{ left: pop.left, top: pop.top, width: pop.w, height: pop.h }} aria-hidden="true">
           {pop.item.kind === 'video'
             ? <>
-                <img src={thumbUrl(pop.item.id)} alt="" draggable={false} />
+                <img src={itemThumbUrl(pop.item)} alt="" draggable={false} />
                 <VideoPreview key={pop.item.id} id={pop.item.id} layer="real" eager hasStrip={hasStrip(pop.item)} hasTiny={hasTiny(pop.item)} durationMs={pop.item.durationMs}
                   w={pop.w} h={pop.h} aspect={pop.w / pop.h} fit="contain" />
               </>
@@ -460,34 +463,91 @@ function sketchStyle(it: Item, place: { px: number; py: number } | null): React.
   };
 }
 
+/** Tiles off screen wait this long (ms, while the scroll stays put) before they ask for their thumbnail. */
+const PREFETCH_WAIT_MS = 90;
+
+/**
+ * A tile's thumbnail address: the small (256 px) one when that is sharp
+ * enough for the tile at this screen's pixel density, else the big one;
+ * versioned by the stored thumbnail (and by `remade`, a count of remakes
+ * seen while this grid shows), so a new thumbnail is a new address.
+ */
+function tileThumbUrl(it: Item, w: number, h: number, remade: number | undefined): string {
+  const v = `${it.thumbV ?? ''}${remade ? `.${remade}` : ''}`;
+  return thumbUrl(it.id, v, smallEnough(w, h, it.width, it.height));
+}
+
 /**
  * A grid thumbnail that waits for its turn (loadqueue.ts: on screen first,
- * then where the scroll is heading), then fades in over the sketch.
+ * then where the scroll is heading), then fades in over the sketch. Fetched
+ * by hand (cancellable: a tile scrolled away stops its load, and a tile far
+ * off screen gives its place to one on screen) and kept in memory
+ * (thumbcache.ts), so it shows at once when it comes back.
  */
-function QueuedThumb(props: { url: string; prio: number; style?: React.CSSProperties }) {
+function QueuedThumb(props: { url: string; prio: number; flinging?: boolean; style?: React.CSSProperties }) {
   const { url, prio } = props;
-  const [go, setGo] = useState(false);
+  // Fetched before (this grid or another): straight away, no fade.
+  const [first] = useState(() => thumbCache.peek(url));
+  const [src, setSrc] = useState<string | null>(first);
+  /** This tile counts as a user of the kept copy (so it isn't let go while shown). */
+  const held = useRef(false);
+  const alive = useRef(true);
   useEffect(() => {
-    if (!go) thumbQueue.want(url, prio, () => setGo(true));
-  }, [url, prio, go]);
-  // (A new address is a new component: the caller keys it by url.)
-  useEffect(() => () => thumbQueue.drop(url), [url]);
-  if (!go) return null;
-  const done = () => thumbQueue.done(url);
+    if (src) return;
+    const ask = () => thumbQueue.want(url, prio, (signal) => {
+      thumbCache.load(url, signal, prio < ON_SCREEN ? 'high' : 'low').then(
+        (blobUrl) => {
+          thumbQueue.done(url);
+          if (!alive.current) {
+            thumbCache.release(url);
+            return;
+          }
+          held.current = true;
+          setSrc(blobUrl);
+        },
+        () => {
+          // Cancelled: it is asked for again when its turn comes back (or the tile is gone).
+          if (signal.aborted) return;
+          thumbQueue.done(url);
+          // Couldn't fetch it by hand: let the picture load it itself.
+          if (alive.current) setSrc(url);
+        },
+      );
+    });
+    // On screen, or already in line (a new priority): now. Other tiles join the
+    // line only once the scroll lets them stay a moment (while flinging, tiles
+    // on screen too), so a fling doesn't start, and then cancel, loads for
+    // every row it flies past.
+    if ((prio < ON_SCREEN && !props.flinging) || thumbQueue.has(url)) {
+      ask();
+      return;
+    }
+    const t = setTimeout(ask, PREFETCH_WAIT_MS);
+    return () => clearTimeout(t);
+  }, [url, prio, src, props.flinging]);
+  // (A new address is a new component: the caller keys it by address.)
+  useEffect(() => {
+    alive.current = true;
+    if (src && !held.current) {
+      // Shown from memory: hold on to it (or, if it was let go meanwhile, load it again).
+      if (thumbCache.take(url)) held.current = true;
+      else setSrc(null);
+    }
+    return () => {
+      alive.current = false;
+      thumbQueue.drop(url);
+      if (held.current) thumbCache.release(url);
+      held.current = false;
+    };
+  }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
+  if (!src) return null;
   return (
-    <img className="thumb" src={url} alt="" draggable={false} style={props.style}
+    <img className={first ? 'thumb in' : 'thumb'} src={src} alt="" draggable={false} style={props.style} decoding="async"
+      fetchPriority={prio < ON_SCREEN ? 'high' : 'low'}
       ref={(el) => {
-        // Already there (from memory): show it at once, without the fade.
-        if (el?.complete && el.naturalWidth > 0) {
-          el.classList.add('in');
-          done();
-        }
+        if (el?.complete && el.naturalWidth > 0) el.classList.add('in');
       }}
-      onLoad={(e) => {
-        e.currentTarget.classList.add('in');
-        done();
-      }}
-      onError={done} />
+      onLoad={(e) => e.currentTarget.classList.add('in')} />
   );
 }
 

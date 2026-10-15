@@ -1,6 +1,6 @@
 // Making a video's preview pictures in one pass, in memory (nothing decrypted
 // ever reaches the disk):
-//  - the frame strip (48 small frames in one JPEG: flip-books, seek-bar
+//  - the frame strip (48 small frames in one WebP picture: flip-books, seek-bar
 //    previews, smart search), and
 //  - the tiny clip (a few seconds of small silent video that grid tiles play
 //    straight away), encoded with WebCodecs and written as WebM (webm.ts).
@@ -12,6 +12,7 @@
 
 import { COLS, ROWS, FRAMES, frameTimes, tinyPieces, tinySize } from './previews';
 import { writeWebm, type WebmFrame } from './webm';
+import { canvasPicture, STRIP_JPEG_QUALITY, STRIP_WEBP_QUALITY } from './canvaspic';
 
 const CELL = 240;
 export const TINY_FPS = 24;
@@ -231,8 +232,8 @@ export async function makeVideoPreviews(src: string, want: { strip: boolean; tin
 
     const out: Made = { ms: 0 };
     if (strip) {
-      const blob = await new Promise<Blob | null>((res) => strip.toBlob(res, 'image/jpeg', 0.72));
-      if (!blob) throw new Error('could not encode');
+      // WebP (smaller); older strips are JPEG and keep working (the vault tells them apart).
+      const blob = await canvasPicture(strip, STRIP_WEBP_QUALITY, STRIP_JPEG_QUALITY);
       out.strip = new Uint8Array(await blob.arrayBuffer());
     }
     if (want.tiny) {

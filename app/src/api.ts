@@ -391,6 +391,8 @@ export interface Item {
   favourite: boolean;
   weight: number;
   thumb: 'ok' | 'pending' | 'failed';
+  /** The thumbnail's version (start of its stored id; changes when it is remade): part of its address. */
+  thumbV?: string | null;
   importedAt: number;
   folderId: number | null;
   /** Best known date taken (seconds). */
@@ -591,6 +593,9 @@ export interface CacheInfo {
   thumbBytes: number;
   previews: number;
   previewBytes: number;
+  /** Thumbnail pages (a folder's thumbnails in a few objects; made again by themselves). */
+  pages?: number;
+  pageBytes?: number;
 }
 
 export interface DataInfo {
@@ -730,6 +735,8 @@ export const api = {
   /** Older, smaller thumbnails still to remake sharper (ids after..upto). */
   thumbsToSharpen: (after: number, upto: number, limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_to_sharpen', { after, upto, limit }),
   newestItemId: () => call<number>('newest_item_id'),
+  /** Older JPEG thumbnails to make again as WebP; `next` = looked at everything up to this id. */
+  thumbsToWebp: (after: number, upto: number, limit: number) => call<{ tasks: { id: number; kind: Kind }[]; next: number }>('thumbs_to_webp', { after, upto, limit }),
   countToSharpen: (after: number, upto: number) => call<number>('count_to_sharpen', { after, upto }),
   thumbFailed: (id: number) => call<void>('thumb_failed', { id }),
 
@@ -1071,7 +1078,32 @@ function proto(scheme: string, path: string): string {
 }
 
 export const mediaUrl = (id: number) => proto('vault', `media/${id}`);
-export const thumbUrl = (id: number) => proto('vault', `thumb/${id}`);
+/**
+ * An item's thumbnail. `v` (the item's `thumbV`, or a counter) makes the
+ * address change when the thumbnail is remade, so no old copy is shown;
+ * `small` asks for the 256 px one (made per folder in the background; the
+ * big one comes until it is there).
+ */
+export const thumbUrl = (id: number, v?: string | number | null, small = false) => {
+  const q = [v != null && v !== '' ? `v=${v}` : '', small ? 'small=1' : ''].filter(Boolean).join('&');
+  return proto('vault', `thumb/${id}${q ? `?${q}` : ''}`);
+};
+/** An item's thumbnail address, versioned (see `thumbUrl`). */
+export const itemThumbUrl = (it: { id: number; thumbV?: string | null }, small = false) => thumbUrl(it.id, it.thumbV, small);
+/** Longest side of small thumbnails (thumbpages.rs). */
+export const SMALL_THUMB = 256;
+/**
+ * Is the small thumbnail sharp enough for a tile `w` × `h` (CSS px) showing
+ * a picture of `pw` × `ph` cropped to fill it (`cover`) or whole (`contain`)?
+ * Counts the screen's pixel density; a little upscaling (10%) is allowed.
+ */
+export function smallEnough(w: number, h: number, pw: number | null | undefined, ph: number | null | undefined, fit: 'cover' | 'contain' = 'cover', dpr = typeof devicePixelRatio === 'number' ? devicePixelRatio : 1): boolean {
+  if (!pw || !ph || w <= 0 || h <= 0) return false;
+  const s = fit === 'cover' ? Math.max(w / pw, h / ph) : Math.min(w / pw, h / ph);
+  // The picture's longest side as drawn, in device pixels.
+  const need = s * Math.max(pw, ph) * dpr;
+  return need <= SMALL_THUMB * 1.1;
+}
 export const previewUrl = (id: number) => proto('vault', `preview/${id}`);
 export const tinyUrl = (id: number) => proto('vault', `tiny/${id}`);
 export const localUrl = (key: string) => proto('local', `f/${key}`);
@@ -1255,6 +1287,8 @@ const mock = {
       case 'previews_needed':
       case 'thumbs_to_sharpen':
         return [];
+      case 'thumbs_to_webp':
+        return { tasks: [], next: Number(a.upto ?? 0) };
       case 'newest_item_id':
       case 'count_to_sharpen':
         return 0;
