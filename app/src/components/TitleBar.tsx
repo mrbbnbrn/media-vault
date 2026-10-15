@@ -10,7 +10,7 @@ import type { LibraryTabs, TabInfo } from '../tabs/useTabs';
 import type { TabIconKind } from '../tabs/tabs';
 import { ContextMenu, type MenuItem } from './Dialogs';
 import {
-  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, FaceIcon, FolderIcon, HeartIcon, ImagesIcon, ImportIcon, LockIcon, PlayIcon, PlusIcon, SearchIcon,
+  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, FaceIcon, FolderIcon, HeartIcon, ImagesIcon, ImportIcon, PlayIcon, PlusIcon, SearchIcon,
   SparkleIcon, TrashIcon, TwinIcon,
 } from './Icons';
 import '../titlebar.css';
@@ -44,18 +44,24 @@ const win = (fn: (w: ReturnType<typeof getCurrentWindow>) => Promise<unknown>) =
   if (inTauri) fn(getCurrentWindow()).catch(() => {});
 };
 
-export function TitleBar({ tabs, onTab }: {
+export function TitleBar({ tabs, onTab, onLock }: {
   /** Tabs to show (null on the start and unlock screens). */
   tabs: LibraryTabs | null;
   /** A tab was chosen (the app shows the library if it was elsewhere). */
   onTab?: () => void;
+  /** With a vault open, the lock mark locks it (like Ctrl+Shift+L). */
+  onLock?: () => void;
 }) {
   const max = useMaximized();
   return (
     <div className="titlebar" data-tauri-drag-region>
-      <div className="wt-mark" data-tauri-drag-region="deep" title="Media Vault">
-        <LockIcon size={15} />
-      </div>
+      {/* lock from the title bar (begin) */}
+      {onLock ? <LockMark onLock={onLock} /> : (
+        <div className="wt-mark" data-tauri-drag-region="deep" title="Media Vault">
+          <LockGlyph />
+        </div>
+      )}
+      {/* lock from the title bar (end) */}
       {tabs && <TabStrip tabs={tabs} onTab={onTab} />}
       <div className="wt-drag" data-tauri-drag-region />
       <div className="wt-caption">
@@ -78,6 +84,38 @@ export function TitleBar({ tabs, onTab }: {
         </button>
       </div>
     </div>
+  );
+}
+
+/** The app mark: a padlock whose shackle can move (it closes when you lock). */
+function LockGlyph() {
+  return (
+    <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path className="wt-shackle" d="M8 10V7a4 4 0 0 1 8 0v3" />
+      <rect x="4" y="10" width="16" height="11" rx="2" />
+    </svg>
+  );
+}
+
+/** With a vault open the mark is a button: it locks the vault, with the
+ *  shackle snapping shut. Not a drag region, so clicks always land and a
+ *  double-click doesn't maximise the window. */
+function LockMark({ onLock }: { onLock: () => void }) {
+  const [snap, setSnap] = useState(0);
+  useEffect(() => {
+    if (!snap) return;
+    const t = setTimeout(() => setSnap(0), 600);
+    return () => clearTimeout(t);
+  }, [snap]);
+  return (
+    <button type="button" className={`wt-mark wt-lock${snap ? ' snap' : ''}`} aria-label="Lock the vault" title="Lock (Ctrl+Shift+L)" tabIndex={-1}
+      onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
+      onClick={() => {
+        setSnap(Date.now());
+        onLock();
+      }}>
+      <LockGlyph />
+    </button>
   );
 }
 

@@ -53,3 +53,18 @@ body.clean-fs .titlebar { display: none; }
 .viewer, .multi, .modal-back, .sheet-back, .qlook, .duel, .qsort, .slots, .museum { top: var(--titlebar-h); }
 .toast { top: calc(var(--titlebar-h) + 18px); }
 .notes { top: calc(var(--titlebar-h) + var(--top-h, 64px) + 12px); }
+
+/* ---- lock from the title bar (begin): the mark is a button with a vault open ---- */
+.wt-lock { border: none; background: transparent; margin: 0; font: inherit; cursor: pointer; border-radius: 0; transition: background 0.15s; }
+.wt-lock:hover { background: color-mix(in srgb, var(--accent) 12%, transparent); }
+.wt-lock:focus-visible { outline-offset: -2px; }
+.wt-mark svg { overflow: visible; }
+.wt-shackle { transform-box: view-box; transition: transform 0.18s ease; }
+/* Hovering lifts the shackle a little (open); clicking snaps it shut. */
+.wt-lock:hover .wt-shackle { transform: translateY(-2.5px); }
+.wt-lock.snap .wt-shackle { animation: wt-shackle-shut 0.42s cubic-bezier(0.3, 1.6, 0.5, 1) both; }
+.wt-lock.snap svg { animation: wt-lock-thud 0.42s ease-out both; }
+@keyframes wt-shackle-shut { 0% { transform: translateY(-4px); } 55% { transform: translateY(0.8px); } 100% { transform: translateY(0); } }
+@keyframes wt-lock-thud { 0%, 40% { transform: scale(1); } 60% { transform: scale(0.88); } 100% { transform: scale(1); } }
+@media (prefers-reduced-motion: reduce) { .wt-shackle, .wt-lock.snap .wt-shackle, .wt-lock.snap svg { transition: none; animation: none; } }
+/* ---- lock from the title bar (end) ---- */

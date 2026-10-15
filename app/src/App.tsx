@@ -263,7 +263,7 @@ export function App() {
     <>
     <TitleBar tabs={withTabs ? tabs : null} onTab={() => {
       if (screen.name !== 'library') go({ name: 'library' });
-    }} />
+    }} onLock={app.session ? () => { api.lock().catch(() => {}); } : undefined} />
     <div className="app">
       {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
