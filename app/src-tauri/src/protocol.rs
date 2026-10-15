@@ -304,6 +304,10 @@ impl ChunkCache {
         Some(out)
     }
 
+    fn has(&self, id: &ObjectId, index: u64) -> bool {
+        self.files.iter().any(|f| f.id == *id && f.chunks.iter().any(|(k, _)| *k == index))
+    }
+
     fn put(&mut self, id: &ObjectId, index: u64, data: Chunk) {
         self.decrypted += 1;
         if let Some(f) = self.file(id) {
@@ -381,8 +385,14 @@ fn serve_cached(s: &Session, oid: &ObjectId, mime: &str, range: &str) -> Respons
             .unwrap();
     };
     let mut body = Vec::with_capacity((end - start + 1) as usize);
-    for index in start / cs..=end / cs {
-        let hit = chunks().get(oid, index);
+    let last_index = end / cs;
+    // Decrypted for this answer (the cache may already have let go of them).
+    let mut fresh: Vec<(u64, Chunk)> = Vec::new();
+    for index in start / cs..=last_index {
+        let hit = match fresh.iter().position(|(k, _)| *k == index) {
+            Some(i) => Some(fresh.swap_remove(i).1),
+            None => chunks().get(oid, index),
+        };
         let data = match hit {
             Some(d) => d,
             None => {
@@ -392,12 +402,28 @@ fn serve_cached(s: &Session, oid: &ObjectId, mime: &str, range: &str) -> Respons
                         Err(e) => return plain(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
                     }
                 }
-                // Decrypting happens without holding the cache's lock.
-                let Ok(d) = reader.as_mut().unwrap().read_chunk(index) else {
+                // This chunk and the missing ones right after it, decrypted
+                // at once on several cores (without holding the cache's lock).
+                let mut run = 1;
+                while index + run <= last_index && !chunks().has(oid, index + run) {
+                    run += 1;
+                }
+                let Ok(v) = reader.as_mut().unwrap().read_chunks(index, run) else {
                     return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
                 };
-                let d = Arc::new(d);
-                chunks().put(oid, index, d.clone());
+                let mut first = None;
+                for (k, d) in v.into_iter().enumerate() {
+                    let d = Arc::new(d);
+                    chunks().put(oid, index + k as u64, d.clone());
+                    if k == 0 {
+                        first = Some(d);
+                    } else {
+                        fresh.push((index + k as u64, d));
+                    }
+                }
+                let Some(d) = first else {
+                    return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
+                };
                 d
             }
         };

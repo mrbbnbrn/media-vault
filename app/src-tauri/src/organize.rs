@@ -57,7 +57,7 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         let new_id = tx.last_insert_rowid();
         copy_tags(&tx, id, new_id)?;
         // What the app already found out about the picture applies to the copy too.
-        tx.execute("INSERT INTO clip(media_id, vec) SELECT ?2, vec FROM clip WHERE media_id = ?1", params![id, new_id]).map_err(e)?;
+        tx.execute("INSERT INTO clip(media_id, vec, f16) SELECT ?2, vec, f16 FROM clip WHERE media_id = ?1", params![id, new_id]).map_err(e)?;
         tx.execute(
             "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden) \
              SELECT ?2, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden FROM faces WHERE media_id = ?1",
@@ -655,16 +655,6 @@ fn mean(vs: &[Vec<f32>]) -> Option<Vec<f32>> {
     (n > 1e-6).then(|| m.iter().map(|x| x / n).collect())
 }
 
-fn vectors(conn: &Connection, sql: &str, arg: i64) -> R<Vec<(i64, Vec<f32>)>> {
-    conn.prepare(sql)
-        .map_err(e)?
-        .query_map([arg], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
-        .map_err(e)?
-        .map(|x| x.map(|(i, b)| (i, faces::from_blob(&b))))
-        .collect::<rusqlite::Result<_>>()
-        .map_err(e)
-}
-
 /// Where this item probably belongs: person folders of recognised faces,
 /// then folders whose pictures look like it (smart search). Best first.
 pub fn suggest(conn: &Connection, item: i64) -> R<Vec<Suggestion>> {
@@ -675,19 +665,22 @@ pub fn suggest(conn: &Connection, item: i64) -> R<Vec<Suggestion>> {
         out.push(Suggestion { folder: p, reason: "face".into(), score });
     }
     // Looks: compare with the average picture of each folder.
-    let mine = vectors(conn, "SELECT media_id, vec FROM clip WHERE media_id = ?", item)?;
-    if let Some(me) = mean(&mine.into_iter().map(|x| x.1).collect::<Vec<_>>()) {
-        let rows: Vec<(i64, Vec<u8>)> = conn
-            .prepare("SELECT m.folder_id, c.vec FROM clip c JOIN media m ON m.id = c.media_id WHERE m.deleted_at IS NULL AND m.folder_id IS NOT NULL AND m.id <> ?")
+    // Vectors from memory (clip.rs keeps them all).
+    let mine = crate::clip::with_index(conn, |idx| idx.vectors(item))?.unwrap_or_default();
+    if let Some(me) = mean(&mine.chunks(crate::clip::DIM).map(|c| c.to_vec()).collect::<Vec<_>>()) {
+        let folder_of: HashMap<i64, i64> = conn
+            .prepare("SELECT id, folder_id FROM media WHERE deleted_at IS NULL AND folder_id IS NOT NULL AND id <> ?")
             .map_err(e)?
             .query_map([item], |r| Ok((r.get(0)?, r.get(1)?)))
             .map_err(e)?
             .collect::<rusqlite::Result<_>>()
             .map_err(e)?;
+        let rows: Vec<(i64, Vec<f32>)> = crate::clip::with_index(conn, |idx| {
+            idx.ids().filter_map(|id| Some((*folder_of.get(&id)?, idx.vectors(id)?))).collect()
+        })?;
         let mut sums: HashMap<i64, Vec<Vec<f32>>> = HashMap::new();
-        for (f, b) in rows {
+        for (f, v) in rows {
             if Some(f) != here {
-                let v = faces::from_blob(&b);
                 // Videos have several vectors: their average stands for them.
                 if let Some(m) = mean(&v.chunks(crate::clip::DIM).map(|c| c.to_vec()).collect::<Vec<_>>()) {
                     sums.entry(f).or_default().push(m);

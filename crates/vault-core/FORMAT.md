@@ -157,9 +157,15 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   seconds made of short pieces spread through the video (WebM/VP9 or MP4/H.264, recognised by
   its first bytes), stored like a thumbnail. NULL = not made yet, '' = couldn't be made. Can be
   deleted; the app makes it again.
-- `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512
-  little-endian float32 values (each unit length, CLIP ViT-B/32 space); videos have the
-  thumbnail plus moments from their preview clip
+- `clip(media_id, vec, f16)` — smart-search vectors of an item: one or more groups of 512
+  values (each unit length, CLIP ViT-B/32 space); videos have the thumbnail plus moments
+  from their preview clip. `f16` = 1 (v13 on): little-endian IEEE 754 half-precision
+  (16-bit) floats; 0: little-endian float32
+- `folder_stats(folder_id, items, bytes)` (v13) — how many items (not in the trash) are
+  directly in each folder and their total size, kept up to date by triggers on `media`
+- `face_graph(model, data)` (v13) — which faces look alike (each face's closest look-alikes
+  and how alike), saved so it isn't worked out again at every unlock; the app checks it
+  against the faces (by a checksum of each fingerprint) and rebuilds what doesn't match
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

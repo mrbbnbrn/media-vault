@@ -56,6 +56,8 @@ pub trait Lib {
     fn conn(&self) -> MutexGuard<'_, Connection>;
     /// Which vault (so remembered work is never mixed up between vaults).
     fn key(&self) -> String;
+    /// Something was written that should be saved.
+    fn changed(&self) {}
 }
 
 impl Lib for crate::session::Session {
@@ -64,6 +66,9 @@ impl Lib for crate::session::Session {
     }
     fn key(&self) -> String {
         self.vault().root().display().to_string()
+    }
+    fn changed(&self) {
+        self.mark_dirty();
     }
 }
 
@@ -130,7 +135,7 @@ pub struct ScanTask {
 }
 
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ScanTask>> {
-    conn.prepare("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL ORDER BY id LIMIT ?")
+    conn.prepare(&format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL ORDER BY {}id LIMIT ?", crate::focus::order()))
         .map_err(e)?
         .query_map([limit], |r| Ok(ScanTask { id: r.get(0)?, kind: r.get(1)?, duration_ms: r.get(2)? }))
         .map_err(e)?
@@ -328,11 +333,114 @@ pub fn upgrade(conn: &Connection) -> R<usize> {
 struct ModelState {
     graph: Graph,
     last: Option<(u64, Arc<Analysis>)>,
+    /// `graph.version` when it was last saved in the library.
+    saved_version: u64,
 }
 
 struct Cache {
     key: String,
     models: HashMap<i64, ModelState>,
+    saved_at: Option<std::time::Instant>,
+    /// A model's faces are all gone (its saved graph is to be removed).
+    removed: bool,
+}
+
+/// The look-alike graphs are saved in the library (table face_graph) at most
+/// this often while they change, and when the vault locks, so unlocking
+/// doesn't compare every face with every other face again.
+const SAVE_GRAPH_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Temporary (never saved) triggers noting faces whose fingerprint changed
+/// (a face id can be used again after its face was deleted).
+const FACES_DIRTY_SQL: &str = "CREATE TEMP TABLE IF NOT EXISTS faces_dirty (face_id INTEGER PRIMARY KEY); \
+    CREATE TEMP TRIGGER IF NOT EXISTS faces_dirty_add AFTER INSERT ON main.faces BEGIN INSERT OR IGNORE INTO faces_dirty VALUES (NEW.id); END; \
+    CREATE TEMP TRIGGER IF NOT EXISTS faces_dirty_change AFTER UPDATE OF descriptor, id, model ON main.faces BEGIN \
+        INSERT OR IGNORE INTO faces_dirty VALUES (OLD.id); INSERT OR IGNORE INTO faces_dirty VALUES (NEW.id); END; \
+    CREATE TEMP TRIGGER IF NOT EXISTS faces_dirty_remove AFTER DELETE ON main.faces BEGIN INSERT OR IGNORE INTO faces_dirty VALUES (OLD.id); END;";
+
+fn has_faces_dirty(conn: &Connection) -> bool {
+    conn.query_row("SELECT COUNT(*) FROM temp.sqlite_master WHERE name = 'faces_dirty_remove'", [], |r| r.get::<_, i64>(0)).unwrap_or(0) > 0
+}
+
+/// Faces whose fingerprint changed since the last call.
+fn take_dirty(conn: &Connection) -> R<Vec<i64>> {
+    let ids: Vec<i64> = conn
+        .prepare("SELECT face_id FROM temp.faces_dirty")
+        .map_err(e)?
+        .query_map([], |r| r.get(0))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    if !ids.is_empty() {
+        conn.execute_batch("DELETE FROM temp.faces_dirty").map_err(e)?;
+    }
+    Ok(ids)
+}
+
+/// A model's graph from the library (or worked out anew): every fingerprint
+/// read in one go, then only faces new since it was saved are compared.
+fn load_graph(conn: &Connection, model: i64, present: &HashSet<i64>) -> R<Graph> {
+    let mut current: HashMap<i64, Vec<f32>> = HashMap::with_capacity(present.len());
+    let mut st = conn.prepare("SELECT id, descriptor FROM faces WHERE model = ?").map_err(e)?;
+    for row in st.query_map([model], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))).map_err(e)? {
+        let (id, b) = row.map_err(e)?;
+        if present.contains(&id) {
+            current.insert(id, from_blob(&b));
+        }
+    }
+    let saved: Option<Vec<u8>> = conn.query_row("SELECT data FROM face_graph WHERE model = ?", [model], |r| r.get(0)).optional().map_err(e)?;
+    let mut graph = saved.and_then(|b| Graph::from_bytes(model, &b, &mut current)).unwrap_or_else(|| Graph::new(model));
+    let mut rest: Vec<(i64, Vec<f32>)> = current.into_iter().collect();
+    rest.sort_unstable_by_key(|x| x.0);
+    graph.add(rest);
+    Ok(graph)
+}
+
+/// Save the graphs that changed into the library.
+fn save_graphs(lib: &dyn Lib, cache: &mut Cache) -> R<()> {
+    let conn = lib.conn();
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    let models: Vec<i64> = cache.models.keys().copied().collect();
+    tx.execute(&format!("DELETE FROM face_graph WHERE model NOT IN ({})", models.iter().map(|m| m.to_string()).chain(["-99".into()]).collect::<Vec<_>>().join(",")), [])
+        .map_err(e)?;
+    let mut saved = Vec::new();
+    for (model, st) in cache.models.iter().filter(|(_, st)| st.graph.version != st.saved_version) {
+        tx.execute("INSERT OR REPLACE INTO face_graph(model, data) VALUES (?, ?)", params![model, st.graph.to_bytes()]).map_err(e)?;
+        saved.push(*model);
+    }
+    tx.commit().map_err(e)?;
+    for m in saved {
+        let st = cache.models.get_mut(&m).expect("listed above");
+        st.saved_version = st.graph.version;
+    }
+    cache.saved_at = Some(std::time::Instant::now());
+    cache.removed = false;
+    lib.changed();
+    Ok(())
+}
+
+fn graphs_unsaved(c: &Cache) -> bool {
+    c.removed || c.models.values().any(|m| m.graph.version != m.saved_version)
+}
+
+/// Save the look-alike graphs now if they changed (the vault is locking).
+/// Never waits: if they are being worked on right now, locking goes first
+/// (what was saved before is used next time, plus the faces new since).
+pub fn keep_graphs(lib: &dyn Lib) {
+    let mut cache = match CACHE.try_lock() {
+        Ok(c) => c,
+        Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return,
+    };
+    if let Some(c) = cache.as_mut().filter(|c| c.key == lib.key() && graphs_unsaved(c)) {
+        let _ = save_graphs(lib, c);
+    }
+}
+
+/// Work out who is who in the background after unlocking (the graphs are
+/// read from the library), so the People page is ready when it is opened.
+pub fn warm(lib: &dyn Lib) -> R<()> {
+    analyse_all(lib).map(|_| ())
 }
 
 static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
@@ -466,25 +574,42 @@ pub struct ModelView {
 fn analyse_all(lib: &dyn Lib) -> R<(Vec<ModelView>, Facts)> {
     let mut cache = CACHE.lock().unwrap_or_else(|x| x.into_inner());
     let key = lib.key();
-    if cache.as_ref().is_none_or(|c| c.key != key) {
-        *cache = Some(Cache { key, models: HashMap::new() });
-    }
+    let (facts, dirty) = {
+        let conn = lib.conn();
+        if cache.as_ref().is_none_or(|c| c.key != key) || !has_faces_dirty(&conn) {
+            conn.execute_batch(FACES_DIRTY_SQL).map_err(e)?;
+            conn.execute_batch("DELETE FROM temp.faces_dirty").map_err(e)?;
+            *cache = Some(Cache { key, models: HashMap::new(), saved_at: None, removed: false });
+        }
+        (facts(&conn)?, take_dirty(&conn)?)
+    };
     let cache = cache.as_mut().expect("set above");
-    let facts = facts(&lib.conn())?;
     let mut views = Vec::new();
     let mut models: Vec<i64> = facts.faces.keys().copied().collect();
     models.sort_unstable_by(|a, b| b.cmp(a));
+    let before = cache.models.len();
     cache.models.retain(|m, _| models.contains(m));
+    cache.removed |= cache.models.len() != before;
+    let mut unsaved = cache.removed;
     for model in models {
-        let st = cache.models.entry(model).or_insert_with(|| ModelState { graph: Graph::new(model), last: None });
         let metas = &facts.faces[&model];
         let present: HashSet<i64> = metas.iter().map(|f| f.id).collect();
+        let st = match cache.models.entry(model) {
+            std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
+            std::collections::hash_map::Entry::Vacant(v) => {
+                // Changes since it was saved count from 0 (none = nothing to save).
+                v.insert(ModelState { graph: load_graph(&lib.conn(), model, &present)?, last: None, saved_version: 0 })
+            }
+        };
+        st.graph.forget(&dirty);
         let missing = st.graph.sync(&present);
         if !missing.is_empty() {
             let loaded = blobs(&lib.conn(), &missing)?;
             st.graph.add(loaded);
         }
-        let fp = fingerprint(model, &facts);
+        unsaved |= st.graph.version != st.saved_version;
+        // The analysis is worked out again when the facts or the graph changed.
+        let fp = fingerprint(model, &facts) ^ st.graph.version.wrapping_mul(0x9e37_79b9_7f4a_7c15);
         let analysis = match &st.last {
             Some((f, a)) if *f == fp => a.clone(),
             _ => {
@@ -494,6 +619,9 @@ fn analyse_all(lib: &dyn Lib) -> R<(Vec<ModelView>, Facts)> {
             }
         };
         views.push(ModelView { model, analysis });
+    }
+    if unsaved && cache.saved_at.is_none_or(|t| t.elapsed() >= SAVE_GRAPH_EVERY) {
+        save_graphs(lib, cache)?;
     }
     Ok((views, facts))
 }

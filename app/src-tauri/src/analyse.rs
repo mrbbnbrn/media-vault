@@ -137,8 +137,9 @@ pub fn window_faces(conn: &Connection, limit: i64) -> R<Vec<faces::ScanTask>> {
         return faces::needed(conn, limit);
     }
     conn.prepare(&format!(
-        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL AND NOT {} ORDER BY id LIMIT ?",
-        here_sql()
+        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL AND NOT {} ORDER BY {}id LIMIT ?",
+        here_sql(),
+        crate::focus::order()
     ))
     .map_err(e)?
     .query_map([limit], |r| Ok(faces::ScanTask { id: r.get(0)?, kind: r.get(1)?, duration_ms: r.get(2)? }))
@@ -180,8 +181,9 @@ fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<
            (phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
            (?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
            (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}) \
-         FROM media WHERE {}{ids} ORDER BY id DESC LIMIT ?3",
-        where_sql(&here)
+         FROM media WHERE {}{ids} ORDER BY {}id DESC LIMIT ?3",
+        where_sql(&here),
+        crate::focus::order()
     );
     conn.prepare(&sql)
         .map_err(e)?
@@ -451,8 +453,18 @@ fn sleep_until_woken(ms: u64) {
 
 fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
     polite_thread();
-    let emit = move |id: i64| {
-        let _ = app.emit("analyse-thumb", id);
+    // New thumbnails go to the window in batches, at most about ten times a second.
+    let pending: Mutex<(Vec<i64>, crate::throttle::Throttle)> = Mutex::new((Vec::new(), crate::throttle::Throttle::new()));
+    let send = |force: bool| {
+        let mut p = pending.lock().unwrap_or_else(|x| x.into_inner());
+        if !p.0.is_empty() && p.1.ready(force) {
+            let ids = std::mem::take(&mut p.0);
+            let _ = app.emit("analyse-thumb", ids);
+        }
+    };
+    let emit = |id: i64| {
+        pending.lock().unwrap_or_else(|x| x.into_inner()).0.push(id);
+        send(false);
     };
     let mut last_naming = Instant::now();
     let mut named = false;
@@ -472,6 +484,7 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
         }
         BUSY.store(true, Ordering::SeqCst);
         let reports = process(&s, &tasks, c, &stop, &emit);
+        send(true);
         if reports.iter().any(|r| r.faces.is_some_and(|n| n > 0)) {
             named = true;
         }

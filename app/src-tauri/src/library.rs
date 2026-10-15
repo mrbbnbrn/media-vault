@@ -186,51 +186,35 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         .collect::<rusqlite::Result<_>>()
         .map_err(e)?;
 
+    // Counts and sizes are kept up to date by the library itself
+    // (folder_stats, see vault-core db.rs), so nothing is counted here.
     let mut direct: HashMap<i64, i64> = HashMap::new();
     let mut direct_bytes: HashMap<i64, i64> = HashMap::new();
+    {
+        let mut st = conn.prepare("SELECT folder_id, items, bytes FROM folder_stats WHERE items > 0").map_err(e)?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
+            let (f, n, bytes) = row.map_err(e)?;
+            direct.insert(f, n);
+            direct_bytes.insert(f, bytes);
+        }
+    }
+    // A few pictures per folder for stacked cards (pictures first); the
+    // first is the folder's cover unless one was chosen. One quick look-up
+    // per folder (index media_samples) instead of sorting the whole library.
+    let mut samples: HashMap<i64, Vec<i64>> = HashMap::new();
     let mut first_thumb: HashMap<i64, i64> = HashMap::new();
     {
         let mut st = conn
             .prepare(
-                "SELECT folder_id, COUNT(*), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' \
-                 AND kind = 'image' THEN id END), MIN(CASE WHEN thumb_object_id IS NOT NULL AND thumb_object_id <> '' THEN id END), \
-                 IFNULL(SUM(size), 0) FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL GROUP BY folder_id",
+                "SELECT id FROM media WHERE folder_id = ? AND deleted_at IS NULL \
+                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY kind <> 'image', id LIMIT 3",
             )
             .map_err(e)?;
-        let it = st
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, i64>(1)?,
-                    r.get::<_, Option<i64>>(2)?,
-                    r.get::<_, Option<i64>>(3)?,
-                    r.get::<_, i64>(4)?,
-                ))
-            })
-            .map_err(e)?;
-        for row in it {
-            let (f, n, img, any, bytes) = row.map_err(e)?;
-            direct.insert(f, n);
-            direct_bytes.insert(f, bytes);
-            if let Some(t) = img.or(any) {
-                first_thumb.insert(f, t);
-            }
-        }
-    }
-    // A few pictures per folder for stacked cards (pictures first).
-    let mut samples: HashMap<i64, Vec<i64>> = HashMap::new();
-    {
-        let mut st = conn
-            .prepare(
-                "SELECT folder_id, id FROM media WHERE folder_id IS NOT NULL AND deleted_at IS NULL \
-                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY folder_id, kind <> 'image', id",
-            )
-            .map_err(e)?;
-        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?))).map_err(e)? {
-            let (f, id) = row.map_err(e)?;
-            let v = samples.entry(f).or_default();
-            if v.len() < 3 {
-                v.push(id);
+        for f in rows.iter().map(|r| r.id).filter(|f| direct.contains_key(f)) {
+            let v: Vec<i64> = st.query_map([f], |r| r.get(0)).map_err(e)?.collect::<rusqlite::Result<_>>().map_err(e)?;
+            if let Some(first) = v.first() {
+                first_thumb.insert(f, *first);
+                samples.insert(f, v);
             }
         }
     }
@@ -320,12 +304,21 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
         samples.insert(*id, mine);
     }
 
+    // The kind of each possible cover (only those, not every item).
     let kinds: HashMap<i64, String> = {
-        let mut st = conn.prepare("SELECT id, kind FROM media WHERE id IN (SELECT cover_media_id FROM folders) OR thumb_object_id IS NOT NULL").map_err(e)?;
-        st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
-            .map_err(e)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(e)?
+        let mut ids: Vec<i64> = rows.iter().filter_map(|r| r.cover).chain(person_covers.values().copied()).chain(cover_below.values().copied()).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = HashMap::new();
+        for chunk in ids.chunks(500) {
+            let (list, args) = id_list(chunk);
+            let mut st = conn.prepare(&format!("SELECT id, kind FROM media WHERE id IN ({list})")).map_err(e)?;
+            for row in st.query_map(params_from_iter(args), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))).map_err(e)? {
+                let (id, k) = row.map_err(e)?;
+                out.insert(id, k);
+            }
+        }
+        out
     };
     Ok(order
         .into_iter()

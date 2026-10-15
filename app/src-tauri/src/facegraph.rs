@@ -110,11 +110,13 @@ pub struct Graph {
     emb: Vec<Vec<f32>>,
     nbrs: Vec<Vec<(u32, f32)>>,
     dead: usize,
+    /// Counts changes (faces added or let go), to know when to save it again.
+    pub version: u64,
 }
 
 impl Graph {
     pub fn new(model: i64) -> Self {
-        Graph { model, ids: Vec::new(), index: HashMap::new(), alive: Vec::new(), emb: Vec::new(), nbrs: Vec::new(), dead: 0 }
+        Graph { model, ids: Vec::new(), index: HashMap::new(), alive: Vec::new(), emb: Vec::new(), nbrs: Vec::new(), dead: 0, version: 0 }
     }
 
     #[cfg(test)]
@@ -122,19 +124,41 @@ impl Graph {
         self.ids.len() - self.dead
     }
 
+    fn kill(&mut self, i: usize) {
+        if self.alive[i] {
+            self.alive[i] = false;
+            self.emb[i] = Vec::new();
+            self.dead += 1;
+            self.version += 1;
+        }
+        if self.index.get(&self.ids[i]) == Some(&i) {
+            self.index.remove(&self.ids[i]);
+        }
+    }
+
+    /// Forget these faces (their fingerprints changed); `sync` then returns
+    /// them again if they are still there, to be added anew.
+    pub fn forget(&mut self, ids: &[i64]) {
+        for id in ids {
+            if let Some(&i) = self.index.get(id) {
+                self.kill(i);
+            }
+        }
+    }
+
     /// Forget faces that are gone; returns those of `present` still to be
-    /// added. After many removals everything is rebuilt (then all of
-    /// `present` is returned).
+    /// added (new, changed, or back from the trash). After many removals
+    /// everything is rebuilt (then all of `present` is returned).
     pub fn sync(&mut self, present: &HashSet<i64>) -> Vec<i64> {
-        for (i, id) in self.ids.iter().enumerate() {
-            if self.alive[i] && !present.contains(id) {
-                self.alive[i] = false;
-                self.emb[i] = Vec::new();
-                self.dead += 1;
+        for i in 0..self.ids.len() {
+            if self.alive[i] && !present.contains(&self.ids[i]) {
+                self.kill(i);
             }
         }
         if self.dead > 500 && self.dead * 4 > self.ids.len() {
+            let version = self.version + 1;
             *self = Graph::new(self.model);
+            self.version = version;
         }
         let mut missing: Vec<i64> = present.iter().filter(|id| !self.index.contains_key(id)).copied().collect();
         missing.sort_unstable();
@@ -159,6 +183,7 @@ impl Graph {
         if end == start {
             return;
         }
+        self.version += (end - start) as u64;
         let (model, link) = (self.model, metric(self.model).link);
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).clamp(1, 16);
         let (emb, alive) = (&self.emb, &self.alive);
@@ -222,6 +247,138 @@ impl Graph {
     /// Living look-alikes of face `i` (index, similarity).
     pub fn neighbours(&self, i: usize) -> impl Iterator<Item = (usize, f32)> + '_ {
         self.nbrs[i].iter().map(|&(j, s)| (j as usize, s)).filter(|&(j, _)| self.alive[j])
+    }
+
+    /// The graph as bytes, to keep in the library (faces gone are left out).
+    /// Each face is stored with a checksum of its fingerprint, so a face
+    /// whose fingerprint changed is never trusted when it is read back.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let live: Vec<usize> = (0..self.ids.len()).filter(|&i| self.alive[i]).collect();
+        let mut new_index = vec![u32::MAX; self.ids.len()];
+        for (k, &i) in live.iter().enumerate() {
+            new_index[i] = k as u32;
+        }
+        let edges: usize = live.iter().map(|&i| self.nbrs[i].len()).sum();
+        let mut b = Vec::with_capacity(32 + live.len() * 20 + edges * 8);
+        b.extend_from_slice(SAVED_MAGIC);
+        b.push(SAVED_VERSION);
+        b.extend_from_slice(&self.model.to_le_bytes());
+        b.extend_from_slice(&(KEEP as u32).to_le_bytes());
+        b.extend_from_slice(&metric(self.model).link.to_le_bytes());
+        b.extend_from_slice(&(dim(self.model) as u32).to_le_bytes());
+        b.extend_from_slice(&(live.len() as u32).to_le_bytes());
+        for &i in &live {
+            b.extend_from_slice(&self.ids[i].to_le_bytes());
+            b.extend_from_slice(&fingerprint_check(&self.emb[i]).to_le_bytes());
+            let kept: Vec<(u32, f32)> = self.nbrs[i].iter().filter(|(j, _)| self.alive[*j as usize]).map(|&(j, s)| (new_index[j as usize], s)).collect();
+            b.extend_from_slice(&(kept.len() as u32).to_le_bytes());
+            for (j, s) in kept {
+                b.extend_from_slice(&j.to_le_bytes());
+                b.extend_from_slice(&s.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// Read back a graph saved by [`Graph::to_bytes`]. `current` holds the
+    /// fingerprints the faces have now; the ones used are taken out of it
+    /// (what is left there is still to be [`Graph::add`]ed). Faces missing
+    /// from `current`, or whose fingerprint changed, are left out with their
+    /// links. None if the bytes are not a graph saved for this model with
+    /// the same settings (then everything is worked out again).
+    pub fn from_bytes(model: i64, b: &[u8], current: &mut HashMap<i64, Vec<f32>>) -> Option<Graph> {
+        let mut r = Reader { b, at: 0 };
+        if r.take(4)? != SAVED_MAGIC || r.take(1)?[0] != SAVED_VERSION || r.i64()? != model {
+            return None;
+        }
+        if r.u32()? as usize != KEEP || r.f32()?.to_bits() != metric(model).link.to_bits() || r.u32()? as usize != dim(model) {
+            return None;
+        }
+        let n = r.u32()? as usize;
+        if n > b.len() / 16 {
+            return None;
+        }
+        let mut saved: Vec<(i64, u64, Vec<(u32, f32)>)> = Vec::with_capacity(n);
+        for _ in 0..n {
+            let (id, check, deg) = (r.i64()?, r.u64()?, r.u32()? as usize);
+            if deg > KEEP * 8 {
+                return None;
+            }
+            let mut v = Vec::with_capacity(deg);
+            for _ in 0..deg {
+                let (j, s) = (r.u32()?, r.f32()?);
+                if j as usize >= n || !s.is_finite() {
+                    return None;
+                }
+                v.push((j, s));
+            }
+            saved.push((id, check, v));
+        }
+        if r.at != b.len() {
+            return None;
+        }
+        // Which saved faces are still the same.
+        let keep: Vec<bool> = saved.iter().map(|(id, check, _)| current.get(id).is_some_and(|e| fingerprint_check(e) == *check)).collect();
+        let mut new_index = vec![u32::MAX; n];
+        let mut g = Graph::new(model);
+        for (k, (id, _, _)) in saved.iter().enumerate() {
+            if keep[k] {
+                new_index[k] = g.ids.len() as u32;
+                let e = current.remove(id).expect("checked above");
+                g.index.insert(*id, g.ids.len());
+                g.ids.push(*id);
+                g.alive.push(true);
+                g.emb.push(e);
+            }
+        }
+        for (k, (_, _, v)) in saved.into_iter().enumerate() {
+            if keep[k] {
+                g.nbrs.push(v.into_iter().filter(|(j, _)| keep[*j as usize]).map(|(j, s)| (new_index[j as usize], s)).collect());
+            }
+        }
+        // Faces left out are changes (so the graph is saved again).
+        g.version = keep.iter().filter(|k| !**k).count() as u64;
+        Some(g)
+    }
+}
+
+const SAVED_MAGIC: &[u8; 4] = b"MVFG";
+const SAVED_VERSION: u8 = 1;
+
+/// A checksum of a fingerprint's exact bits (FNV-1a; the same in every build).
+fn fingerprint_check(e: &[f32]) -> u64 {
+    let mut h = 0xcbf2_9ce4_8422_2325u64;
+    for x in e {
+        for byte in x.to_bits().to_le_bytes() {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+    h
+}
+
+struct Reader<'a> {
+    b: &'a [u8],
+    at: usize,
+}
+
+impl<'a> Reader<'a> {
+    fn take(&mut self, n: usize) -> Option<&'a [u8]> {
+        let s = self.b.get(self.at..self.at.checked_add(n)?)?;
+        self.at += n;
+        Some(s)
+    }
+    fn u32(&mut self) -> Option<u32> {
+        Some(u32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn f32(&mut self) -> Option<f32> {
+        Some(f32::from_le_bytes(self.take(4)?.try_into().ok()?))
+    }
+    fn i64(&mut self) -> Option<i64> {
+        Some(i64::from_le_bytes(self.take(8)?.try_into().ok()?))
+    }
+    fn u64(&mut self) -> Option<u64> {
+        Some(u64::from_le_bytes(self.take(8)?.try_into().ok()?))
     }
 }
 
@@ -769,6 +926,62 @@ mod tests {
         assert_eq!(g.len(), 18);
         assert!(g.idx(19).is_none());
         assert!(g.neighbours(g.idx(1).unwrap()).all(|(j, _)| g.id(j) != 19));
+        // Back from the trash, or a changed fingerprint: added again.
+        let back: HashSet<i64> = (0..20).collect();
+        assert_eq!(g.sync(&back), vec![18, 19]);
+        g.add(vec![(18, fp(0, 18)), (19, fp(1, 19))]);
+        g.forget(&[3]);
+        assert!(g.idx(3).is_none());
+        assert_eq!(g.sync(&back), vec![3]);
+        g.add(vec![(3, fp(0, 3))]);
+        assert_eq!(g.len(), 20);
+        assert!(g.neighbours(g.idx(3).unwrap()).all(|(j, _)| g.id(j) % 2 == 0));
+        assert_eq!(g.neighbours(g.idx(3).unwrap()).count(), 10, "now like the ten even faces");
+    }
+
+    fn links(g: &Graph) -> Vec<(i64, Vec<(i64, u32)>)> {
+        let mut out: Vec<(i64, Vec<(i64, u32)>)> = g
+            .index
+            .iter()
+            .filter(|&(_, &i)| g.alive[i])
+            .map(|(&id, &i)| {
+                let mut v: Vec<(i64, u32)> = g.neighbours(i).map(|(j, s)| (g.id(j), s.to_bits())).collect();
+                v.sort_unstable();
+                (id, v)
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
+    #[test]
+    fn a_saved_graph_reads_back_the_same_and_drops_changed_faces() {
+        let mut g = Graph::new(1);
+        g.add((0..40).map(|i| (i, fp((i % 4) as usize, i as u64))).collect());
+        g.sync(&(0..38).collect()); // two gone: left out of the saved graph
+        let bytes = g.to_bytes();
+        let all = |skip: &[i64]| -> HashMap<i64, Vec<f32>> { (0..38).filter(|i| !skip.contains(i)).map(|i| (i, fp((i % 4) as usize, i as u64))).collect() };
+        let mut cur = all(&[]);
+        let back = Graph::from_bytes(1, &bytes, &mut cur).unwrap();
+        assert!(cur.is_empty(), "every face was taken from the saved graph");
+        assert_eq!(links(&back), links(&g));
+        assert_eq!(back.to_bytes(), bytes);
+        // A face whose fingerprint changed, and one deleted: left out (and to be added again).
+        let mut cur = all(&[5]);
+        cur.insert(6, fp(1, 1234));
+        let mut back = Graph::from_bytes(1, &bytes, &mut cur).unwrap();
+        assert_eq!(cur.keys().copied().collect::<Vec<_>>(), vec![6]);
+        assert!(back.idx(5).is_none() && back.idx(6).is_none());
+        assert!(links(&back).iter().all(|(_, v)| v.iter().all(|(j, _)| *j != 5 && *j != 6)));
+        back.add(cur.into_iter().collect());
+        assert!(back.idx(6).is_some());
+        // Another model, other settings or damaged bytes: not used.
+        assert!(Graph::from_bytes(0, &bytes, &mut all(&[])).is_none());
+        let mut bad = bytes.clone();
+        bad[13] ^= 1; // the number of look-alikes kept
+        assert!(Graph::from_bytes(1, &bad, &mut all(&[])).is_none());
+        assert!(Graph::from_bytes(1, &bytes[..bytes.len() - 3], &mut all(&[])).is_none());
+        assert!(Graph::from_bytes(1, b"", &mut all(&[])).is_none());
     }
 
     #[test]

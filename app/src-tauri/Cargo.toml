@@ -41,6 +41,9 @@ jpeg-encoder = "0.7.1"
 # The native analysis pass (picture.rs): decoding JPEG, PNG, WebP and GIF in memory.
 # Also used for the colour sketches (sketch.rs) and the tests' sample pictures.
 image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
+# A faster memory allocator for the app (main.rs): many threads allocating
+# chunk buffers, pictures and query rows at once.
+mimalloc = { version = "=0.1.52", default-features = false }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

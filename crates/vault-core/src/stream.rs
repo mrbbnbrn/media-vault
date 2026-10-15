@@ -116,9 +116,52 @@ pub struct WrittenObject {
     pub sha256_hex: String,
 }
 
-/// Streams plaintext in, writes an encrypted object out.
-/// Data is buffered one chunk at a time, so memory use stays at ~2 chunks
-/// regardless of file size.
+/// At most this much plaintext is encrypted or decrypted at once, spread over
+/// the processor's cores (several chunks of a big file at a time).
+pub const PARALLEL_BYTES: usize = 8 << 20;
+
+/// Cores used for encrypting and decrypting several chunks at once.
+pub fn default_threads() -> usize {
+    static N: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *N.get_or_init(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).clamp(1, 8))
+}
+
+/// `f(0..n)` on up to `threads` threads (the calling thread included),
+/// results in order. `side` runs on the calling thread at the same time.
+fn par_map<T: Send>(n: usize, threads: usize, f: impl Fn(usize) -> T + Sync, side: impl FnOnce()) -> Vec<T> {
+    let threads = threads.clamp(1, n.max(1));
+    if threads == 1 {
+        side();
+        return (0..n).map(f).collect();
+    }
+    let f = &f;
+    let parts: Vec<Vec<(usize, T)>> = std::thread::scope(|sc| {
+        let hs: Vec<_> = (1..threads)
+            .map(|t| sc.spawn(move || (t..n).step_by(threads).map(|i| (i, f(i))).collect::<Vec<_>>()))
+            .collect();
+        side();
+        let mut all = vec![(0..n).step_by(threads).map(|i| (i, f(i))).collect::<Vec<_>>()];
+        for h in hs {
+            match h.join() {
+                Ok(v) => all.push(v),
+                Err(p) => std::panic::resume_unwind(p),
+            }
+        }
+        all
+    });
+    let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
+    for (i, v) in parts.into_iter().flatten() {
+        out[i] = Some(v);
+    }
+    out.into_iter().map(|v| v.expect("every index was computed")).collect()
+}
+
+/// Streams plaintext in, writes an encrypted object out, reading the source
+/// once: the SHA-256 of the plaintext is computed while it is encrypted. Big
+/// files are encrypted several chunks at a time on all cores (and hashed on
+/// the calling thread at the same time), so memory use stays at about
+/// [`PARALLEL_BYTES`] regardless of file size. The output is exactly the same
+/// as encrypting chunk by chunk.
 pub struct ObjectWriter<W: Write + Seek> {
     inner: W,
     id: ObjectId,
@@ -132,6 +175,9 @@ pub struct ObjectWriter<W: Write + Seek> {
     next_index: u64,
     total: u64,
     hasher: Sha256,
+    threads: usize,
+    /// Chunks encrypted at once.
+    batch: usize,
 }
 
 impl<W: Write + Seek> ObjectWriter<W> {
@@ -147,7 +193,7 @@ impl<W: Write + Seek> ObjectWriter<W> {
         let prefix = crypto::random_bytes::<PREFIX_LEN>();
         let fixed = fixed_head(kind, chunk_log2);
         let chunk_size = 1usize << chunk_log2;
-        Ok(Self {
+        let mut w = Self {
             inner,
             id,
             kind,
@@ -156,26 +202,68 @@ impl<W: Write + Seek> ObjectWriter<W> {
             data_key: crypto::random_key(),
             prefix,
             aad: chunk_aad(&fixed, &prefix, &id),
-            buf: Zeroizing::new(Vec::with_capacity(chunk_size * 2)),
+            buf: Zeroizing::new(Vec::new()),
             next_index: 0,
             total: 0,
             hasher: Sha256::new(),
-        })
+            threads: 1,
+            batch: 1,
+        };
+        w.set_threads(default_threads());
+        Ok(w)
     }
 
-    fn emit(&mut self, len: usize, last: bool) -> io::Result<()> {
-        let nonce = chunk_nonce(&self.prefix, self.next_index, last)?;
-        let ct = crypto::seal(&self.data_key, &nonce, &self.aad, &self.buf[..len]);
-        self.inner.write_all(&ct)?;
-        self.buf.drain(..len);
-        self.next_index += 1;
+    /// How many cores to encrypt on (1 = one chunk at a time, for callers
+    /// that already run several writers at once). Only before writing anything.
+    pub fn set_threads(&mut self, threads: usize) {
+        if self.total > 0 {
+            return;
+        }
+        self.threads = threads.max(1);
+        self.batch = if self.threads == 1 { 1 } else { (PARALLEL_BYTES / self.chunk_size).clamp(1, 64) };
+        let want = self.chunk_size * self.batch + 1;
+        if self.buf.capacity() < want {
+            // Sized once, so it never moves (no stray copies of plaintext).
+            let mut b = Zeroizing::new(Vec::with_capacity(want));
+            b.extend_from_slice(&self.buf);
+            self.buf = b;
+        }
+    }
+
+    /// Encrypt and write `full` whole chunks from the front of the buffer,
+    /// then (if `last`) everything after them as the final chunk. The
+    /// plaintext is hashed at the same time.
+    fn emit(&mut self, full: usize, last: bool) -> io::Result<()> {
+        let cs = self.chunk_size;
+        let n = full + last as usize;
+        let take = if last { self.buf.len() } else { full * cs };
+        let first = self.next_index;
+        let nonces = (0..n)
+            .map(|k| chunk_nonce(&self.prefix, first + k as u64, last && k == full))
+            .collect::<io::Result<Vec<_>>>()?;
+        let (data, key, aad, hasher) = (&self.buf[..take], &self.data_key, &self.aad, &mut self.hasher);
+        let sealed = par_map(
+            n,
+            self.threads,
+            |k| {
+                let end = if k == full { take } else { (k + 1) * cs };
+                crypto::seal(key, &nonces[k], aad, &data[k * cs..end])
+            },
+            || hasher.update(data),
+        );
+        for ct in &sealed {
+            self.inner.write_all(ct)?;
+        }
+        self.buf.drain(..take);
+        self.next_index += n as u64;
         Ok(())
     }
 
     /// Encrypt the remaining data, write the header, and return length + SHA-256.
     pub fn finish(mut self, master: &Key) -> io::Result<(W, WrittenObject)> {
-        let rest = self.buf.len();
-        self.emit(rest, true)?;
+        // The final chunk always carries the "last" flag (an empty file is one empty chunk).
+        let full = self.buf.len().saturating_sub(1) / self.chunk_size;
+        self.emit(full, true)?;
 
         let mut header = [0u8; HEADER_LEN as usize];
         header[..8].copy_from_slice(&fixed_head(self.kind, self.chunk_log2));
@@ -200,13 +288,20 @@ impl<W: Write + Seek> ObjectWriter<W> {
 
 impl<W: Write + Seek> Write for ObjectWriter<W> {
     fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        self.hasher.update(data);
         self.total += data.len() as u64;
-        self.buf.extend_from_slice(data);
-        // Keep at least one byte back so the final chunk is always the one
-        // written by finish() with the "last" flag set.
-        while self.buf.len() > self.chunk_size {
-            self.emit(self.chunk_size, false)?;
+        let limit = self.chunk_size * self.batch;
+        let mut rest = data;
+        while !rest.is_empty() {
+            // Never more than one batch plus one byte in the buffer.
+            let room = (limit + 1 - self.buf.len()).min(rest.len());
+            let (now, later) = rest.split_at(room);
+            self.buf.extend_from_slice(now);
+            rest = later;
+            // Keep at least one byte back so the final chunk is always the one
+            // written by finish() with the "last" flag set.
+            if self.buf.len() > limit {
+                self.emit(self.batch, false)?;
+            }
         }
         Ok(data.len())
     }
@@ -242,6 +337,9 @@ impl ObjectHeader {
 
 /// Random-access decrypting reader. Implements `Read + Seek`, so a video
 /// player can jump anywhere and only the 1 MiB chunk it lands in is decrypted.
+/// Reading on from chunk to chunk (export, sharing, analysing, checking)
+/// decrypts the next few chunks ahead at once on all cores, up to
+/// [`PARALLEL_BYTES`] at a time.
 pub struct ObjectReader<R: Read + Seek> {
     inner: R,
     header: ObjectHeader,
@@ -249,7 +347,12 @@ pub struct ObjectReader<R: Read + Seek> {
     prefix: [u8; PREFIX_LEN],
     aad: Vec<u8>,
     pos: u64,
-    cached: Option<(u64, Zeroizing<Vec<u8>>)>,
+    /// Decrypted chunks (consecutive, the first one's index).
+    cached: Option<(u64, Vec<Zeroizing<Vec<u8>>>)>,
+    /// The chunk right after the last ones decrypted, and how many were.
+    next: u64,
+    ahead: u64,
+    threads: usize,
 }
 
 impl<R: Read + Seek> ObjectReader<R> {
@@ -303,7 +406,15 @@ impl<R: Read + Seek> ObjectReader<R> {
             prefix,
             pos: 0,
             cached: None,
+            next: u64::MAX,
+            ahead: 0,
+            threads: default_threads(),
         })
+    }
+
+    /// How many cores to decrypt on (1 = one chunk at a time).
+    pub fn set_threads(&mut self, threads: usize) {
+        self.threads = threads.max(1);
     }
 
     pub fn header(&self) -> &ObjectHeader {
@@ -318,27 +429,34 @@ impl<R: Read + Seek> ObjectReader<R> {
         self.header.plaintext_len == 0
     }
 
-    fn load_chunk(&mut self, index: u64) -> io::Result<()> {
-        if matches!(&self.cached, Some((i, _)) if *i == index) {
-            return Ok(());
-        }
+    fn cached_chunk(&self, index: u64) -> Option<&Zeroizing<Vec<u8>>> {
+        let (first, v) = self.cached.as_ref()?;
+        v.get(usize::try_from(index.checked_sub(*first)?).ok()?)
+    }
+
+    /// Most chunks decrypted at once.
+    fn max_run(&self) -> u64 {
+        (PARALLEL_BYTES as u64 / self.header.chunk_size()).max(1)
+    }
+
+    /// Decrypt up to `count` chunks from `first` on (fewer at the end of the
+    /// object): one read from the file, then on several cores.
+    fn decrypt_run(&mut self, first: u64, count: u64) -> io::Result<Vec<Zeroizing<Vec<u8>>>> {
         let cs = self.header.chunk_size();
         let n = self.header.chunk_count();
-        if index >= n {
+        if first >= n {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "chunk out of range",
             ));
         }
-        let last = index == n - 1;
-        let plain = if last {
-            self.header.plaintext_len - index * cs
-        } else {
-            cs
-        };
-        let mut ct = vec![0u8; (plain + TAG_LEN as u64) as usize];
+        let count = count.clamp(1, n - first);
+        let len = self.header.plaintext_len;
+        let plain = |i: u64| (len.min((i + 1) * cs) - (i * cs).min(len)) as usize;
+        let sizes: Vec<usize> = (first..first + count).map(|i| plain(i) + TAG_LEN).collect();
+        let mut ct = vec![0u8; sizes.iter().sum()];
         self.inner
-            .seek(SeekFrom::Start(HEADER_LEN + index * (cs + TAG_LEN as u64)))?;
+            .seek(SeekFrom::Start(HEADER_LEN + first * (cs + TAG_LEN as u64)))?;
         self.inner.read_exact(&mut ct).map_err(|e| {
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 io::Error::new(io::ErrorKind::InvalidData, "encrypted file is truncated")
@@ -346,14 +464,48 @@ impl<R: Read + Seek> ObjectReader<R> {
                 e
             }
         })?;
-        let nonce = chunk_nonce(&self.prefix, index, last)?;
-        let pt = crypto::open(&self.data_key, &nonce, &self.aad, &ct).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("chunk {index} is damaged or was tampered with"),
-            )
-        })?;
-        self.cached = Some((index, Zeroizing::new(pt)));
+        let nonces = (first..first + count)
+            .map(|i| chunk_nonce(&self.prefix, i, i == n - 1))
+            .collect::<io::Result<Vec<_>>>()?;
+        let mut starts = Vec::with_capacity(sizes.len());
+        let mut at = 0;
+        for s in &sizes {
+            starts.push(at);
+            at += s;
+        }
+        let (key, aad, ct) = (&self.data_key, &self.aad, &ct);
+        let threads = if count > 1 { self.threads } else { 1 };
+        let plain = par_map(
+            count as usize,
+            threads,
+            |k| crypto::open(key, &nonces[k], aad, &ct[starts[k]..starts[k] + sizes[k]]).map(Zeroizing::new),
+            || {},
+        );
+        plain
+            .into_iter()
+            .enumerate()
+            .map(|(k, p)| {
+                p.ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("chunk {} is damaged or was tampered with", first + k as u64),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn load_chunk(&mut self, index: u64) -> io::Result<()> {
+        if self.cached_chunk(index).is_some() {
+            return Ok(());
+        }
+        // Reading on from where the last chunks ended: decrypt more ahead each time.
+        let count = if index == self.next && self.threads > 1 { (self.ahead * 2).clamp(1, self.max_run()) } else { 1 };
+        self.cached = None;
+        let v = self.decrypt_run(index, count)?;
+        self.ahead = v.len() as u64;
+        self.next = index + self.ahead;
+        self.cached = Some((index, v));
         Ok(())
     }
 
@@ -363,7 +515,34 @@ impl<R: Read + Seek> ObjectReader<R> {
     /// chunk again for each request.
     pub fn read_chunk(&mut self, index: u64) -> io::Result<Zeroizing<Vec<u8>>> {
         self.load_chunk(index)?;
-        Ok(self.cached.take().unwrap().1)
+        let (first, mut v) = self.cached.take().expect("loaded above");
+        let rest = v.split_off((index - first) as usize + 1);
+        let chunk = v.pop().expect("loaded above");
+        if !rest.is_empty() {
+            self.cached = Some((index + 1, rest));
+        }
+        Ok(chunk)
+    }
+
+    /// Chunks `first..first + count` (fewer at the end), decrypted at once on
+    /// several cores.
+    pub fn read_chunks(&mut self, first: u64, count: u64) -> io::Result<Vec<Zeroizing<Vec<u8>>>> {
+        let mut out = Vec::new();
+        if count == 0 {
+            return Ok(out);
+        }
+        let max = self.max_run();
+        let end = self.header.chunk_count().min(first.saturating_add(count));
+        if first >= end {
+            return self.decrypt_run(first, 1); // out of range: the error
+        }
+        let mut i = first;
+        while i < end {
+            let v = self.decrypt_run(i, (end - i).min(max))?;
+            i += v.len() as u64;
+            out.extend(v);
+        }
+        Ok(out)
     }
 
     /// Decrypt and authenticate every chunk, and check there are no extra
@@ -376,12 +555,13 @@ impl<R: Read + Seek> ObjectReader<R> {
                 "file is {actual} bytes, expected {expected}"
             )));
         }
-        for i in 0..self.header.chunk_count() {
-            self.cached = None;
-            self.load_chunk(i)
-                .map_err(|e| Error::Corrupt(e.to_string()))?;
-        }
         self.cached = None;
+        let (n, max) = (self.header.chunk_count(), self.max_run());
+        let mut i = 0;
+        while i < n {
+            let done = self.decrypt_run(i, max).map_err(|e| Error::Corrupt(e.to_string()))?;
+            i += done.len() as u64;
+        }
         Ok(())
     }
 
@@ -402,7 +582,7 @@ impl<R: Read + Seek> Read for ObjectReader<R> {
         let cs = self.header.chunk_size();
         let index = self.pos / cs;
         self.load_chunk(index)?;
-        let (_, data) = self.cached.as_ref().unwrap();
+        let data = self.cached_chunk(index).expect("loaded above");
         let off = (self.pos - index * cs) as usize;
         let n = out.len().min(data.len() - off);
         out[..n].copy_from_slice(&data[off..off + n]);
@@ -427,5 +607,101 @@ impl<R: Read + Seek> Seek for ObjectReader<R> {
         }
         self.pos = new as u64;
         Ok(self.pos)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    fn data(len: usize) -> Vec<u8> {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect()
+    }
+
+    fn write(plain: &[u8], log2: u8, threads: usize, piece: usize) -> (Key, ObjectId, Vec<u8>, WrittenObject) {
+        let master = crypto::random_key();
+        let id = ObjectId::random();
+        let mut w = ObjectWriter::new(Cursor::new(Vec::new()), id, ObjectKind::Media, log2).unwrap();
+        w.set_threads(threads);
+        for p in plain.chunks(piece.max(1)) {
+            w.write_all(p).unwrap();
+        }
+        let (cur, done) = w.finish(&master).unwrap();
+        (master, id, cur.into_inner(), done)
+    }
+
+    #[test]
+    fn parallel_and_one_at_a_time_agree_both_ways() {
+        let cs = 1usize << 12;
+        let batch = PARALLEL_BYTES / cs;
+        for len in [0, 1, cs - 1, cs, cs + 1, 3 * cs, batch * cs, batch * cs + 1, batch * cs * 2 + 7, 70 * cs + 5] {
+            let plain = data(len);
+            let want = hex::encode(Sha256::digest(&plain));
+            for (wt, piece) in [(1, 8192), (4, 8192), (3, 1), (4, 1 << 20), (2, len + 1)] {
+                if piece == 1 && len > 4 * cs {
+                    continue;
+                }
+                let (master, id, enc, done) = write(&plain, 12, wt, piece);
+                assert_eq!(done.sha256_hex, want, "len {len} threads {wt}");
+                assert_eq!(done.plaintext_len, len as u64);
+                let head = ObjectHeader { kind: ObjectKind::Media, chunk_log2: 12, plaintext_len: len as u64 };
+                assert_eq!(enc.len() as u64, head.expected_file_len());
+                for rt in [1, 4] {
+                    let mut r = ObjectReader::open(Cursor::new(&enc), &master, id, None).unwrap();
+                    r.set_threads(rt);
+                    let mut back = Vec::new();
+                    r.read_to_end(&mut back).unwrap();
+                    assert!(back == plain, "len {len} write threads {wt} read threads {rt}");
+                    r.verify_all().unwrap();
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reading_ahead_keeps_random_access_and_chunk_reads_right() {
+        let cs = 1usize << 12;
+        let plain = data(40 * cs + 123);
+        let (master, id, enc, _) = write(&plain, 12, 4, 65536);
+        let mut r = ObjectReader::open(Cursor::new(&enc), &master, id, None).unwrap();
+        r.set_threads(4);
+        // Sequential, then jumping around, then on again.
+        let mut buf = vec![0u8; 3000];
+        for at in [0usize, 3000, 6000, 9000, 39 * cs, 5, 20 * cs - 10, 20 * cs + 2990, 40 * cs + 100] {
+            r.seek(SeekFrom::Start(at as u64)).unwrap();
+            let n = r.read(&mut buf).unwrap();
+            assert!(n > 0);
+            assert_eq!(&buf[..n], &plain[at..at + n], "at {at}");
+        }
+        for i in [0u64, 1, 2, 3, 7, 8, 9, 40, 12] {
+            let c = r.read_chunk(i).unwrap();
+            let s = i as usize * cs;
+            assert_eq!(&c[..], &plain[s..(s + cs).min(plain.len())], "chunk {i}");
+        }
+        let many = r.read_chunks(38, 10).unwrap();
+        assert_eq!(many.len(), 3);
+        assert_eq!(many.iter().flat_map(|c| c.iter().copied()).collect::<Vec<u8>>(), plain[38 * cs..]);
+        assert!(r.read_chunks(41, 1).is_err());
+        assert!(r.read_chunks(0, 0).unwrap().is_empty());
+        // One damaged chunk in the middle of a run is found, not skipped.
+        let mut bad = enc.clone();
+        bad[HEADER_LEN as usize + 13 * (cs + TAG_LEN) + 5] ^= 1;
+        let mut r = ObjectReader::open(Cursor::new(&bad), &master, id, None).unwrap();
+        r.set_threads(4);
+        let mut back = Vec::new();
+        let err = r.read_to_end(&mut back).unwrap_err();
+        assert!(err.to_string().contains("chunk 13"), "{err}");
+        assert!(back.len() <= 13 * cs);
+        let mut r = ObjectReader::open(Cursor::new(&bad), &master, id, None).unwrap();
+        assert!(r.verify_all().is_err());
     }
 }

@@ -330,7 +330,7 @@ pub struct Job {
 struct Ctx<'a> {
     s: &'a Session,
     cancel: &'a AtomicBool,
-    bytes: AtomicU64,
+    bytes: &'a AtomicU64,
     report: Report,
     done: usize,
     total: usize,
@@ -346,7 +346,7 @@ impl Ctx<'_> {
     }
 
     fn emit(&mut self, current: &str, force: bool) {
-        if force || self.last_emit.elapsed() >= Duration::from_millis(200) {
+        if force || self.last_emit.elapsed() >= crate::throttle::GAP {
             self.last_emit = Instant::now();
             (self.progress)(&Progress {
                 job: self.report.job,
@@ -423,7 +423,7 @@ fn add_one(
     let mut tap = Tap {
         inner: reader,
         head: Vec::new(),
-        bytes: &ctx.bytes,
+        bytes: ctx.bytes,
         cancel: ctx.cancel,
         s: ctx.s,
     };
@@ -433,20 +433,37 @@ fn add_one(
             .add_object(ObjectKind::Media, &mut tap)
             .map_err(|e| e.to_string())?
     };
-    let kind = kind_for(name, &tap.head).unwrap_or("image");
-    let db = ctx.s.db();
-    let dup: bool = db
-        .query_row(
-            "SELECT 1 FROM media WHERE sha256 = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0) AND deleted_at IS NULL",
-            params![written.sha256_hex, folder],
-            |_| Ok(()),
-        )
-        .is_ok();
-    if dup {
-        drop(db);
+    if is_duplicate(ctx, folder, &written.sha256_hex) {
         let _ = ctx.s.vault().delete_object(ObjectKind::Media, &id);
         return Ok(Added::Duplicate);
     }
+    insert_item(ctx, folder, name, mtime, id, &written, &tap.head)
+}
+
+/// The same file (same SHA-256) already in this folder?
+fn is_duplicate(ctx: &Ctx, folder: Option<i64>, sha256_hex: &str) -> bool {
+    ctx.s
+        .db()
+        .query_row(
+            "SELECT 1 FROM media WHERE sha256 = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0) AND deleted_at IS NULL",
+            params![sha256_hex, folder],
+            |_| Ok(()),
+        )
+        .is_ok()
+}
+
+/// Record a stored file as a new item in `folder`.
+fn insert_item(
+    ctx: &Ctx,
+    folder: Option<i64>,
+    name: &str,
+    mtime: Option<i64>,
+    id: ObjectId,
+    written: &vault_core::stream::WrittenObject,
+    head: &[u8],
+) -> Result<Added, String> {
+    let kind = kind_for(name, head).unwrap_or("image");
+    let db = ctx.s.db();
     let display = Path::new(name)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -455,9 +472,9 @@ fn add_one(
     // at the end is looked at later by the background pass (NULL = not yet).
     let ext = ext_of(name);
     let taken: Option<i64> =
-        match crate::meta::media_date::<std::io::Cursor<&[u8]>>(&ext, &tap.head, None) {
+        match crate::meta::media_date::<std::io::Cursor<&[u8]>>(&ext, head, None) {
             Some(t) => Some(t),
-            None if matches!(ext.as_str(), "mp4" | "m4v") && tap.head.len() >= HEAD_KEEP => None,
+            None if matches!(ext.as_str(), "mp4" | "m4v") && head.len() >= HEAD_KEEP => None,
             None => Some(0),
         };
     db.execute(
@@ -508,7 +525,34 @@ fn folder_for(
     Ok(cur)
 }
 
-fn import_file(ctx: &mut Ctx, folder: Option<i64>, path: &Path) {
+// ---- files on disk: several at once ---------------------------------------------------
+//
+// Files are read, hashed and encrypted on all cores at once (each file once,
+// on one core, into memory), then stored and recorded strictly in the order
+// they were found, so item order, duplicates and progress are exactly as if
+// they were imported one by one. At most about IN_FLIGHT bytes of files are
+// being worked on at a time; bigger files are streamed straight into the
+// vault (encrypted on all cores, a few chunks at a time) when their turn comes.
+
+/// Files up to this size are encrypted in memory by a worker (smaller in
+/// tests, so both ways are tried).
+const SMALL_FILE: u64 = if cfg!(test) { 64 << 10 } else { 32 << 20 };
+/// Bytes of files being encrypted or waiting for their turn, at most.
+const IN_FLIGHT: u64 = if cfg!(test) { 256 << 10 } else { 192 << 20 };
+
+/// One file to import.
+struct FileJob {
+    folder: Option<i64>,
+    name: String,
+    path: PathBuf,
+    mtime: Option<i64>,
+    size: u64,
+    /// Shown as the source while it is imported (files dropped on their own).
+    source: Option<String>,
+}
+
+/// A file's job, or None if it isn't a supported kind (counted as skipped).
+fn file_job(ctx: &mut Ctx, folder: Option<i64>, path: &Path, source: bool) -> Option<FileJob> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -516,16 +560,122 @@ fn import_file(ctx: &mut Ctx, folder: Option<i64>, path: &Path) {
     if kind_by_ext(&name).is_none() {
         ctx.skip(&name);
         ctx.done += 1;
+        return None;
+    }
+    let meta = std::fs::metadata(path).ok();
+    Some(FileJob {
+        folder,
+        mtime: meta.as_ref().and_then(|m| m.modified().ok()).and_then(secs_of),
+        size: meta.map(|m| m.len()).unwrap_or(u64::MAX),
+        source: source.then(|| name.clone()),
+        name,
+        path: path.to_path_buf(),
+    })
+}
+
+/// What a worker made of a file.
+enum Prepared {
+    Ready(vault_core::Encrypted, Vec<u8>),
+    /// Too big for memory: streamed in when its turn comes.
+    Big,
+    Failed(String),
+}
+
+fn prepare(s: &Session, cancel: &AtomicBool, bytes: &AtomicU64, path: &Path) -> Prepared {
+    let f = match File::open(path) {
+        Ok(f) => f,
+        Err(e) => return Prepared::Failed(e.to_string()),
+    };
+    let mut tap = Tap { inner: f, head: Vec::new(), bytes, cancel, s };
+    let r = s.vault().encrypt_to_memory(ObjectKind::Media, &mut tap);
+    match r {
+        Ok(enc) => Prepared::Ready(enc, tap.head),
+        Err(e) => Prepared::Failed(e.to_string()),
+    }
+}
+
+/// Store and record one prepared file (its turn has come).
+fn commit(ctx: &mut Ctx, job: &FileJob, p: Prepared) {
+    if let Some(src) = &job.source {
+        ctx.source = src.clone();
+    }
+    let r = match p {
+        Prepared::Failed(e) => Err(e),
+        Prepared::Big => File::open(&job.path)
+            .map_err(|e| e.to_string())
+            .and_then(|mut f| add_one(ctx, job.folder, &job.name, &mut f, job.mtime)),
+        Prepared::Ready(enc, head) => {
+            if is_duplicate(ctx, job.folder, &enc.written().sha256_hex) {
+                // Never stored at all.
+                Ok(Added::Duplicate)
+            } else {
+                let stored = ctx.s.vault().add_encrypted(&enc).map_err(|e| e.to_string());
+                stored.and_then(|()| insert_item(ctx, job.folder, &job.name, job.mtime, enc.id(), enc.written(), &head))
+            }
+        }
+    };
+    record(ctx, &job.name, r);
+}
+
+/// Import these files, several at once (see above).
+fn import_files(ctx: &mut Ctx, jobs: Vec<FileJob>) {
+    if jobs.is_empty() {
         return;
     }
-    let mtime = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .ok()
-        .and_then(secs_of);
-    let r = File::open(path)
-        .map_err(|e| e.to_string())
-        .and_then(|mut f| add_one(ctx, folder, &name, &mut f, mtime));
-    record(ctx, &name, r);
+    let workers = vault_core::stream::default_threads().clamp(1, 8).min(jobs.len());
+    let (s, cancel, bytes) = (ctx.s, ctx.cancel, ctx.bytes);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(usize, PathBuf)>(workers * 2);
+    let job_rx = std::sync::Mutex::new(job_rx);
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Prepared)>();
+    std::thread::scope(|sc| {
+        for _ in 0..workers {
+            let (job_rx, done_tx) = (&job_rx, done_tx.clone());
+            sc.spawn(move || {
+                loop {
+                    let next = job_rx.lock().unwrap_or_else(|x| x.into_inner()).recv();
+                    let Ok((k, path)) = next else { break };
+                    if done_tx.send((k, prepare(s, cancel, bytes, &path))).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(done_tx);
+        let mut waiting: std::collections::BTreeMap<usize, Prepared> = Default::default();
+        let (mut sent, mut next, mut in_flight) = (0usize, 0usize, 0u64);
+        while next < jobs.len() && !ctx.stopped() {
+            // Hand out more work while there is room.
+            while sent < jobs.len() && sent - next < workers * 3 && (in_flight < IN_FLIGHT || sent == next) {
+                let size = jobs[sent].size;
+                if size <= SMALL_FILE {
+                    if job_tx.send((sent, jobs[sent].path.clone())).is_err() {
+                        break;
+                    }
+                    in_flight += size;
+                } else {
+                    waiting.insert(sent, Prepared::Big);
+                }
+                sent += 1;
+            }
+            // Store whatever is next in line, else wait for a worker.
+            if let Some(p) = waiting.remove(&next) {
+                if jobs[next].size <= SMALL_FILE {
+                    in_flight -= jobs[next].size;
+                }
+                commit(ctx, &jobs[next], p);
+                next += 1;
+                continue;
+            }
+            match done_rx.recv() {
+                Ok((k, p)) => {
+                    waiting.insert(k, p);
+                }
+                Err(_) => break,
+            }
+        }
+        // Workers finish what they have (quickly when cancelled) and stop.
+        drop(job_tx);
+    });
 }
 
 fn import_dir(ctx: &mut Ctx, target: Option<i64>, dir: &Path) {
@@ -542,6 +692,7 @@ fn import_dir(ctx: &mut Ctx, target: Option<i64>, dir: &Path) {
     };
     ctx.s.mark_dirty();
     let mut cache = HashMap::new();
+    let mut jobs = Vec::new();
     for f in walk_files(dir) {
         if ctx.stopped() {
             return;
@@ -556,10 +707,11 @@ fn import_dir(ctx: &mut Ctx, target: Option<i64>, dir: &Path) {
             })
             .unwrap_or_default();
         match folder_for(ctx, base, &rel, &mut cache) {
-            Ok(folder) => import_file(ctx, folder, &f),
+            Ok(folder) => jobs.extend(file_job(ctx, folder, &f, false)),
             Err(e) => ctx.report.failed.push((f.display().to_string(), e)),
         }
     }
+    import_files(ctx, jobs);
 }
 
 fn import_archive(
@@ -679,10 +831,11 @@ pub fn run(
 ) -> Report {
     let started = Instant::now();
     let (sources, errors) = classify(&job.paths);
+    let bytes = AtomicU64::new(0);
     let mut ctx = Ctx {
         s,
         cancel,
-        bytes: AtomicU64::new(0),
+        bytes: &bytes,
         report: Report {
             job: job.id,
             failed: errors,
@@ -713,17 +866,18 @@ pub fn run(
         };
     }
     ctx.emit("", true);
-    for src in &sources {
+    let mut loose: Vec<FileJob> = Vec::new();
+    for (i, src) in sources.iter().enumerate() {
         if ctx.stopped() {
             break;
         }
         match src {
             Source::File(p) => {
-                ctx.source = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default();
-                import_file(&mut ctx, job.target, p)
+                // Files dropped on their own are imported together, several at once.
+                loose.extend(file_job(&mut ctx, job.target, p, true));
+                if !matches!(sources.get(i + 1), Some(Source::File(_))) {
+                    import_files(&mut ctx, std::mem::take(&mut loose));
+                }
             }
             Source::Dir(d) => {
                 ctx.source = d
@@ -913,6 +1067,60 @@ mod tests {
         drop(s);
         let s2 = session::unlock(&path, "long enough pw").unwrap();
         assert_eq!(s2.info().items, 3);
+    }
+
+    #[test]
+    fn several_files_at_once_keep_their_order_and_contents() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let src = t.path().join("Many");
+        fs::create_dir_all(src.join("sub")).unwrap();
+        let mut want: Vec<(String, Vec<u8>)> = Vec::new();
+        for i in 0..40usize {
+            // Small, middling and (for tests) big files; some the same.
+            let len = [10, 3000, 70_000, 200_000][i % 4] + i;
+            let data: Vec<u8> = (0..len).map(|k| (k * 31 + i * 7) as u8).collect();
+            let name = format!("f{i:02}.jpg");
+            fs::write(src.join(&name), &data).unwrap();
+            want.push((name, data));
+        }
+        fs::write(src.join("twin.jpg"), &want[5].1).unwrap(); // same as f05, same folder
+        fs::write(src.join("sub/f05.jpg"), &want[5].1).unwrap(); // another folder: kept
+        let cancel = AtomicBool::new(false);
+        let mut last = None;
+        let r = run(&s, &job(vec![src.display().to_string()], None), &cancel, &mut |p| last = Some((p.done, p.total)));
+        assert!(r.failed.is_empty(), "{:?}", r.failed);
+        assert_eq!((r.imported, r.duplicates), (41, 1));
+        assert_eq!(last, Some((42, 42)));
+        let many = library::find_child(&s.db(), None, "Many").unwrap().unwrap();
+        // In the order they were found (by id), with the right bytes.
+        let rows: Vec<(String, String, i64)> = s
+            .db()
+            .prepare("SELECT original_name, object_id, size FROM media WHERE folder_id = ? ORDER BY id")
+            .unwrap()
+            .query_map([many], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows.iter().map(|r| r.0.clone()).collect::<Vec<_>>(), want.iter().map(|w| w.0.clone()).collect::<Vec<_>>());
+        for ((_, obj, size), (_, data)) in rows.iter().zip(&want) {
+            let back = s.vault().read_object(ObjectKind::Media, &ObjectId::from_hex(obj).unwrap()).unwrap();
+            assert_eq!(*size as usize, data.len());
+            assert!(back.as_slice() == data.as_slice());
+        }
+        let sub = library::find_child(&s.db(), Some(many), "sub").unwrap();
+        assert_eq!(names(&s, sub), vec!["f05.jpg"]);
+        // The duplicate never took up space.
+        assert_eq!(s.vault().list_objects(ObjectKind::Media).unwrap().len(), 41);
+        // Loose files dropped together, too.
+        let loose: Vec<String> = (0..6).map(|i| {
+            let p = t.path().join(format!("loose{i}.png"));
+            fs::write(&p, vec![i as u8; 1000 + i * 30_000]).unwrap();
+            p.display().to_string()
+        }).collect();
+        let r = run(&s, &job(loose, None), &cancel, &mut |_| {});
+        assert_eq!(r.imported, 6);
+        assert_eq!(names(&s, None), (0..6).map(|i| format!("loose{i}.png")).collect::<Vec<_>>());
     }
 
     fn make_7z(path: &Path, password: Option<&str>, encrypt_names: bool, files: &[(&str, &[u8])]) {

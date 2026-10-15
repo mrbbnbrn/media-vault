@@ -23,6 +23,7 @@ import { viewKey } from './viewmemory';
 import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
+import { resetGrid, whenGridShown } from './firstgrid';
 import { startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
 import { setNativeOptions, startNativeAnalyser } from './ml/native';
@@ -204,22 +205,24 @@ export function App() {
 
   // Thumbnails are made in the background while a vault is open.
   const open = !!app?.session && !app.session.needsNewPassword && !app.session.name.startsWith('SelfTest');
-  useEffect(() => (open ? startThumbnailer() : undefined), [open]);
+  // All of it starts once the library has shown its first page (firstgrid.ts).
+  useEffect(() => (open ? undefined : resetGrid()), [open]);
+  useEffect(() => (open ? whenGridShown(startThumbnailer) : undefined), [open]);
   // Faces are found only in what the user asked to scan; pictures are analysed
   // for smart search whenever its models are there (full package).
-  useEffect(() => (open ? startFaceScanner() : undefined), [open]);
+  useEffect(() => (open ? whenGridShown(startFaceScanner) : undefined), [open]);
   const smartIndex = open && app?.config.smartIndex !== false;
-  useEffect(() => (smartIndex ? startClipIndexer() : undefined), [smartIndex]);
+  useEffect(() => (smartIndex ? whenGridShown(startClipIndexer) : undefined), [smartIndex]);
   // The app's own analysis pass: thumbnails, fingerprints, smart search and
   // faces of the pictures it reads, each decoded once (the loops above and
   // below only do the rest).
-  useEffect(() => (open ? startNativeAnalyser(smartIndex) : undefined), [open]);
+  useEffect(() => (open ? whenGridShown(() => startNativeAnalyser(smartIndex)) : undefined), [open]);
   useEffect(() => setNativeOptions({ smart: smartIndex }), [smartIndex]);
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
-  useEffect(() => (makePreviews ? startPreviewMaker() : undefined), [makePreviews]);
+  useEffect(() => (makePreviews ? whenGridShown(startPreviewMaker) : undefined), [makePreviews]);
   // Picture fingerprints for finding look-alikes (tiny, made from the thumbnails).
-  useEffect(() => (open ? startFingerprinter() : undefined), [open]);
+  useEffect(() => (open ? whenGridShown(startFingerprinter) : undefined), [open]);
 
   useEffect(() => {
     if (!toast) return;

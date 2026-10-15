@@ -155,9 +155,11 @@ pub fn data_info(s: &Session) -> Result<DataInfo, String> {
     {
         let db = s.db();
         (d.faces, d.face_bytes) = db
-            .query_row("SELECT COUNT(*), IFNULL(SUM(length(descriptor)) + COUNT(*) * 64, 0) FROM faces", [], |r| {
-                Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
-            })
+            .query_row(
+                "SELECT COUNT(*), IFNULL(SUM(length(descriptor)) + COUNT(*) * 64, 0) + (SELECT IFNULL(SUM(length(data)), 0) FROM face_graph) FROM faces",
+                [],
+                |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64)),
+            )
             .map_err(e)?;
         (d.clip_items, d.clip_bytes) = db
             .query_row("SELECT COUNT(*), IFNULL(SUM(length(vec)) + COUNT(*) * 16, 0) FROM clip", [], |r| {
@@ -182,8 +184,14 @@ pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
         "faces" => {
             let db = s.db();
             let n: i64 = db.query_row("SELECT COUNT(*) FROM faces", [], |r| r.get(0)).map_err(e)?;
-            db.execute_batch("DELETE FROM face_rejects; DELETE FROM faces; DELETE FROM face_not_same; UPDATE media SET faces_state = 0, faces_model = 0; VACUUM;")
-                .map_err(e)?;
+            db.execute_batch(
+                "DELETE FROM face_rejects; DELETE FROM faces; DELETE FROM face_not_same; DELETE FROM face_graph; \
+                 UPDATE media SET faces_state = 0, faces_model = 0; VACUUM;",
+            )
+            .map_err(e)?;
+            drop(db);
+            // Not even the look-alike graph kept in memory survives (it would be saved again).
+            crate::faces::forget_cache();
             format!("Deleted {n} faces. Person folders stay; scan again to find faces.")
         }
         "clip" => {

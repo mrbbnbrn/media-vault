@@ -38,7 +38,8 @@ export function startNativeAnalyser(smart: boolean): () => void {
   let base = 0;
   let last: AnalyseStatus | null = null;
   let wake: (() => void) | null = null;
-  const offThumb = onEvent<number>('analyse-thumb', (id) => thumbMade(id));
+  // Batches of new thumbnails (a single id from older builds).
+  const offThumb = onEvent<number | number[]>('analyse-thumb', (ids) => (Array.isArray(ids) ? ids : [ids]).forEach((id) => thumbMade(id)));
   const offPause = onFaceScanPaused((p) => setNativeOptions({ facesPaused: p }));
   const sleep = (ms: number) =>
     new Promise<void>((r) => {

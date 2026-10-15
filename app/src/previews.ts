@@ -134,12 +134,12 @@ async function makeFor(t: { id: number; durationMs: number | null; needStrip: bo
   }
   if (stopped()) return how;
   if (made.strip) {
-    await api.savePreview(t.id, Array.from(made.strip));
+    await api.savePreview(t.id, made.strip);
     madeListeners.forEach((l) => l(t.id, 'strip'));
   }
   if (needTiny) {
     if (made.tiny) {
-      await api.saveTiny(t.id, Array.from(made.tiny));
+      await api.saveTiny(t.id, made.tiny);
       madeListeners.forEach((l) => l(t.id, 'tiny'));
     } else {
       // No video encoder here: the flip-book stands in.

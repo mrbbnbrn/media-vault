@@ -105,8 +105,10 @@ export function demoAnswer(cmd: string, a: Record<string, unknown>): unknown {
       if (f == null) return { folder: null, subfolders: d.folders, items: d.items.filter((x) => x.folderId == null) };
       return { folder: d.folders.find((x) => x.id === f) ?? null, subfolders: [], items: d.items.filter((x) => x.folderId === f) };
     }
-    case 'query_items':
-      return d.items;
+    case 'query_items': {
+      const f = (a.filter as { folder?: number | null } | undefined)?.folder;
+      return f === undefined ? d.items : d.items.filter((x) => (x.folderId ?? null) === f);
+    }
     case 'continue_watching':
       return d.items.filter((x) => x.resumeMs != null);
     case 'folder_samples':

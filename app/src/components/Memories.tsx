@@ -75,7 +75,10 @@ export function MemoriesView(props: { folders: FolderCard[]; onPlay: (m: Memory)
     (async () => {
       const all = await api.queryItems({});
       const persons = props.folders.filter((f) => f.person).slice(0, 8);
-      const people = await Promise.all(persons.map(async (folder) => ({ folder, items: await api.queryItems({ people: [folder.id] }) })));
+      // Who is in what: ids only, in one call (the items themselves are in `all`).
+      const byId = new Map(all.map((i) => [i.id, i]));
+      const lists = new Map(persons.length ? await api.personItemIds(persons.map((p) => p.id)).catch(() => []) : []);
+      const people = persons.map((folder) => ({ folder, items: (lists.get(folder.id) ?? []).flatMap((id) => byId.get(id) ?? []) }));
       if (live) setList(makeMemories(all, people, props.folders));
     })().catch(() => live && setList([]));
     return () => {

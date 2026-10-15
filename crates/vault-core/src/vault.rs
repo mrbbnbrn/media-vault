@@ -76,6 +76,32 @@ pub enum Access {
     ReadOnly,
 }
 
+/// An object encrypted in memory by [`Vault::encrypt_to_memory`], not stored
+/// yet. Holds only encrypted bytes.
+pub struct Encrypted {
+    id: ObjectId,
+    kind: ObjectKind,
+    bytes: Vec<u8>,
+    written: WrittenObject,
+}
+
+impl Encrypted {
+    pub fn id(&self) -> ObjectId {
+        self.id
+    }
+    /// Plaintext length and SHA-256.
+    pub fn written(&self) -> &WrittenObject {
+        &self.written
+    }
+    /// Size of the encrypted object.
+    pub fn len(&self) -> usize {
+        self.bytes.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
 /// An unlocked vault. The master key is wiped from memory when this is dropped.
 pub struct Vault {
     root: PathBuf,
@@ -390,6 +416,33 @@ impl Vault {
             Ok(written)
         })?;
         Ok((id, written))
+    }
+
+    /// Encrypt everything read from `source` into memory, on one core
+    /// (for importing several files at once: each is encrypted on its own
+    /// thread, then stored in order with [`Vault::add_encrypted`]). Reads
+    /// the source once; the SHA-256 is computed on the way.
+    pub fn encrypt_to_memory(&self, kind: ObjectKind, mut source: impl Read) -> Result<Encrypted> {
+        self.require_write()?;
+        if kind == ObjectKind::Database {
+            return Err(Error::Invalid("the database is not stored in packs".into()));
+        }
+        let id = ObjectId::random();
+        let mut ow = ObjectWriter::new(std::io::Cursor::new(Vec::new()), id, kind, DEFAULT_CHUNK_LOG2)?;
+        ow.set_threads(1);
+        std::io::copy(&mut source, &mut ow)?;
+        let (cur, written) = ow.finish(&self.master)?;
+        Ok(Encrypted { id, kind, bytes: cur.into_inner(), written })
+    }
+
+    /// Store an object made by [`Vault::encrypt_to_memory`] (appended to the newest pack).
+    pub fn add_encrypted(&self, e: &Encrypted) -> Result<()> {
+        self.require_write()?;
+        self.packs.append(e.kind, e.id, |w| {
+            w.write_all(&e.bytes)?;
+            Ok(())
+        })?;
+        Ok(())
     }
 
     /// Write a loose object file (used for the database).

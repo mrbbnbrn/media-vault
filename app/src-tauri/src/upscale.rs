@@ -20,7 +20,6 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Duration, Instant};
 
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -673,10 +672,9 @@ pub fn upscale_start(app: AppHandle, state: State<'_, crate::Shared>, request: t
     let rgba = Zeroizing::new(rgba.to_vec());
     let (job, flag) = new_job();
     std::thread::spawn(move || {
-        let mut last = Instant::now() - Duration::from_secs(1);
+        let mut t = crate::throttle::Throttle::new();
         let done = run(&s, job, &req, &rgba, &flag, &mut |p| {
-            if last.elapsed() > Duration::from_millis(120) || p.fraction >= 1.0 {
-                last = Instant::now();
+            if t.ready(p.fraction >= 1.0) {
                 let _ = app.emit("upscale-progress", p);
             }
         });

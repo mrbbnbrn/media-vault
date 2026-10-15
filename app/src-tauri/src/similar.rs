@@ -32,7 +32,8 @@ const KINDS: &str = "('image', 'gif', 'video')";
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<FpTask>> {
     conn.prepare(&format!(
         "SELECT id, kind FROM media WHERE phash_state = 0 AND deleted_at IS NULL AND IFNULL(thumb_object_id, '') <> '' \
-         AND kind IN {KINDS} ORDER BY id DESC LIMIT ?"
+         AND kind IN {KINDS} ORDER BY {}id DESC LIMIT ?",
+        crate::focus::order()
     ))
     .map_err(e)?
     .query_map([limit], |r| Ok(FpTask { id: r.get(0)?, kind: r.get(1)? }))
@@ -137,16 +138,18 @@ fn fingerprints(conn: &Connection) -> R<HashMap<i64, Fp>> {
 /// One vector per item for comparing pictures with each other: the average
 /// of its smart-search vectors (videos have several), unit length.
 fn meanings(conn: &Connection) -> R<HashMap<i64, Vec<f32>>> {
-    let rows = conn
-        .prepare("SELECT c.media_id, c.vec FROM clip c JOIN media m ON m.id = c.media_id WHERE m.deleted_at IS NULL")
+    let live: std::collections::HashSet<i64> = conn
+        .prepare("SELECT id FROM media WHERE deleted_at IS NULL")
         .map_err(e)?
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?)))
+        .query_map([], |r| r.get(0))
         .map_err(e)?
-        .collect::<rusqlite::Result<Vec<_>>>()
+        .collect::<rusqlite::Result<_>>()
         .map_err(e)?;
+    // From the vectors kept in memory (clip.rs), not the library.
+    let rows: Vec<(i64, Vec<f32>)> =
+        clip::with_index(conn, |idx| idx.ids().filter(|id| live.contains(id)).filter_map(|id| Some((id, idx.vectors(id)?))).collect())?;
     let mut out = HashMap::new();
-    for (id, b) in rows {
-        let v: Vec<f32> = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    for (id, v) in rows {
         if v.is_empty() || !v.len().is_multiple_of(clip::DIM) {
             continue;
         }

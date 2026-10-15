@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 13;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -470,7 +470,118 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    if v < 13 || !table_exists(conn, "folder_stats")? || !has_column(conn, "clip", "f16")? {
+        // v13: speed. Item counts and sizes per folder kept up to date by
+        // triggers (instead of counting on every folder load); smart-search
+        // vectors stored as 16-bit floats (half the size, same results); the
+        // face look-alike graph saved (face_graph) instead of worked out
+        // again at every unlock. Every part only if it isn't there yet, so
+        // this step is safe to run again.
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            conn.execute_batch(FOLDER_STATS_SQL)?;
+            rebuild_folder_stats(conn)?;
+            if !has_column(conn, "clip", "f16")? {
+                conn.execute_batch("ALTER TABLE clip ADD COLUMN f16 INTEGER NOT NULL DEFAULT 0;")?;
+            }
+            let old: Vec<(i64, Vec<u8>)> = conn
+                .prepare("SELECT media_id, vec FROM clip WHERE f16 = 0")?
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?
+                .collect::<rusqlite::Result<_>>()?;
+            let mut st = conn.prepare("UPDATE clip SET vec = ?2, f16 = 1 WHERE media_id = ?1")?;
+            for (id, blob) in old {
+                st.execute(rusqlite::params![id, crate::half::f32_blob_to_f16(&blob)])?;
+            }
+            conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS face_graph (model INTEGER PRIMARY KEY, data BLOB NOT NULL);",
+            )?;
+            if v < 13 {
+                conn.execute_batch("PRAGMA user_version = 13;")?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
     Ok(())
+}
+
+fn table_exists(conn: &Connection, t: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
+}
+
+/// Items (not in the trash) directly in each folder and their total size,
+/// kept up to date by triggers on `media` for every insert, delete, move,
+/// trash, restore and size change. (A future upgrade that rebuilds the media
+/// table must create these triggers again: dropping a table drops them.)
+const FOLDER_STATS_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS folder_stats (
+    folder_id  INTEGER PRIMARY KEY,
+    items      INTEGER NOT NULL,
+    bytes      INTEGER NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS folder_stats_add AFTER INSERT ON media
+WHEN NEW.folder_id IS NOT NULL AND NEW.deleted_at IS NULL
+BEGIN
+    INSERT INTO folder_stats(folder_id, items, bytes) VALUES (NEW.folder_id, 1, NEW.size)
+        ON CONFLICT(folder_id) DO UPDATE SET items = items + 1, bytes = bytes + excluded.bytes;
+END;
+CREATE TRIGGER IF NOT EXISTS folder_stats_remove AFTER DELETE ON media
+WHEN OLD.folder_id IS NOT NULL AND OLD.deleted_at IS NULL
+BEGIN
+    UPDATE folder_stats SET items = items - 1, bytes = bytes - OLD.size WHERE folder_id = OLD.folder_id;
+END;
+CREATE TRIGGER IF NOT EXISTS folder_stats_change AFTER UPDATE OF folder_id, deleted_at, size ON media
+WHEN OLD.folder_id IS NOT NEW.folder_id OR OLD.deleted_at IS NOT NEW.deleted_at OR OLD.size IS NOT NEW.size
+BEGIN
+    UPDATE folder_stats SET items = items - 1, bytes = bytes - OLD.size
+        WHERE folder_id = OLD.folder_id AND OLD.deleted_at IS NULL;
+    INSERT INTO folder_stats(folder_id, items, bytes)
+        SELECT NEW.folder_id, 1, NEW.size WHERE NEW.folder_id IS NOT NULL AND NEW.deleted_at IS NULL
+        ON CONFLICT(folder_id) DO UPDATE SET items = items + 1, bytes = bytes + excluded.bytes;
+END;
+CREATE TRIGGER IF NOT EXISTS folder_stats_gone AFTER DELETE ON folders
+BEGIN
+    DELETE FROM folder_stats WHERE folder_id = OLD.id;
+END;
+-- A folder's first few pictures (its cover and stacked cards), found without sorting.
+CREATE INDEX IF NOT EXISTS media_samples ON media(folder_id, kind <> 'image', id)
+    WHERE deleted_at IS NULL AND thumb_object_id IS NOT NULL AND thumb_object_id <> '';
+"#;
+
+const FOLDER_STATS_COUNT: &str = "SELECT folder_id, COUNT(*), IFNULL(SUM(size), 0) FROM media \
+     WHERE folder_id IS NOT NULL AND deleted_at IS NULL GROUP BY folder_id";
+
+/// Count every folder's items again (after an upgrade, or if a check found
+/// the kept counts wrong).
+pub fn rebuild_folder_stats(conn: &Connection) -> Result<()> {
+    conn.execute_batch(&format!(
+        "DELETE FROM folder_stats; INSERT INTO folder_stats(folder_id, items, bytes) {FOLDER_STATS_COUNT};"
+    ))?;
+    Ok(())
+}
+
+/// Compare the kept counts with a real count; rebuild them if they differ.
+/// Returns true if they were right.
+pub fn check_folder_stats(conn: &Connection) -> Result<bool> {
+    let real: HashMap<i64, (i64, i64)> = conn
+        .prepare(FOLDER_STATS_COUNT)?
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    let kept: HashMap<i64, (i64, i64)> = conn
+        .prepare("SELECT folder_id, items, bytes FROM folder_stats WHERE items <> 0 OR bytes <> 0")?
+        .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+        .collect::<rusqlite::Result<_>>()?;
+    if real == kept {
+        return Ok(true);
+    }
+    rebuild_folder_stats(conn)?;
+    Ok(false)
 }
 
 /// The pack index stored in the database.
@@ -682,10 +793,106 @@ mod tests {
             c.query_row("SELECT preview_object_id, tiny_object_id FROM media", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((p.as_str(), t), ("strip", None));
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert!(v >= 12);
         // Running it again (or with the column already there) changes nothing.
         migrate(&c).unwrap();
         c.execute_batch("PRAGMA user_version = 11;").unwrap();
         migrate(&c).unwrap();
+    }
+
+    fn stats(c: &Connection) -> Vec<(i64, i64, i64)> {
+        c.prepare("SELECT folder_id, items, bytes FROM folder_stats WHERE items <> 0 OR bytes <> 0 ORDER BY folder_id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap()
+    }
+
+    #[test]
+    fn v13_counts_folders_with_triggers_through_every_change() {
+        let c = create_empty().unwrap();
+        for (id, name) in [(1, "A"), (2, "B")] {
+            c.execute("INSERT INTO folders(id, name, created_at) VALUES (?, ?, 0)", rusqlite::params![id, name]).unwrap();
+        }
+        let add = |folder: Option<i64>, size: i64| {
+            c.execute(
+                "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES (lower(hex(randomblob(16))), ?, 'image', 'a', 'jpg', ?, 'h', 0)",
+                rusqlite::params![folder, size],
+            )
+            .unwrap();
+            c.last_insert_rowid()
+        };
+        let a1 = add(Some(1), 10);
+        let a2 = add(Some(1), 5);
+        let top = add(None, 7);
+        assert_eq!(stats(&c), vec![(1, 2, 15)]);
+        // Move, trash, restore, change size, delete, move to top level.
+        c.execute("UPDATE media SET folder_id = 2 WHERE id = ?", [a2]).unwrap();
+        assert_eq!(stats(&c), vec![(1, 1, 10), (2, 1, 5)]);
+        c.execute("UPDATE media SET deleted_at = 1 WHERE id = ?", [a1]).unwrap();
+        assert_eq!(stats(&c), vec![(2, 1, 5)]);
+        c.execute("UPDATE media SET folder_id = 2 WHERE id = ?", [a1]).unwrap(); // moved while in the trash
+        assert_eq!(stats(&c), vec![(2, 1, 5)]);
+        c.execute("UPDATE media SET deleted_at = NULL WHERE id = ?", [a1]).unwrap();
+        assert_eq!(stats(&c), vec![(2, 2, 15)]);
+        c.execute("UPDATE media SET size = 100 WHERE id = ?", [a1]).unwrap();
+        assert_eq!(stats(&c), vec![(2, 2, 105)]);
+        c.execute("UPDATE media SET folder_id = 1, deleted_at = 5, size = 1 WHERE id = ?", [a2]).unwrap();
+        assert_eq!(stats(&c), vec![(2, 1, 100)]);
+        c.execute("DELETE FROM media WHERE id = ?", [a2]).unwrap();
+        c.execute("UPDATE media SET folder_id = 1 WHERE id = ?", [top]).unwrap();
+        assert_eq!(stats(&c), vec![(1, 1, 7), (2, 1, 100)]);
+        c.execute("UPDATE media SET folder_id = NULL WHERE id = ?", [a1]).unwrap();
+        c.execute("UPDATE media SET original_name = 'b', favourite = 1", []).unwrap(); // not counted
+        assert_eq!(stats(&c), vec![(1, 1, 7)]);
+        assert!(check_folder_stats(&c).unwrap());
+        // Deleting a folder forever forgets its row; a wrong count is put right.
+        c.execute("DELETE FROM media WHERE folder_id = 1", []).unwrap();
+        c.execute("DELETE FROM folders WHERE id = 1", []).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM folder_stats WHERE folder_id = 1", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        add(Some(2), 3);
+        c.execute("UPDATE folder_stats SET items = 9", []).unwrap();
+        assert!(!check_folder_stats(&c).unwrap());
+        assert_eq!(stats(&c), vec![(2, 1, 3)]);
+        // Survives saving and loading.
+        let c2 = deserialize(&serialize(&c).unwrap()).unwrap();
+        c2.execute("INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('x', 2, 'image', 'a', 'jpg', 4, 'h', 0)", []).unwrap();
+        assert_eq!(stats(&c2), vec![(2, 2, 7)]);
+    }
+
+    #[test]
+    fn v13_upgrade_counts_and_halves_vectors() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO folders(id, name, created_at) VALUES (1, 'A', 0)", []).unwrap();
+        for (i, deleted) in [(1, None), (2, Some(5)), (3, None)] {
+            c.execute(
+                "INSERT INTO media(id, object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, deleted_at) VALUES (?1, ?1, 1, 'image', 'a', 'jpg', 10, 'h', 0, ?2)",
+                rusqlite::params![i, deleted],
+            )
+            .unwrap();
+        }
+        let v: Vec<f32> = (0..1024).map(|i| ((i as f32) * 0.37).sin() * 0.06).collect();
+        let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
+        // Back to how a v12 library looked, then upgrade again.
+        c.execute_batch(
+            "DROP TRIGGER folder_stats_add; DROP TRIGGER folder_stats_remove; DROP TRIGGER folder_stats_change; DROP TRIGGER folder_stats_gone; \
+             DROP TABLE folder_stats; DROP TABLE face_graph; ALTER TABLE clip DROP COLUMN f16; PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        c.execute("INSERT INTO clip(media_id, vec) VALUES (1, ?)", [&blob]).unwrap();
+        migrate(&c).unwrap();
+        assert_eq!(stats(&c), vec![(1, 2, 20)]);
+        let (back, f16): (Vec<u8>, i64) = c.query_row("SELECT vec, f16 FROM clip", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((back.len(), f16), (2048, 1));
+        let got = crate::half::f16_blob_to_f32(&back);
+        assert!(got.iter().zip(&v).all(|(a, b)| (a - b).abs() < 1e-4));
+        let ver: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(ver, 13);
+        // Running it again changes nothing.
+        c.execute_batch("PRAGMA user_version = 12;").unwrap();
+        migrate(&c).unwrap();
+        assert_eq!(stats(&c), vec![(1, 2, 20)]);
+        assert_eq!(c.query_row("SELECT vec FROM clip", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), back);
     }
 }

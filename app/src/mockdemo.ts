@@ -178,6 +178,8 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     }
     case 'query_items':
       return query(a.filter as ItemFilter);
+    case 'person_item_ids':
+      return (a.people as number[]).map((p) => [p, query({ people: [p] }).map((i) => i.id)]);
     case 'get_item':
       return items.find((i) => i.id === a.id);
     case 'all_tags': {

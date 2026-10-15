@@ -17,6 +17,9 @@ mod beatlisten;
 mod beatloop;
 #[cfg(test)]
 mod beats_music_tests;
+#[cfg(test)]
+mod bench_tests;
+mod binbody;
 #[cfg(windows)]
 mod loopback_win;
 // Hiding the windows from screenshots and screen sharing.
@@ -31,6 +34,7 @@ mod engine;
 mod exporter;
 mod extras;
 mod faces;
+mod focus;
 // Native face recognition (optional pack: tools/faces): InsightFace buffalo_l.
 mod faceid;
 mod faceid_math;
@@ -50,6 +54,7 @@ mod organize;
 mod similar;
 mod sketch;
 mod storage;
+mod throttle;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
 mod videotool;
@@ -110,7 +115,13 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     let was_open = taken.is_some();
     upscale::cancel();
     upscale::forget_all();
+    if let Some(s) = &taken {
+        // The face look-alike graph goes into the library (saved just below).
+        faces::keep_graphs(&**s);
+    }
     faces::forget_cache();
+    clip::forget_index();
+    focus::set(None);
     faceid::unload();
     analyse::stop();
     protocol::forget_cache();
@@ -188,6 +199,23 @@ fn start_background(s: Arc<Session>) {
         }
         // Files kept for undoing rotations last time (the undo list is new now).
         let _ = rotate::clean_retired(&s2);
+        // The kept folder counts are checked once per unlock (put right if ever wrong).
+        if let Ok(false) = vault_core::db::check_folder_stats(&s2.db()) {
+            s2.mark_dirty();
+        }
+    });
+    // The grid comes first: the heavy parts (every smart-search vector, the
+    // face look-alike graphs) are read just after, in the background, a
+    // batch at a time so the library stays free for the window.
+    let s3 = s.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(400));
+        if !s3.is_closed() {
+            let _ = clip::warm(&*s3);
+        }
+        if !s3.is_closed() {
+            let _ = faces::warm(&*s3);
+        }
     });
     sketch::backfill(s.clone());
     meta::backfill(s);
@@ -643,15 +671,19 @@ async fn delete_bookmark(state: State<'_, Shared>, id: i64) -> Result<(), String
     edit_db(state.inner(), move |c| extras::delete_bookmark(c, id)).await
 }
 
-/// Save something made in the app (a video frame, a GIF) into a folder.
-#[tauri::command]
-async fn add_file_bytes(
-    state: State<'_, Shared>,
+#[derive(serde::Deserialize)]
+struct FileBytesArgs {
     folder: Option<i64>,
     name: String,
-    data: Vec<u8>,
-) -> Result<i64, String> {
+}
+
+/// Save something made in the app (a video frame, a GIF) into a folder.
+/// Raw body: {folder, name}, then the file (binbody.rs).
+#[tauri::command]
+async fn add_file_bytes(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<i64, String> {
     let s = sess(state.inner())?;
+    let (FileBytesArgs { folder, name }, data) = binbody::request(&request)?;
+    let data = zeroize::Zeroizing::new(data.to_vec());
     blocking(move || {
         let id = import::add_bytes(&s, folder, &name, &data)?;
         s.save_soon();
@@ -769,7 +801,11 @@ async fn thumbs_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<Thumb
     read_db(state.inner(), move |c| {
         // Pictures the native analysis pass reads are left to it (analyse.rs).
         let mut st = c
-            .prepare(&format!("SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY id LIMIT ?", analyse::window_thumbs_sql()))
+            .prepare(&format!(
+                "SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY {}id LIMIT ?",
+                analyse::window_thumbs_sql(),
+                focus::order()
+            ))
             .map_err(|e| e.to_string())?;
         let v = st
             .query_map([limit], |r| {
@@ -786,18 +822,33 @@ async fn thumbs_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<Thumb
     .await
 }
 
-#[tauri::command]
-async fn save_thumb(
-    state: State<'_, Shared>,
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ThumbArgs {
     id: i64,
-    data: Vec<u8>,
+    #[serde(default)]
     width: Option<i64>,
+    #[serde(default)]
     height: Option<i64>,
+    #[serde(default)]
     duration_ms: Option<i64>,
+    #[serde(default)]
     sharper: Option<bool>,
-) -> Result<(), String> {
+}
+
+/// A thumbnail made by the window. Raw body: the other arguments, then the
+/// picture (binbody.rs), so it isn't sent as a JSON list of numbers.
+#[tauri::command]
+async fn save_thumb(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let s = sess(state.inner())?;
-    blocking(move || store_thumb(&s, id, &data, width, height, duration_ms, sharper.unwrap_or(false))).await
+    let (a, data): (ThumbArgs, &[u8]) = binbody::request(&request)?;
+    let data = zeroize::Zeroizing::new(data.to_vec());
+    blocking(move || store_thumb(&s, a.id, &data, a.width, a.height, a.duration_ms, a.sharper.unwrap_or(false))).await
+}
+
+#[derive(serde::Deserialize)]
+struct IdArgs {
+    id: i64,
 }
 
 /// Store a new thumbnail for an item (from the window, or made natively by
@@ -986,9 +1037,12 @@ fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Resu
     Ok(())
 }
 
+/// Raw body: {id}, then the frame strip (binbody.rs).
 #[tauri::command]
-async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Result<(), String> {
+async fn save_preview(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let s = sess(state.inner())?;
+    let (IdArgs { id }, data) = binbody::request(&request)?;
+    let data = zeroize::Zeroizing::new(data.to_vec());
     blocking(move || store_preview_object(&s, id, "preview_object_id", &data)).await
 }
 
@@ -1002,12 +1056,15 @@ async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String>
     .await
 }
 
-/// A tiny clip made by the window (WebM or MP4 bytes).
+/// A tiny clip made by the window (WebM or MP4 bytes). Raw body: {id}, then
+/// the clip (binbody.rs).
 #[tauri::command]
-async fn save_tiny(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Result<(), String> {
-    if protocol::tiny_mime(&data).is_none() {
+async fn save_tiny(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let (IdArgs { id }, data) = binbody::request(&request)?;
+    if protocol::tiny_mime(data).is_none() {
         return Err("That isn't a WebM or MP4 video.".into());
     }
+    let data = zeroize::Zeroizing::new(data.to_vec());
     let s = sess(state.inner())?;
     blocking(move || store_preview_object(&s, id, "tiny_object_id", &data)).await
 }
@@ -1131,6 +1188,7 @@ fn start_import(
             archive_folder: archive_folder.unwrap_or(true),
         };
         let report = import::run(&s, &job, &cancel, &mut |p| {
+            // import.rs already sends at most about ten a second.
             let _ = app.emit("import-progress", p);
         });
         inner.imports.lock().unwrap().remove(&id);
@@ -1199,8 +1257,11 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
         let result = if task == "deleteThumbs" || task == "deletePreviews" {
             storage::delete_cache(&s, task == "deleteThumbs")
         } else if task == "convert" {
+            let mut t = throttle::Throttle::new();
             storage::convert(&s, &mut |done, total| {
-                let _ = app.emit("storage-progress", StorageProgress { task, done, total });
+                if t.ready(done >= total) {
+                    let _ = app.emit("storage-progress", StorageProgress { task, done, total });
+                }
             })
             .map(|n| format!("{n} items moved into pack files."))
         } else {
@@ -1251,10 +1312,9 @@ fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> 
     let cancel = begin_task(&inner, "check")?;
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
-        let mut last = Instant::now();
+        let mut t = throttle::Throttle::new();
         let r = integrity::run(&s, &cancel, &mut |done, total| {
-            if last.elapsed() > Duration::from_millis(150) || done == total {
-                last = Instant::now();
+            if t.ready(done == total) {
                 let _ = app.emit("check-progress", TaskProgress { task: "check", done, total });
             }
         });
@@ -1279,10 +1339,9 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter:
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "export")?;
     std::thread::spawn(move || {
-        let mut last = Instant::now();
+        let mut t = throttle::Throttle::new();
         let done = exporter::run(&s, &request, &cancel, &mut |p| {
-            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
-                last = Instant::now();
+            if t.ready(p.done == p.total) {
                 let _ = app.emit("export-progress", p);
             }
         });
@@ -1303,10 +1362,9 @@ fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "share")?;
     std::thread::spawn(move || {
-        let mut last = Instant::now();
+        let mut t = throttle::Throttle::new();
         let done = share7z::run(&s, &request, &cancel, &mut |p| {
-            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
-                last = Instant::now();
+            if t.ready(p.done == p.total) {
                 let _ = app.emit("share-progress", p);
             }
         });
@@ -1336,10 +1394,9 @@ fn video_task<D: Serialize + Clone + 'static>(
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, task)?;
     std::thread::spawn(move || {
-        let mut last = Instant::now() - Duration::from_secs(1);
+        let mut t = throttle::Throttle::new();
         let done = job(&s, &tool, &cancel, &mut |p| {
-            if last.elapsed() > Duration::from_millis(150) || p.done == p.total {
-                last = Instant::now();
+            if t.ready(p.done == p.total) {
                 let _ = app.emit(&format!("{task}-progress"), p);
             }
         });
@@ -1645,8 +1702,51 @@ async fn clip_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<clip::C
     read_db(state.inner(), move |c| clip::needed(c, limit)).await
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FocusArgs {
+    folder: Option<i64>,
+    #[serde(default)]
+    in_folder: bool,
+    #[serde(default)]
+    ids: Vec<i64>,
+}
+
+/// Per person folder, the ids of the items showing them (as `query_items`
+/// with `people: [id]`), all in one call instead of one call per person.
 #[tauri::command]
-async fn clip_save(state: State<'_, Shared>, media: i64, vec: Vec<f32>) -> Result<(), String> {
+async fn person_item_ids(state: State<'_, Shared>, people: Vec<i64>) -> Result<Vec<(i64, Vec<i64>)>, String> {
+    read_db(state.inner(), move |c| {
+        people
+            .iter()
+            .take(64)
+            .map(|&p| {
+                let items = library::query_items(c, &library::ItemFilter { people: vec![p], ..Default::default() })?;
+                Ok((p, items.into_iter().map(|i| i.id).collect()))
+            })
+            .collect()
+    })
+    .await
+}
+
+/// What the window shows: thumbnails, fingerprints, smart search and faces
+/// are made for these first (focus.rs).
+#[tauri::command]
+fn set_focus(focus: Option<FocusArgs>) {
+    crate::focus::set(focus.map(|f| crate::focus::Focus { folder: f.folder, in_folder: f.in_folder, ids: f.ids }));
+    analyse::kick();
+}
+
+#[derive(serde::Deserialize)]
+struct MediaArgs {
+    media: i64,
+}
+
+/// Raw body: {media}, then the vectors as little-endian 32-bit floats (binbody.rs).
+#[tauri::command]
+async fn clip_save(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
+    let (MediaArgs { media }, data) = binbody::request(&request)?;
+    let vec = binbody::floats(data)?;
     edit_db_bg(state.inner(), move |c| clip::save(c, media, &vec)).await
 }
 
@@ -1755,10 +1855,9 @@ async fn copy_into(
 ) -> Result<organize::Copied, String> {
     let s = sess(state.inner())?;
     blocking(move || {
-        let mut last = Instant::now();
+        let mut t = throttle::Throttle::new();
         let out = organize::copy_into(&s, &ids, &folders, target, &mut |done, total| {
-            if last.elapsed() > Duration::from_millis(200) || done == total {
-                last = Instant::now();
+            if t.ready(done == total) {
                 let _ = app.emit("copy-progress", (done, total));
             }
         })?;
@@ -2186,6 +2285,8 @@ pub fn run() {
             set_resume,
             clip_needed,
             clip_save,
+            set_focus,
+            person_item_ids,
             clip_failed,
             clip_status,
             similar_needed,

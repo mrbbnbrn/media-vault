@@ -678,13 +678,17 @@ export const api = {
   randomJourney: () => call<{ folder: number | null; item: number } | null>('random_journey'),
   todaysPick: (day: number) => call<Item | null>('todays_pick', { day }),
   folderSamples: (folder: number, n: number) => call<number[]>('folder_samples', { folder, n }),
+  /** Per person folder: the ids of the items showing them (one call for all of them). */
+  personItemIds: (people: number[]) => call<[number, number[]][]>('person_item_ids', { people }),
+  /** What is on screen (the open folder, null = top level; the items shown): background work does these first. */
+  setFocus: (focus: { folder: number | null; inFolder: boolean; ids: number[] } | null) => call<void>('set_focus', { focus }),
   bookmarks: (media: number) => call<Bookmark[]>('bookmarks', { media }),
   addBookmark: (media: number, positionMs: number, note: string) => call<number>('add_bookmark', { media, positionMs, note }),
   updateBookmark: (id: number, positionMs: number, note: string) => call<void>('update_bookmark', { id, positionMs, note }),
   deleteBookmark: (id: number) => call<void>('delete_bookmark', { id }),
   /** Save a file made in the app (frame, GIF) into a folder; returns the new item id. */
   addFileBytes: (folder: number | null, name: string, data: Uint8Array) =>
-    call<number>('add_file_bytes', { folder, name, data: Array.from(data) }),
+    callRaw<number>('add_file_bytes', { folder, name }, data),
   moveItems: (ids: number[], folder: number | null) => call<number>('move_items', { ids, folder }),
   setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
@@ -725,8 +729,8 @@ export const api = {
 
   // thumbnails
   thumbsNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_needed', { limit }),
-  saveThumb: (id: number, data: number[], width: number | null, height: number | null, durationMs: number | null, sharper = false) =>
-    call<void>('save_thumb', { id, data, width, height, durationMs, sharper }),
+  saveThumb: (id: number, data: Bytes, width: number | null, height: number | null, durationMs: number | null, sharper = false) =>
+    callRaw<void>('save_thumb', { id, width, height, durationMs, sharper }, data),
   /** Older, smaller thumbnails still to remake sharper (ids after..upto). */
   thumbsToSharpen: (after: number, upto: number, limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_to_sharpen', { after, upto, limit }),
   newestItemId: () => call<number>('newest_item_id'),
@@ -756,10 +760,10 @@ export const api = {
   // preview clips
   previewsNeeded: (limit: number, prefer: number[]) =>
     call<{ id: number; durationMs: number | null; needStrip: boolean; needTiny: boolean }[]>('previews_needed', { limit, prefer }),
-  savePreview: (id: number, data: number[]) => call<void>('save_preview', { id, data }),
+  savePreview: (id: number, data: Bytes) => callRaw<void>('save_preview', { id }, data),
   previewFailed: (id: number) => call<void>('preview_failed', { id }),
   /** A tiny preview video made by the window (WebM or MP4 bytes). */
-  saveTiny: (id: number, data: number[]) => call<void>('save_tiny', { id, data }),
+  saveTiny: (id: number, data: Bytes) => callRaw<void>('save_tiny', { id }, data),
   tinyFailed: (id: number) => call<void>('tiny_failed', { id }),
   /** Make the tiny clip with the video tool; false = no video tool installed. */
   makeTinyWithTool: (id: number, starts: number[], piece: number) => call<boolean>('make_tiny_with_tool', { id, starts, piece }),
@@ -815,7 +819,9 @@ export const api = {
 
   // smart search
   clipNeeded: (limit: number) => call<{ id: number; kind: Kind; preview: boolean }[]>('clip_needed', { limit }),
-  clipSave: (media: number, vec: number[]) => call<void>('clip_save', { media, vec }),
+  /** The vectors go as raw little-endian 32-bit floats. */
+  clipSave: (media: number, vec: Float32Array | number[]) =>
+    callRaw<void>('clip_save', { media }, new Uint8Array(Float32Array.from(vec).buffer)),
   clipFailed: (media: number) => call<void>('clip_failed', { media }),
   clipStatus: () => call<ClipStatus>('clip_status'),
   /** Where pictures are analysed for smart search (Settings). */
@@ -1102,6 +1108,33 @@ async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> 
   if (!inTauri) return mock.call(cmd, args ?? {}) as Promise<T>;
   try {
     return await invoke<T>(cmd, args);
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+/** Bytes for the backend (a plain number array still works, but costs a copy). */
+export type Bytes = Uint8Array | ArrayLike<number>;
+
+/**
+ * A request carrying bytes, as one raw body instead of JSON (where every
+ * byte would become a number in text): 4 bytes JSON length (little-endian),
+ * the other arguments as JSON, then the bytes.
+ */
+export function rawBody(args: Record<string, unknown>, data: Bytes): Uint8Array {
+  const bytes = data instanceof Uint8Array ? data : Uint8Array.from(data);
+  const json = new TextEncoder().encode(JSON.stringify(args));
+  const body = new Uint8Array(4 + json.length + bytes.length);
+  new DataView(body.buffer).setUint32(0, json.length, true);
+  body.set(json, 4);
+  body.set(bytes, 4 + json.length);
+  return body;
+}
+
+async function callRaw<T>(cmd: string, args: Record<string, unknown>, data: Bytes): Promise<T> {
+  if (!inTauri) return mock.call(cmd, { ...args, data }) as Promise<T>;
+  try {
+    return await invoke<T>(cmd, rawBody(args, data));
   } catch (e) {
     throw new Error(typeof e === 'string' ? e : String(e));
   }

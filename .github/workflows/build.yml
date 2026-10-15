@@ -81,8 +81,28 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: app/package-lock.json
+      # The released app is built for x86-64-v2 (SSE4.2 and POPCNT: every
+      # 64-bit Intel and AMD processor since about 2009), so the compiler may
+      # use those instructions everywhere. Only here: the tests above and
+      # vault-export.exe (the recovery tool, which must run on anything) keep
+      # the plain x86-64 baseline. AES and carry-less multiply (encryption)
+      # and F16C (smart search) are picked at run time either way.
+      #
+      # Profile-guided optimisation (PGO) was looked at and left out for now:
+      # it needs the release build twice (an instrumented build, a profiling
+      # run, then the optimised build), which adds well over 10 minutes to
+      # this job, and the only representative workload that exists is the
+      # self-test in the real window, which needs the models and the web
+      # engine. The plan, when it is worth it: `rustup component add
+      # llvm-tools`, build with RUSTFLAGS="-Cprofile-generate=$PWD/pgo",
+      # run a headless workload (create a demo vault, import a few hundred
+      # generated pictures and a big file, read everything back, search),
+      # `llvm-profdata merge -o pgo.profdata pgo`, and build again with
+      # RUSTFLAGS="-Cprofile-use=$PWD/pgo.profdata -Ctarget-cpu=x86-64-v2".
       - name: Build MediaVault.exe
         working-directory: app
+        env:
+          RUSTFLAGS: -C target-cpu=x86-64-v2
         run: |
           npm ci
           npx tauri build --no-bundle

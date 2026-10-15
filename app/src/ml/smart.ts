@@ -161,7 +161,7 @@ export function startClipIndexer(): () => void {
         try {
           const v = t.kind === 'video' && t.preview ? await embedVideo(t.id) : await embedItem(t.id);
           if (stopped) break;
-          await api.clipSave(t.id, Array.from(v));
+          await api.clipSave(t.id, v);
         } catch (e) {
           if (stopped) break;
           if (String(e).includes('missing')) {

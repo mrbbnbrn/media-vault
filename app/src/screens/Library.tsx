@@ -4,6 +4,7 @@
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { gridShown } from '../firstgrid';
 import {
   api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind,
   type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
@@ -514,16 +515,26 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const reload = useCallback(async () => {
     setLoading(true);
     try {
-      const [f, t] = await Promise.all([api.folders(), api.allTags()]);
+      // A folder's own card and its subfolders come from the full folder
+      // list, so the library works out every folder's counts once, not twice.
+      const inFolder = view.kind === 'folder' ? view.id : undefined;
+      const [f, t, folderItems] = await Promise.all([
+        api.folders(),
+        api.allTags(),
+        inFolder !== undefined ? api.queryItems({ folder: inFolder }) : Promise.resolve(null),
+      ]);
       setFolders(f);
       tabsRef.current?.onFolders(f);
       setTags(t);
       setTrash(null);
-      if (view.kind === 'folder') {
-        const fv = await api.folderView(view.id);
-        setFolder(fv.folder);
-        setSubfolders(fv.subfolders);
-        setItems(fv.items);
+      if (view.kind === 'folder' && folderItems) {
+        const here = view.id == null ? null : f.find((x) => x.id === view.id) ?? null;
+        if (view.id != null && !here) throw new Error('That folder no longer exists.');
+        setFolder(here);
+        setSubfolders(f.filter((x) => (x.parentId ?? null) === (view.id ?? null)));
+        setItems(folderItems);
+        // Background work (thumbnails, faces, smart search) does this folder first.
+        api.setFocus({ folder: view.id ?? null, inFolder: true, ids: folderItems.slice(0, 300).map((i) => i.id) }).catch(() => {});
       } else {
         setFolder(null);
         setSubfolders([]);
@@ -556,6 +567,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       setError(errText(e));
     } finally {
       setLoading(false);
+      // Background work may start now (firstgrid.ts).
+      gridShown();
     }
   }, [view, similarSmart]);
 
