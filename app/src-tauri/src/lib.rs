@@ -1779,10 +1779,11 @@ async fn faces_sort_offers(state: State<'_, Shared>, ids: Vec<i64>) -> Result<fa
 
 /// "Sort people into their folders": every person and the photos of them outside their folder.
 #[tauri::command]
-async fn faces_sort_all(state: State<'_, Shared>) -> Result<faces::SortOffers, String> {
+async fn faces_sort_all(state: State<'_, Shared>, ids: Option<Vec<i64>>, folder: Option<i64>) -> Result<faces::SortOffers, String> {
     let s = sess(state.inner())?;
     blocking(move || {
-        let r = faces::sort_all(&*s)?;
+        // Only these items, or one folder and its subfolders; nothing given = the whole vault.
+        let r = if ids.is_some() || folder.is_some() { faces::sort_scoped(&*s, &ids.unwrap_or_default(), folder)? } else { faces::sort_all(&*s)? };
         if r.changed > 0 {
             s.mark_dirty();
         }

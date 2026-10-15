@@ -19,6 +19,7 @@ import {
   ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { FaceSortOffer } from '../components/FaceSort';
+import { openSortAll } from '../facesort';
 import { peopleInText } from '../peoplelogic';
 import type { RenameEntry } from '../components/RenameDialog';
 import type { Memory } from '../components/Memories';
@@ -1189,6 +1190,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+    { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { folder: f.id, label: `“${f.name}”` }) },
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
     ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
@@ -1742,6 +1744,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         } },
         ...(!many ? [{ label: 'Note…', hint: it.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: false, id: it.id, name: it.name, note: it.note }) }] : []),
         { label: 'Scan for faces', sepBefore: true, onSelect: () => scanFaces({ ids }, many ? `${ids.length} items` : `“${it.name}”`) },
+        { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { ids, label: many ? `${ids.length} items` : `“${it.name}”` }) },
         ...(it.thumb === 'failed' && it.kind === 'video' ? [{ label: 'Make a playable copy', hint: 'converts to MP4', onSelect: () => setDialog({ t: 'convert', items: [it], target: 'mp4' }) }] : []),
         { label: 'Convert to…', onSelect: () => setDialog({ t: 'convert', items: shown.filter((x) => sel.has(x.id)) }) },
         ...(pictures(shown.filter((x) => sel.has(x.id))).length >= 2 ? [{ label: 'Create GIF or video…', onSelect: () => setDialog({ t: 'animation', items: pictures(shown.filter((x) => sel.has(x.id))) }) }] : []),
@@ -2239,6 +2242,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 <button type="button" className="chip dashed" onClick={() => setDialog({ t: 'folderTag', folder })}>+ tag folder</button>
                 <button type="button" className="btn btn-sm" title="Go through this folder one by one and send each item to a folder" onClick={() => setDialog({ t: 'quickSort', folder })}>
                   <SortIcon size={14} /> Quick sort
+                </button>
+                <button type="button" className="btn btn-sm" title="Move (or free-copy) the photos in this folder that show recognised people into those people's folders — you choose, person by person"
+                  onClick={() => openSortAll(true, { folder: folder.id, label: `“${folder.name}”` })}>
+                  <FaceIcon size={13} /> To person folders
                 </button>
                 <Dropdown className="btn btn-sm" label="Folder ▾" items={folderMenu(folder).slice(1)} />
               </div>
@@ -2997,12 +3004,39 @@ function ImportSummary({ r, onClose }: { r: ImportReport; onClose: () => void })
   );
 }
 
+/** Where "Choose cover…" looks: this folder, the person's photos anywhere, or the whole library. */
+type CoverSource = 'here' | 'person' | 'all';
+const COVER_PAGE = 600;
+
 function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked: (id: number | null) => Promise<void> }) {
+  const f = props.folder;
+  // A person folder opens on that person's photos (they may live anywhere, or the folder may be empty).
+  const [source, setSource] = useState<CoverSource>(f.person ? 'person' : 'here');
+  const [q, setQ] = useState('');
+  const [favs, setFavs] = useState(false);
   const [items, setItems] = useState<Item[] | null>(null);
+  const [limit, setLimit] = useState(COVER_PAGE);
   const [err, setErr] = useState<string | null>(null);
+  /** The picture being looked at big (an index into the list), or null. */
+  const [big, setBig] = useState<number | null>(null);
   useEffect(() => {
-    api.queryItems({ folder: props.folder.id, recursive: true }).then((x) => setItems(x.slice(0, 600))).catch((e) => setErr(String(e)));
-  }, [props.folder.id]);
+    let alive = true;
+    setItems(null);
+    setBig(null);
+    setLimit(COVER_PAGE);
+    const media: Kind[] = ['image', 'gif', 'video'];
+    const words = q.trim().split(/\s+/).filter(Boolean);
+    const t = setTimeout(() => {
+      const filter = source === 'here' ? { folder: f.id, recursive: true }
+        : source === 'person' ? { people: [f.id], kinds: media }
+        : { kinds: media, names: words.length ? words : undefined, favouritesOnly: favs || undefined };
+      api.queryItems(filter).then((x) => alive && setItems(x)).catch((e) => alive && setErr(String(e)));
+    }, source === 'all' && words.length ? 250 : 0);
+    return () => {
+      alive = false;
+      clearTimeout(t);
+    };
+  }, [source, q, favs, f.id]);
   const pick = async (id: number | null) => {
     try {
       await props.onPicked(id);
@@ -3011,25 +3045,94 @@ function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked:
       setErr(e instanceof Error ? e.message : String(e));
     }
   };
+  const shown = items?.slice(0, limit) ?? [];
+  const cur = big != null ? shown[big] : undefined;
+  // Looking at one big: ←/→ step through, Enter uses it (Esc goes back to the list, see Modal's close below).
+  useEffect(() => {
+    if (big == null) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+        e.preventDefault();
+        e.stopPropagation();
+        const n = shown.length;
+        if (n) setBig((i) => (i == null ? i : (i + (e.key === 'ArrowRight' ? 1 : n - 1)) % n));
+      } else if (e.key === 'Enter' && cur) {
+        e.preventDefault();
+        e.stopPropagation();
+        pick(cur.id);
+      }
+    };
+    window.addEventListener('keydown', onKey, true);
+    return () => window.removeEventListener('keydown', onKey, true);
+  }); // eslint-disable-line react-hooks/exhaustive-deps
+  const closeRef = useRef<() => void>(() => {});
+  closeRef.current = () => (big != null ? setBig(null) : props.onClose());
+  const close = useCallback(() => closeRef.current(), []);
+  const tabs: [CoverSource, string][] = [
+    ['here', 'In this folder'],
+    ...(f.person ? [['person', `Photos of ${f.name}`] as [CoverSource, string]] : []),
+    ['all', 'Whole library'],
+  ];
   return (
-    <Modal title={`Cover for “${props.folder.name}”`} onClose={props.onClose} wide>
+    <Modal title={`Cover for “${f.name}”`} onClose={close} wide>
+      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
+        <div role="tablist" aria-label="Where to choose from" className="seg">
+          {tabs.map(([k, label]) => (
+            <button key={k} type="button" role="tab" aria-selected={source === k} className={source === k ? 'on' : ''} onClick={() => setSource(k)}>{label}</button>
+          ))}
+        </div>
+        {source === 'all' && (
+          <>
+            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Search by name…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search by name" />
+            <label className="check"><input type="checkbox" checked={favs} onChange={(e) => setFavs(e.target.checked)} /> Favourites only</label>
+          </>
+        )}
+      </div>
       <p className="faint" style={{ margin: 0, fontSize: 13 }}>
-        Pick any picture, GIF or video inside this folder (or its subfolders). Videos and GIFs play on the card when previews are on.
+        {source === 'person' ? `Every picture, GIF and video where ${f.name} is recognised, wherever it is. ` : source === 'all' ? 'Any picture, GIF or video in the vault. ' : 'Pictures, GIFs and videos in this folder (and its subfolders). '}
+        Click one to look at it big (←/→ to go through them), or <b>Use</b> to pick it straight away. The cover doesn't have to be inside the folder.
       </p>
       {err && <div className="error">{err}</div>}
-      <div className="cover-grid">
-        <button type="button" className={`cover-pick${props.folder.cover == null ? ' on' : ''}`} onClick={() => pick(null)}>
-          <span className="tile-msg">Automatic<br />(first picture)</span>
-        </button>
-        {items?.map((it) => (
-          <button key={it.id} type="button" title={it.name} className={`cover-pick${props.folder.cover === it.id ? ' on' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`} onClick={() => pick(it.id)}>
-            {it.thumb === 'ok' ? <img src={thumbUrl(it.id)} alt={it.name} loading="lazy" /> : <span className="tile-msg">{it.name}</span>}
-            {it.kind !== 'image' && <span className="badge">{it.kind === 'video' ? 'VIDEO' : it.kind.toUpperCase()}</span>}
+      {cur ? (
+        <div className="cover-big">
+          <div className="cover-big-media">
+            {cur.kind === 'video' ? <video key={cur.id} src={mediaUrl(cur.id)} autoPlay muted loop playsInline controls />
+              : cur.kind === 'image' || cur.kind === 'gif' ? <img key={cur.id} src={mediaUrl(cur.id)} alt={cur.name} />
+              : <img key={cur.id} src={thumbUrl(cur.id)} alt={cur.name} />}
+          </div>
+          <div className="row" style={{ gap: 8 }}>
+            <button type="button" className="btn" onClick={() => setBig(null)}>← Back to the list</button>
+            <button type="button" className="btn ghost" aria-label="Previous" onClick={() => setBig((i) => (i == null ? i : (i + shown.length - 1) % shown.length))}>‹</button>
+            <span className="faint" style={{ fontSize: 12 }}>{(big ?? 0) + 1} of {shown.length.toLocaleString()} · {cur.name}</span>
+            <button type="button" className="btn ghost" aria-label="Next" onClick={() => setBig((i) => (i == null ? i : (i + 1) % shown.length))}>›</button>
+            <button type="button" className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={() => pick(cur.id)}>Use as cover</button>
+          </div>
+        </div>
+      ) : (
+        <div className="cover-grid">
+          {source === 'here' && (
+            <button type="button" className={`cover-pick${f.cover == null ? ' on' : ''}`} onClick={() => pick(null)}>
+              <span className="tile-msg">Automatic<br />(first picture)</span>
+            </button>
+          )}
+          {shown.map((it, i) => (
+            <div key={it.id} className={`cover-pick${f.cover === it.id ? ' on' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`} title={it.name}
+              role="button" tabIndex={0} onClick={() => setBig(i)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setBig(i); } }}>
+              {it.thumb === 'ok' ? <img src={thumbUrl(it.id)} alt={it.name} loading="lazy" /> : <span className="tile-msg">{it.name}</span>}
+              {it.kind !== 'image' && <span className="badge">{it.kind === 'video' ? 'VIDEO' : it.kind.toUpperCase()}</span>}
+              <button type="button" className="btn btn-sm cover-use" onClick={(e) => { e.stopPropagation(); pick(it.id); }}>Use</button>
+            </div>
+          ))}
+          {!items && <span className="faint">Loading…</span>}
+          {items && !items.length && <span className="faint">{source === 'person' ? `No photos of ${f.name} found yet.` : 'Nothing here.'}</span>}
+        </div>
+      )}
+      <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
+        {!cur && items && items.length > limit && (
+          <button type="button" className="btn" style={{ marginRight: 'auto' }} onClick={() => setLimit((n) => n + COVER_PAGE)}>
+            Show more ({(items.length - limit).toLocaleString()} left)
           </button>
-        ))}
-        {!items && <span className="faint">Loading…</span>}
-      </div>
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        )}
         <button type="button" className="btn" onClick={props.onClose}>Close</button>
       </div>
     </Modal>

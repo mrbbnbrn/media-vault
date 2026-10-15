@@ -83,11 +83,22 @@ export function watchImports(): () => void {
   };
 }
 
-// "Sort people into their folders…" (People page, or the after-import card).
+// "Sort people into their folders…": the whole vault (People page, or the
+// after-import card), or only some items / one folder (right-click on items or
+// a folder, or inside a folder).
+
+/** What to sort: chosen items or one folder with its subfolders; `label` names it in the window. */
+export interface SortScope {
+  ids?: number[];
+  folder?: number;
+  label: string;
+}
 let sortAllOpen = false;
+let sortScope: SortScope | null = null;
 const sortSubs = new Set<() => void>();
-export function openSortAll(open = true) {
+export function openSortAll(open = true, scope: SortScope | null = null) {
   sortAllOpen = open;
+  sortScope = open ? scope : null;
   sortSubs.forEach((s) => s());
 }
 export function useSortAllOpen(): boolean {
@@ -97,6 +108,15 @@ export function useSortAllOpen(): boolean {
       return () => sortSubs.delete(cb);
     },
     () => sortAllOpen,
+  );
+}
+export function useSortScope(): SortScope | null {
+  return useSyncExternalStore(
+    (cb) => {
+      sortSubs.add(cb);
+      return () => sortSubs.delete(cb);
+    },
+    () => sortScope,
   );
 }
 

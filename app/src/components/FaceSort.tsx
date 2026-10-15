@@ -3,7 +3,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { api, thumbUrl, type Item } from '../api';
-import { dismissOffer, openSortAll, useSortAllOpen, useSortOffers, watchImports, type Offer } from '../facesort';
+import { dismissOffer, openSortAll, useSortAllOpen, useSortOffers, useSortScope, watchImports, type Offer, type SortScope } from '../facesort';
+import { kickFaceScanner, onFaceProgress } from '../ml/facescan';
 import { Modal } from './Dialogs';
 import { plural } from '../undo';
 import { CloseIcon, FaceIcon } from './Icons';
@@ -17,10 +18,11 @@ export function FaceSortOffer(props: {
   useEffect(() => watchImports(), []);
   const offers = useSortOffers();
   const sortAll = useSortAllOpen();
+  const scope = useSortScope();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const o = offers[0];
-  const dialog = sortAll && <SortAllDialog did={props.did} onChanged={props.onChanged} onClose={() => openSortAll(false)} />;
+  const dialog = sortAll && <SortAllDialog key={scope ? `${scope.folder ?? ''}:${scope.ids?.join(',') ?? ''}` : 'all'} scope={scope} did={props.did} onChanged={props.onChanged} onClose={() => openSortAll(false)} />;
   if (!o) return dialog || null;
   const ids = o.items.map((i) => i.id);
   const n = ids.length;
@@ -86,7 +88,9 @@ async function placeInFolder(items: Item[], folder: number, name: string, how: '
 /** "Sort people into their folders": every recognised person, one at a time,
  *  with the photos of them that aren't in their folder yet. Nothing moves
  *  unless you say so. */
-export function SortAllDialog(props: { did: (label: string, undo: () => Promise<unknown>) => void; onChanged: () => void; onClose: () => void }) {
+export function SortAllDialog(props: { scope?: SortScope | null; did: (label: string, undo: () => Promise<unknown>) => void; onChanged: () => void; onClose: () => void }) {
+  const scope = props.scope ?? null;
+  const [notScanned, setNotScanned] = useState({ waiting: 0, unscanned: 0 });
   const [list, setList] = useState<Offer[] | null>(null);
   const [skipped, setSkipped] = useState<Set<number>>(() => new Set());
   const [unticked, setUnticked] = useState<Set<number>>(() => new Set());
@@ -95,16 +99,52 @@ export function SortAllDialog(props: { did: (label: string, undo: () => Promise<
   const [done, setDone] = useState(0);
   const load = useCallback(async () => {
     try {
-      const r = await api.facesSortAll();
+      const r = await api.facesSortAll(scope ? { ids: scope.ids, folder: scope.folder } : undefined);
       setList(r?.offers ?? []);
+      setNotScanned({ waiting: r?.waiting ?? 0, unscanned: r?.unscanned ?? 0 });
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setList([]);
     }
-  }, []);
+  }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     load();
   }, [load]);
+  // While some of them are still being scanned: look again as the scan moves on.
+  useEffect(() => {
+    if (!scope || notScanned.waiting === 0) return;
+    let t: ReturnType<typeof setTimeout> | null = null;
+    const off = onFaceProgress(() => {
+      if (t) return;
+      t = setTimeout(() => {
+        t = null;
+        load();
+      }, 1500);
+    });
+    return () => {
+      off();
+      if (t) clearTimeout(t);
+    };
+  }, [scope, notScanned.waiting, load]);
+  const scanFirst = async () => {
+    if (!scope) return;
+    try {
+      await api.facesQueue(scope.folder != null ? { folder: scope.folder } : { ids: scope.ids ?? [] });
+      kickFaceScanner();
+      await load();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    }
+  };
+  const scanLine = scope && (notScanned.waiting > 0 || notScanned.unscanned > 0) && (
+    <p className="faint" style={{ margin: 0, fontSize: 12 }}>
+      {notScanned.waiting > 0 && <>{plural(notScanned.waiting, 'item is', 'items are')} still being scanned for faces (this updates by itself). </>}
+      {notScanned.unscanned > 0 && <>
+        {plural(notScanned.unscanned, "item hasn't", "items haven't")} been scanned for faces yet.{' '}
+        <button type="button" className="link" onClick={scanFirst}>Scan {notScanned.unscanned === 1 ? 'it' : 'them'} now</button>
+      </>}
+    </p>
+  );
   const left = (list ?? []).filter((o) => !skipped.has(o.folder));
   const o = left[0];
   const total = list ? list.length : 0;
@@ -132,12 +172,13 @@ export function SortAllDialog(props: { did: (label: string, undo: () => Promise<
     setUnticked(new Set());
   };
   return (
-    <Modal title="Sort people into their folders" onClose={props.onClose} wide>
+    <Modal title={scope ? `Sort into person folders: ${scope.label}` : 'Sort people into their folders'} onClose={props.onClose} wide>
       {list === null && <span className="faint">Looking at who is where…</span>}
+      {scanLine}
       {list !== null && !o && (
         <>
           <p className="muted" style={{ margin: 0 }}>
-            {total === 0 ? 'Everyone recognised is already in their folder.' : done ? `Done: ${plural(done, 'person', 'people')} sorted.` : 'Nothing left to sort.'}
+            {total === 0 ? (scope ? 'Nobody recognised in these is outside their folder.' : 'Everyone recognised is already in their folder.') : done ? `Done: ${plural(done, 'person', 'people')} sorted.` : 'Nothing left to sort.'}
           </p>
           <div className="row" style={{ justifyContent: 'flex-end' }}>
             <button type="button" className="btn btn-primary" onClick={props.onClose}>Close</button>

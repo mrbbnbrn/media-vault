@@ -84,7 +84,7 @@ impl Lib for Mutex<Connection> {
 // ---- queue and storage -----------------------------------------------------------------
 
 /// Which items to scan: these ids, a folder (with subfolders) or everything.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanRequest {
     #[serde(default)]
@@ -1215,6 +1215,8 @@ pub struct SortOffer {
 pub struct SortOffers {
     /// Of these items, still waiting to be scanned.
     pub waiting: usize,
+    /// Of these items (pictures, GIFs, videos), never scanned and not queued.
+    pub unscanned: usize,
     pub offers: Vec<SortOffer>,
     #[serde(skip)]
     pub changed: usize,
@@ -1243,15 +1245,32 @@ pub fn sort_all(lib: &dyn Lib) -> R<SortOffers> {
     offers_for(lib, &ids, 1)
 }
 
+/// "Sort into person folders" for some items only (right-click on items) or one
+/// folder and its subfolders (right-click on a folder, or inside it).
+pub fn sort_scoped(lib: &dyn Lib, ids: &[i64], folder: Option<i64>) -> R<SortOffers> {
+    let ids: Vec<i64> = match folder {
+        Some(f) => {
+            let conn = lib.conn();
+            scannable_ids(&conn, &ScanRequest { folder: Some(f), ..Default::default() })?
+        }
+        None => ids.to_vec(),
+    };
+    offers_for(lib, &ids, 1)
+}
+
 fn offers_for(lib: &dyn Lib, ids: &[i64], min: usize) -> R<SortOffers> {
     let (views, facts) = analyse_all(lib)?;
     let conn = lib.conn();
     let changed = apply(&conn, &views)?;
     let items = library::items_by_ids(&conn, ids)?;
     let mut waiting = 0;
+    let mut unscanned = 0;
     for chunk in ids.chunks(500) {
-        let sql = format!("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND faces_state = 2 AND id IN ({})", vec!["?"; chunk.len()].join(","));
+        let marks = vec!["?"; chunk.len()].join(",");
+        let sql = format!("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND faces_state = 2 AND id IN ({marks})");
         waiting += conn.query_row(&sql, params_from_iter(chunk.iter()), |r| r.get::<_, i64>(0)).map_err(e)? as usize;
+        let sql = format!("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND faces_state = 0 AND kind IN ('image', 'gif', 'video') AND id IN ({marks})");
+        unscanned += conn.query_row(&sql, params_from_iter(chunk.iter()), |r| r.get::<_, i64>(0)).map_err(e)? as usize;
     }
     let mut offers = Vec::new();
     for p in &facts.people {
@@ -1270,7 +1289,7 @@ fn offers_for(lib: &dyn Lib, ids: &[i64], min: usize) -> R<SortOffers> {
         }
     }
     offers.sort_by_key(|o| std::cmp::Reverse(o.items.len()));
-    Ok(SortOffers { waiting, offers, changed })
+    Ok(SortOffers { waiting, unscanned, offers, changed })
 }
 
 // ---- faces of items ---------------------------------------------------------------------------
@@ -1833,6 +1852,10 @@ mod tests {
         assert_eq!(all.offers.len(), 1);
         assert_eq!(all.offers[0].folder, a);
         assert!(news[..3].iter().all(|m| all.offers[0].items.iter().any(|it| it.id == *m)));
+        // …and for chosen items only (right-click), even a single one.
+        let one = sort_scoped(&l, &news[..1], None).unwrap();
+        assert_eq!((one.offers.len(), one.offers[0].items.len(), one.unscanned, one.waiting), (1, 1, 0, 0));
+        assert!(sort_scoped(&l, &news[3..], None).unwrap().offers.is_empty());
         // Quick sort's suggestion for one of them.
         assert_eq!(person_matches(&l.conn(), news[0]).unwrap()[0].0, a);
         assert!(person_matches(&l.conn(), news[3]).unwrap().is_empty());

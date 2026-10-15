@@ -448,6 +448,8 @@ export interface OwnerProposal {
 export interface SortOffers {
   /** Of the items asked about, still waiting to be scanned. */
   waiting: number;
+  /** Of the items asked about (pictures, GIFs, videos), never scanned for faces. */
+  unscanned?: number;
   offers: { folder: number; name: string; items: Item[] }[];
 }
 
@@ -974,7 +976,8 @@ export const api = {
   facesAfterImport: (since: number) => call<number[]>('faces_after_import', { since }),
   facesSortOffers: (ids: number[]) => call<SortOffers>('faces_sort_offers', { ids }),
   /** Every recognised person with the photos of them that aren't in their folder yet. */
-  facesSortAll: () => call<SortOffers>('faces_sort_all'),
+  /** Every person and their photos outside their folder; or only these items / one folder (with subfolders). */
+  facesSortAll: (scope?: { ids?: number[]; folder?: number }) => call<SortOffers>('faces_sort_all', { ids: scope?.ids ?? null, folder: scope?.folder ?? null }),
   facesAccept: (faceIds: number[], person: number) => call<{ named?: number; moved: number; tagged: number }>('faces_accept', { faceIds, person }),
   facesReject: (faceIds: number[], person: number) => call<void>('faces_reject', { faceIds, person }),
   facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>
