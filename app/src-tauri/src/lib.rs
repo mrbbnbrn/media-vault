@@ -18,6 +18,8 @@ mod loopback_win;
 mod nocapture;
 mod clip;
 mod config;
+// "3D photos": depth maps for gentle parallax in slideshows (the optional depth pack).
+mod depth;
 // Duel mode: pick the better of two; Elo ratings set the slideshow weights.
 mod duel;
 mod engine;
@@ -104,6 +106,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     upscale::forget_all();
     faces::forget_cache();
     faceid::unload();
+    depth::unload();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -2154,6 +2157,10 @@ pub fn run() {
             rotate_video,
             rotate_undo,
             upscale::upscale_forget,
+            // 3D photos (depth.rs)
+            depth::depth_info,
+            depth::depth_estimate,
+            depth::depth_forget,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")
