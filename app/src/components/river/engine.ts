@@ -5,7 +5,7 @@
 // The maths is river.ts.
 
 import {
-  Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, setDensity, setLayerCount, step, stepFlow, wheelFlow,
+  cardSize, Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, setDensity, setLayerCount, step, stepFlow, wheelFlow,
   type Drifter, type Spawner, type View,
 } from '../../river';
 
@@ -259,8 +259,28 @@ export class RiverEngine {
     g.d.frozen = true;
     g.d.vx = 0;
     g.d.vy = 0;
-    const c = this.cards.get(g.d.key);
-    if (c) c.el.classList.add('rv-frozen');
+    // Frozen pictures come to the front: front-row size, front-row look, around the same middle.
+    const d = g.d;
+    const c = this.cards.get(d.key);
+    if (d.layer !== NEAREST) {
+      const s = cardSize(NEAREST, d.w / d.h, this.view);
+      d.layer = NEAREST;
+      d.w = s.w;
+      d.h = s.h;
+      if (c) {
+        this.lookFor(c, NEAREST);
+        c.el.classList.toggle('rv-video', this.items[d.item]?.kind === 'video');
+        c.el.classList.add('rv-grow');
+        c.el.style.width = `${d.w.toFixed(1)}px`;
+        c.el.style.height = `${d.h.toFixed(1)}px`;
+        window.setTimeout(() => c.el.classList.remove('rv-grow'), 450);
+      }
+    }
+    if (c) {
+      c.el.classList.add('rv-frozen');
+      c.el.classList.toggle('rv-lifted', this.hovered === d);
+      c.el.style.zIndex = String(10 + NEAREST * 10 + 5);
+    }
     this.ev.onFlow('Frozen here · grab it again to let it go', this.target);
     return true;
   }

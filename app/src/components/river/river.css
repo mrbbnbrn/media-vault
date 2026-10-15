@@ -5,6 +5,7 @@
 .river.rv-pointing { cursor: grab; }
 .river.rv-holding, .river.rv-holding * { cursor: grabbing !important; }
 /* Frozen in place: a quiet ring so you can tell. */
+.rv-item.rv-grow { transition: width 0.4s cubic-bezier(.2,.8,.2,1), height 0.4s cubic-bezier(.2,.8,.2,1); }
 .rv-frozen .rv-card { box-shadow: 0 22px 44px -18px rgba(0, 0, 0, 0.85), 0 0 0 1.5px rgba(157, 226, 218, 0.55); }
 
 .rv-sky { position: absolute; inset: 0; pointer-events: none;

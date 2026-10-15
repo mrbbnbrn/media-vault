@@ -337,3 +337,17 @@ describe('holding, flicking and freezing', () => {
     expect(hitTest([near, held], 500, 400, 0, { ...V, reduced: true })?.key).toBe(9001);
   });
 });
+
+describe('the higher limits', () => {
+  it('the current goes up to ×32 and the flow amount to 500%', () => {
+    expect(MAX_FLOW).toBe(32);
+    expect(stepFlow(24, 1)).toBe(32);
+    expect(sliderToFlow(1)).toBeCloseTo(32);
+    setDensity(5);
+    try {
+      expect(fill(V, spawner(600)).length).toBeGreaterThan(40);
+    } finally {
+      setDensity(1);
+    }
+  });
+});

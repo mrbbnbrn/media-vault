@@ -80,7 +80,7 @@ export function setLayerCount(n: number) {
 
 /** How many items flow (the Flow amount slider): 1 = as designed; more = smaller gaps. */
 export const MIN_DENSITY = 0.4;
-export const MAX_DENSITY = 2.5;
+export const MAX_DENSITY = 5;
 let density = 1;
 export function setDensity(d: number) {
   density = Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, d));
@@ -363,7 +363,7 @@ export function hitTest(list: Drifter[], px: number, py: number, t: number, v: V
 }
 
 /** Flow speeds (the wheel moves smoothly between these; ←/→ step through them). */
-export const FLOWS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
+export const FLOWS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8, 12, 16, 24, 32];
 export const MIN_FLOW = FLOWS[0];
 export const MAX_FLOW = FLOWS[FLOWS.length - 1];
 
