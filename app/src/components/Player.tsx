@@ -35,6 +35,7 @@ import {
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
+import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
 import { UpscaleCompare } from './UpscaleCompare';
@@ -128,6 +129,7 @@ export function Player(props: PlayerProps) {
   const [bmOpen, setBmOpen] = useState(false);
   const [bmFocus, setBmFocus] = useState<number | null>(null);
   const [gifMaker, setGifMaker] = useState(false);
+  const [bestFrames, setBestFrames] = useState(false);
   const [help, setHelp] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
   const lastWheel = useRef(0);
@@ -1079,6 +1081,10 @@ export function Player(props: PlayerProps) {
       {inVault && isVideo && (
         <button type="button" className="pbtn" aria-label="Make a GIF" title="Make a GIF from part of this video" onClick={() => { setPaused(true); setGifMaker(true); }}><GifIcon /></button>
       )}
+      {inVault && isVideo && (
+        <button type="button" className="pbtn" aria-label="Find the best frames" title="Find the best frames: the sharpest, best-lit moments, to save as pictures"
+          onClick={() => { setPaused(true); setBestFrames(true); }}><BestFramesIcon /></button>
+      )}
     </>
   );
 
@@ -1148,6 +1154,7 @@ export function Player(props: PlayerProps) {
           { label: 'Rotate left', hint: 'Shift+R', onSelect: () => { setMenu(null); rotate(-1); } },
           ...(rot && inVault ? [{ label: rotSaving ? 'Saving the rotation…' : 'Save rotation', hint: 'keeps it turned', onSelect: () => { setMenu(null); saveTurn(); } }] : []),
           ...(rot ? [{ label: 'Back the right way round', onSelect: () => { setMenu(null); rotate(-rot); } }] : []),
+          ...(isVideo && inVault ? [{ label: 'Find the best frames…', hint: 'save as pictures', sepBefore: true, onSelect: () => { setMenu(null); setPaused(true); setBestFrames(true); } }] : []),
           ...(faceCapable ? [
             { label: 'Show faces', hint: 'for a moment', sepBefore: true, onSelect: () => { setMenu(null); flashFaces(); } },
             { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
@@ -1295,6 +1302,10 @@ export function Player(props: PlayerProps) {
         <GifMakerDialog name={item.name} src={item.src} folder={item.folderId} at={time.at} dur={time.dur} loop={loop}
           videoWidth={videoRef.current?.videoWidth ?? 480} onClose={() => setGifMaker(false)}
           onSaved={(n) => { kickThumbnails(); setFlash(`Saved “${n}” in this folder`); }} />
+      )}
+      {bestFrames && item && isVideo && (
+        // Saved frames can be undone with Ctrl+Z right here, like a saved rotation.
+        <BestFramesDialog item={item} rot={rot} onClose={() => setBestFrames(false)} onMessage={setFlash} onSaved={() => { lastTurn.current = peekUndo(); }} />
       )}
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
     </div>

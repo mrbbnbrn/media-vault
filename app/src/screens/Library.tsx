@@ -36,6 +36,7 @@ import { WhyHere, type WhyQuery } from '../components/WhyHere';
 import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortTree, type FolderSort } from '../foldersort';
 import { useFolderPrefs } from '../folderprefs';
 import { MuseumHost, museumOpen, openFolderMuseum, openMuseum } from '../components/museum/launch';
+import { openFolderRiver, openVaultRiver, RiverHost, RiverIcon, riverOpen } from '../components/river/launch';
 import { copyOut, readPaste, savePastedPicture } from '../winclip';
 import { maybeDragOut, lastDragOutError } from '../dragout';
 import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } from '../viewerflip';
@@ -623,7 +624,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (asleepRef.current || museumOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if (asleepRef.current || museumOpen() || riverOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -1115,6 +1116,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
     } },
     { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
+    { label: 'Discovery river from here', hint: 'drift through it', onSelect: () => openFolderRiver(f, (text) => setNote({ text, at: 0 })) },
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
@@ -2001,6 +2003,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           {sideView({ kind: 'continue' }, 'Continue watching', undefined, <PlayIcon size={rail ? 16 : 13} />)}
           {sideView({ kind: 'timeline' }, 'Timeline', undefined, <ClockIcon size={rail ? 16 : 14} />)}
           {sideView({ kind: 'memories' }, 'Memories', undefined, <SparkleIcon size={rail ? 16 : 14} />)}
+          {sideView({ kind: 'folders' }, 'Discovery river', undefined, <RiverIcon size={rail ? 16 : 14} />, () => openVaultRiver((text) => setNote({ text, at: 0 })))}
           {sideView({ kind: 'people' }, 'People', undefined, <FaceIcon size={rail ? 16 : 14} />)}
           {sideView({ kind: 'lookalikes', folder: null }, 'Look-alikes', undefined, <TwinIcon size={rail ? 16 : 14} />)}
           {sideView({ kind: 'folders' }, 'Tags', undefined, <TagIcon size={rail ? 16 : 14} />, () => setDialog({ t: 'tags' }))}
@@ -2523,6 +2526,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
       {dialog?.t === 'why' && <WhyHere item={dialog.item} query={dialog.query} kind={kind} onClose={() => setDialog(null)} />}
       <MuseumHost nav={nav} view={view} />
+      <RiverHost nav={nav} />
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (
         <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />

@@ -1,0 +1,26 @@
+/* "Find the best frames…" (BestFrames.tsx). */
+.modal:has(.bf-grid) { max-width: 860px; }
+.bf-intro { margin: 0; font-size: 13px; line-height: 1.45; }
+.bf-wait > div { width: 30% !important; animation: bf-wait 1.2s ease-in-out infinite alternate; }
+@keyframes bf-wait { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
+.bf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 10px; }
+.bf-frame { position: relative; display: block; aspect-ratio: 16 / 10; border-radius: 10px; overflow: hidden; background: var(--raised, #1a1f22); cursor: pointer;
+  outline: 2px solid transparent; outline-offset: -2px; transition: outline-color 0.15s ease, transform 0.15s ease; animation: bf-in 0.3s ease-out both; }
+.bf-frame:hover { transform: translateY(-1px); }
+.bf-frame.on { outline-color: var(--accent); }
+.bf-frame img { width: 100%; height: 100%; object-fit: cover; display: block; transition: opacity 0.15s ease, filter 0.15s ease; }
+.bf-frame:not(.on) img { opacity: 0.45; filter: saturate(0.6); }
+.bf-frame input { position: absolute; opacity: 0; pointer-events: none; }
+.bf-frame:has(input:focus-visible) { outline-color: var(--accent-text); }
+.bf-tick { position: absolute; top: 7px; right: 7px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--on-accent); background: rgba(0, 0, 0, 0.45); border: 1.5px solid rgba(255, 255, 255, 0.7); }
+.bf-frame.on .bf-tick { background: var(--accent); border-color: var(--accent); }
+.bf-time { position: absolute; left: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 11.5px; }
+.bf-face { position: absolute; right: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: var(--accent-text); font-size: 11px; }
+.bf-blank { display: block; width: 100%; height: 100%; }
+.bf-ghost { cursor: default; animation: bf-pulse 1.4s ease-in-out infinite alternate; }
+.bf-ghost:hover { transform: none; }
+@keyframes bf-in { from { opacity: 0; transform: scale(0.97); } }
+@keyframes bf-pulse { from { opacity: 0.35; } to { opacity: 0.7; } }
+.bf-actions { gap: 8px; align-items: center; }
+@media (prefers-reduced-motion: reduce) { .bf-frame, .bf-ghost, .bf-wait > div { animation: none; } }
