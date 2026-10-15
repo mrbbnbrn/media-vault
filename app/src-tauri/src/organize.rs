@@ -267,11 +267,14 @@ fn copy_folder(
             .map_err(e)?;
         (items, kids)
     };
+    let mut copied = Vec::with_capacity(items.len());
     for id in items {
-        copy_one(s, id, Some(new_f))?;
+        copied.push((id, copy_one(s, id, Some(new_f))?));
         *done += 1;
         progress(*done, total);
     }
+    // The copy keeps the banner (its own copy of the picture when that was copied too).
+    crate::banner::copy(&s.db(), f, new_f, &copied)?;
     for k in kids {
         copy_folder(s, k, Some(new_f), out, done, total, progress)?;
     }

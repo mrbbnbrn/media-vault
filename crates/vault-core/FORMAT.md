@@ -157,6 +157,8 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   seconds made of short pieces spread through the video (WebM/VP9 or MP4/H.264, recognised by
   its first bytes), stored like a thumbnail. NULL = not made yet, '' = couldn't be made. Can be
   deleted; the app makes it again.
+- `folders.banner_media_id`, `folders.banner_y` (v15) — a folder's banner: the item shown wide at the
+  top of the folder and where in it to look (0 = top, 1 = bottom); NULL = no banner.
 - `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512
   little-endian float32 values (each unit length, CLIP ViT-B/32 space); videos have the
   thumbnail plus moments from their preview clip

@@ -1,0 +1,34 @@
+/* Folder banner (FolderBanner.tsx): full width at the top of the folder, fading into the page. */
+.fbanner { --bs: 0px; --bp: 0; position: relative; flex: none; height: clamp(180px, 21vw, 236px); margin: -18px -22px -4px; overflow: hidden; isolation: isolate; background: #0b0c0e; user-select: none; }
+/* After a notice at the top of the page it sits in the page like a card. */
+.lib-main > * + .fbanner { margin: 0; border-radius: 12px; }
+.fbanner-media { position: absolute; inset: 0; transform: translate3d(0, calc(var(--bs) * 0.42), 0) scale(calc(1.02 + var(--bp) * 0.06)); transform-origin: 50% 0; will-change: transform; }
+.fbanner-media img, .fbanner-media video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+/* Pictures: the thumbnail, softened, until the full picture is decoded. */
+.fbanner[data-kind='image']:not(.full) .fbanner-still { filter: blur(10px) saturate(1.1); transform: scale(1.08); }
+.fbanner-full { opacity: 0; transition: opacity 0.6s ease; }
+.fbanner.full .fbanner-full { opacity: 1; }
+.fbanner.full[data-kind='image'] .fbanner-still { visibility: hidden; transition: visibility 0s 0.6s; }
+.fbanner-shade { position: absolute; inset: 0; pointer-events: none;
+  background:
+    linear-gradient(to bottom, rgba(0, 0, 0, 0.32) 0%, transparent 26%, transparent 42%, color-mix(in srgb, var(--ground) 62%, transparent) 76%, var(--ground) 100%),
+    linear-gradient(100deg, rgba(0, 0, 0, 0.5) 0%, rgba(0, 0, 0, 0.18) 42%, transparent 70%); }
+.fbanner-text { position: absolute; left: 28px; right: 300px; bottom: 14px; display: flex; flex-direction: column; gap: 4px; transform: translate3d(0, calc(var(--bs) * 0.18), 0); opacity: calc(1 - var(--bp) * 1.5); }
+.fbanner-text h1 { margin: 0; font-size: 30px; font-weight: 700; letter-spacing: -0.01em; color: #f4f2ee; text-shadow: 0 2px 14px rgba(0, 0, 0, 0.55); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fbanner-text h1 .femoji { font-size: 26px; margin-right: 10px; }
+.fbanner-text p { margin: 0; max-width: 720px; color: #dedbd5; font-size: 14px; line-height: 1.45; text-shadow: 0 1px 8px rgba(0, 0, 0, 0.6);
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.fbanner-tools, .fbanner-edit { position: absolute; bottom: 16px; right: 18px; display: flex; align-items: center; gap: 6px; }
+.fbanner-tools { opacity: 0; transform: translateY(4px); transition: opacity 0.18s, transform 0.18s; }
+.fbanner:hover .fbanner-tools, .fbanner-tools:focus-within { opacity: 1; transform: none; }
+.fbanner-tools .btn.glass, .fbanner-edit .btn.glass { background: rgba(10, 12, 14, 0.55); backdrop-filter: blur(8px); }
+.fbanner-tools .btn.glass:hover, .fbanner-edit .btn.glass:hover { background: rgba(10, 12, 14, 0.78); }
+/* Choosing what shows: drag up or down. */
+.fbanner.editing { cursor: ns-resize; outline: 2px solid var(--accent); outline-offset: -2px; }
+.fbanner.editing .fbanner-media { transform: none; }
+.fbanner.editing .fbanner-text { opacity: 0.55; }
+.fbanner.moving { cursor: grabbing; }
+.fbanner-edit { padding: 5px 5px 5px 12px; border-radius: 10px; background: rgba(10, 12, 14, 0.72); backdrop-filter: blur(8px); color: #f0eee9; font-size: 12.5px; cursor: default; }
+.fbanner-edit span { margin-right: 4px; }
+.banner-grid .cover-pick { aspect-ratio: 16 / 9; }
+@media (prefers-reduced-motion: reduce) { .fbanner-media, .fbanner-text { transform: none; } .fbanner-full { transition: none; } }

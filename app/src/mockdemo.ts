@@ -59,6 +59,9 @@ const items: DItem[] = [];
 }
 const ui = new Map<string, string>();
 let nextFolder = 100;
+// Folder banners and notes (one sample banner on "Antalya 2023").
+const banners = new Map<number, { media: number; y: number }>([[5, { media: items.find((i) => i.folderId === 5 && i.kind === 'image')!.id, y: 0.42 }]]);
+const notes = new Map<number, string>([[5, 'Two weeks by the sea in August: boat trips, old town walks and far too much baklava.']]);
 
 const kidsOf = (id: number | null) => folders.filter((f) => f.parentId === id);
 function below(id: number): number[] {
@@ -88,7 +91,7 @@ function cards(): FolderCard[] {
         id: f.id, name: f.name, parentId: f.parentId, path, depth: path.length, items: inside.length,
         directItems: items.filter((i) => i.folderId === f.id).length, subfolders: kidsOf(f.id).length,
         cover, coverKind: cover ? 'image' : null, tags: f.tags, pinned: f.pinned, color: null, emoji: null, person: f.person,
-        samples: inside.slice(1, 3).map((i) => i.id), note: null, createdAt: f.createdAt, bytes: inside.reduce((a, i) => a + i.size, 0),
+        samples: inside.slice(1, 3).map((i) => i.id), note: notes.get(f.id) ?? null, createdAt: f.createdAt, bytes: inside.reduce((a, i) => a + i.size, 0),
       });
       walk(f.id, [...path, { id: f.id, name: f.name }]);
     }
@@ -234,6 +237,20 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     case 'set_favourite':
       for (const it of items) if ((a.ids as number[]).includes(it.id)) it.favourite = !!a.on;
       return;
+    case 'folder_banner': {
+      const b = banners.get(a.folder as number);
+      const it = b && items.find((i) => i.id === b.media && i.deletedAt == null);
+      return b && it ? { folder: a.folder, media: it.id, kind: it.kind, y: b.y, width: it.width, height: it.height } : null;
+    }
+    case 'set_banner':
+      if (a.media == null) banners.delete(a.folder as number);
+      else banners.set(a.folder as number, { media: a.media as number, y: Math.min(1, Math.max(0, (a.y as number | null) ?? 0.5)) });
+      return;
+    case 'set_note':
+      if (!a.folder) return NOT_DEMO;
+      if (a.note) notes.set(a.id as number, String(a.note));
+      else notes.delete(a.id as number);
+      return a.note ?? null;
     case 'ui_get':
       return ui.get(a.key as string) ?? null;
     case 'ui_set':
