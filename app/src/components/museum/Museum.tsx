@@ -112,8 +112,7 @@ export default function Museum(props: MuseumProps) {
   const dropRenderer = () => {
     const r = renderer.current;
     if (!r) return;
-    r.dispose();
-    r.forceContextLoss();
+    MuseumEngine.releaseRenderer(r);
     renderer.current = null;
   };
   const props_ = useRef(props);
