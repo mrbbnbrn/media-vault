@@ -14,11 +14,13 @@ permissions:
   contents: write
 
 jobs:
+  # A push whose last commit message contains [quick] (small fixes) skips the
+  # slow Windows test run; the Linux tests and the Windows package still run.
   test:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: ${{ contains(github.event.head_commit.message, '[quick]') && fromJSON('["ubuntu-latest"]') || fromJSON('["windows-latest", "ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
