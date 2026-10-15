@@ -33,6 +33,7 @@ const folders: DFolder[] = [
 
 const WORDS = ['sunset', 'beach', 'balloon', 'cave', 'boat', 'dinner', 'cat', 'dog', 'portrait', 'market', 'İstanbul', 'köprü'];
 const items: DItem[] = [];
+const rivervideos = typeof location !== 'undefined' && /[?&]rivervideos\b/.test(location.search);
 {
   // [folder, how many, tags, faces]
   const plan: [number | null, number, string[], number[]][] = [
@@ -50,7 +51,8 @@ const items: DItem[] = [];
         id, kind, name: `${w} ${String(id).padStart(3, '0')}.${kind === 'video' ? 'mp4' : kind === 'gif' ? 'gif' : 'jpg'}`, ext: kind === 'video' ? 'mp4' : 'jpg',
         size: 200_000 + ((id * 7919) % 50) * 90_000, width: 1600, height: id % 3 ? 1200 : 2000, durationMs: kind === 'video' ? 42_000 : null,
         favourite: id % 5 === 0, weight: 1, thumb: 'ok', importedAt: T0 + id * DAY, folderId: folder, takenAt: T0 + id * DAY, views: id % 4,
-        deletedAt: null, preview: false, copyOf: null, linked: false, note: id % 13 === 0 ? 'the sunset boat trip' : null, resumeMs: null,
+        // `&rivervideos`: demo videos say they have a frame strip and a tiny clip (to try the river's video previews).
+        deletedAt: null, preview: kind === 'video' && rivervideos, tiny: kind === 'video' && rivervideos, copyOf: null, linked: false, note: id % 13 === 0 ? 'the sunset boat trip' : null, resumeMs: null,
         tags: [...tags, ...(id % 6 === 0 ? ['sunset'] : [])], faces: f,
       });
       id++;
@@ -206,6 +208,15 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
         unknown: [],
         status: { queued: 0, scanned: items.length, faces: 40, failed: 0 },
       };
+    }
+    case 'river_faces': {
+      // One face per person in each picture they are in; sizes vary so the "Smallest face" slider has something to do.
+      const want = (a.people as number[]).length ? (a.people as number[]) : folders.filter((f) => f.person).map((f) => f.id);
+      return items.filter((i) => i.deletedAt == null && i.kind !== 'video').flatMap((it) => want.filter((p) => isPerson(it, p)).map((p, k) => {
+        const w = 0.08 + ((it.id * 13 + p * 7) % 17) / 100;
+        const h = (w * (it.width ?? 1600)) / (it.height ?? 1200);
+        return { id: it.id * 10 + p, media: it.id, person: p, x: 0.15 + k * 0.4 + ((it.id * 7) % 10) / 100, y: 0.12 + ((it.id * 3) % 20) / 100, w, h, frameMs: 0, px: Math.round(h * (it.height ?? 1200)), aspect: (it.width ?? 1600) / (it.height ?? 1200) };
+      }));
     }
     case 'faces_of_many':
     case 'similar_needed':

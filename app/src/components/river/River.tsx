@@ -5,11 +5,18 @@
 // for the mini player; wheel or ←/→ for a faster or slower current; Space
 // pauses; Esc leaves. Speed, flow amount and layers: the bar that appears at
 // the bottom when the mouse is there. The drawing is engine.ts, the maths river.ts.
+//
+// The bar also switches to the faces river: round bubbles of the faces of
+// known people (everyone, or the people picked), each cut out of its photo on
+// screen. Clicking a face opens its photo.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { DEFAULT_LAYERS, flowText, flowToSlider, MAX_DENSITY, MAX_LAYERS, MIN_DENSITY, MIN_LAYERS, sliderToFlow } from '../../river';
+import { bigEnough, FACE_MIN_MAX, faceCountText, peopleText, type RiverFace, type RiverMode } from '../../riverplay';
+import { api, type FolderCard } from '../../api';
 import { saveViewerPrefs, viewerPrefs } from '../../prefs';
 import { CloseIcon } from '../Icons';
+import { RoundCover } from '../RoundCover';
 import { grainTile, RiverEngine, type RiverItem, type Sources } from './engine';
 import './river.css';
 
@@ -29,6 +36,9 @@ export default function River(props: {
   onOpen: (index: number) => void;
   /** Middle-click: open this item in the mini player. */
   onMini?: (index: number) => void;
+  /** Faces river: a face was clicked (its photo `media`; `all`: the photos behind every face drifting). */
+  onOpenPhoto?: (media: number, all: number[]) => void;
+  onMiniPhoto?: (media: number, all: number[]) => void;
   onClose: () => void;
 }) {
   const root = useRef<HTMLDivElement>(null);
@@ -46,6 +56,17 @@ export default function River(props: {
   const [density, setDensityValue] = useState(saved.riverDensity ?? 1);
   const [layers, setLayersValue] = useState(saved.riverLayers ?? DEFAULT_LAYERS);
   const [bar, setBar] = useState(false);
+  // Pictures or faces, whose faces, and the smallest face (remembered too).
+  const [mode, setMode] = useState<RiverMode>(saved.riverMode === 'faces' ? 'faces' : 'pictures');
+  const [people, setPeople] = useState<number[]>(saved.riverPeople ?? []);
+  const [faceMin, setFaceMin] = useState(saved.riverFaceMin ?? 0);
+  /** The smallest face the river uses (follows the slider once it rests, as the river starts over). */
+  const [faceMinUsed, setFaceMinUsed] = useState(faceMin);
+  const [faces, setFaces] = useState<RiverFace[] | null>(null);
+  const [persons, setPersons] = useState<FolderCard[] | null>(null);
+  const [picker, setPicker] = useState(false);
+  const pickerRef = useRef(false);
+  pickerRef.current = picker;
   const overBar = useRef(false);
   const barTimer = useRef(0);
   const saveTimer = useRef(0);
@@ -71,11 +92,62 @@ export default function River(props: {
     if (Object.keys(pending.current).length) saveViewerPrefs(pending.current);
   }, []);
 
+  // Person folders (for names and the picker) and the faces of the people picked.
+  useEffect(() => {
+    if (mode !== 'faces' && !picker) return;
+    let live = true;
+    api.folders().then((fs) => {
+      if (!live) return;
+      const ps = fs.filter((f) => f.person);
+      setPersons(ps);
+      // People whose folder has gone are let go of (else the river would quietly show nobody).
+      setPeople((now) => {
+        const keep = now.filter((id) => ps.some((f) => f.id === id));
+        return keep.length === now.length ? now : keep;
+      });
+    }).catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [mode, picker]);
+  const peopleKey = people.join(',');
+  useEffect(() => {
+    if (mode !== 'faces') return;
+    let live = true;
+    // The same faces again (back from pictures): the river carries on instead of starting over.
+    const same = (a: RiverFace[] | null, b: RiverFace[]) => !!a && a.length === b.length && a.every((f, i) => f.id === b[i].id && f.px === b[i].px);
+    api.riverFaces(people).then((f) => live && setFaces((now) => (same(now, f) ? now : f))).catch(() => live && setFaces([]));
+    return () => {
+      live = false;
+    };
+  }, [mode, peopleKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const t = window.setTimeout(() => setFaceMinUsed(faceMin), 350);
+    return () => window.clearTimeout(t);
+  }, [faceMin]);
+  // Names change rarely; the folder list is looked at again whenever the picker opens.
+  const namesKey = persons ? persons.map((f) => `${f.id}:${f.name}`).join('|') : null;
+  const names = useMemo(() => new Map((persons ?? []).map((f) => [f.id, f.name])), [namesKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const faceItems = useMemo<RiverItem[]>(() => (faces && namesKey != null ? bigEnough(faces, faceMinUsed) : []).map((f) => ({
+    id: f.id, kind: 'image', name: names.get(f.person) ?? '', aspect: 1, preview: false, thumb: true,
+    face: { media: f.media, x: f.x, y: f.y, w: f.w, h: f.h },
+  })), [faces, faceMinUsed, names]);
+  const shownCount = useMemo(() => (faces ? bigEnough(faces, faceMin).length : 0), [faces, faceMin]);
+  // What drifts now (the engine starts over when it changes).
+  const drifting = mode === 'faces' ? faceItems : props.items;
+  const list = useRef(drifting);
+  list.current = drifting;
+  const photos = () => [...new Set(list.current.map((it) => it.face?.media ?? it.id))];
+
   useEffect(() => {
     if (!root.current || !stage.current || !canvas.current) return;
     const start = viewerPrefs();
-    const e = new RiverEngine(root.current, stage.current, canvas.current, props.items, props.sources, {
-      onOpen: (i) => p.current.onOpen(i),
+    const e = new RiverEngine(root.current, stage.current, canvas.current, list.current, props.sources, {
+      onOpen: (i) => {
+        const f = list.current[i]?.face;
+        if (f) p.current.onOpenPhoto?.(f.media, photos());
+        else p.current.onOpen(i);
+      },
       onFlow: (text, f) => {
         setNote({ text, at: Date.now() });
         if (text !== 'Paused') {
@@ -97,6 +169,11 @@ export default function River(props: {
     engine.current?.setCovered(props.covered);
   }, [props.covered]);
 
+  // Pictures <-> faces, other people, another smallest face: the river starts over with them.
+  useEffect(() => {
+    engine.current?.setItems(drifting);
+  }, [drifting]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // The flow note fades after a moment; the hint after a while.
   useEffect(() => {
     if (!note) return;
@@ -116,7 +193,8 @@ export default function River(props: {
       const en = engine.current;
       if (!en) return;
       const k = e.key;
-      if (k === 'Escape' || k === 'Backspace') p.current.onClose();
+      if (k === 'Escape' && pickerRef.current) setPicker(false);
+      else if (k === 'Escape' || k === 'Backspace') p.current.onClose();
       else if (k === ' ') en.togglePause();
       else if (k === 'ArrowRight' || k === 'ArrowUp') en.faster(1);
       else if (k === 'ArrowLeft' || k === 'ArrowDown') en.faster(-1);
@@ -170,7 +248,9 @@ export default function River(props: {
           // Middle-click: the mini player (no auto-scroll circle).
           e.preventDefault();
           const i = en.itemAt(q.x, q.y);
-          if (i != null) p.current.onMini?.(i);
+          const f = i != null ? list.current[i]?.face : undefined;
+          if (f) p.current.onMiniPhoto?.(f.media, photos());
+          else if (i != null) p.current.onMini?.(i);
           return;
         }
         if (e.button !== 0) return;
@@ -198,14 +278,21 @@ export default function River(props: {
       {grain && <div className="rv-grain" aria-hidden="true" style={{ backgroundImage: `url(${grain})` }} />}
       <div className="rv-top">
         <div className="rv-title">
-          <span className="rv-kicker">{props.kicker}</span>
-          <b>{props.title}</b>
+          <span className="rv-kicker">{mode === 'faces' ? 'Faces river' : props.kicker}</span>
+          <b>{mode === 'faces' ? peopleText(people, names) : props.title}</b>
         </div>
         <button type="button" className="btn btn-sm rv-leave" onClick={props.onClose} title="Leave the river (Esc)">
           <CloseIcon size={14} /> Leave
         </button>
       </div>
       {note && <div key={note.at} className="rv-note" role="status">{note.text}</div>}
+      {mode === 'faces' && faces && persons && !faceItems.length && (
+        <div className="rv-empty" role="status">
+          {faces.length ? 'No faces are this big. Move "Smallest face" to the left to see more.' : people.length
+            ? 'No named faces of these people yet.'
+            : 'No named faces yet. Name people on the People page and their faces float by here.'}
+        </div>
+      )}
       <div className={`rv-hint${hint && !bar ? ' on' : ''}`}>
         Click to open · hold and flick · right-click while holding freezes · middle-click: mini player · settings at the bottom · Esc leaves
       </div>
@@ -217,8 +304,53 @@ export default function River(props: {
         }}
         onPointerLeave={() => {
           overBar.current = false;
-          barTimer.current = window.setTimeout(() => setBar(false), BAR_IDLE_MS);
+          if (!pickerRef.current) barTimer.current = window.setTimeout(() => setBar(false), BAR_IDLE_MS);
         }}>
+        <div className="rv-set rv-modes">
+          <span>Show</span>
+          <div className="rv-seg" role="radiogroup" aria-label="What the river shows">
+            {(['pictures', 'faces'] as const).map((m) => (
+              <button key={m} type="button" role="radio" aria-checked={mode === m} className={mode === m ? 'on' : ''}
+                title={m === 'faces' ? 'Round faces of the people you named' : 'Pictures and videos'}
+                onClick={() => {
+                  setMode(m);
+                  setPicker(false);
+                  rememberSoon({ riverMode: m });
+                }}>
+                {m === 'pictures' ? 'Pictures' : 'Faces'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {mode === 'faces' && (
+          <div className="rv-set rv-people">
+            <span>People</span>
+            <button type="button" className="rv-pick" aria-haspopup="true" aria-expanded={picker} onClick={() => setPicker((o) => !o)}
+              title="Whose faces float by">
+              {peopleText(people, names)} <span aria-hidden="true">▾</span>
+            </button>
+            {picker && (
+              <PeoplePicker persons={persons ?? []} chosen={people}
+                onChange={(next) => {
+                  setPeople(next);
+                  rememberSoon({ riverPeople: next });
+                }}
+                onClose={() => setPicker(false)} />
+            )}
+          </div>
+        )}
+        {mode === 'faces' && (
+          <label className="rv-set" title="Leave out faces smaller than this in the original picture (small faces are blurry up close)">
+            <span>Smallest face <b>{faceMin ? `${faceMin} px` : 'Any'}</b></span>
+            <input type="range" min={0} max={FACE_MIN_MAX} step={10} value={faceMin} aria-label="Smallest face"
+              onChange={(e) => {
+                const n = Number(e.target.value);
+                setFaceMin(n);
+                rememberSoon({ riverFaceMin: n });
+              }} />
+            <span className="rv-ends"><i>{faces ? faceCountText(shownCount, faces.length) : 'Looking for faces…'}</i></span>
+          </label>
+        )}
         <label className="rv-set" title="How fast the current flows (the mouse wheel changes it too)">
           <span>Speed <b>{flowText(flow)}</b></span>
           <input type="range" min={0} max={1} step={0.005} value={flowToSlider(flow)} aria-label="River speed"
@@ -253,6 +385,40 @@ export default function River(props: {
           <span className="rv-ends"><i>Few</i><i>Crowded</i></span>
         </label>
       </div>
+    </div>
+  );
+}
+
+/** Everyone, or some people: a small list of person folders with their round covers. */
+function PeoplePicker(props: { persons: FolderCard[]; chosen: number[]; onChange: (next: number[]) => void; onClose: () => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  // A click anywhere else closes it.
+  useEffect(() => {
+    const away = (e: PointerEvent) => {
+      const t = e.target as HTMLElement;
+      if (!box.current?.contains(t) && !t.closest('.rv-pick')) props.onClose();
+    };
+    window.addEventListener('pointerdown', away, true);
+    return () => window.removeEventListener('pointerdown', away, true);
+  }, [props]);
+  const chosen = new Set(props.chosen);
+  const sorted = [...props.persons].sort((a, b) => a.name.localeCompare(b.name));
+  return (
+    <div ref={box} className="rv-pop" role="listbox" aria-multiselectable="true" aria-label="People">
+      <button type="button" role="option" aria-selected={!chosen.size} className={`rv-pop-row${!chosen.size ? ' on' : ''}`} onClick={() => props.onChange([])}>
+        <span className="rv-pop-all" aria-hidden="true">∞</span>
+        <span className="rv-pop-name">Everyone</span>
+        <span className="rv-pop-tick" aria-hidden="true">{!chosen.size ? '✓' : ''}</span>
+      </button>
+      {sorted.map((f) => (
+        <button key={f.id} type="button" role="option" aria-selected={chosen.has(f.id)} className={`rv-pop-row${chosen.has(f.id) ? ' on' : ''}`}
+          onClick={() => props.onChange(chosen.has(f.id) ? props.chosen.filter((x) => x !== f.id) : [...props.chosen, f.id])}>
+          {f.cover != null ? <RoundCover folder={f} size={26} /> : <span className="rv-pop-all" aria-hidden="true">{f.name.slice(0, 1)}</span>}
+          <span className="rv-pop-name">{f.name}</span>
+          <span className="rv-pop-tick" aria-hidden="true">{chosen.has(f.id) ? '✓' : ''}</span>
+        </button>
+      ))}
+      {!sorted.length && <div className="rv-pop-none">No people yet. Mark a folder as a person to see them here.</div>}
     </div>
   );
 }

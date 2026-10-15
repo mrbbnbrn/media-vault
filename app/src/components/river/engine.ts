@@ -3,11 +3,25 @@
 // canvas, and the mouse handled by hit-testing the moving cards. Cards are
 // reused as they leave, so it can run for hours with the same few elements.
 // The maths is river.ts.
+//
+// Videos move too: the two nearest depths play their tiny clip (the real
+// video while the PC keeps up), further depths a flip-book; which card shows
+// what is riverplay.ts. Players come from a reused pool (videopool.ts) and
+// rest while the viewer covers the river or the window is hidden. In the faces
+// river, cards are round bubbles cut out of the picture on screen (nothing is
+// stored).
 
 import {
   cardSize, Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, setDensity, setLayerCount, step, stepFlow, wheelFlow,
   type Drifter, type Spawner, type View,
 } from '../../river';
+import { riverPreviews, type RiverCardWant } from '../../riverplay';
+import { Budget, type Layer } from '../../previewplan';
+import { PlayerPool } from '../../videopool';
+import { CLIP_FPS, FRAMES, frameTimes, framePosition, tinyToSource } from '../../previews';
+import { coverFit } from '../../facealign';
+import { isWindowResting, onWindowResting } from '../../previewgate';
+import { makePlayer } from '../VideoPreview';
 
 export interface RiverItem {
   id: number;
@@ -15,16 +29,22 @@ export interface RiverItem {
   name: string;
   /** Width / height when known. */
   aspect: number | null;
-  /** Videos: a short preview clip exists. */
+  /** Videos: a frame strip (flip-book) exists. */
   preview: boolean;
   /** A thumbnail exists. */
   thumb: boolean;
+  /** Videos: a tiny silent clip exists. */
+  tiny?: boolean;
+  durationMs?: number | null;
+  /** Faces river: the face to cut out of picture `media` (box in parts of the picture). */
+  face?: { media: number; x: number; y: number; w: number; h: number };
 }
 
 export interface Sources {
   thumb: (id: number) => string;
   full: (id: number) => string;
   preview: (id: number) => string;
+  tiny: (id: number) => string;
 }
 
 export interface EngineEvents {
@@ -54,14 +74,26 @@ interface Card {
   shownOpacity: number;
   lift: number;
   full: boolean;
-  video: HTMLVideoElement | null;
+  /** What this video card shows now (riverplay.ts). */
+  want: Layer;
+  /** The flip-book (made when first needed, kept with the card). */
+  flip: HTMLDivElement | null;
+  /** The player on screen and the one fading in over it (tiny <-> real). */
+  player: HTMLVideoElement | null;
+  next: HTMLVideoElement | null;
 }
 
 const IDLE_MS = 2600;
+/** How often the river looks again at which cards play what (s). */
+const PLAN_EVERY = 0.5;
+/** How often it looks at how smoothly the real videos play (ms). */
+const BUDGET_EVERY = 2000;
+/** A player that was replaced fades out this long before it is handed back. */
+const FADE_MS = 650;
 
 export class RiverEngine {
   private readonly view: View;
-  private readonly deck: Deck;
+  private deck: Deck;
   private drifters: Drifter[] = [];
   private cards = new Map<number, Card>();
   private pool: Card[][] = LAYERS.map(() => []);
@@ -84,18 +116,41 @@ export class RiverEngine {
   private readonly onResize = () => this.resize();
   private aspects = new Map<number, number>();
   private videoTimer = 0;
+  /** The hovered video, once the mouse has stayed on it a moment: it plays the real video. */
+  private hoverPlays: Drifter | null = null;
   // The title stays a little longer at the start.
   private lastMove = performance.now() + 3000;
   private stats = { frames: 0, maxCards: 0, ms: 0 };
   /** The card held by the mouse, where on it it was taken, and whether it has been moved yet. */
   private grab: { d: Drifter; dx: number; dy: number; sx: number; sy: number; moved: boolean } | null = null;
   private readonly momentum = new Momentum();
+  // Video players: a pool of its own (the grid's rests while the river is open), every one ever made
+  // (to let go of them all at the end), and the ones fading out.
+  private readonly made = new Set<HTMLVideoElement>();
+  private readonly players = new PlayerPool<HTMLVideoElement>(() => {
+    const v = makePlayer();
+    this.made.add(v);
+    return v;
+  });
+  private leaving = new Set<HTMLVideoElement>();
+  /** Takes off a player's listeners for the card it was started for. */
+  private offs = new WeakMap<HTMLVideoElement, () => void>();
+  private flips = new Set<HTMLDivElement>();
+  private flipFrame = -1;
+  private sinceReplan = 0;
+  private windowResting = isWindowResting();
+  private readonly offWindow: () => void;
+  // How many cards may play the real video (grows while the PC keeps up, as in the grid).
+  private readonly budget = new Budget(2);
+  private realBudget = 2;
+  private watch = { start: performance.now(), frames: 0, slow: 0, sum: 0 };
+  private quality = new WeakMap<HTMLVideoElement, { total: number; dropped: number }>();
 
   constructor(
     private readonly root: HTMLElement,
     private readonly stage: HTMLElement,
     private readonly canvas: HTMLCanvasElement,
-    private readonly items: RiverItem[],
+    private items: RiverItem[],
     private readonly src: Sources,
     private readonly ev: EngineEvents,
     reduced: boolean,
@@ -113,7 +168,8 @@ export class RiverEngine {
       pick: () => {
         const i = this.deck.next(showing());
         if (i < 0) return null;
-        const it = items[i];
+        const it = this.items[i];
+        if (it.face) return { item: i, aspect: 1 };
         return { item: i, aspect: this.aspects.get(it.id) ?? it.aspect ?? 4 / 3 };
       },
     };
@@ -122,7 +178,12 @@ export class RiverEngine {
     this.resize();
     this.drifters = fill(this.view, this.spawner);
     for (const d of this.drifters) this.attach(d);
+    this.plan();
     window.addEventListener('resize', this.onResize);
+    this.offWindow = onWindowResting((r) => {
+      this.windowResting = r;
+      this.rest();
+    });
     // The UI tests look in (development only).
     if (import.meta.env.DEV) (window as unknown as { __river?: unknown }).__river = this;
   }
@@ -148,6 +209,32 @@ export class RiverEngine {
       this.mouse = null;
       this.setHover(null);
     } else this.start();
+    this.rest();
+  }
+
+  /** Players pause while nobody can see them (viewer on top, window hidden or minimised). */
+  private rest() {
+    const r = this.covered || this.windowResting;
+    if (r === this.players.isPaused) return;
+    if (r) this.players.pauseAll();
+    else this.players.resumeAll();
+  }
+
+  /** Other things to drift (pictures or faces, other people): the river starts over with them. */
+  setItems(items: RiverItem[]) {
+    if (items === this.items) return;
+    this.grab = null;
+    this.root.classList.remove('rv-holding');
+    this.setHover(null);
+    for (const d of this.drifters) this.detach(d);
+    this.items = items;
+    this.deck = new Deck(items.length);
+    this.drifters = fill(this.view, this.spawner);
+    for (const d of this.drifters) {
+      d.shown = 0;
+      this.attach(d);
+    }
+    this.plan();
   }
 
   togglePause() {
@@ -192,6 +279,7 @@ export class RiverEngine {
       d.shown = 0;
       this.attach(d);
     }
+    this.plan();
   }
 
   pointer(x: number | null, y = 0) {
@@ -268,8 +356,7 @@ export class RiverEngine {
       d.w = s.w;
       d.h = s.h;
       if (c) {
-        this.lookFor(c, NEAREST);
-        c.el.classList.toggle('rv-video', this.items[d.item]?.kind === 'video');
+        this.lookFor(c, NEAREST, this.items[d.item]);
         c.el.classList.add('rv-grow');
         c.el.style.width = `${d.w.toFixed(1)}px`;
         c.el.style.height = `${d.h.toFixed(1)}px`;
@@ -282,6 +369,7 @@ export class RiverEngine {
       c.el.style.zIndex = String(10 + NEAREST * 10 + 5);
     }
     this.ev.onFlow('Frozen here · grab it again to let it go', this.target);
+    this.plan();
     return true;
   }
 
@@ -291,7 +379,17 @@ export class RiverEngine {
 
   /** For the UI tests. */
   info() {
-    return { cards: this.drifters.length, elements: this.stage.childElementCount, pool: this.pool.reduce((s, p) => s + p.length, 0), flow: this.flow, ...this.stats, msPerFrame: this.stats.ms / Math.max(1, this.stats.frames), hovered: this.hovered ? this.items[this.hovered.item].name : null };
+    const shows: Record<string, number> = {};
+    for (const d of this.drifters) {
+      const c = this.cards.get(d.key);
+      if (c && isVideo(this.items[d.item])) shows[c.want] = (shows[c.want] ?? 0) + 1;
+    }
+    return {
+      cards: this.drifters.length, elements: this.stage.childElementCount, pool: this.pool.reduce((s, p) => s + p.length, 0), flow: this.flow, ...this.stats,
+      msPerFrame: this.stats.ms / Math.max(1, this.stats.frames), hovered: this.hovered ? this.items[this.hovered.item].name : null,
+      faces: this.items.filter((i) => i.face).length, shows,
+      players: { ...this.players.stats, made: this.made.size, leaving: this.leaving.size, paused: this.players.isPaused, realBudget: this.realBudget },
+    };
   }
 
   /** Jump ahead (UI tests: many minutes of drifting in a moment). */
@@ -303,7 +401,19 @@ export class RiverEngine {
     this.stop();
     window.clearTimeout(this.videoTimer);
     window.removeEventListener('resize', this.onResize);
+    this.offWindow();
     for (const c of this.cards.values()) this.stopVideo(c);
+    for (const v of this.leaving) this.players.release(v);
+    this.leaving.clear();
+    // Nothing kept loaded once the river is gone.
+    for (const v of this.made) {
+      v.pause();
+      v.removeAttribute('src');
+      v.load();
+      v.remove();
+    }
+    this.made.clear();
+    this.flips.clear();
     this.stage.replaceChildren();
     this.cards.clear();
     this.pool = LAYERS.map(() => []);
@@ -320,6 +430,7 @@ export class RiverEngine {
     const t0 = performance.now();
     this.advance(dt);
     this.draw(now);
+    this.watchSmoothness(now, dt);
     this.stats.ms += performance.now() - t0;
   };
 
@@ -336,6 +447,8 @@ export class RiverEngine {
     if (this.hovered && gone.includes(this.hovered)) this.setHover(null);
     if (this.grab && gone.includes(this.grab.d)) this.grab = null;
     this.stats.maxCards = Math.max(this.stats.maxCards, this.drifters.length);
+    this.sinceReplan += dt;
+    if (this.sinceReplan >= PLAN_EVERY) this.plan();
   }
 
   private draw(now: number) {
@@ -360,6 +473,15 @@ export class RiverEngine {
         c.name.style.opacity = l;
       }
     }
+    // Flip-books: one shared frame for all, changed only when it moves on.
+    if (this.flips.size) {
+      const f = Math.floor(now / (1000 / CLIP_FPS)) % FRAMES;
+      if (f !== this.flipFrame) {
+        this.flipFrame = f;
+        const pos = framePosition(f);
+        for (const el of this.flips) el.style.backgroundPosition = pos;
+      }
+    }
     // The mouse rests: hide the pointer, as in the viewer.
     this.root.classList.toggle('rv-idle', now - this.lastMove > IDLE_MS && !this.hovered && !this.grab);
     this.drawMotes();
@@ -375,34 +497,59 @@ export class RiverEngine {
     c.el.style.height = `${d.h.toFixed(1)}px`;
     c.el.style.opacity = '0';
     c.el.style.zIndex = String(10 + d.layer * 10);
-    this.lookFor(c, d.layer);
+    this.lookFor(c, d.layer, it);
     c.shownOpacity = 0;
     c.lift = -1;
     c.full = false;
-    c.el.classList.toggle('rv-video', it.kind === 'video');
+    c.want = 'thumb';
     // Shown once its picture is in (no empty boxes while loading).
     c.el.classList.add('rv-wait');
-    c.name.textContent = it.name.replace(/\.[^.]+$/, '');
+    c.name.textContent = it.face ? it.name : it.name.replace(/\.[^.]+$/, '');
+    // A reused card may have held a face cut-out: the picture fills the card again.
+    c.img.removeAttribute('style');
     // Thumbnails mostly; GIFs move when near; the nearest pictures get the full picture when the thumbnail would be soft.
     const near = d.layer >= NEAREST - 1;
-    const wantFull = it.kind === 'gif' ? near : it.kind === 'image' && (!it.thumb || (d.layer === NEAREST && d.h * this.dpr > 600));
+    const wantFull = it.face ? null : it.kind === 'gif' ? near : it.kind === 'image' && (!it.thumb || (d.layer === NEAREST && d.h * this.dpr > 600));
     let loaded = false;
     c.img.onload = () => {
       if (c.key !== d.key || loaded) return;
       loaded = true;
       c.el.classList.remove('rv-wait');
+      if (it.face) {
+        this.cutFace(c, it);
+        // A small face in the thumbnail would be soft up close: the whole picture then.
+        if (near && !c.full && it.face.h * c.img.naturalHeight < d.h * 0.5 * this.dpr * 0.8) this.upgrade(c, d.key, it);
+        return;
+      }
       this.learnShape(d, c, it);
       if (wantFull && it.thumb && !c.full) this.upgrade(c, d.key, it);
     };
     c.img.onerror = it.thumb && it.kind !== 'video' ? () => {
       if (c.key === d.key && !c.full) this.upgrade(c, d.key, it);
     } : null;
-    c.img.src = it.thumb ? this.src.thumb(it.id) : this.src.full(it.id);
+    const pic = picOf(it);
+    c.img.src = it.thumb ? this.src.thumb(pic) : this.src.full(pic);
     if (!it.thumb) c.full = true;
     // Already there (the same picture again): no load event may come.
     if (c.img.complete && c.img.naturalWidth) c.img.onload?.(new Event('load'));
     this.stage.appendChild(c.el);
     this.cards.set(d.key, c);
+  }
+
+  /** Faces river: the picture placed so the face sits in the middle of the round bubble. */
+  private cutFace(c: Card, it: RiverItem) {
+    const nw = c.img.naturalWidth;
+    const nh = c.img.naturalHeight;
+    if (!it.face || !nw || !nh) return;
+    const f = coverFit(nw / nh, it.face, true);
+    const pct = (v: number) => `${(v * 100).toFixed(3)}%`;
+    const st = c.img.style;
+    st.position = 'absolute';
+    st.maxWidth = 'none';
+    st.width = pct(f.w);
+    st.height = pct(f.h);
+    st.left = pct(f.left);
+    st.top = pct(f.top);
   }
 
   /** The real shape from the thumbnail (the stored size may be unknown or turned). */
@@ -417,12 +564,13 @@ export class RiverEngine {
     const h = d.h;
     d.w = h * Math.max(0.6, Math.min(1.8, a));
     c.el.style.width = `${d.w.toFixed(1)}px`;
+    if (c.flip && c.flip.style.display !== 'none') this.sizeFlip(c, d, it);
   }
 
   private upgrade(c: Card, key: number, it: RiverItem) {
     const full = new Image();
     full.decoding = 'async';
-    full.src = this.src.full(it.id);
+    full.src = this.src.full(picOf(it));
     const swap = () => {
       if (c.key !== key) return;
       c.img.onload = null;
@@ -430,6 +578,7 @@ export class RiverEngine {
       c.img.src = full.src;
       c.full = true;
       c.el.classList.remove('rv-wait');
+      // The whole picture has the thumbnail's shape, so a face cut-out stays where it was.
     };
     full.decode().then(swap, () => {
       /* stays a thumbnail */
@@ -437,14 +586,14 @@ export class RiverEngine {
   }
 
   /** Depth: further away is dimmer, softer and a little cooler (pointing at it clears it). */
-  private lookFor(c: Card, layer: number) {
+  private lookFor(c: Card, layer: number, it: RiverItem | undefined) {
     const L = LAYERS[layer];
     const n = LAYERS.length;
     // The style sheet knows five depth bands (reflections, shadows): far … near.
     const band = n <= 1 ? 4 : Math.round(4 - (4 * (n - 1 - layer)) / Math.max(4, n - 1));
-    c.el.className = `rv-item rv-l${Math.max(0, Math.min(4, band))}`;
+    c.el.className = `rv-item rv-l${Math.max(0, Math.min(4, band))}${isVideo(it) ? ' rv-video' : ''}${it?.face ? ' rv-face' : ''}`;
     c.card.style.filter = L.blur > 0 || L.bright < 1 ? `blur(${L.blur}px) brightness(${L.bright}) saturate(${(0.6 + 0.4 * L.bright).toFixed(2)})` : '';
-    c.card.style.borderRadius = `${Math.round(4 + (L.size / 0.31) * 8)}px`;
+    c.card.style.borderRadius = it?.face ? '50%' : `${Math.round(4 + (L.size / 0.31) * 8)}px`;
   }
 
   private makeCard(layer: number): Card {
@@ -463,14 +612,17 @@ export class RiverEngine {
     const name = document.createElement('div');
     name.className = 'rv-name';
     el.append(glow, card, name);
-    return { el, card, img, glow, name, layer, key: 0, shownOpacity: 0, lift: 0, full: false, video: null };
+    return { el, card, img, glow, name, layer, key: 0, shownOpacity: 0, lift: 0, full: false, want: 'thumb', flip: null, player: null, next: null };
   }
 
   private detach(d: Drifter) {
     const c = this.cards.get(d.key);
     if (!c) return;
     this.cards.delete(d.key);
+    // Its players go back to the pool for the next cards.
     this.stopVideo(c);
+    this.setFlip(c, d, null);
+    c.want = 'thumb';
     c.img.onload = null;
     c.img.onerror = null;
     c.el.classList.remove('rv-lifted', 'rv-frozen');
@@ -486,44 +638,227 @@ export class RiverEngine {
     if (before) {
       before.el.classList.remove('rv-lifted');
       before.el.style.zIndex = String(10 + before.layer * 10 + (this.hovered?.frozen ? 5 : 0));
-      this.stopVideo(before);
     }
     window.clearTimeout(this.videoTimer);
+    this.hoverPlays = null;
+    const had = this.hovered;
     this.hovered = d;
     this.root.classList.toggle('rv-pointing', !!d);
+    // A video left behind goes back to what its depth plays (at once: frees its real player).
+    if (had && isVideo(this.items[had.item])) this.plan();
     if (!d) return;
     const c = this.cards.get(d.key);
     if (!c) return;
     c.el.classList.add('rv-lifted');
     c.el.style.zIndex = d.held ? '210' : '200';
     const it = this.items[d.item];
-    if (it.kind === 'video') this.videoTimer = window.setTimeout(() => this.playVideo(c, d.key, it), 450);
+    // A video plays the real thing once the mouse stays a moment (passing over doesn't start players).
+    if (isVideo(it)) {
+      this.videoTimer = window.setTimeout(() => {
+        this.hoverPlays = d;
+        this.plan();
+      }, d.held ? 0 : 220);
+    }
     else if (!c.full) this.upgrade(c, d.key, it);
   }
 
-  private playVideo(c: Card, key: number, it: RiverItem) {
-    if (c.key !== key || c.video) return;
-    const v = document.createElement('video');
-    v.className = 'rv-clip';
-    v.muted = true;
-    v.loop = true;
-    v.playsInline = true;
-    v.autoplay = true;
-    v.src = it.preview ? this.src.preview(it.id) : this.src.full(it.id);
-    v.onplaying = () => v.classList.add('on');
-    c.card.appendChild(v);
-    c.video = v;
-    v.play().catch(() => {});
+  // ---- videos ------------------------------------------------------------------------------
+
+  /** Which video card plays what (riverplay.ts), and each card brought in line. */
+  private plan() {
+    this.sinceReplan = 0;
+    const v = this.view;
+    const wants: RiverCardWant[] = [];
+    for (const d of this.drifters) {
+      const it = this.items[d.item];
+      if (!isVideo(it)) continue;
+      wants.push({
+        key: d.key, kind: 'video', layer: d.layer, hasTiny: !!it.tiny, hasStrip: it.preview,
+        // Hovered counts once the mouse has stayed (the timer in setHover), or while it is held.
+        hovered: !!d.held || d === this.hoverPlays,
+        frozen: !!d.frozen, onScreen: d.x + d.w / 2 > 0 && d.x - d.w / 2 < v.w, away: Math.hypot(d.x - v.w / 2, d.y - v.h / 2),
+      });
+    }
+    if (!wants.length) return;
+    const plan = riverPreviews(wants, NEAREST, this.realBudget);
+    for (const d of this.drifters) {
+      const c = this.cards.get(d.key);
+      const want = plan.get(d.key);
+      if (c && want) this.show(c, d, this.items[d.item], want);
+    }
   }
 
+  private show(c: Card, d: Drifter, it: RiverItem, want: Layer) {
+    if (c.want === want) return;
+    c.want = want;
+    // The flip-book plays far away, and stands in under a player until its first picture is drawn.
+    this.setFlip(c, d, want !== 'thumb' && it.preview ? it : null);
+    if (want === 'tiny' || want === 'real') {
+      const src = want === 'real' ? this.src.full(it.id) : this.src.tiny(it.id);
+      if (c.next?.dataset.role === want) return;
+      if (c.next) {
+        this.letGo(c.next);
+        c.next = null;
+      }
+      if (c.player?.dataset.role === want) return;
+      this.startPlayer(c, d.key, it, want, src);
+    } else this.stopVideo(c);
+  }
+
+  private startPlayer(c: Card, key: number, it: RiverItem, role: 'tiny' | 'real', src: string) {
+    const v = this.players.acquire(src);
+    this.leaving.delete(v);
+    v.dataset.role = role;
+    v.dataset.layer = role;
+    v.className = 'rv-clip';
+    const warm = v.src === src && v.readyState >= 1;
+    if (!warm) v.src = src;
+    // The real video carries on from the moment the tiny clip or flip-book shows.
+    const dur = (it.durationMs ?? 0) / 1000;
+    const from = role !== 'real' || !dur ? 0
+      : c.player?.dataset.role === 'tiny' && Number.isFinite(c.player.currentTime) ? tinyToSource(c.player.currentTime + 0.35, dur)
+      : c.flip && c.flip.style.display !== 'none' ? frameTimes(dur)[Math.max(0, this.flipFrame)] ?? 0 : 0;
+    const seek = () => {
+      if (c.next !== v || from < 0.05 || !Number.isFinite(v.duration)) return;
+      try {
+        v.currentTime = Math.min(from, Math.max(0, v.duration - 0.2));
+      } catch {
+        // not seekable yet
+      }
+    };
+    if (v.readyState >= 1) seek();
+    else v.addEventListener('loadedmetadata', seek, { once: true });
+    c.next = v;
+    c.card.appendChild(v);
+    // Shown once its first picture is drawn (no black flash), then the one under it goes.
+    // Frame callbacks can go missing (a seek near the end of a looping video): time moving on counts too.
+    const onTime = () => {
+      if (v.readyState >= 2 && !v.paused) ready();
+    };
+    const off = () => {
+      v.removeEventListener('loadedmetadata', seek);
+      v.removeEventListener('timeupdate', onTime);
+      this.offs.delete(v);
+    };
+    this.offs.set(v, off);
+    v.addEventListener('timeupdate', onTime);
+    const ready = () => {
+      if (c.key !== key || c.next !== v) return;
+      off();
+      c.next = null;
+      v.classList.add('on');
+      const old = c.player;
+      c.player = v;
+      if (old) this.fadeOut(old);
+    };
+    if (typeof v.requestVideoFrameCallback === 'function') v.requestVideoFrameCallback(() => ready());
+    else v.addEventListener('playing', () => requestAnimationFrame(() => requestAnimationFrame(ready)), { once: true });
+    this.players.play(v);
+  }
+
+  /** A replaced player stays a moment under the new one, then goes back to the pool. */
+  private fadeOut(v: HTMLVideoElement) {
+    this.leaving.add(v);
+    window.setTimeout(() => {
+      if (!this.leaving.delete(v)) return;
+      this.letGo(v);
+    }, FADE_MS);
+  }
+
+  private letGo(v: HTMLVideoElement) {
+    this.offs.get(v)?.();
+    this.leaving.delete(v);
+    v.classList.remove('on');
+    delete v.dataset.role;
+    this.players.release(v);
+  }
+
+  /** The card's players back to the pool (the card leaves, or goes back to its picture or flip-book). */
   private stopVideo(c: Card) {
-    const v = c.video;
-    if (!v) return;
-    c.video = null;
-    v.pause();
-    v.removeAttribute('src');
-    v.load();
-    v.remove();
+    if (c.next) this.letGo(c.next);
+    if (c.player) this.letGo(c.player);
+    // One still fading out in this card goes now too (the card may be reused at once).
+    c.card.querySelectorAll('video').forEach((v) => {
+      if (this.leaving.has(v)) this.letGo(v);
+    });
+    c.next = null;
+    c.player = null;
+  }
+
+  private setFlip(c: Card, d: Drifter, it: RiverItem | null) {
+    if (!it) {
+      if (c.flip && this.flips.delete(c.flip)) {
+        c.flip.style.display = 'none';
+        c.flip.style.backgroundImage = '';
+      }
+      return;
+    }
+    if (!c.flip) {
+      c.flip = document.createElement('div');
+      c.flip.className = 'rv-flip';
+      c.card.insertBefore(c.flip, c.img.nextSibling);
+    }
+    if (this.flips.has(c.flip)) return;
+    c.flip.style.backgroundImage = `url("${this.src.preview(it.id)}")`;
+    c.flip.style.backgroundPosition = framePosition(Math.max(0, this.flipFrame));
+    c.flip.style.display = '';
+    this.sizeFlip(c, d, it);
+    this.flips.add(c.flip);
+  }
+
+  /** The flip-book covers the card as the video would (its frames have the video's shape). */
+  private sizeFlip(c: Card, d: Drifter, it: RiverItem) {
+    if (!c.flip) return;
+    const a = this.aspects.get(it.id) ?? it.aspect ?? d.w / d.h;
+    const ca = d.w / d.h;
+    // In parts of the card, so it follows the card's size (freezing, resizing) by itself.
+    const w = Math.max(1, a / ca);
+    const h = w * (ca / a);
+    const st = c.flip.style;
+    st.width = `${(w * 100).toFixed(2)}%`;
+    st.height = `${(h * 100).toFixed(2)}%`;
+    st.left = `${((1 - w) * 50).toFixed(2)}%`;
+    st.top = `${((1 - h) * 50).toFixed(2)}%`;
+  }
+
+  /** Every couple of seconds: did the real videos and the river keep up? (previewplan.ts Budget, as in the grid.) */
+  private watchSmoothness(now: number, dt: number) {
+    const w = this.watch;
+    const ms = dt * 1000;
+    if (ms < 1000) {
+      w.frames++;
+      w.sum += ms;
+      if (ms > 50) w.slow++;
+    }
+    if (now - w.start < BUDGET_EVERY) return;
+    let total = 0;
+    let dropped = 0;
+    let real = 0;
+    let wanted = 0;
+    for (const c of this.cards.values()) {
+      if (c.want === 'tiny' || c.want === 'real') wanted++;
+      if (c.want === 'real') real++;
+    }
+    for (const v of this.players.inUse()) {
+      if (v.dataset.role !== 'real') continue;
+      const q = v.getVideoPlaybackQuality?.();
+      if (!q) continue;
+      const prev = this.quality.get(v);
+      // A reused player starts counting afresh.
+      if (prev && q.totalVideoFrames >= prev.total) {
+        total += q.totalVideoFrames - prev.total;
+        dropped += Math.max(0, q.droppedVideoFrames - prev.dropped);
+      }
+      this.quality.set(v, { total: q.totalVideoFrames, dropped: q.droppedVideoFrames });
+    }
+    if (w.frames > 10 && !this.players.isPaused) {
+      const b = this.budget.look({ real, wanted, frames: total, dropped, slowShare: w.slow / w.frames, avgFrameMs: w.sum / w.frames }, now);
+      if (b !== this.realBudget) {
+        this.realBudget = b;
+        this.plan();
+      }
+    }
+    this.watch = { start: now, frames: 0, slow: 0, sum: 0 };
   }
 
   // ---- motes ---------------------------------------------------------------------------------
@@ -589,6 +924,11 @@ export class RiverEngine {
     g.globalAlpha = 1;
   }
 }
+
+/** A video card (faces are always cut out of a still picture). */
+const isVideo = (it: RiverItem | undefined) => !!it && it.kind === 'video' && !it.face;
+/** The picture an item shows: its own, or for a face the picture it was found in. */
+const picOf = (it: RiverItem) => it.face?.media ?? it.id;
 
 /** A soft round light, drawn once. */
 function moteSprite(): HTMLCanvasElement {

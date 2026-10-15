@@ -3,8 +3,9 @@
 // the river, which holds still underneath: closing the viewer carries on
 // exactly where it was.
 
-import { lazy, Suspense, useMemo, useSyncExternalStore } from 'react';
-import { api, mediaUrl, onLocked, previewUrl, thumbUrl, type FolderCard, type Item } from '../../api';
+import { lazy, Suspense, useEffect, useMemo, useSyncExternalStore } from 'react';
+import { api, mediaUrl, onLocked, previewUrl, thumbUrl, tinyUrl, type FolderCard, type Item } from '../../api';
+import { setPreviewCover } from '../../previewgate';
 import { fromItem } from '../../media';
 import type { Nav } from '../../App';
 import { Viewer } from '../../screens/Viewer';
@@ -20,6 +21,8 @@ interface Session {
   drifting: RiverItem[];
   /** The viewer is open over the river, on this item. */
   viewing: number | null;
+  /** Faces river: the photos the viewer steps through (else `items`). */
+  viewList: Item[] | null;
 }
 
 let session: Session | null = null;
@@ -39,7 +42,21 @@ const drawable = (i: Item) => visual(i) && (i.kind !== 'video' || i.thumb === 'o
 
 const toRiver = (i: Item): RiverItem => ({
   id: i.id, kind: i.kind as RiverItem['kind'], name: i.name, aspect: i.width && i.height ? i.width / i.height : null, preview: i.preview, thumb: i.thumb === 'ok',
+  tiny: !!i.tiny, durationMs: i.durationMs,
 });
+
+// Faces river: the photos behind the faces, looked up once per river (every item, as the vault river does).
+let allItems: Promise<Map<number, Item>> | null = null;
+async function photosOf(media: number[]): Promise<Item[]> {
+  allItems ??= api.queryItems({}).then((l) => new Map(l.map((i) => [i.id, i])));
+  try {
+    const all = await allItems;
+    return media.map((id) => all.get(id)).filter((i): i is Item => !!i && i.deletedAt == null);
+  } catch (e) {
+    allItems = null;
+    throw e;
+  }
+}
 
 /** Opens the river with these items (pictures, GIFs and videos only). */
 export function openRiver(title: string, kicker: string, items: Item[], note?: (text: string) => void) {
@@ -53,7 +70,8 @@ export function openRiver(title: string, kicker: string, items: Item[], note?: (
     // Locking the vault closes the river.
     onLocked(() => set(null)).catch(() => {});
   }
-  set({ title, kicker, items: list, drifting: list.map(toRiver), viewing: null });
+  allItems = null;
+  set({ title, kicker, items: list, drifting: list.map(toRiver), viewing: null, viewList: null });
 }
 
 /** Everything in the vault. */
@@ -75,7 +93,7 @@ export async function openFolderRiver(f: FolderCard, note?: (text: string) => vo
   }
 }
 
-const sources = { thumb: thumbUrl, full: mediaUrl, preview: previewUrl };
+const sources = { thumb: thumbUrl, full: mediaUrl, preview: previewUrl, tiny: tinyUrl };
 
 /** Rendered once by the library; shows the river while one is open. */
 export function RiverHost({ nav }: { nav: Nav }) {
@@ -86,8 +104,14 @@ export function RiverHost({ nav }: { nav: Nav }) {
     },
     () => session,
   );
-  const items = s?.items;
+  const items = s?.viewList ?? s?.items;
   const play = useMemo(() => (items ? items.map(fromItem) : []), [items]);
+  // The library's grid previews rest while the river covers them (the river plays its own).
+  const open = !!s;
+  useEffect(() => {
+    setPreviewCover('river', open);
+    return () => setPreviewCover('river', false);
+  }, [open]);
 
   if (!s) return null;
   return (
@@ -100,8 +124,18 @@ export function RiverHost({ nav }: { nav: Nav }) {
         covered={s.viewing != null}
         onClose={() => set(null)}
         onOpen={(index) => {
-          if (session) set({ ...session, viewing: session.items[index]?.id ?? null });
+          if (session) set({ ...session, viewing: session.items[index]?.id ?? null, viewList: null });
         }}
+        onOpenPhoto={(media, all) => {
+          photosOf(all).then((list) => {
+            if (session && list.some((i) => i.id === media)) set({ ...session, viewing: media, viewList: list });
+          }).catch(() => {});
+        }}
+        onMiniPhoto={nav.mini ? (media, all) => {
+          photosOf(all).then((list) => {
+            if (session && list.some((i) => i.id === media)) nav.mini?.({ items: list.map(fromItem), startKey: `v${media}`, title: s.title, auto: false });
+          }).catch(() => {});
+        } : undefined}
         onMini={nav.mini ? (index) => {
           const id = session?.items[index]?.id;
           if (id != null) nav.mini?.({ items: play, startKey: `v${id}`, title: s.title, auto: false });
@@ -111,7 +145,7 @@ export function RiverHost({ nav }: { nav: Nav }) {
         <div className="river-viewer">
           <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
             onBack={() => {
-              if (session) set({ ...session, viewing: null });
+              if (session) set({ ...session, viewing: null, viewList: null });
             }} />
         </div>
       )}
