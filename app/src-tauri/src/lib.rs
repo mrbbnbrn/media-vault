@@ -50,6 +50,8 @@ mod organize;
 mod similar;
 mod sketch;
 mod storage;
+// Thumbnail pages: a folder's thumbnails in a few encrypted objects (derived, a cache).
+mod thumbpages;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
 mod videotool;
@@ -117,6 +119,8 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     depth::unload();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
+        // Again, now that it is closed: whatever a request still running put back.
+        protocol::forget_cache();
         if s.is_dirty() {
             let _ = s.save();
         }
@@ -190,6 +194,7 @@ fn start_background(s: Arc<Session>) {
         let _ = rotate::clean_retired(&s2);
     });
     sketch::backfill(s.clone());
+    thumbpages::start(s.clone());
     meta::backfill(s);
 }
 
@@ -877,6 +882,57 @@ async fn count_to_sharpen(state: State<'_, Shared>, after: i64, upto: i64) -> Re
             |r| r.get(0),
         )
         .map_err(|e| e.to_string())
+    })
+    .await
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ToWebp {
+    tasks: Vec<ThumbTask>,
+    /// Looked at everything up to this item id.
+    next: i64,
+}
+
+/// Older JPEG thumbnails to make again as WebP (smaller): items in
+/// `after < id <= upto` whose thumbnail is a JPEG (found from its first
+/// bytes), oldest first. Looks at no more than a few hundred items per call.
+#[tauri::command]
+async fn thumbs_to_webp(state: State<'_, Shared>, after: i64, upto: i64, limit: i64) -> Result<ToWebp, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let rows: Vec<(i64, String, String)> = {
+            let db = s.db();
+            let mut st = db
+                .prepare(
+                    "SELECT id, kind, thumb_object_id FROM media WHERE id > ?1 AND id <= ?2 AND thumb_object_id IS NOT NULL AND thumb_object_id != '' \
+                     AND kind IN ('image', 'gif', 'video') AND (copy_of IS NULL) ORDER BY id LIMIT 300",
+                )
+                .map_err(|e| e.to_string())?;
+            st.query_map([after, upto], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(|e| e.to_string())?
+                .collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(|e| e.to_string())?
+        };
+        let mut out = ToWebp { tasks: Vec::new(), next: if rows.is_empty() { upto } else { after } };
+        for (id, kind, hex) in rows {
+            if out.tasks.len() as i64 >= limit {
+                break;
+            }
+            out.next = id;
+            let Ok(oid) = vault_core::ObjectId::from_hex(&hex) else { continue };
+            let mut head = [0u8; 3];
+            let jpeg = s
+                .vault()
+                .open_object(vault_core::ObjectKind::Thumbnail, &oid)
+                .and_then(|mut r| Ok(std::io::Read::read_exact(&mut r, &mut head)?))
+                .is_ok()
+                && picture::image_mime(&head) == Some("image/jpeg");
+            if jpeg {
+                out.tasks.push(ThumbTask { id, kind });
+            }
+        }
+        Ok(out)
     })
     .await
 }
@@ -2117,6 +2173,7 @@ pub fn run() {
             delete_named,
             thumbs_needed,
             thumbs_to_sharpen,
+            thumbs_to_webp,
             count_to_sharpen,
             newest_item_id,
             save_thumb,

@@ -150,8 +150,25 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   people marked "not important". `face_rejects(face_id, folder_id)` remembers "not this person",
   `face_not_same(a, b)` "these two people are not the same". `media.faces_model` = the model
   that scanned the item (-1 = waiting to be scanned again with the new model).
-- `media.preview_object_id` — a video's preview clip: one JPEG holding 48 small frames
-  (8 across, 6 down), stored like a thumbnail. Can be deleted; the app makes it again.
+- `media.thumb_object_id` — the item's thumbnail (at most 640 px on the longest side),
+  stored as an object of kind 2. Older thumbnails are JPEG, newer ones lossy WebP; tell them
+  apart by their first bytes (`FF D8 FF` = JPEG, `RIFF····WEBP` = WebP). NULL = not made yet,
+  '' = couldn't be made. Can be deleted; the app makes it again.
+- `media.preview_object_id` — a video's preview clip: one picture holding 48 small frames
+  (8 across, 6 down), JPEG (older) or WebP, stored like a thumbnail. Can be deleted; the app
+  makes it again.
+- `thumb_bundles(object_id, folder_id, size, items, bytes, members, made_at)` (v14) —
+  *derived data, only there to make grids faster*: "thumbnail pages", each one object of
+  kind 2 holding up to 96 thumbnails of one folder (`folder_id` NULL = top level) packed
+  together, so a grid decrypts one object per page instead of one per tile. `size` 1 = small
+  copies (at most 256 px, WebP) made from the thumbnails (what the app makes), 0 = the stored
+  thumbnails exactly as they are.
+  `members` = the 16-byte thumbnail object ids it holds, one after another. The decrypted
+  object is: `MVTP` (4 bytes), version 1 (1 byte), size (1 byte), 2 reserved bytes, `n` (u32
+  little-endian), then `n` entries of thumbnail object id (16 bytes) | offset (u32) | length
+  (u32) — offsets counted from the end of that table — then the pictures back to back. The
+  item's own thumbnail object stays the original; pages can all be deleted (rows and objects)
+  at any time and the app makes them again.
 - `media.sketch` (v11) — a tiny colour sketch of the thumbnail (a few cells of colour as text), drawn blurred while the thumbnail loads; NULL = not made yet.
 - `media.tiny_object_id` (v12) — a video's tiny preview video: silent, about 426×240, a few
   seconds made of short pieces spread through the video (WebM/VP9 or MP4/H.264, recognised by

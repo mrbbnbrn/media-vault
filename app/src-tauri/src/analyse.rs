@@ -245,7 +245,7 @@ fn not_here(id: i64) {
 fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJob>, ItemReport) {
     let start = Instant::now();
     let mut rep = ItemReport { id: t.id, ..Default::default() };
-    let mut thumb_jpeg: Option<Zeroizing<Vec<u8>>> = None;
+    let mut thumb_bytes: Option<Zeroizing<Vec<u8>>> = None;
     let mut thumb_id = t.thumb.clone();
     let (mut print, mut smart) = (t.print, t.smart && caps.smart);
     if t.make_thumb || (t.faces && caps.faces) {
@@ -257,12 +257,12 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
             Ok(pic) => {
                 if t.make_thumb {
                     match picture::thumbnail(&pic) {
-                        Ok((_, jpeg)) => match crate::store_thumb(s, t.id, &jpeg, Some(pic.w as i64), Some(pic.h as i64), None, false) {
+                        Ok((_, webp)) => match crate::store_thumb(s, t.id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, false) {
                             Ok(()) => {
                                 DONE.thumbs.fetch_add(1, Ordering::Relaxed);
                                 rep.thumb = true;
                                 emit(t.id);
-                                thumb_jpeg = Some(jpeg);
+                                thumb_bytes = Some(webp);
                                 thumb_id = Some("new".into());
                                 // A new thumbnail: its fingerprint and smart-search vector are made again.
                                 let db = s.db();
@@ -311,7 +311,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
     }
     let mut job = None;
     if print || smart {
-        let thumb = match (&thumb_jpeg, thumb_id.as_deref()) {
+        let thumb = match (&thumb_bytes, thumb_id.as_deref()) {
             (Some(j), _) => picture::decode(j),
             (None, Some(hex)) if !hex.is_empty() => read(s, ObjectKind::Thumbnail, hex).and_then(|b| picture::decode(&b)),
             _ => Err("no thumbnail".into()),
@@ -394,7 +394,7 @@ fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> Vec<i64> {
 }
 
 /// Background threads are polite: lower priority (and on Windows lower disk priority too).
-fn polite_thread() {
+pub(crate) fn polite_thread() {
     #[cfg(windows)]
     // SAFETY: only changes the calling thread's own scheduling priority.
     unsafe {
@@ -606,8 +606,8 @@ pub async fn analyse_thumb(state: State<'_, crate::Shared>, id: i64) -> Result<b
             not_here(id);
             return Ok(false);
         };
-        let (_, jpeg) = picture::thumbnail(&pic)?;
-        crate::store_thumb(&s, id, &jpeg, Some(pic.w as i64), Some(pic.h as i64), None, true)?;
+        let (_, webp) = picture::thumbnail(&pic)?;
+        crate::store_thumb(&s, id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, true)?;
         Ok(true)
     })
     .await

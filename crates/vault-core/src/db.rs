@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 12;
+pub const SCHEMA_VERSION: i64 = 14;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -470,7 +470,33 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    // (v13 is another change that may be numbered before this one.)
+    if v < 14 || !has_table(conn, "thumb_bundles")? {
+        // v14: thumbnail pages — a folder's thumbnails packed into a few
+        // objects (stored like thumbnails) so a grid decrypts one per page.
+        // Derived data: can be deleted at any time and is made again. Only
+        // added if it isn't there yet, so this step is safe to run again.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS thumb_bundles (
+                object_id TEXT PRIMARY KEY,
+                folder_id INTEGER,
+                size      INTEGER NOT NULL,
+                items     INTEGER NOT NULL,
+                bytes     INTEGER NOT NULL,
+                members   BLOB NOT NULL,
+                made_at   INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS thumb_bundles_folder ON thumb_bundles(folder_id, size);",
+        )?;
+        if v < 14 {
+            conn.pragma_update(None, "user_version", 14)?;
+        }
+    }
     Ok(())
+}
+
+fn has_table(conn: &Connection, t: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
 }
 
 /// The pack index stored in the database.
@@ -682,10 +708,37 @@ mod tests {
             c.query_row("SELECT preview_object_id, tiny_object_id FROM media", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((p.as_str(), t), ("strip", None));
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
+        assert_eq!(v, SCHEMA_VERSION);
         // Running it again (or with the column already there) changes nothing.
         migrate(&c).unwrap();
         c.execute_batch("PRAGMA user_version = 11;").unwrap();
         migrate(&c).unwrap();
+    }
+
+    #[test]
+    fn v14_adds_thumbnail_pages_and_can_run_again() {
+        let c = create_empty().unwrap();
+        c.execute(
+            "INSERT INTO thumb_bundles(object_id, folder_id, size, items, bytes, members, made_at) VALUES ('p', NULL, 0, 1, 10, x'00', 0)",
+            [],
+        )
+        .unwrap();
+        // A v12 library (no pages yet) upgrades.
+        c.execute_batch("DROP TABLE thumb_bundles; PRAGMA user_version = 12;").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 14);
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM thumb_bundles", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 0);
+        // Pages already there (or run again from 13) are kept.
+        c.execute(
+            "INSERT INTO thumb_bundles(object_id, folder_id, size, items, bytes, members, made_at) VALUES ('p', 3, 1, 1, 10, x'00', 0)",
+            [],
+        )
+        .unwrap();
+        c.execute_batch("PRAGMA user_version = 13;").unwrap();
+        migrate(&c).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM thumb_bundles", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }

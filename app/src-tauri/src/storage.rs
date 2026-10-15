@@ -69,6 +69,9 @@ pub struct CacheInfo {
     pub thumb_bytes: u64,
     pub previews: usize,
     pub preview_bytes: u64,
+    /// Thumbnail pages (thumbpages.rs; made again by themselves) and their size.
+    pub pages: i64,
+    pub page_bytes: i64,
 }
 
 fn cache_ids(s: &Session, column: &str) -> Result<Vec<(i64, ObjectId)>, String> {
@@ -95,7 +98,15 @@ pub fn cache_info(s: &Session) -> Result<CacheInfo, String> {
     // "Preview clips" are both kinds: frame strips and tiny clips.
     let p = cache_ids(s, "preview_object_id")?;
     let tiny = cache_ids(s, "tiny_object_id")?;
-    Ok(CacheInfo { thumbs: t.len(), thumb_bytes: size(&t), previews: p.len().max(tiny.len()), preview_bytes: size(&p) + size(&tiny) })
+    let (pages, page_bytes) = crate::thumbpages::usage(&s.db());
+    Ok(CacheInfo {
+        thumbs: t.len(),
+        thumb_bytes: size(&t),
+        previews: p.len().max(tiny.len()),
+        preview_bytes: size(&p) + size(&tiny),
+        pages,
+        page_bytes,
+    })
 }
 
 /// Delete every thumbnail (they are made again as needed) or every preview
@@ -116,6 +127,10 @@ pub fn delete_cache(s: &Session, thumbs: bool) -> Result<String, String> {
     // Free copies share them: each stored file once.
     ids.sort_by_key(|(_, o)| o.to_hex());
     ids.dedup_by_key(|(_, o)| o.to_hex());
+    // Thumbnail pages are made from the thumbnails: they go with them.
+    if thumbs {
+        crate::thumbpages::delete_all(s);
+    }
     s.mark_dirty();
     s.save().map_err(|e| e.to_string())?;
     let v = s.vault();

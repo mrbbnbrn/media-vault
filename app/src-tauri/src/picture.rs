@@ -22,8 +22,20 @@ const MAX_ALLOC: u64 = 1 << 30;
 
 /// Thumbnails: the longest side (as the window makes them, media.ts).
 pub const THUMB_MAX: usize = 640;
-/// JPEG quality of thumbnails (as the window makes them).
+/// JPEG quality thumbnails used to be made with (before WebP; still the
+/// quality the WebP one is matched to, see `THUMB_WEBP_QUALITY`).
 pub const THUMB_QUALITY: u8 = 86;
+/// WebP quality of thumbnails: the lowest that looks as good as JPEG
+/// quality 86 did (as close in SSIM and PSNR on real photos), measured by
+/// `webp_quality_corpus` below and tools/thumbquality.py. The window uses
+/// the same (canvaspic.ts).
+pub const THUMB_WEBP_QUALITY: f32 = 83.0;
+/// Small thumbnails (dense grids, the minimap): the longest side.
+pub const SMALL_MAX: usize = 256;
+/// WebP quality of small thumbnails (a little higher: each pixel counts more).
+pub const SMALL_WEBP_QUALITY: f32 = 84.0;
+/// libwebp's effort (0 fast … 6 slow); 4 is its default, a good balance.
+const WEBP_METHOD: i32 = 4;
 /// The face finder gets the picture at most this big (as facescan.ts sent it).
 pub const FACES_MAX: usize = 1600;
 /// Smart search (CLIP) looks at SIZE × SIZE.
@@ -249,11 +261,115 @@ fn copy(src: &Rgb) -> Rgb {
     Rgb { w: src.w, h: src.h, px: Zeroizing::new(src.px.to_vec()) }
 }
 
-/// The thumbnail: at most 640 px on the longest side, as JPEG (quality 86).
+/// The thumbnail: at most 640 px on the longest side, as lossy WebP
+/// (about a third smaller than the JPEG quality 86 it replaces, looking the same).
 pub fn thumbnail(src: &Rgb) -> Result<(Rgb, Zeroizing<Vec<u8>>), String> {
     let t = fit(src, THUMB_MAX).unwrap_or_else(|| copy(src));
-    let jpeg = encode_jpeg(&t, THUMB_QUALITY)?;
-    Ok((t, jpeg))
+    // (Should libwebp ever refuse, a JPEG as before rather than none.)
+    let bytes = encode_webp(&t, THUMB_WEBP_QUALITY).or_else(|_| encode_jpeg(&t, THUMB_QUALITY))?;
+    Ok((t, bytes))
+}
+
+/// The small thumbnail made from a stored (big) one, JPEG or WebP: at most
+/// 256 px, WebP. `None` when the stored one is already that small (it is
+/// used as it is).
+pub fn small_from_thumb(thumb: &[u8]) -> Result<Option<Zeroizing<Vec<u8>>>, String> {
+    let big = decode_thumb(thumb)?;
+    match fit(&big, SMALL_MAX) {
+        Some(small) => encode_webp(&small, SMALL_WEBP_QUALITY).map(Some),
+        None => Ok(None),
+    }
+}
+
+/// A stored thumbnail, decoded: WebP ones with libwebp (several times
+/// quicker than the pure-Rust decoder; thumbnails have no orientation or
+/// transparency to apply), anything else as any picture.
+pub fn decode_thumb(bytes: &[u8]) -> Result<Rgb, String> {
+    if image_mime(bytes) == Some("image/webp") {
+        let (mut w, mut h): (std::ffi::c_int, std::ffi::c_int) = (0, 0);
+        // SAFETY: libwebp reads `bytes` (its length given) and returns a
+        // buffer of w × h × 3 bytes it allocated (or null); it is copied,
+        // wiped and freed here.
+        unsafe {
+            let p = libwebp_sys::WebPDecodeRGB(bytes.as_ptr(), bytes.len(), &mut w, &mut h);
+            if !p.is_null() {
+                let n = w.max(0) as usize * h.max(0) as usize * 3;
+                let buf = std::slice::from_raw_parts_mut(p, n);
+                let px = Zeroizing::new(buf.to_vec());
+                buf.iter_mut().for_each(|b| *b = 0);
+                libwebp_sys::WebPFree(p.cast());
+                if n > 0 {
+                    return Ok(Rgb { w: w as usize, h: h as usize, px });
+                }
+            }
+        }
+    }
+    decode(bytes)
+}
+
+/// Lossy WebP (libwebp), in memory. The encoded bytes are wiped when
+/// dropped; libwebp's own working copy is freed when it is done.
+pub fn encode_webp(p: &Rgb, quality: f32) -> Result<Zeroizing<Vec<u8>>, String> {
+    use libwebp_sys as w;
+    use std::ffi::c_int;
+    let fail = |what: &str| format!("The thumbnail couldn't be made ({what}).");
+    if p.w == 0 || p.h == 0 || p.w > 16_383 || p.h > 16_383 || p.px.len() < p.w * p.h * 3 {
+        return Err(fail("size"));
+    }
+    // SAFETY: plain libwebp calls on structs it initialises itself; the
+    // picture reads `p.px` (checked to be w × h × 3 bytes above) and writes
+    // into `writer`, which outlives the encode; both are freed below.
+    unsafe {
+        let mut config = std::mem::MaybeUninit::<w::WebPConfig>::zeroed();
+        if w::WebPConfigInitInternal(config.as_mut_ptr(), w::WebPPreset::WEBP_PRESET_DEFAULT, quality, w::WEBP_ENCODER_ABI_VERSION as c_int) == 0 {
+            return Err(fail("libwebp version"));
+        }
+        let mut config = config.assume_init();
+        config.quality = quality.clamp(0.0, 100.0);
+        config.method = WEBP_METHOD;
+        if w::WebPValidateConfig(&config) == 0 {
+            return Err(fail("settings"));
+        }
+        let mut pic = std::mem::MaybeUninit::<w::WebPPicture>::zeroed();
+        if w::WebPPictureInitInternal(pic.as_mut_ptr(), w::WEBP_ENCODER_ABI_VERSION as c_int) == 0 {
+            return Err(fail("libwebp version"));
+        }
+        let mut pic = pic.assume_init();
+        pic.use_argb = 0;
+        pic.width = p.w as c_int;
+        pic.height = p.h as c_int;
+        let mut writer = std::mem::MaybeUninit::<w::WebPMemoryWriter>::zeroed();
+        w::WebPMemoryWriterInit(writer.as_mut_ptr());
+        let mut writer = writer.assume_init();
+        pic.writer = Some(w::WebPMemoryWrite);
+        pic.custom_ptr = (&mut writer as *mut w::WebPMemoryWriter).cast();
+        let ok = w::WebPPictureImportRGB(&mut pic, p.px.as_ptr(), (p.w * 3) as c_int) != 0 && w::WebPEncode(&config, &mut pic) != 0;
+        w::WebPPictureFree(&mut pic);
+        let out = if ok && !writer.mem.is_null() {
+            let bytes = std::slice::from_raw_parts_mut(writer.mem, writer.size);
+            let out = Zeroizing::new(bytes.to_vec());
+            bytes.iter_mut().for_each(|b| *b = 0);
+            Some(out)
+        } else {
+            None
+        };
+        w::WebPMemoryWriterClear(&mut writer);
+        out.ok_or_else(|| fail("encoder"))
+    }
+}
+
+/// What kind of picture these bytes are, from their first bytes:
+/// JPEG, WebP or PNG (thumbnails, small thumbnails and frame strips are one of these).
+pub fn image_mime(head: &[u8]) -> Option<&'static str> {
+    if head.len() >= 3 && head[..3] == [0xFF, 0xD8, 0xFF] {
+        Some("image/jpeg")
+    } else if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
+        Some("image/webp")
+    } else if head.len() >= 8 && head[..8] == [0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A] {
+        Some("image/png")
+    } else {
+        None
+    }
 }
 
 pub fn encode_jpeg(p: &Rgb, quality: u8) -> Result<Zeroizing<Vec<u8>>, String> {
@@ -513,16 +629,97 @@ mod tests {
     }
 
     #[test]
-    fn thumbnails_are_jpegs_that_read_back() {
+    fn thumbnails_are_webps_that_read_back() {
         let p = solid(1600, 900, |x, y| [(x % 256) as u8, (y % 256) as u8, 128]);
-        let (t, jpeg) = thumbnail(&p).unwrap();
+        let (t, webp) = thumbnail(&p).unwrap();
         assert_eq!((t.w, t.h), (640, 360));
-        let back = decode(&jpeg).unwrap();
+        assert_eq!(image_mime(&webp), Some("image/webp"));
+        let back = decode(&webp).unwrap();
         assert_eq!((back.w, back.h), (640, 360));
         let (hash, sharp) = fingerprint(&back);
         assert_eq!(hash.len(), 16);
         assert!(sharp.is_finite() && sharp >= 0.0);
         let (rgba, w, h) = faces_input(&p);
         assert_eq!((w, h, rgba.len()), (1600, 900, 1600 * 900 * 4));
+    }
+
+    fn psnr(a: &Rgb, b: &Rgb) -> f64 {
+        assert_eq!((a.w, a.h), (b.w, b.h));
+        let se: f64 = a.px.iter().zip(b.px.iter()).map(|(x, y)| (*x as f64 - *y as f64).powi(2)).sum();
+        10.0 * (255.0f64.powi(2) / (se / a.px.len() as f64).max(1e-9)).log10()
+    }
+
+    #[test]
+    fn webp_keeps_the_picture_and_small_thumbnails_are_small() {
+        // A smooth picture with some detail: WebP at the thumbnail quality is close to it.
+        let p = solid(640, 427, |x, y| {
+            let v = ((x as f64 / 9.0).sin() * 40.0 + (y as f64 / 13.0).cos() * 40.0 + 128.0) as u8;
+            [v, (x * 255 / 640) as u8, (y * 255 / 427) as u8]
+        });
+        let webp = encode_webp(&p, THUMB_WEBP_QUALITY).unwrap();
+        let back = decode(&webp).unwrap();
+        assert!(psnr(&p, &back) > 33.0, "{}", psnr(&p, &back));
+        // The quick (libwebp) way to read our own thumbnails gives the same picture.
+        let quick = decode_thumb(&webp).unwrap();
+        assert!(psnr(&back, &quick) > 40.0, "{}", psnr(&back, &quick));
+        assert!(decode_thumb(b"RIFF\0\0\0\0WEBPnot really").is_err());
+        let jpeg = encode_jpeg(&p, THUMB_QUALITY).unwrap();
+        assert_eq!(image_mime(&jpeg), Some("image/jpeg"));
+        // Small thumbnails from WebP and from older JPEG thumbnails.
+        for big in [&webp, &jpeg] {
+            let small = small_from_thumb(big).unwrap().unwrap();
+            assert_eq!(image_mime(&small), Some("image/webp"));
+            let s = decode(&small).unwrap();
+            assert_eq!((s.w, s.h), (256, 171));
+            assert!(small.len() < big.len() / 2, "{} vs {}", small.len(), big.len());
+        }
+        // Already small enough: used as it is.
+        let tiny = encode_webp(&solid(200, 100, |_, _| [9, 9, 9]), 80.0).unwrap();
+        assert!(small_from_thumb(&tiny).unwrap().is_none());
+        // Bad sizes are refused, not crashed on.
+        assert!(encode_webp(&Rgb { w: 0, h: 5, px: Zeroizing::new(Vec::new()) }, 80.0).is_err());
+        assert!(encode_webp(&Rgb { w: 4, h: 4, px: Zeroizing::new(vec![0; 10]) }, 80.0).is_err());
+        assert_eq!(image_mime(b"\x89PNG\r\n\x1a\n...."), Some("image/png"));
+        assert_eq!(image_mime(b"GIF89a"), None);
+    }
+
+    /// How WebP qualities compare with the JPEG quality 86 thumbnails, on real
+    /// photos: writes, for every picture in MV_CORPUS, the 640 px reference
+    /// (PNG), the JPEG q86 and WebP at several qualities into MV_OUT, for
+    /// tools/thumbquality.py to score (SSIM, PSNR, size). Run with
+    /// `MV_CORPUS=… MV_OUT=… cargo test -p media-vault-app webp_quality_corpus -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn webp_quality_corpus() {
+        let (Some(dir), Some(out)) = (std::env::var_os("MV_CORPUS"), std::env::var_os("MV_OUT")) else {
+            return;
+        };
+        let out = std::path::PathBuf::from(out);
+        std::fs::create_dir_all(&out).unwrap();
+        let size: usize = std::env::var("MV_SIZE").ok().and_then(|v| v.parse().ok()).unwrap_or(THUMB_MAX);
+        let mut names: Vec<_> = std::fs::read_dir(dir).unwrap().flatten().map(|e| e.path()).collect();
+        names.sort();
+        let (mut tj, mut tw) = (0.0, 0.0);
+        for p in names {
+            let Ok(bytes) = std::fs::read(&p) else { continue };
+            let Ok(pic) = decode(&bytes) else { continue };
+            let t = fit(&pic, size).unwrap_or_else(|| copy(&pic));
+            let stem = p.file_stem().unwrap().to_string_lossy().to_string();
+            let img = image::RgbImage::from_raw(t.w as u32, t.h as u32, t.px.to_vec()).unwrap();
+            img.save(out.join(format!("{stem}.ref.png"))).unwrap();
+            let t0 = std::time::Instant::now();
+            let j = encode_jpeg(&t, THUMB_QUALITY).unwrap();
+            tj += t0.elapsed().as_secs_f64();
+            std::fs::write(out.join(format!("{stem}.jpg86.jpg")), &*j).unwrap();
+            for q in [75.0f32, 80.0, 82.0, 83.0, 84.0, 86.0, 88.0] {
+                let t0 = std::time::Instant::now();
+                let w = encode_webp(&t, q).unwrap();
+                if q == THUMB_WEBP_QUALITY {
+                    tw += t0.elapsed().as_secs_f64();
+                }
+                std::fs::write(out.join(format!("{stem}.webp{q}.webp")), &*w).unwrap();
+            }
+        }
+        println!("encode time: jpeg q86 {:.1} ms total, webp q{THUMB_WEBP_QUALITY} {:.1} ms total", tj * 1e3, tw * 1e3);
     }
 }
