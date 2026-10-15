@@ -9,6 +9,8 @@ import { formatTime } from '../media';
 import { saveViewerPrefs } from '../prefs';
 import { Dropdown, Modal } from './Dialogs';
 import { CloseIcon } from './Icons';
+import { DepthSettingsDialog } from './DepthSettings';
+import { depthPack } from '../depth';
 import { COLS, framePosition, ROWS } from '../previews';
 import { nearestFrame } from '../viewerlogic';
 
@@ -212,11 +214,25 @@ export function GifMakerDialog(props: {
 
 /** Picture scaling, like IrfanView's "Use Resample for fitting / zooming". */
 export function ScalingMenu({ prefs }: { prefs: ViewerSettings }) {
+  // 3D photos (begin): the switch, and a window with its shape, amount and speed (DepthSettings.tsx).
+  const [depth, setDepth] = useState(false);
+  // 3D photos (end)
   return (
-    <Dropdown className="btn btn-sm glass" label="View ▾" title="How pictures are scaled" items={[
-      { label: 'Smooth when shrinking to fit', hint: 'better quality', checked: prefs.smoothFit, onSelect: () => saveViewerPrefs({ smoothFit: !prefs.smoothFit }) },
-      { label: 'Smooth when zoomed in', hint: 'off = crisp pixels (P)', checked: prefs.smoothZoom, onSelect: () => saveViewerPrefs({ smoothZoom: !prefs.smoothZoom }) },
-      { label: 'Sharpen after smoothing', checked: prefs.sharpen, onSelect: () => saveViewerPrefs({ sharpen: !prefs.sharpen }) },
-    ]} />
+    <>
+      <Dropdown className="btn btn-sm glass" label="View ▾" title="How pictures are shown" items={[
+        { label: 'Smooth when shrinking to fit', hint: 'better quality', checked: prefs.smoothFit, onSelect: () => saveViewerPrefs({ smoothFit: !prefs.smoothFit }) },
+        { label: 'Smooth when zoomed in', hint: 'off = crisp pixels (P)', checked: prefs.smoothZoom, onSelect: () => saveViewerPrefs({ smoothZoom: !prefs.smoothZoom }) },
+        { label: 'Sharpen after smoothing', checked: prefs.sharpen, onSelect: () => saveViewerPrefs({ sharpen: !prefs.sharpen }) },
+        // 3D photos (begin)
+        { label: '3D photos (gentle depth motion)', hint: 'still pictures', checked: !!prefs.depthAuto, sepBefore: true, onSelect: () => {
+          saveViewerPrefs({ depthAuto: !prefs.depthAuto });
+          // Without the depth pack nothing would move: the settings window says what's missing.
+          if (!prefs.depthAuto) void depthPack(true).then((i) => !i?.available && setDepth(true));
+        } },
+        { label: '3D photo settings…', hint: 'shape, amount, speed', onSelect: () => setDepth(true) },
+        // 3D photos (end)
+      ]} />
+      {depth && <DepthSettingsDialog prefs={prefs} onClose={() => setDepth(false)} />}
+    </>
   );
 }

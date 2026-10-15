@@ -34,7 +34,7 @@ import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage'
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
-import { depthAhead, depthPack, NO_DEPTH_PACK } from '../depth';
+import { depthAhead, depthPack, motionChoice, NO_DEPTH_PACK } from '../depth';
 import { lazyPart } from '../lazypart';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
@@ -783,21 +783,26 @@ export function Player(props: PlayerProps) {
     keys: !!props.keys, onMessage: setFlash, onStart: () => setPaused(true) });
   const upLayer = useRef<HTMLDivElement>(null);
 
-  // ---- 3D photos (begin): gentle depth parallax for still pictures in the slideshow ----------
-  // It works inside the same layer as slow pan and zoom and Line up faces, so those still apply;
-  // pictures without a depth map (or without the pack) simply show as usual.
+  // ---- 3D photos (begin): gentle depth parallax for still pictures ----------------------------
+  // On (View ▾ → 3D photos) it moves pictures in slideshows, fitted to each picture's time, and
+  // over and over while a picture is simply open. It works inside the same layer as slow pan and
+  // zoom and Line up faces, so those still apply; pictures without a depth map (or without the
+  // pack) simply show as usual.
+  const depthAuto = !!prefs.depthAuto;
   const [depthPackOk, setDepthPackOk] = useState(false);
   useEffect(() => {
-    if (!s.depth3d && !prefs.depthMouse) return;
+    if (!depthAuto && !prefs.depthMouse) return;
     let alive = true;
     depthPack().then((i) => alive && setDepthPackOk(!!i?.available));
     return () => {
       alive = false;
     };
-  }, [s.depth3d, prefs.depthMouse]);
-  // The 3D button: the picture follows the mouse (slideshow or not).
+  }, [depthAuto, prefs.depthMouse]);
+  // Just viewing (no slideshow), the movement goes on for as long as the picture is open; only
+  // the title card holds it, not a paused slideshow left behind.
+  // The 3D button: the picture follows the mouse (slideshow or not); it takes over from the automatic movement.
   const depthByMouse = !!prefs.depthMouse && depthPackOk && !mini && !props.compact;
-  const depthRunning = ((s.depth3d && slideshow) || depthByMouse) && depthPackOk && !mini;
+  const depthRunning = (depthAuto || depthByMouse) && depthPackOk && !mini;
   const depth3d = depthRunning && item?.kind === 'image' && !zoomed && !failed && rot === 0 && (depthByMouse || !beatDriving) && !up.src && !!imgInfo;
   useEffect(() => {
     // The next pictures' depth is worked out ahead, so the slideshow doesn't wait.
@@ -814,7 +819,7 @@ export function Player(props: PlayerProps) {
       setDepthPackOk(true);
     }
     saveViewerPrefs({ depthMouse: on });
-    setFlash(on ? '3D: move the mouse over the picture · strength in Timing ▾' : '3D off');
+    setFlash(on ? '3D: move the mouse over the picture · strength in View ▾ → 3D photos' : '3D off');
   };
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
@@ -1229,9 +1234,11 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && imgInfo && (
-              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'show'}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
                 amount={prefs.depthAmount ?? 1} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
-                showMs={s.imageSeconds * 1000} halted={halted} sharpen={prefs.sharpen && prefs.smoothFit} />
+                motion={{ shape: motionChoice(prefs.depthShape), amount: prefs.depthMotion ?? 1, speed: prefs.depthSpeed ?? 1 }}
+                endless={!slideshow} halted={slideshow ? halted : !!props.hold}
+                showMs={s.imageSeconds * 1000} sharpen={prefs.sharpen && prefs.smoothFit} />
             )}
             {/* 3D photos (end) */}
             {up.src && item && (
@@ -1411,7 +1418,7 @@ export function Player(props: PlayerProps) {
               {up.button}
               {isPicture && item?.kind === 'image' && !failed && (
                 <button type="button" className={`pbtn lg depth-btn${prefs.depthMouse ? ' on' : ''}`} aria-pressed={!!prefs.depthMouse}
-                  aria-label="3D photo" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in Timing ▾) · click to turn off' : '3D: the picture moves in depth with your mouse'}
+                  aria-label="3D photo" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in View ▾ → 3D photos) · click to turn off' : '3D: the picture moves in depth with your mouse'}
                   onClick={toggleDepthMouse}>
                   3D
                 </button>

@@ -43,6 +43,14 @@ export interface ViewerSettings {
   depthAmount?: number;
   /** 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way). */
   depthReact?: number;
+  /** 3D photos (View ▾): still pictures move gently in depth, in slideshows and while just open. */
+  depthAuto?: boolean;
+  /** …how far they move (1 = as designed; 0.3–4), how fast (1 = as designed; 0.25–4) and along which shape. */
+  depthMotion?: number;
+  depthSpeed?: number;
+  depthShape?: 'random' | 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'spiral' | 'pendulum';
+  /** The old slideshow setting "3D photos" has been carried over to depthAuto (done once). */
+  depthAutoMigrated?: boolean;
   /** Discovery river: the current's speed (1 = normal), how many items flow (1 = as designed) and how many depth layers. */
   riverFlow?: number;
   riverDensity?: number;
@@ -58,7 +66,9 @@ export interface ViewerSettings {
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
-  depthMouse: false, depthAmount: 1, depthReact: 1, riverFlow: 1, riverDensity: 1, riverLayers: 5,
+  depthMouse: false, depthAmount: 1, depthReact: 1,
+  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthAutoMigrated: false,
+  riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
 };

@@ -17,7 +17,10 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { inTauri, type DepthInfo, type DepthMap } from '../api';
-import { cropScale, depthOf, depthPack, easeToward, mouseLean, mousePose, NO_DEPTH_PACK, pickPath, pivotOf, poseAt, progress, scalePose, shiftUv } from '../depth';
+import {
+  advancePhase, depthOf, depthPack, easeToward, framePose, loopOf, mouseLean, mousePose, NO_DEPTH_PACK, pickShape, pivotOf, progress, scalePose,
+  shapePose, slideLoops, slidePhase, type MotionChoice, type MotionLoop, type MotionShape,
+} from '../depth';
 import { drawnRect } from '../flip';
 
 interface Props {
@@ -33,10 +36,14 @@ interface Props {
   sharpen: boolean;
   /** Told once the moving picture is showing (true) or given up (false). */
   onLive?: (live: boolean) => void;
-  /** How strong the depth is (1 = as designed; Timing ▾ → 3D depth). */
+  /** How strong the depth is (1 = as designed; View ▾ → 3D photos → 3D depth). */
   amount?: number;
   /** Follow the mouse instead of moving on its own; `react` = how strongly (1 = the edge of the picture leans all the way). */
   mouse?: { react: number };
+  /** The automatic movement: its shape, how far (1 = as designed) and how fast (1 = as designed). */
+  motion?: { shape: MotionChoice; amount: number; speed: number };
+  /** Not in a slideshow: move over and over for as long as the picture is open (showMs is not used). */
+  endless?: boolean;
 }
 
 /** Less than this left of the picture's time: not worth starting. */
@@ -192,8 +199,10 @@ export function DepthSection() {
     <section className="section">
       <h2>3D photos</h2>
       <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-        In slideshows, still pictures can move gently in depth, as if the camera drifted a little. Turn it on under
-        <b> Timing ▾ → 3D photos</b>. The depth of each picture is worked out offline and kept in memory only.
+        Still pictures can move gently in depth, as if the camera drifted a little: in slideshows, and over and over
+        while a picture is open. Turn it on in the viewer under <b>View ▾ → 3D photos</b>, where you can also pick the
+        motion's shape, amount and speed, or click the <b>3D</b> button to make the picture follow your mouse.
+        The depth of each picture is worked out offline and kept in memory only.
       </p>
       {info && (info.available ? (
         <div className="info">
@@ -263,7 +272,8 @@ export function Depth3D(props: Props) {
       const start = now();
       const end = propsRef.current.showMs;
       const byMouse = !!propsRef.current.mouse;
-      if (!byMouse && end - start < MIN_MOVE_MS) return give(false);
+      const endless = !byMouse && !!propsRef.current.endless;
+      if (!byMouse && !endless && end - start < MIN_MOVE_MS) return give(false);
       scene = makeScene(canvas, bmp, map);
       bmp.close();
       picture = null;
@@ -272,7 +282,31 @@ export function Depth3D(props: Props) {
         cancelAnimationFrame(raf);
         setLive(false);
       });
-      const path = pickPath();
+      // The automatic movement: one shape per picture (Random picks it here); each loop
+      // goes a new way round. A shape chosen while the picture is open starts with the next loop,
+      // so it never jumps.
+      const seed = Math.floor(Math.random() * 2 ** 31);
+      let choice: MotionChoice = propsRef.current.motion?.shape ?? 'random';
+      let shape: MotionShape = pickShape(choice);
+      let loopIdx = -1;
+      let loop: MotionLoop = loopOf(shape, seed, 0);
+      const loopFor = (i: number) => {
+        if (i !== loopIdx) {
+          const c = propsRef.current.motion?.shape ?? 'random';
+          if (c !== choice) {
+            choice = c;
+            shape = pickShape(c);
+          }
+          loop = loopOf(shape, seed, i);
+          loopIdx = i;
+        }
+        return loop;
+      };
+      // In a slideshow: whole loops within the picture's time (more when faster), fixed when it starts.
+      const loops = slideLoops(propsRef.current.motion?.speed ?? 1);
+      // Outside: a running count of loops, moved on frame by frame (see advancePhase).
+      let phase = 0;
+      let lastMs = start;
       const pivot = pivotOf(map);
       const s = scene;
       // With the mouse: where it points (target) and where the camera is (eased toward it).
@@ -294,7 +328,17 @@ export function Depth3D(props: Props) {
         }
         const d = drawnRect(cw, ch, nw, nh, p.fit);
         const amount = Math.max(0, p.amount ?? 1);
-        const u = byMouse ? 0 : progress(now(), start, end);
+        let u = 0;
+        let at = { loop: 0, v: 0 };
+        if (endless) {
+          const ms = now();
+          phase = advancePhase(phase, ms - lastMs, p.motion?.speed ?? 1);
+          lastMs = ms;
+          at = { loop: Math.floor(phase), v: phase - Math.floor(phase) };
+        } else if (!byMouse) {
+          u = progress(now(), start, end);
+          at = slidePhase(u, loops);
+        }
         const t = performance.now();
         if (byMouse) {
           // (After a still moment the first step is one frame, not the whole pause.)
@@ -303,22 +347,24 @@ export function Depth3D(props: Props) {
           lean.y = easeToward(lean.y, want.y, dt);
         }
         lastT = t;
-        const pose = byMouse ? mousePose(lean, amount) : scalePose(poseAt(u, path), amount);
-        const shift = shiftUv(pose, d.width, d.height);
+        const pose = byMouse ? mousePose(lean, amount) : scalePose(shapePose(at.v, loopFor(at.loop)), amount * Math.max(0, p.motion?.amount ?? 1));
+        // Held within what can be shown without the picture's edges.
+        const f = framePose(pose, d.width, d.height, pivot);
         const { gl } = s;
         gl.clear(gl.COLOR_BUFFER_BIT);
         // Whole pixels from the top left, exactly where the plain picture is drawn (GL counts from the bottom).
         const vw = Math.round(d.width * r);
         const vh = Math.round(d.height * r);
         gl.viewport(Math.round(d.left * r), bh - Math.round(d.top * r) - vh, vw, vh);
-        gl.uniform2f(s.u.shift, shift.x, shift.y);
-        gl.uniform1f(s.u.dolly, pose.dolly);
-        gl.uniform1f(s.u.scale, cropScale(shift, pose.dolly, pivot));
+        gl.uniform2f(s.u.shift, f.shift.x, f.shift.y);
+        gl.uniform1f(s.u.dolly, f.dolly);
+        gl.uniform1f(s.u.scale, f.scale);
         gl.uniform1f(s.u.pivot, pivot);
         gl.uniform2f(s.u.focus, 0.5, 0.5);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
-        const moving = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) > 0.0005 : !clock.current.halted && u < 1;
+        const moving = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) > 0.0005
+          : !clock.current.halted && (endless || u < 1);
         if (moving) raf = requestAnimationFrame(frame);
       };
       frame();
@@ -367,7 +413,7 @@ export function Depth3D(props: Props) {
   // Resumed, resized, refitted or made stronger: draw again.
   useEffect(() => {
     kick.current();
-  }, [props.halted, props.fit, props.amount]);
+  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape]);
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;

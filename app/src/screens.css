@@ -1073,3 +1073,9 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .settings main > .section { content-visibility: auto; contain-intrinsic-block-size: auto 300px; }
 /* An open "⋯" menu inside one must be able to spill out over its neighbours. */
 .person:has(.menu), .look-group:has(.menu), .settings main > .section:has(.menu) { content-visibility: visible; }
+
+/* 3D photos settings (View ▾ → 3D photos): the motion shape chooser, a small drawing over each name. */
+.shape-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.shape-pick button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px; border-radius: 8px; border: 1px solid #23262c; background: #15171b; color: var(--text-2); font-size: 11.5px; cursor: pointer; }
+.shape-pick button:hover { border-color: var(--line-2); color: var(--text); }
+.shape-pick button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
