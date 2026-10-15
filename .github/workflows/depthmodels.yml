@@ -1,0 +1,170 @@
+name: depth models
+
+# Builds the optional "Balanced" and "Best" 3D-photo depth models (Depth
+# Anything 3 Base and Mono Large — both Apache-2.0) as their own downloads,
+# MediaVault-depth-<id>-windows.zip, each unzipping to MediaVault\tools\depth-<id>\
+# with model.onnx, depth.json (what the app reads), ONNX Runtime + DirectML,
+# and the licences. The "Fast" model stays the depth pack (depthpack.yml).
+#
+# The model is converted here from the original PyTorch weights (Hugging Face)
+# and checked against PyTorch before it is packed (.github/scripts/da3_export.py).
+# Run by hand (Actions → depth models → Run workflow); never on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Which model
+        type: choice
+        options: [da3-mono-large, da3-base]
+        required: true
+      tag:
+        description: Release tag (default depth-models-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with depthpack.yml, upscaler.yml and facepack.yml.
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  # The Depth Anything 3 source, at a fixed commit.
+  DA3_REPO: https://github.com/ByteDance-Seed/Depth-Anything-3
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which model
+        run: |
+          set -euo pipefail
+          case "${{ github.event.inputs.model }}" in
+            da3-mono-large) echo "CFG=da3mono-large" >> "$GITHUB_ENV"; echo "HF=depth-anything/DA3MONO-LARGE" >> "$GITHUB_ENV"
+                            echo "NAME=Best" >> "$GITHUB_ENV"; echo "TITLE=Depth Anything 3 Mono Large" >> "$GITHUB_ENV" ;;
+            da3-base)       echo "CFG=da3-base" >> "$GITHUB_ENV"; echo "HF=depth-anything/DA3-BASE" >> "$GITHUB_ENV"
+                            echo "NAME=Balanced" >> "$GITHUB_ENV"; echo "TITLE=Depth Anything 3 Base" >> "$GITHUB_ENV" ;;
+            *) echo "unknown model"; exit 1 ;;
+          esac
+          echo "ID=${{ github.event.inputs.model }}" >> "$GITHUB_ENV"
+
+      - name: Depth Anything 3 source and the tools to convert it
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$DA3_REPO" Depth-Anything-3
+          (cd Depth-Anything-3 && git log -1 --format='DA3 source: %H %cd')
+          echo "DA3_COMMIT=$(cd Depth-Anything-3 && git rev-parse HEAD)" >> "$GITHUB_ENV"
+          grep -q "Apache License" Depth-Anything-3/LICENSE
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install einops addict omegaconf huggingface_hub safetensors "numpy<2" pillow onnx onnxscript onnxruntime onnxconverter-common
+          pip install --no-deps -e Depth-Anything-3
+
+      - name: Convert and check against PyTorch
+        run: |
+          set -euo pipefail
+          python .github/scripts/da3_export.py "$CFG" "$HF" pack
+          ls -la pack
+          # The weights' own licence must be Apache-2.0 (the Giant/Large multi-view ones are not and are never used).
+          python - <<'PY'
+          import json, pathlib, re
+          p = pathlib.Path("pack")
+          text = " ".join(f.read_text(errors="ignore") for f in p.glob("weights-README*"))
+          m = re.search(r"license:\s*([\w.\-]+)", text, re.I)
+          lic = (m.group(1) if m else "").lower()
+          print("weights licence:", lic or "(not stated)")
+          if lic and lic not in ("apache-2.0",):
+              raise SystemExit(f"weights licence is {lic}, not Apache-2.0")
+          PY
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+
+      - name: Manifest, licences, readme, checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("pack")
+          made = json.loads((p / "export.json").read_text())
+          dyn = made["dynamic"]
+          manifest = {
+              "id": os.environ["ID"], "name": os.environ["NAME"], "model": os.environ["TITLE"], "file": "model.onnx",
+              "output": "depth", "patch": 14, "standardSide": 518, "highSide": 756 if dyn else 518,
+              "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "licence": "Apache-2.0",
+          }
+          (p / "depth.json").write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — 3D PHOTOS DEPTH MODEL \"$NAME\": LICENCES"
+            echo "======================================================"
+            echo
+            echo "model.onnx   $TITLE by ByteDance Seed (https://github.com/ByteDance-Seed/Depth-Anything-3),"
+            echo "    weights from https://huggingface.co/$HF under the Apache-2.0 licence, converted to ONNX"
+            echo "    (one picture in, its depth out; camera and multi-view parts left out) from source commit $DA3_COMMIT."
+            echo "onnxruntime.dll   ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence)."
+            echo "DirectML.dll      DirectML $DIRECTML_VERSION (Microsoft); redistributed under its licence below."
+            echo
+            for f in Depth-Anything-3/LICENSE pack/weights-LICENSE* "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          rm -f pack/weights-*
+          printf '%s\r\n' \
+            "Media Vault 3D photos depth model: $NAME ($TITLE)" \
+            "" \
+            "Unzip into the same place as the app: this adds MediaVault\\tools\\depth-$ID." \
+            "Then choose it in Settings > 3D photos > Depth model (or View > 3D photo settings in the viewer)." \
+            "" \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="depth-models-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "$TITLE ($HF, source $DA3_COMMIT)" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > pack/VERSION.txt
+          cp pack/export.json pack/CONVERSION.json && rm pack/export.json
+          (cd pack && sha256sum model.onnx *.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "z/MediaVault/tools/depth-$ID"
+          cp pack/* "z/MediaVault/tools/depth-$ID/"
+          zip_name="MediaVault-depth-$ID-windows.zip"
+          (cd z && zip -qr -6 "../$zip_name" MediaVault)
+          ls -la "$zip_name"
+          notes="Optional 3D-photo depth models (Depth Anything 3, Apache-2.0). Unzip into the same place as the app, then choose the model in Settings → 3D photos → Depth model. Fast = the depth pack (depth-2026-10-15); Balanced = depth-da3-base; Best = depth-da3-mono-large."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$zip_name" --prerelease --title "3D photo depth models $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi
