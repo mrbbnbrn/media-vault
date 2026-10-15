@@ -53,6 +53,8 @@ pub struct Item {
     pub note: Option<String>,
     /// Videos: where you left off (ms).
     pub resume_ms: Option<i64>,
+    /// A tiny colour sketch of the thumbnail, drawn until it loads (sketch.rs).
+    pub sketch: Option<String>,
 }
 
 const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, m.height, m.duration_ms, \
@@ -60,7 +62,7 @@ const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, 
      COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at, \
      IFNULL(m.preview_object_id, '') <> '', m.copy_of, \
      EXISTS(SELECT 1 FROM media x WHERE x.object_id = m.object_id AND x.id <> m.id AND x.deleted_at IS NULL), \
-     m.note, m.resume_ms";
+     m.note, m.resume_ms, m.sketch";
 
 fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
     let thumb: Option<String> = r.get(10)?;
@@ -91,6 +93,7 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         linked: r.get(18)?,
         note: r.get(19)?,
         resume_ms: r.get(20)?,
+        sketch: r.get::<_, Option<String>>(21)?.filter(|s| !s.is_empty()),
     })
 }
 

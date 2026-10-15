@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -439,6 +439,14 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    if v < 11 {
+        // v11: a tiny colour sketch of each thumbnail (a few cells of colour,
+        // drawn blurred while the thumbnail loads). NULL = not made yet.
+        if !has_column(conn, "media", "sketch")? {
+            conn.execute_batch("ALTER TABLE media ADD COLUMN sketch TEXT;")?;
+        }
+        conn.pragma_update(None, "user_version", 11)?;
+    }
     Ok(())
 }
 
@@ -618,6 +626,21 @@ mod tests {
         c.execute_batch("DROP TABLE face_rejects; DROP TABLE faces; DROP TABLE face_not_same; PRAGMA user_version = 9;").unwrap();
         migrate(&c).unwrap();
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v11_adds_the_sketch_column() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", []).unwrap();
+        c.execute_batch("ALTER TABLE media DROP COLUMN sketch; PRAGMA user_version = 10;").unwrap();
+        migrate(&c).unwrap();
+        let s: Option<String> = c.query_row("SELECT sketch FROM media", [], |r| r.get(0)).unwrap();
+        assert_eq!(s, None);
+        // Running it again (column already there) is fine.
+        c.execute_batch("PRAGMA user_version = 10;").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 11);
     }
 }

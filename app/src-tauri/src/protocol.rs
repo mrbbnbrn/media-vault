@@ -2,7 +2,10 @@
 //!
 //! `vault://localhost/media/<id>` and `/thumb/<id>` decrypt on the fly from
 //! the open vault, one 1 MiB chunk at a time, with HTTP Range support so
-//! videos can seek. `local://localhost/f/<hex path>` plays ordinary files the
+//! videos can seek. Range answers for media line up with the encryption
+//! chunks, and the last few decrypted chunks of recently played files stay
+//! in memory (see [`ChunkCache`]), so a seek or the next request never
+//! decrypts the same chunk twice. `local://localhost/f/<hex path>` plays ordinary files the
 //! user dropped onto a player (outside any vault), only from folders they
 //! dropped.
 
@@ -10,7 +13,9 @@ use std::collections::HashSet;
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+
+use zeroize::Zeroizing;
 
 use serde::Serialize;
 use tauri::http::{Request, Response, StatusCode, header};
@@ -186,6 +191,12 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
     let Ok(oid) = ObjectId::from_hex(&hex) else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
+    // Videos (and anything else asked for in ranges) go through the chunk cache.
+    if kind == ObjectKind::Media
+        && let Some(range) = header_str(req, header::RANGE)
+    {
+        return serve_cached(s, &oid, mime, range);
+    }
     // Opening only needs the key briefly; reading happens without holding locks.
     let reader = s.vault().open_object(kind, &oid);
     match reader {
@@ -195,6 +206,185 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
         }
         Err(e) => plain(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
     }
+}
+
+// ---- decrypted chunks of recently played files ------------------------------------------
+
+/// Files whose chunks are kept, and chunks kept per file. At 1 MiB chunks
+/// that is at most 36 MiB, all in memory (wiped when dropped) and emptied
+/// when the vault locks.
+const CACHE_FILES: usize = 6;
+const CACHE_CHUNKS: usize = 6;
+/// After a seek (or the first request) only up to the end of the next chunk
+/// is sent, so the picture comes back quickly; requests that carry on where
+/// the last one ended get up to [`MAX_CHUNK`].
+const SEEK_CHUNKS: u64 = 2;
+
+type Chunk = Arc<Zeroizing<Vec<u8>>>;
+
+struct CachedFile {
+    id: ObjectId,
+    len: u64,
+    chunk: u64,
+    /// (index, plaintext), most recently used last.
+    chunks: Vec<(u64, Chunk)>,
+    /// One past the last byte sent (to tell a seek from playing on).
+    sent_to: u64,
+    used: u64,
+}
+
+#[derive(Default)]
+pub struct ChunkCache {
+    files: Vec<CachedFile>,
+    tick: u64,
+    /// Chunks decrypted so far (for tests and measurements).
+    pub decrypted: u64,
+}
+
+impl ChunkCache {
+    fn file(&mut self, id: &ObjectId) -> Option<&mut CachedFile> {
+        self.tick += 1;
+        let t = self.tick;
+        let f = self.files.iter_mut().find(|f| f.id == *id)?;
+        f.used = t;
+        Some(f)
+    }
+
+    fn add_file(&mut self, id: ObjectId, len: u64, chunk: u64) {
+        if self.files.iter().any(|f| f.id == id) {
+            return;
+        }
+        if self.files.len() >= CACHE_FILES
+            && let Some(i) = self.files.iter().enumerate().min_by_key(|(_, f)| f.used).map(|(i, _)| i)
+        {
+            self.files.swap_remove(i);
+        }
+        self.tick += 1;
+        self.files.push(CachedFile { id, len, chunk, chunks: Vec::new(), sent_to: u64::MAX, used: self.tick });
+    }
+
+    fn get(&mut self, id: &ObjectId, index: u64) -> Option<Chunk> {
+        let f = self.file(id)?;
+        let i = f.chunks.iter().position(|(k, _)| *k == index)?;
+        let c = f.chunks.remove(i);
+        let out = c.1.clone();
+        f.chunks.push(c);
+        Some(out)
+    }
+
+    fn put(&mut self, id: &ObjectId, index: u64, data: Chunk) {
+        self.decrypted += 1;
+        if let Some(f) = self.file(id) {
+            f.chunks.retain(|(k, _)| *k != index);
+            if f.chunks.len() >= CACHE_CHUNKS {
+                f.chunks.remove(0);
+            }
+            f.chunks.push((index, data));
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.files.clear();
+    }
+}
+
+static CHUNKS: Mutex<ChunkCache> = Mutex::new(ChunkCache { files: Vec::new(), tick: 0, decrypted: 0 });
+
+fn chunks() -> std::sync::MutexGuard<'static, ChunkCache> {
+    CHUNKS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Forget every decrypted chunk (the vault locked).
+pub fn forget_cache() {
+    chunks().clear();
+}
+
+/// Which bytes to send for a range request on a file split into chunks of
+/// `chunk` bytes. An explicit end is honoured; an open end ("bytes=N-") stops
+/// at a chunk boundary: soon after a seek, up to `MAX_CHUNK` when playing on
+/// (`carry_on`: the request starts where the last answer ended).
+pub fn chunked_range(h: &str, len: u64, chunk: u64, carry_on: bool) -> Option<(u64, u64)> {
+    let (start, end) = parse_range(Some(h), len)?;
+    let spec = h.trim().strip_prefix("bytes=")?;
+    let open_end = spec.split(',').next()?.trim().ends_with('-');
+    if !open_end || chunk == 0 {
+        return Some((start, end));
+    }
+    let want = if carry_on { MAX_CHUNK.div_ceil(chunk).max(1) } else { SEEK_CHUNKS };
+    let stop = (start / chunk + want) * chunk - 1;
+    Some((start, stop.min(len - 1)))
+}
+
+fn serve_cached(s: &Session, oid: &ObjectId, mime: &str, range: &str) -> Response<Vec<u8>> {
+    let known = chunks().file(oid).map(|f| (f.len, f.chunk, f.sent_to));
+    let mut reader = None;
+    let (len, cs, sent_to) = match known {
+        Some(k) => k,
+        None => match s.vault().open_object(ObjectKind::Media, oid) {
+            Ok(r) => {
+                let (len, cs) = (r.len(), r.header().chunk_size());
+                chunks().add_file(*oid, len, cs);
+                reader = Some(r);
+                (len, cs, u64::MAX)
+            }
+            Err(e) => return plain(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+        },
+    };
+    let base = |b: tauri::http::response::Builder| {
+        b.header(header::CONTENT_TYPE, mime)
+            .header(header::ACCEPT_RANGES, "bytes")
+            .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
+            .header(header::CACHE_CONTROL, "no-store")
+    };
+    // Playing on: it starts where the last answer ended, or right after a
+    // chunk that was just sent.
+    let carry_on = parse_range(Some(range), len).is_some_and(|(a, _)| {
+        a == sent_to
+            || (a > 0 && a % cs == 0 && chunks().file(oid).is_some_and(|f| f.chunks.iter().any(|(k, _)| *k == a / cs - 1)))
+    });
+    let Some((start, end)) = chunked_range(range, len, cs, carry_on) else {
+        return base(Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE))
+            .header(header::CONTENT_RANGE, format!("bytes */{len}"))
+            .body(Vec::new())
+            .unwrap();
+    };
+    let mut body = Vec::with_capacity((end - start + 1) as usize);
+    for index in start / cs..=end / cs {
+        let hit = chunks().get(oid, index);
+        let data = match hit {
+            Some(d) => d,
+            None => {
+                if reader.is_none() {
+                    match s.vault().open_object(ObjectKind::Media, oid) {
+                        Ok(r) => reader = Some(r),
+                        Err(e) => return plain(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
+                    }
+                }
+                // Decrypting happens without holding the cache's lock.
+                let Ok(d) = reader.as_mut().unwrap().read_chunk(index) else {
+                    return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
+                };
+                let d = Arc::new(d);
+                chunks().put(oid, index, d.clone());
+                d
+            }
+        };
+        let c0 = index * cs;
+        let from = start.max(c0) - c0;
+        let to = (end + 1).min(c0 + data.len() as u64) - c0;
+        if from >= to {
+            return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
+        }
+        body.extend_from_slice(&data[from as usize..to as usize]);
+    }
+    if let Some(f) = chunks().file(oid) {
+        f.sent_to = end + 1;
+    }
+    base(Response::builder().status(StatusCode::PARTIAL_CONTENT))
+        .header(header::CONTENT_RANGE, format!("bytes {start}-{end}/{len}"))
+        .header(header::CONTENT_LENGTH, body.len())
+        .body(body)
+        .unwrap()
 }
 
 // ---- playing ordinary files outside the vault ------------------------------------------
@@ -461,6 +651,159 @@ mod tests {
             Some("bytes=999-"),
         );
         assert_eq!(bad.status(), StatusCode::RANGE_NOT_SATISFIABLE);
+    }
+
+    /// A vault with one "video" of `len` pseudo-random bytes; its item id and bytes.
+    fn vault_with_video(t: &Path, len: usize) -> (Session, i64, Vec<u8>) {
+        let (s, _) = crate::session::create(t.to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let mut x: u64 = 0x9e37_79b9_7f4a_7c15;
+        let data: Vec<u8> = (0..len)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x as u8
+            })
+            .collect();
+        let (oid, _) = s.vault().add_object(ObjectKind::Media, &data[..]).unwrap();
+        s.db()
+            .execute(
+                "INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES (?, 'video', 'big.mp4', 'mp4', ?, 'h', 0)",
+                rusqlite::params![oid.to_hex(), len as i64],
+            )
+            .unwrap();
+        let id = s.db().last_insert_rowid();
+        (s, id, data)
+    }
+
+    fn get_range(s: &Session, id: i64, range: &str) -> Response<Vec<u8>> {
+        let req = Request::builder().uri(format!("vault://localhost/media/{id}")).header(header::RANGE, range).body(Vec::new()).unwrap();
+        serve_vault(Some(s), &req)
+    }
+
+    fn sent(r: &Response<Vec<u8>>) -> (u64, u64) {
+        let cr = r.headers()[header::CONTENT_RANGE].to_str().unwrap();
+        let (a, b) = cr.trim_start_matches("bytes ").split_once('/').unwrap().0.split_once('-').unwrap();
+        (a.parse().unwrap(), b.parse().unwrap())
+    }
+
+    #[test]
+    fn open_ranges_end_on_chunk_boundaries() {
+        const M: u64 = 1 << 20;
+        let len = 100 * M + 123;
+        // After a seek: to the end of the next chunk.
+        assert_eq!(chunked_range("bytes=0-", len, M, false), Some((0, 2 * M - 1)));
+        assert_eq!(chunked_range("bytes=5000000-", len, M, false), Some((5_000_000, 6 * M - 1)));
+        // Playing on: up to 8 chunks, still ending on a boundary.
+        assert_eq!(chunked_range("bytes=2097152-", len, M, true), Some((2 * M, 10 * M - 1)));
+        assert_eq!(chunked_range("bytes=2097000-", len, M, true), Some((2_097_000, 9 * M - 1)));
+        // The end of the file, explicit ends and suffixes are as asked.
+        assert_eq!(chunked_range("bytes=104857000-", len, M, false), Some((104_857_000, len - 1)));
+        assert_eq!(chunked_range("bytes=10-20", len, M, false), Some((10, 20)));
+        assert_eq!(chunked_range("bytes=-100", len, M, false), Some((len - 100, len - 1)));
+        assert_eq!(chunked_range("bytes=999999999-", len, M, false), None);
+    }
+
+    #[test]
+    fn video_ranges_come_from_the_chunk_cache() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, id, data) = vault_with_video(t.path(), 12 * (1 << 20) + 777);
+        let len = data.len() as u64;
+        let before = chunks().decrypted;
+        // A seek into the middle: two chunks decrypted.
+        let r = get_range(&s, id, "bytes=3500000-");
+        assert_eq!(r.status(), StatusCode::PARTIAL_CONTENT);
+        let (a, b) = sent(&r);
+        assert_eq!((a, b), (3_500_000, 5 * (1 << 20) - 1));
+        assert_eq!(r.body(), &data[a as usize..=b as usize]);
+        assert_eq!(chunks().decrypted - before, 2);
+        // The same place again, and small pieces inside it: nothing new decrypted.
+        let r2 = get_range(&s, id, "bytes=3500000-");
+        assert_eq!(r2.body(), r.body());
+        let r3 = get_range(&s, id, "bytes=4000000-4000099");
+        assert_eq!(r3.body(), &data[4_000_000..4_000_100]);
+        assert_eq!(chunks().decrypted - before, 2);
+        // Playing on from where the last answer ended: a long piece.
+        let r4 = get_range(&s, id, &format!("bytes={}-", 5 << 20));
+        let (a, b) = sent(&r4);
+        assert_eq!((a, b), (5 << 20, len - 1));
+        assert_eq!(r4.body(), &data[a as usize..]);
+        // Asked with no Range at all: the whole file.
+        let full = serve_vault(Some(&s), &Request::builder().uri(format!("vault://localhost/media/{id}")).body(Vec::new()).unwrap());
+        assert_eq!(full.status(), StatusCode::OK);
+        assert_eq!(full.body(), &data);
+        assert_eq!(get_range(&s, id, "bytes=999999999-").status(), StatusCode::RANGE_NOT_SATISFIABLE);
+        // Locking forgets every decrypted chunk.
+        forget_cache();
+        assert!(chunks().file(&ObjectId::from_hex(&s.db().query_row("SELECT object_id FROM media WHERE id = ?", [id], |r| r.get::<_, String>(0)).unwrap()).unwrap()).is_none());
+    }
+
+    #[test]
+    fn the_cache_keeps_a_few_files_and_chunks() {
+        let mut c = ChunkCache::default();
+        let ids: Vec<ObjectId> = (0..8).map(|_| ObjectId::random()).collect();
+        for id in &ids {
+            c.add_file(*id, 100 << 20, 1 << 20);
+        }
+        assert_eq!(c.files.len(), CACHE_FILES);
+        assert!(c.file(&ids[0]).is_none() && c.file(&ids[1]).is_none(), "the oldest went");
+        for i in 0..10 {
+            c.put(&ids[7], i, Arc::new(Zeroizing::new(vec![i as u8])));
+        }
+        assert_eq!(c.file(&ids[7]).unwrap().chunks.len(), CACHE_CHUNKS);
+        assert!(c.get(&ids[7], 3).is_none());
+        assert_eq!(c.get(&ids[7], 9).unwrap()[0], 9);
+    }
+
+    /// Seek latency through the protocol, before (each request opens the file
+    /// and decrypts up to 8 MiB from wherever it lands) and after (chunk-aligned
+    /// answers from the chunk cache). Run with
+    /// `cargo test --release -p media-vault-app seek_latency -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn seek_latency() {
+        let t = tempfile::tempdir().unwrap();
+        let mb = std::env::var("MV_BENCH_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(400usize);
+        let (s, id, data) = vault_with_video(t.path(), mb << 20);
+        let len = data.len() as u64;
+        let hex: String = s.db().query_row("SELECT object_id FROM media WHERE id = ?", [id], |r| r.get(0)).unwrap();
+        let oid = ObjectId::from_hex(&hex).unwrap();
+        let old = |range: &str| {
+            let r = s.vault().open_object(ObjectKind::Media, &oid).unwrap();
+            respond(r, len, "video/mp4", Some(range))
+        };
+        let mut x: u64 = 12345;
+        let mut seeks = Vec::new();
+        for _ in 0..60 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seeks.push((x >> 11) % (len - (10 << 20)));
+        }
+        // A seek as the web engine does it: an open request where it lands, then
+        // (often) the same place again with a small explicit range, then playing on.
+        let run = |name: &str, f: &dyn Fn(&str) -> Response<Vec<u8>>| {
+            let mut first = Vec::new();
+            let mut total = Vec::new();
+            for &p in &seeks {
+                let t0 = std::time::Instant::now();
+                let r = f(&format!("bytes={p}-"));
+                first.push(t0.elapsed().as_secs_f64() * 1000.0);
+                let (_, end) = sent(&r);
+                assert_eq!(r.body()[..64], data[p as usize..p as usize + 64]);
+                let _ = f(&format!("bytes={p}-{}", p + 65535));
+                let _ = f(&format!("bytes={}-", end + 1));
+                total.push(t0.elapsed().as_secs_f64() * 1000.0);
+            }
+            first.sort_by(f64::total_cmp);
+            total.sort_by(f64::total_cmp);
+            let med = |v: &Vec<f64>| v[v.len() / 2];
+            let p90 = |v: &Vec<f64>| v[v.len() * 9 / 10];
+            println!("{name}: first answer median {:.1} ms (p90 {:.1}); seek+check+play-on median {:.1} ms (p90 {:.1})", med(&first), p90(&first), med(&total), p90(&total));
+        };
+        let d0 = chunks().decrypted;
+        run("before (no cache, 8 MiB from the seek)", &old);
+        forget_cache();
+        run("after  (chunk-aligned, cached)", &|r: &str| get_range(&s, id, r));
+        println!("chunks decrypted after: {} for {} seeks", chunks().decrypted - d0, seeks.len());
     }
 
     #[test]

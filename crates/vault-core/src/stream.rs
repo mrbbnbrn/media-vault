@@ -357,6 +357,15 @@ impl<R: Read + Seek> ObjectReader<R> {
         Ok(())
     }
 
+    /// One whole decrypted chunk (`index` counts from 0; see
+    /// `ObjectHeader::chunk_count`). For callers that keep their own cache of
+    /// chunks, e.g. to serve a video's byte ranges without decrypting the same
+    /// chunk again for each request.
+    pub fn read_chunk(&mut self, index: u64) -> io::Result<Zeroizing<Vec<u8>>> {
+        self.load_chunk(index)?;
+        Ok(self.cached.take().unwrap().1)
+    }
+
     /// Decrypt and authenticate every chunk, and check there are no extra
     /// bytes at the end. Used by the integrity check.
     pub fn verify_all(&mut self) -> Result<()> {

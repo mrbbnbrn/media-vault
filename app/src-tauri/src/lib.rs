@@ -46,6 +46,7 @@ mod session;
 mod share7z;
 mod organize;
 mod similar;
+mod sketch;
 mod storage;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
@@ -110,6 +111,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     faces::forget_cache();
     faceid::unload();
     analyse::stop();
+    protocol::forget_cache();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -155,6 +157,8 @@ fn install_session(inner: &Inner, s: Session) -> SessionInfo {
     if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
         old.close();
     }
+    // Nothing decrypted from another vault stays in memory.
+    protocol::forget_cache();
     start_background(s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
@@ -182,6 +186,7 @@ fn start_background(s: Arc<Session>) {
         // Files kept for undoing rotations last time (the undo list is new now).
         let _ = rotate::clean_retired(&s2);
     });
+    sketch::backfill(s.clone());
     meta::backfill(s);
 }
 
@@ -805,6 +810,8 @@ fn store_thumb(
     same_picture: bool,
 ) -> Result<(), String> {
     {
+        // The colour sketch shown while the thumbnail loads (sketch.rs).
+        let sketch = sketch::sketch_from_encoded(data).unwrap_or_default();
         let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
         let old: Option<String> = {
             let db = s.db();
@@ -812,8 +819,8 @@ fn store_thumb(
             db.execute(
                 // Free copies share the stored file, so they share the thumbnail too.
                 "UPDATE media SET thumb_object_id = ?1, width = COALESCE(?2, width), height = COALESCE(?3, height), \
-                 duration_ms = COALESCE(?4, duration_ms) WHERE object_id = (SELECT object_id FROM media WHERE id = ?5)",
-                rusqlite::params![tid.to_hex(), width, height, duration_ms, id],
+                 duration_ms = COALESCE(?4, duration_ms), sketch = ?6 WHERE object_id = (SELECT object_id FROM media WHERE id = ?5)",
+                rusqlite::params![tid.to_hex(), width, height, duration_ms, id, sketch],
             )
             .map_err(|e| e.to_string())?;
             // A replaced thumbnail may show something else: analyse it again.

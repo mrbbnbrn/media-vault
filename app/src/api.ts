@@ -405,6 +405,8 @@ export interface Item {
   note: string | null;
   /** Videos: where you left off (ms). */
   resumeMs: number | null;
+  /** A tiny colour sketch of the thumbnail, drawn until it loads (sketch.ts); none yet = null or missing. */
+  sketch?: string | null;
 }
 
 export interface Crumb {

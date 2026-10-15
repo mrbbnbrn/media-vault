@@ -39,6 +39,7 @@ ort = { version = "=2.0.0-rc.14", default-features = false, features = ["std", "
 # Saving an upscaled photo as a high-quality JPEG (and the native thumbnails).
 jpeg-encoder = "0.7.1"
 # The native analysis pass (picture.rs): decoding JPEG, PNG, WebP and GIF in memory.
+# Also used for the colour sketches (sketch.rs) and the tests' sample pictures.
 image = { version = "=0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 
 [target."cfg(windows)".dependencies]

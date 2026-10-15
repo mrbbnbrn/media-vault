@@ -228,6 +228,22 @@ export class Playlist<T extends Entry = Entry> {
     return out;
   }
 
+  /** The `n` items before this one, nearest first (what prev() would show; in random modes, what was shown before). */
+  peekBack(n: number): T[] {
+    if (this.pos < 0) return [];
+    const out: T[] = [];
+    if (isRandomish(this.order)) {
+      for (let k = this.history.length - 2; k >= 0 && out.length < n; k--) out.push(this.seq[this.history[k]]);
+      return out;
+    }
+    for (let k = 1; k <= n && k < this.seq.length; k++) {
+      const i = this.pos - k;
+      if (i >= 0) out.push(this.seq[i]);
+      else if (this.repeat === 'all') out.push(this.seq[i + this.seq.length]);
+    }
+    return out;
+  }
+
   /** Position for "34 of 214"; -1 in random modes. */
   index(): number {
     return isRandomish(this.order) ? -1 : this.pos;

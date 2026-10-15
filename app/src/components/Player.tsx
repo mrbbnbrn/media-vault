@@ -28,6 +28,7 @@ import { ContextMenu, Dropdown } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
 import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
+import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
@@ -219,12 +220,15 @@ export function Player(props: PlayerProps) {
     return () => clearTimeout(t);
   }, [flash]);
 
+  /** Which way you are going through the items (what to decode ahead of time). */
+  const travel = useRef<'next' | 'prev'>('next');
   const beatMark = useRef<() => void>(() => {});
   const alignSnap = useRef<() => void>(() => {});
   const go = useCallback((dir: 'next' | 'prev', auto = false) => {
     const p = listRef.current;
     if (!p) return;
     const before = p.current()?.key;
+    travel.current = dir;
     const n = dir === 'next' ? p.next(auto) : p.prev();
     if (n === null) {
       // End of the list with repeat off.
@@ -266,6 +270,25 @@ export function Player(props: PlayerProps) {
     const t = setTimeout(() => go('next', true), ms);
     return () => clearTimeout(t);
   }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // ---- decoding ahead (picturecache.ts) --------------------------------------------------
+  // Once this item shows, the next two in the direction you are going (and one
+  // behind) are decoded, videos load their first part; the last few pictures
+  // stay decoded, so going back and forth is instant. Not in multi-screen panels.
+  const preloads = !props.compact && !mini;
+  useEffect(() => viewerOpened(), []);
+  const shownNow = !!item && (failed || !isPicture || !!imgInfo);
+  useEffect(() => {
+    const p = listRef.current;
+    if (!preloads || !item || !p || !shownNow) return;
+    const t = setTimeout(() => {
+      const fwd = travel.current === 'next';
+      const near = [...(fwd ? p.peek(2) : p.peekBack(2)), ...(fwd ? p.peekBack(1) : p.peek(1))].filter((x) => x.key !== item.key);
+      preloadPictures(near.map((x) => ({ src: x.src, kind: x.kind, size: x.width && x.height ? { w: x.width, h: x.height } : null })));
+      warmVideos(near.filter((x) => x.kind === 'video').map((x) => x.src));
+    }, isPicture ? 30 : 400);
+    return () => clearTimeout(t);
+  }, [item?.key, shownNow, preloads]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // How long a fade takes: the setting, but with beat sync never longer than
   // about a third of the time between changes, so it keeps up with fast music.
@@ -1077,6 +1100,7 @@ export function Player(props: PlayerProps) {
           <div ref={kbRef} className="kb-layer">
             {isPicture && item && !failed ? (
               <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom} rot={rot}
+                size={item.width && item.height ? { w: item.width, h: item.height } : null}
                 prefs={prefs} paused={halted} className={anim}
                 onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })} onError={() => setFailed(true)} />
             ) : (
