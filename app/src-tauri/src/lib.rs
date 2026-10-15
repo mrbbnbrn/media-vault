@@ -35,6 +35,7 @@ mod engine;
 mod exporter;
 mod extras;
 mod faces;
+mod facecrops; // a person's faces cut out: face wall, best faces, time-lapse
 mod focus;
 // Native face recognition (optional pack: tools/faces): InsightFace buffalo_l.
 mod faceid;
@@ -126,6 +127,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
         faces::keep_graphs(&**s);
     }
     faces::forget_cache();
+    facecrops::forget();
     clip::forget_index();
     focus::set(None);
     faceid::unload();
@@ -2476,6 +2478,10 @@ pub fn run() {
             faces_sort_all,
             faceid::faces_detect,
             faceid::faces_points,
+            // a person's faces cut out (facecrops.rs)
+            facecrops::face_crops_list,
+            facecrops::face_crops_measure,
+            facecrops::face_crops_stop,
             // the native analysis pass (analyse.rs)
             analyse::analyse_start,
             analyse::analyse_status,
