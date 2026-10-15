@@ -239,7 +239,7 @@ export function Settings({ nav }: { nav: Nav }) {
           {section === 'vault' && <VaultSection nav={nav} />}
           {section === 'storage' && <StorageSection cfg={cfg} update={update} />}
           {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
-          {section === 'smart' && <SmartSection poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
+          {section === 'smart' && <SmartSection viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (
             <section className="section">
               <h2>Media Vault 0.1.0</h2>
@@ -610,7 +610,7 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
   );
 }
 
-function SmartSection(props: { poor?: React.ReactNode }) {
+function SmartSection(props: { poor?: React.ReactNode; viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [models, setModels] = useState<boolean | null>(null);
   const [engine, setEngine] = useState<SmartEngine | null>(null);
@@ -655,7 +655,7 @@ function SmartSection(props: { poor?: React.ReactNode }) {
 
       <div className="divider" />
 
-      <DepthSection />
+      <DepthSection viewer={props.viewer} setViewer={props.setViewer} />
     </>
   );
 }

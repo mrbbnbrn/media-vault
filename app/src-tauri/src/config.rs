@@ -83,6 +83,10 @@ pub struct ViewerSettings {
     pub depth_shape: String,
     /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
     pub depth_auto_migrated: bool,
+    /// 3D photos: which depth model ("v2-small", "da3-base", "da3-mono-large"; "" = the best one installed).
+    pub depth_model: String,
+    /// 3D photos: "standard" or "high" (more detail, about twice as slow; models of any size only).
+    pub depth_detail: String,
     /// Discovery river: the current's speed (0.1–8, 1 = normal).
     pub river_flow: f64,
     /// Discovery river: how many items flow (0.4–2.5, 1 = as designed).
@@ -138,6 +142,8 @@ impl Default for ViewerSettings {
             depth_speed: 1.0,
             depth_shape: "random".into(),
             depth_auto_migrated: false,
+            depth_model: String::new(),
+            depth_detail: "standard".into(),
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
@@ -339,6 +345,14 @@ impl AppConfig {
             v.river_mode = "pictures".into();
         }
         v.river_people.truncate(500);
+        // A model id is a short name of a-z, 0-9 and "-" (anything else: the best one installed).
+        let id_ok = v.depth_model.len() <= 40 && v.depth_model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !id_ok {
+            v.depth_model.clear();
+        }
+        if v.depth_detail != "high" {
+            v.depth_detail = "standard".into();
+        }
         v.river_face_min = v.river_face_min.min(5000);
         self.lock.idle_minutes = self.lock.idle_minutes.min(24 * 60);
         self.lock.safety_net_minutes = self.lock.safety_net_minutes.min(24 * 60);
@@ -521,6 +535,22 @@ mod tests {
         assert_eq!((v.depth_motion, v.depth_speed, v.depth_shape.as_str()), (3.5, 0.25, "spiral"));
         let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn depth_model_settings_default_and_are_sanitised() {
+        let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
+        assert_eq!((v.depth_model.as_str(), v.depth_detail.as_str()), ("", "standard"));
+        let mut c = AppConfig::default();
+        c.viewer.depth_model = "da3-base".into();
+        c.viewer.depth_detail = "high".into();
+        let c = c.sanitized();
+        assert_eq!((c.viewer.depth_model.as_str(), c.viewer.depth_detail.as_str()), ("da3-base", "high"));
+        let mut c = AppConfig::default();
+        c.viewer.depth_model = "..\\evil".into();
+        c.viewer.depth_detail = "ultra".into();
+        let c = c.sanitized();
+        assert_eq!((c.viewer.depth_model.as_str(), c.viewer.depth_detail.as_str()), ("", "standard"));
     }
 
     #[test]

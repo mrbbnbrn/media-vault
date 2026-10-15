@@ -352,6 +352,22 @@ body.clean-fs .toast { display: none; }
 .shape-pick:hover { background: var(--accent-soft-2); }
 .shape-pick.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
 .shape-pick .faint { font-size: 11px; }
+/* 3D photos: the depth model chooser (components/DepthModels.tsx). */
+.depth-models { display: flex; flex-direction: column; gap: 12px; }
+.depth-model-list { display: flex; flex-direction: column; gap: 6px; }
+.depth-model { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-2); cursor: pointer; }
+.depth-model:hover { background: var(--accent-soft-2); }
+.depth-model.on { border-color: var(--accent-border); background: var(--accent-soft); }
+.depth-model.off { cursor: default; opacity: 0.55; }
+.depth-model.off:hover { background: transparent; }
+.depth-model input { accent-color: var(--accent); }
+.depth-model .btn-sm { min-height: 30px; flex: none; }
+.depth-model-text { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; font-size: 13px; }
+.depth-model-text .faint { font-size: 12px; }
+.depth-model-speed { font-size: 12px; color: var(--accent-text); }
+.depth-model-problem { font-size: 12px; color: #e0b36a; }
+.depth-detail { display: flex; flex-direction: column; gap: 4px; }
+.depth-detail input { accent-color: var(--accent); }
 .lthumb { display: block; }
 
 .wall { position: absolute; inset: 0; display: grid; gap: 3px; background: #050506; }

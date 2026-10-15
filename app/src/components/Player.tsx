@@ -34,7 +34,7 @@ import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage'
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
-import { depthAhead, depthPack, motionChoice, NO_DEPTH_PACK } from '../depth';
+import { depthAhead, depthPack, motionChoice, NO_DEPTH_PACK, pickAhead } from '../depth';
 import { lazyPart } from '../lazypart';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
@@ -790,14 +790,21 @@ export function Player(props: PlayerProps) {
   // pack) simply show as usual.
   const depthAuto = !!prefs.depthAuto;
   const [depthPackOk, setDepthPackOk] = useState(false);
+  // (Asked again when another depth model or detail is chosen: maps from the old one are forgotten.)
   useEffect(() => {
     if (!depthAuto && !prefs.depthMouse) return;
     let alive = true;
-    depthPack().then((i) => alive && setDepthPackOk(!!i?.available));
+    depthPack().then((i) => {
+      if (!alive) return;
+      setDepthPackOk(!!i?.available);
+      setDepthModelKey(i?.available ? `${i.model ?? ''}@${i.inputSide ?? ''}` : '');
+    });
     return () => {
       alive = false;
     };
-  }, [depthAuto, prefs.depthMouse]);
+  }, [depthAuto, prefs.depthMouse, prefs.depthModel, prefs.depthDetail]);
+  /** The model and size in use: the picture starts again with the new model's depth when it changes. */
+  const [depthModelKey, setDepthModelKey] = useState('');
   // Just viewing (no slideshow), the movement goes on for as long as the picture is open; only
   // the title card holds it, not a paused slideshow left behind.
   // The 3D button: the picture follows the mouse (slideshow or not); it takes over from the automatic movement.
@@ -805,9 +812,11 @@ export function Player(props: PlayerProps) {
   const depthRunning = (depthAuto || depthByMouse) && depthPackOk && !mini;
   const depth3d = depthRunning && item?.kind === 'image' && !zoomed && !failed && rot === 0 && (depthByMouse || !beatDriving) && !up.src && !!imgInfo;
   useEffect(() => {
-    // The next pictures' depth is worked out ahead, so the slideshow doesn't wait.
-    if (depthRunning) depthAhead((listRef.current?.peek(2) ?? []).filter((x) => x.kind === 'image').map((x) => x.src));
-  }, [item?.key, depthRunning]);
+    // The neighbours' depth is worked out ahead (the next two pictures and the previous one),
+    // so slideshows don't wait and browsing by hand feels instant. Each new item replaces the
+    // list, so flicking quickly never piles up work.
+    if (depthRunning && depthPackOk) depthAhead(pickAhead(listRef.current?.peek(4) ?? [], listRef.current?.peekBack(2) ?? []));
+  }, [item?.key, depthRunning, depthPackOk, depthModelKey]);
   const toggleDepthMouse = async () => {
     const on = !prefs.depthMouse;
     if (on) {
@@ -1234,7 +1243,7 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && imgInfo && (
-              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
                 amount={prefs.depthAmount ?? 1} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 motion={{ shape: motionChoice(prefs.depthShape), amount: prefs.depthMotion ?? 1, speed: prefs.depthSpeed ?? 1 }}
                 endless={!slideshow} halted={slideshow ? halted : !!props.hold}
