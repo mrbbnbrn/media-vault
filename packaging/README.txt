@@ -37,6 +37,12 @@ What's in the full package
               whole picture, GFPGAN to also rebuild faces (GFPGAN: personal
               use only, see LICENSES.txt there). Without it the Upscale
               button just explains where to get it.
+  tools\depth\
+              3D photos (a separate download, MediaVault-depth-windows.zip):
+              still pictures in slideshows move gently in depth (Timing >
+              3D photos). Depth Anything V2 Small, Apache-2.0, offline. Uses
+              its own ONNX Runtime, or the upscaler's or faces pack's.
+              Without it pictures show as usual.
   Face recognition is built into MediaVault.exe and also works offline.
 
 Requirements

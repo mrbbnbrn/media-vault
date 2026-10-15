@@ -818,6 +818,12 @@ export const api = {
   upscaleSave: (token: number) => call<UpscaleSaved>('upscale_save', { token }),
   /** The viewer closed: forget results, free the models' memory. */
   upscaleForget: () => call<void>('upscale_forget'),
+  // 3D photos: depth maps for gentle parallax in slideshows (Rust: depth.rs; window side: depth.ts, components/Depth3D.tsx)
+  depthInfo: () => call<DepthInfo>('depth_info'),
+  /** Sends the picture's pixels (about 518 × 518); the depth map comes back. */
+  depthEstimate: (request: { width: number; height: number }, rgba: Uint8Array) => depthEstimate(request, rgba),
+  /** The viewer closed: free the model's memory. */
+  depthForget: () => call<void>('depth_forget'),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
@@ -1139,6 +1145,13 @@ const mock = {
         return { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\upscaler', device: 'gpu', deviceKnown: false } satisfies UpscalerInfo;
       case 'upscale_start':
         return mockUpscale(a.request as UpscaleRequest);
+      case 'depth_info':
+        // Preview: add ?nodepth to the address to see the "pack not found" note.
+        return (typeof location !== 'undefined' && new URLSearchParams(location.search).has('nodepth')
+          ? { available: false, problem: "The depth pack isn't installed.", folder: 'C:\\MediaVault\\tools\\depth', device: null, deviceKnown: false, sharedRuntime: false }
+          : { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\depth', device: 'gpu', deviceKnown: false, sharedRuntime: true }) satisfies DepthInfo;
+      case 'depth_forget':
+        return;
       case 'upscale_cancel':
         mockJob += 1;
         return;
@@ -1361,6 +1374,63 @@ async function facesDetect(request: { width: number; height: number; frameMs: nu
   } catch (e) {
     throw new Error(typeof e === 'string' ? e : String(e));
   }
+}
+
+// ---- 3D photos (depth maps) ------------------------------------------------------------
+
+export interface DepthInfo {
+  available: boolean;
+  /** Why not, in one sentence. */
+  problem: string | null;
+  folder: string | null;
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+  /** ONNX Runtime comes from the upscaler or faces pack. */
+  sharedRuntime: boolean;
+}
+
+/** A depth map: w × h bytes, 255 = nearest. It covers the whole picture (stretched to a square). */
+export interface DepthMap {
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+
+/** What depth_estimate sends back: width, height (u32 little-endian), then the bytes. */
+export function parseDepth(buf: ArrayBuffer | Uint8Array): DepthMap {
+  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  if (b.length < 8) throw new Error('3D photos got something unexpected back.');
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const w = v.getUint32(0, true);
+  const h = v.getUint32(4, true);
+  if (!w || !h || b.length !== 8 + w * h) throw new Error('3D photos got something unexpected back.');
+  return { w, h, data: b.slice(8) };
+}
+
+async function depthEstimate(request: { width: number; height: number }, rgba: Uint8Array): Promise<DepthMap> {
+  if (!inTauri) return mockDepth(request.width, request.height, rgba);
+  try {
+    return parseDepth(await invoke<ArrayBuffer>('depth_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+/** Preview: a pretend depth map (nearer towards the bottom and the middle). Tests can supply real ones via `__mvDepthMock`. */
+async function mockDepth(w: number, h: number, rgba: Uint8Array): Promise<DepthMap> {
+  const hook = (globalThis as { __mvDepthMock?: (w: number, h: number, rgba: Uint8Array) => Promise<DepthMap | null> }).__mvDepthMock;
+  const real = hook ? await hook(w, h, rgba) : null;
+  if (real) return real;
+  await new Promise((r) => setTimeout(r, 150));
+  const data = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      const dx = x / w - 0.5;
+      const dy = y / h - 0.55;
+      const blob = Math.max(0, 1 - Math.hypot(dx * 1.6, dy * 1.2) * 2.2);
+      data[y * w + x] = Math.round(255 * Math.min(1, 0.15 + 0.45 * (y / h) + 0.5 * blob));
+    }
+  return { w, h, data };
 }
 
 type UpscaleListener = { progress: (p: UpscaleProgress) => void; done: (d: UpscaleDone) => void };

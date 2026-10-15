@@ -1013,3 +1013,7 @@ canvas.flip-in-ghost { display: block; }
 
 /* Slideshow fades follow the "Fade speed" setting (shorter with fast beat sync). */
 .player .fade-in { animation-duration: var(--fade-ms, 350ms); }
+
+/* 3D photos: the moving picture lies exactly over the still one (Depth3D.tsx). */
+.player .depth3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; opacity: 0; }
+.player .depth3d.live { opacity: 1; animation: fadein var(--fade-ms, 350ms) ease-out; }

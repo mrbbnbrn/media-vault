@@ -1,0 +1,336 @@
+// 3D photos: the picture drawn again with WebGL, moved with gentle depth
+// parallax (a slow camera orbit, swing or dolly of a few per cent). It lies
+// exactly over the plain picture (ImageStage) and starts and ends exactly
+// like it, so it can appear and disappear without a jump; until the depth
+// map and the picture are both ready (or if WebGL isn't there), the plain
+// picture simply shows.
+//
+// Edges: the shader marches from near to far through the depth map and
+// shows the first surface it meets, so near things cover what's behind
+// them; where the background is uncovered it is stretched a little (the
+// depth map's near things are grown and softened in depth.rs, so that
+// stretch lands in the background, not on a face). The picture is enlarged
+// just enough that its own edges never show.
+//
+// Everything stays in memory (one texture, one small depth texture), and the
+// WebGL context is let go when the picture changes.
+
+import { useEffect, useRef, useState } from 'react';
+import { inTauri, type DepthInfo, type DepthMap } from '../api';
+import { cropScale, depthOf, depthPack, NO_DEPTH_PACK, pickPath, pivotOf, poseAt, progress, shiftUv } from '../depth';
+import { drawnRect } from '../flip';
+
+interface Props {
+  src: string;
+  /** The picture's own size (as shown, after its EXIF orientation). */
+  natural: { w: number; h: number };
+  fit: 'contain' | 'cover';
+  /** How long this picture stays (ms): the camera is back where it started by then. */
+  showMs: number;
+  /** Paused: the camera waits. */
+  halted: boolean;
+  /** Same light sharpening as the plain picture. */
+  sharpen: boolean;
+  /** Told once the moving picture is showing (true) or given up (false). */
+  onLive?: (live: boolean) => void;
+}
+
+/** Less than this left of the picture's time: not worth starting. */
+const MIN_MOVE_MS = 1800;
+const STEPS = 14;
+
+const VERT = `
+attribute vec2 aPos;
+varying vec2 vUv;
+void main() {
+  vUv = vec2(aPos.x * 0.5 + 0.5, 0.5 - aPos.y * 0.5);
+  gl_Position = vec4(aPos, 0.0, 1.0);
+}`;
+
+const FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uImg;
+uniform sampler2D uDepth;
+uniform vec2 uShift;
+uniform float uDolly;
+uniform float uScale;
+uniform float uPivot;
+uniform vec2 uFocus;
+const int N = ${STEPS};
+void main() {
+  vec2 p = 0.5 + (vUv - 0.5) / uScale;
+  vec2 k = uShift + (p - uFocus) * uDolly;
+  // From the nearest depth to the farthest: the first surface met is the one seen.
+  vec2 hit = p + k * uPivot;
+  float prevZ = 1.0;
+  float prevDiff = -1.0;
+  for (int i = 0; i <= N; i++) {
+    float z = 1.0 - float(i) / float(N);
+    vec2 s = p - k * (z - uPivot);
+    float diff = texture2D(uDepth, s).r - z;
+    if (diff >= 0.0) {
+      if (i == 0) {
+        hit = s;
+      } else {
+        float t = prevDiff / (prevDiff - diff);
+        hit = p - k * (mix(prevZ, z, t) - uPivot);
+      }
+      break;
+    }
+    prevDiff = diff;
+    prevZ = z;
+  }
+  gl_FragColor = texture2D(uImg, clamp(hit, 0.0, 1.0));
+}`;
+
+type Gl = WebGLRenderingContext;
+
+interface Scene {
+  gl: Gl;
+  prog: WebGLProgram;
+  buf: WebGLBuffer;
+  img: WebGLTexture;
+  depth: WebGLTexture;
+  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth', WebGLUniformLocation | null>;
+}
+
+function compile(gl: Gl, type: number, text: string): WebGLShader | null {
+  const sh = gl.createShader(type);
+  if (!sh) return null;
+  gl.shaderSource(sh, text);
+  gl.compileShader(sh);
+  if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+    gl.deleteShader(sh);
+    return null;
+  }
+  return sh;
+}
+
+function texture(gl: Gl): WebGLTexture | null {
+  const t = gl.createTexture();
+  if (!t) return null;
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  return t;
+}
+
+function makeScene(canvas: HTMLCanvasElement, picture: ImageBitmap, map: DepthMap): Scene | null {
+  const gl = canvas.getContext('webgl', { alpha: true, premultipliedAlpha: true, antialias: false, depth: false, stencil: false, preserveDrawingBuffer: false }) as Gl | null;
+  if (!gl) return null;
+  const vs = compile(gl, gl.VERTEX_SHADER, VERT);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, FRAG);
+  const prog = gl.createProgram();
+  if (!vs || !fs || !prog) return null;
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.linkProgram(prog);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+  gl.useProgram(prog);
+  const buf = gl.createBuffer();
+  if (!buf) return null;
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+  const loc = gl.getAttribLocation(prog, 'aPos');
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.activeTexture(gl.TEXTURE0);
+  const img = texture(gl);
+  if (!img) return null;
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, picture);
+  gl.activeTexture(gl.TEXTURE1);
+  const depth = texture(gl);
+  if (!depth) return null;
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.w, map.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
+  const u = {
+    shift: gl.getUniformLocation(prog, 'uShift'),
+    dolly: gl.getUniformLocation(prog, 'uDolly'),
+    scale: gl.getUniformLocation(prog, 'uScale'),
+    pivot: gl.getUniformLocation(prog, 'uPivot'),
+    focus: gl.getUniformLocation(prog, 'uFocus'),
+    img: gl.getUniformLocation(prog, 'uImg'),
+    depth: gl.getUniformLocation(prog, 'uDepth'),
+  };
+  gl.uniform1i(u.img, 0);
+  gl.uniform1i(u.depth, 1);
+  gl.clearColor(0, 0, 0, 0);
+  return { gl, prog, buf, img, depth, u };
+}
+
+function dropScene(s: Scene) {
+  const { gl } = s;
+  gl.deleteTexture(s.img);
+  gl.deleteTexture(s.depth);
+  gl.deleteBuffer(s.buf);
+  gl.deleteProgram(s.prog);
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+}
+
+/** Settings → AI tools: whether the depth pack is there. */
+export function DepthSection() {
+  const [info, setInfo] = useState<DepthInfo | null>(null);
+  useEffect(() => {
+    let alive = true;
+    depthPack(true).then((i) => alive && setInfo(i));
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return (
+    <section className="section">
+      <h2>3D photos</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        In slideshows, still pictures can move gently in depth, as if the camera drifted a little. Turn it on under
+        <b> Timing ▾ → 3D photos</b>. The depth of each picture is worked out offline and kept in memory only.
+      </p>
+      {info && (info.available ? (
+        <div className="info">
+          Depth pack found · runs on the {info.device === 'gpu' ? 'graphics card' : 'processor'}{info.deviceKnown ? '' : info.device === 'gpu' ? ' (when it can)' : ''}.
+        </div>
+      ) : (
+        <div className="notice">
+          Depth pack not found. {info.problem && info.problem !== "The depth pack isn't installed." ? `${info.problem} ` : ''}{NO_DEPTH_PACK}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function Depth3D(props: Props) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [live, setLive] = useState(false);
+  /** Draw again (and keep moving) once something changed. */
+  const kick = useRef<() => void>(() => {});
+  const propsRef = useRef(props);
+  propsRef.current = props;
+  // The picture's own clock: runs only while not paused.
+  const clock = useRef({ ms: 0, last: performance.now(), halted: props.halted });
+  const now = () => {
+    // Browser preview only: tests can set the time to look at single frames.
+    const fixed = inTauri ? undefined : (globalThis as { __mvDepthClock?: () => number }).__mvDepthClock;
+    if (fixed) return fixed();
+    const c = clock.current;
+    const t = performance.now();
+    if (!c.halted) c.ms += t - c.last;
+    c.last = t;
+    return c.ms;
+  };
+  useEffect(() => {
+    now();
+    clock.current.halted = props.halted;
+  }, [props.halted]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const nw = props.natural.w;
+  const nh = props.natural.h;
+  useEffect(() => {
+    let alive = true;
+    let scene: Scene | null = null;
+    let raf = 0;
+    let picture: ImageBitmap | null = null;
+    const give = (ok: boolean) => alive && propsRef.current.onLive?.(ok);
+    (async () => {
+      const canvas = canvasRef.current;
+      if (!canvas || !nw || !nh) return give(false);
+      // The picture at the size it's drawn (never bigger than it is).
+      const W = canvas.clientWidth || 1;
+      const H = canvas.clientHeight || 1;
+      const dpr = window.devicePixelRatio || 1;
+      const box = drawnRect(W, H, nw, nh, propsRef.current.fit);
+      const k = Math.min(1, (box.width * dpr) / nw, 4096 / Math.max(nw, nh));
+      const [map, bmp] = await Promise.all([
+        depthOf(propsRef.current.src, true),
+        fetch(propsRef.current.src)
+          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
+          .then((b) => createImageBitmap(b, { imageOrientation: 'from-image', resizeWidth: Math.max(1, Math.round(nw * k)), resizeHeight: Math.max(1, Math.round(nh * k)), resizeQuality: 'high' } as ImageBitmapOptions))
+          .catch(() => null),
+      ]);
+      picture = bmp;
+      if (!alive) return;
+      if (!map || !bmp) return give(false);
+      const start = now();
+      const end = propsRef.current.showMs;
+      if (end - start < MIN_MOVE_MS) return give(false);
+      scene = makeScene(canvas, bmp, map);
+      bmp.close();
+      picture = null;
+      if (!scene) return give(false);
+      canvas.addEventListener('webglcontextlost', () => {
+        cancelAnimationFrame(raf);
+        setLive(false);
+      });
+      const path = pickPath();
+      const pivot = pivotOf(map);
+      const s = scene;
+      const frame = () => {
+        raf = 0;
+        if (!alive) return;
+        const p = propsRef.current;
+        const cw = canvas.clientWidth || 1;
+        const ch = canvas.clientHeight || 1;
+        const r = window.devicePixelRatio || 1;
+        const bw = Math.max(1, Math.round(cw * r));
+        const bh = Math.max(1, Math.round(ch * r));
+        if (canvas.width !== bw || canvas.height !== bh) {
+          canvas.width = bw;
+          canvas.height = bh;
+        }
+        const d = drawnRect(cw, ch, nw, nh, p.fit);
+        const u = progress(now(), start, end);
+        const pose = poseAt(u, path);
+        const shift = shiftUv(pose, d.width, d.height);
+        const { gl } = s;
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        // Whole pixels from the top left, exactly where the plain picture is drawn (GL counts from the bottom).
+        const vw = Math.round(d.width * r);
+        const vh = Math.round(d.height * r);
+        gl.viewport(Math.round(d.left * r), bh - Math.round(d.top * r) - vh, vw, vh);
+        gl.uniform2f(s.u.shift, shift.x, shift.y);
+        gl.uniform1f(s.u.dolly, pose.dolly);
+        gl.uniform1f(s.u.scale, cropScale(shift, pose.dolly, pivot));
+        gl.uniform1f(s.u.pivot, pivot);
+        gl.uniform2f(s.u.focus, 0.5, 0.5);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        // Still (paused, or done moving): no need to keep drawing.
+        if (!clock.current.halted && u < 1) raf = requestAnimationFrame(frame);
+      };
+      frame();
+      kick.current = () => {
+        if (!raf && alive) raf = requestAnimationFrame(frame);
+      };
+      setLive(true);
+      give(true);
+    })().catch(() => give(false));
+    return () => {
+      alive = false;
+      cancelAnimationFrame(raf);
+      kick.current = () => {};
+      picture?.close();
+      if (scene) dropScene(scene);
+    };
+  }, [props.src, nw, nh]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Resumed, resized or refitted: draw again.
+  useEffect(() => {
+    kick.current();
+  }, [props.halted, props.fit]);
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver(() => kick.current());
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  return (
+    <canvas ref={canvasRef} className={`depth3d${live ? ' live' : ''}`} aria-hidden="true"
+      style={{ filter: props.sharpen ? 'url(#mv-sharpen)' : undefined }} />
+  );
+}

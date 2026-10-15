@@ -9,6 +9,7 @@ import { Dropdown, PromptDialog } from '../components/Dialogs';
 import { BackIcon } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
 import { SpeedRound } from '../components/SpeedRound';
+import { depthPack, NO_DEPTH_PACK } from '../depth';
 import { drawnRect, type Box } from '../flip';
 import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
 import type { PlayItem } from '../media';
@@ -253,7 +254,7 @@ export function Viewer(props: {
       )}
       {saving && (
         <PromptDialog title="Save preset" label="Name" confirm="Save" onClose={() => setSaving(false)}
-          hint="Saves picture duration, video and GIF timing, order, repeat, speed, sound, beat sync and slow pan and zoom."
+          hint="Saves picture duration, video and GIF timing, order, repeat, speed, sound, beat sync, slow pan and zoom and 3D photos."
           onSubmit={async (name) => {
             await api.saveNamed('preset', { id: null, name, settings });
             setPresets(await api.listNamed<PlaybackSettings>('preset'));
@@ -284,6 +285,16 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
   const num = (v: string) => (v === '' ? 0 : Number(v));
   const [beats, setBeats] = useState(false);
   const prefs = useViewerPrefs();
+  // 3D photos: whether the depth pack is there (asked anew when the box is ticked).
+  const [depthOk, setDepthOk] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!s.depth3d) return;
+    let alive = true;
+    depthPack(true).then((i) => alive && setDepthOk(i ? i.available : null));
+    return () => {
+      alive = false;
+    };
+  }, [s.depth3d]);
   useEffect(() => {
     let alive = true;
     beatsOk ??= api.beatsSupported().catch(() => false);
@@ -304,6 +315,17 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           <span>Pictures</span>
           <span className="row">
             <label className="check"><input type="checkbox" checked={s.kenBurns} onChange={(e) => set({ kenBurns: e.target.checked })} /> Slow pan and zoom</label>
+          </span>
+
+          <span />
+          <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+            <label className="check"><input type="checkbox" checked={s.depth3d} onChange={(e) => set({ depth3d: e.target.checked })} /> 3D photos (gentle depth motion)</label>
+            {s.depth3d && (
+              <span className="faint" style={{ fontSize: 12 }}>
+                {depthOk === false ? NO_DEPTH_PACK
+                  : `Still pictures move gently in depth, the near things against the far ones${s.kenBurns || prefs.alignFaces ? `, on top of ${s.kenBurns && prefs.alignFaces ? 'slow pan and zoom and lined-up faces' : s.kenBurns ? 'the slow pan and zoom' : 'lined-up faces'}` : ''}. Pictures without a depth map show as usual.`}
+              </span>
+            )}
           </span>
 
           <span>Faces</span>
