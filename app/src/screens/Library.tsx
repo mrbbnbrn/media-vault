@@ -59,6 +59,7 @@ import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 import { lazyPart } from '../lazypart';
+import { FaceToolsHost, faceToolOpen, openFaceTool } from '../components/facecrops/launch';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -78,6 +79,7 @@ const Duel = lazyPart(() => import('../components/Duel').then((m) => m.Duel));
 const SlotMachine = lazyPart(() => import('../components/SlotMachine').then((m) => m.SlotMachine));
 const WhyHere = lazyPart(() => import('../components/WhyHere').then((m) => m.WhyHere));
 const StatsView = lazyPart(() => import('../components/StatsView').then((m) => m.StatsView));
+const FaceWall = lazyPart(() => import('../components/facecrops/FaceWall').then((m) => m.FaceWall));
 
 export type LibView =
   | { kind: 'folders' }
@@ -671,7 +673,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (asleepRef.current || museumOpen() || riverOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if (asleepRef.current || museumOpen() || riverOpen() || faceToolOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
@@ -947,6 +949,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- derived -------------------------------------------------------------------------
 
   const timeline = view.kind === 'timeline';
+  // A person's own page, their timeline or a search for just them: the face tools (face wall, Best faces, time-lapse).
+  const facePerson = view.kind === 'folder' && folder?.person ? folder.id : view.kind === 'timeline' && view.person != null ? view.person
+    : view.kind === 'search' && view.people?.length === 1 && !view.tags.length && !view.names.length ? view.people[0] : null;
+  const facePersonName = facePerson != null ? folders.find((f) => f.id === facePerson)?.name ?? 'Person' : '';
+  const [faceWallFor, setFaceWallFor] = useState<number | null>(null);
+  const faceWall = facePerson != null && faceWallFor === facePerson;
   const inTrash = view.kind === 'trash';
   const smart = view.kind === 'smart';
   const shown = useMemo(() => {
@@ -1173,6 +1181,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
+    ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
     { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
     { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
@@ -2233,6 +2242,16 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                   {allSelected ? 'Select none' : 'Select all'}
                 </button>
               )}
+              {gridView && !inTrash && facePerson != null && (
+                <>
+                  <button type="button" className="btn btn-sm" title="Their biggest, sharpest faces looking at the camera; pick a cover" onClick={() => openFaceTool('best', facePerson, facePersonName)}>
+                    <FaceIcon size={14} /> Best faces
+                  </button>
+                  <button type="button" className="btn btn-sm" title="Every face, oldest first, lined up by the eyes and played fast" onClick={() => openFaceTool('timelapse', facePerson, facePersonName)}>
+                    <PlayIcon size={14} /> Time-lapse
+                  </button>
+                </>
+              )}
               {gridView && !inTrash && (
                 <>
                   {shown.length > 0 && (
@@ -2250,16 +2269,19 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                     ]} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
                   <div role="group" aria-label="Tile shape" className="seg">
-                    <button type="button" className={!shape && !scrollMode ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => { setScrollMode(false); saveCfg({ gridShape: false }); }}>Tiles</button>
-                    <button type="button" className={shape && !scrollMode ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => { setScrollMode(false); saveCfg({ gridShape: true }); }}>True shape</button>
-                    <button type="button" className={scrollMode ? 'on' : ''} title="Scroll mode: one long column of big pictures; videos play as you scroll past" onClick={() => setScrollMode(!scrollMode)}>Scroll</button>
+                    <button type="button" className={!shape && !scrollMode && !faceWall ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: false }); }}>Tiles</button>
+                    <button type="button" className={shape && !scrollMode && !faceWall ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: true }); }}>True shape</button>
+                    <button type="button" className={scrollMode && !faceWall ? 'on' : ''} title="Scroll mode: one long column of big pictures; videos play as you scroll past" onClick={() => { setFaceWallFor(null); setScrollMode(!scrollMode); }}>Scroll</button>
+                    {facePerson != null && (
+                      <button type="button" className={faceWall ? 'on' : ''} title="Face wall: just their face from every photo, oldest first" onClick={() => setFaceWallFor(faceWall ? null : facePerson)}>Faces</button>
+                    )}
                   </div>
                 </>
               )}
               {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
                 <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
               )}
-              {view.kind !== 'stats' && view.kind !== 'people' && !looks && view.kind !== 'memories' && !scrollMode && (
+              {view.kind !== 'stats' && view.kind !== 'people' && !looks && view.kind !== 'memories' && !scrollMode && !faceWall && (
                 <>
                   <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }} title="Ctrl + mouse wheel changes this too">Size · {cols} per row</label>
                   <input id="tile-size" type="range" min={2} max={12} step={1} value={cols} style={{ direction: 'rtl' }}
@@ -2362,7 +2384,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             </div>
           )}
 
-          {gridView && (
+          {faceWall && facePerson != null ? (
+            <FaceWall person={facePerson} name={facePersonName} onOpen={async (id) => {
+              // Like clicking a tile; a face from elsewhere opens among every photo of them.
+              const list = shown.some((i) => i.id === id) ? shown : await api.queryItems({ people: [facePerson] }).catch(() => shown);
+              playList(list, false, id);
+            }} />
+          ) : gridView && (
             shown.length ? (
               <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
               <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
@@ -2601,6 +2629,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
       {dialog?.t === 'why' && <WhyHere item={dialog.item} query={dialog.query} kind={kind} onClose={() => setDialog(null)} />}
       <MuseumHost nav={nav} view={view} />
+      <FaceToolsHost nav={nav} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} />
       <RiverHost nav={nav} />
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (

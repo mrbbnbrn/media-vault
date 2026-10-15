@@ -45,12 +45,24 @@ export interface ViewerSettings {
   riverFlow?: number;
   riverDensity?: number;
   riverLayers?: number;
+  // ---- a person's faces (face wall, Best faces, face time-lapse) ----
+  /** "Smallest face" of each (pixels tall in the original picture). */
+  faceWallMin?: number;
+  bestFacesMin?: number;
+  timelapseMin?: number;
+  /** Best faces: how many to show. */
+  bestFacesCount?: number;
+  /** Time-lapse: faces per second, morph instead of a cut, and the part of each face's time spent morphing. */
+  timelapseFps?: number;
+  timelapseMorph?: boolean;
+  timelapseMorphShare?: number;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1, riverFlow: 1, riverDensity: 1, riverLayers: 5,
+  faceWallMin: 40, bestFacesMin: 80, timelapseMin: 120, bestFacesCount: 24, timelapseFps: 8, timelapseMorph: false, timelapseMorphShare: 0.5,
 };
 
 export interface AppConfig {
@@ -239,6 +251,38 @@ export interface FaceBox {
   auto?: boolean;
   /** Marked "not important" (only listed when asked for). */
   hidden?: boolean;
+}
+
+/** One face of a person, for the face wall, Best faces and the time-lapse (facecrops.rs). */
+export interface PersonFace {
+  id: number;
+  mediaId: number;
+  frameMs: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** The photo's best known date (seconds). */
+  date: number;
+  /** The picture's own size (0 when not known yet). */
+  width: number;
+  height: number;
+  /** How tall the face is in the original picture (px). */
+  facePx: number;
+}
+
+/** What was measured on a face (sharpness, looking at the camera, the five points). */
+export interface FaceMeasure {
+  id: number;
+  sharp: number;
+  /** 0 turned away … 1 straight at the camera; null without the faces pack. */
+  front: number | null;
+  /** Eyes, nose tip, mouth corners, as parts of the picture. */
+  points: [number, number][] | null;
+  facePx: number;
+  /** All together, 0…1. */
+  score: number;
+  failed: boolean;
 }
 
 export interface Suggestion {
@@ -850,6 +894,11 @@ export const api = {
   facesDetect: (request: { width: number; height: number; frameMs: number }, rgba: Uint8Array) => facesDetect(request, rgba),
   /** The upscaler: the five face points (eyes, nose tip, mouth corners) of each face, in picture pixels (needs the faces pack). */
   facesPoints: (request: { width: number; height: number }, rgba: Uint8Array) => facesPoints(request, rgba),
+  // a person's faces cut out (facecrops.rs)
+  faceCropsList: (person: number) => call<PersonFace[]>('face_crops_list', { person }),
+  /** Measures faces (remembered for the session); progress comes as "face-measure-progress" { job, done, total }. */
+  faceCropsMeasure: (job: string, ids: number[]) => call<FaceMeasure[]>('face_crops_measure', { job, ids }),
+  faceCropsStop: (job: string) => call<void>('face_crops_stop', { job }),
   facesFindOwner: (person: number) => call<OwnerProposal | null>('faces_find_owner', { person }),
   facesHide: (faceIds: number[], hidden: boolean) => call<number>('faces_hide', { faceIds, hidden }),
   facesMergePeople: (keep: number, other: number) => call<number>('faces_merge_people', { keep, other }),
@@ -1291,6 +1340,9 @@ const mock = {
     // Face recognition with made-up people (People page, Settings).
     const faces = (await import('./mockfaces')).facesAnswer(cmd, a);
     if (faces !== undefined) return faces;
+    // A person's faces cut out (face wall, Best faces, time-lapse).
+    const crops = await (await import('./mockfacecrops')).cropsAnswer(cmd, a, (person) => this.call('query_items', { filter: { people: [person] } }) as Promise<Item[]>);
+    if (crops !== undefined) return crops;
     const s = this.state;
     const session = (path: string, needsNewPassword = false): SessionInfo => ({
       path,

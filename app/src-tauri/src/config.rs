@@ -79,6 +79,20 @@ pub struct ViewerSettings {
     pub river_density: f64,
     /// Discovery river: how many depth layers (2–8).
     pub river_layers: u32,
+    // ---- a person's faces (face wall, Best faces, face time-lapse) ----
+    /// "Smallest face" of the face wall, Best faces and the time-lapse
+    /// (pixels tall in the original picture).
+    pub face_wall_min: u32,
+    pub best_faces_min: u32,
+    pub timelapse_min: u32,
+    /// Best faces: how many to show.
+    pub best_faces_count: u32,
+    /// Face time-lapse: faces per second (1–30).
+    pub timelapse_fps: f64,
+    /// Face time-lapse: morph into the next face instead of a cut.
+    pub timelapse_morph: bool,
+    /// Face time-lapse: the part of each face's time spent morphing (0.1–0.9).
+    pub timelapse_morph_share: f64,
 }
 
 impl Default for ViewerSettings {
@@ -104,6 +118,13 @@ impl Default for ViewerSettings {
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
+            face_wall_min: 40,
+            best_faces_min: 80,
+            timelapse_min: 120,
+            best_faces_count: 24,
+            timelapse_fps: 8.0,
+            timelapse_morph: false,
+            timelapse_morph_share: 0.5,
         }
     }
 }
