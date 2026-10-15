@@ -362,7 +362,7 @@ pub fn replace(s: &Session, item: i64, bytes: &[u8], quarter: u8, lossless: bool
         let ids = ids_with(&tx, &cur.object)?;
         tx.execute(
             "UPDATE media SET object_id = ?1, size = ?2, sha256 = ?3, width = ?4, height = ?5, \
-             thumb_object_id = NULL, preview_object_id = NULL WHERE object_id = ?6",
+             thumb_object_id = NULL, preview_object_id = NULL, sketch = NULL WHERE object_id = ?6",
             params![new, written.plaintext_len as i64, written.sha256_hex, w, h, cur.object],
         )
         .map_err(e)?;
@@ -425,7 +425,7 @@ pub fn undo(s: &Session, t: &Turned) -> Result<(), String> {
         let tx = db.unchecked_transaction().map_err(e)?;
         tx.execute(
             "UPDATE media SET object_id = ?1, size = ?2, sha256 = ?3, width = ?4, height = ?5, \
-             thumb_object_id = ?6, preview_object_id = ?7 WHERE object_id = ?8",
+             thumb_object_id = ?6, preview_object_id = ?7, sketch = NULL WHERE object_id = ?8",
             params![t.old_object, t.old_size, t.old_sha, t.old_width, t.old_height, t.old_thumb, t.old_preview, t.new_object],
         )
         .map_err(e)?;

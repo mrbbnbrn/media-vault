@@ -19,7 +19,7 @@ fn e(err: rusqlite::Error) -> String {
 /// The columns an item copy takes over (everything except id, object ids,
 /// folder, name, the trash and the copy link).
 const COPY_COLS: &str = "kind, ext, size, width, height, duration_ms, has_audio, sha256, imported_at, favourite, weight, \
-    taken_at, file_mtime, phash, sharpness, phash_state, note";
+    taken_at, file_mtime, phash, sharpness, phash_state, note, sketch";
 
 fn copy_tags(conn: &Connection, from: i64, to: i64) -> R<()> {
     conn.execute("INSERT OR IGNORE INTO media_tags(media_id, tag_id) SELECT ?2, tag_id FROM media_tags WHERE media_id = ?1", params![from, to])

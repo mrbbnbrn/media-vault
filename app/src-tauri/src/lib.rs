@@ -41,6 +41,7 @@ mod session;
 mod share7z;
 mod organize;
 mod similar;
+mod sketch;
 mod storage;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
@@ -104,6 +105,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     upscale::forget_all();
     faces::forget_cache();
     faceid::unload();
+    protocol::forget_cache();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -176,6 +178,7 @@ fn start_background(s: Arc<Session>) {
         // Files kept for undoing rotations last time (the undo list is new now).
         let _ = rotate::clean_retired(&s2);
     });
+    sketch::backfill(s.clone());
     meta::backfill(s);
 }
 
@@ -786,6 +789,8 @@ async fn save_thumb(
     let same_picture = sharper.unwrap_or(false);
     let s = sess(state.inner())?;
     blocking(move || {
+        // The colour sketch shown while the thumbnail loads (sketch.rs).
+        let sketch = sketch::sketch_from_encoded(&data).unwrap_or_default();
         let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, &data[..]).map_err(|e| e.to_string())?;
         let old: Option<String> = {
             let db = s.db();
@@ -793,8 +798,8 @@ async fn save_thumb(
             db.execute(
                 // Free copies share the stored file, so they share the thumbnail too.
                 "UPDATE media SET thumb_object_id = ?1, width = COALESCE(?2, width), height = COALESCE(?3, height), \
-                 duration_ms = COALESCE(?4, duration_ms) WHERE object_id = (SELECT object_id FROM media WHERE id = ?5)",
-                rusqlite::params![tid.to_hex(), width, height, duration_ms, id],
+                 duration_ms = COALESCE(?4, duration_ms), sketch = ?6 WHERE object_id = (SELECT object_id FROM media WHERE id = ?5)",
+                rusqlite::params![tid.to_hex(), width, height, duration_ms, id, sketch],
             )
             .map_err(|e| e.to_string())?;
             // A replaced thumbnail may show something else: analyse it again.
