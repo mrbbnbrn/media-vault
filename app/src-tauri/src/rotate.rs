@@ -242,11 +242,13 @@ struct Current {
     width: Option<i64>,
     height: Option<i64>,
     ext: String,
+    /// The tiny preview clip (made again for the turned file).
+    tiny: Option<String>,
 }
 
 fn current(conn: &Connection, item: i64) -> Result<Current, String> {
     conn.query_row(
-        "SELECT object_id, thumb_object_id, preview_object_id, size, sha256, width, height, ext FROM media WHERE id = ? AND deleted_at IS NULL",
+        "SELECT object_id, thumb_object_id, preview_object_id, size, sha256, width, height, ext, tiny_object_id FROM media WHERE id = ? AND deleted_at IS NULL",
         [item],
         |r| {
             Ok(Current {
@@ -258,6 +260,7 @@ fn current(conn: &Connection, item: i64) -> Result<Current, String> {
                 width: r.get(5)?,
                 height: r.get(6)?,
                 ext: r.get::<_, String>(7)?.to_ascii_lowercase(),
+                tiny: r.get(8)?,
             })
         },
     )
@@ -362,7 +365,7 @@ pub fn replace(s: &Session, item: i64, bytes: &[u8], quarter: u8, lossless: bool
         let ids = ids_with(&tx, &cur.object)?;
         tx.execute(
             "UPDATE media SET object_id = ?1, size = ?2, sha256 = ?3, width = ?4, height = ?5, \
-             thumb_object_id = NULL, preview_object_id = NULL WHERE object_id = ?6",
+             thumb_object_id = NULL, preview_object_id = NULL, tiny_object_id = NULL WHERE object_id = ?6",
             params![new, written.plaintext_len as i64, written.sha256_hex, w, h, cur.object],
         )
         .map_err(e)?;
@@ -372,6 +375,7 @@ pub fn replace(s: &Session, item: i64, bytes: &[u8], quarter: u8, lossless: bool
         keep.media.push(cur.object.clone());
         keep.thumbs.extend(some(&cur.thumb));
         keep.thumbs.extend(some(&cur.preview));
+        keep.thumbs.extend(some(&cur.tiny));
         set_retired(&tx, &keep)?;
         let copies: i64 = tx
             .query_row("SELECT COUNT(*) FROM media WHERE object_id = ? AND id <> ? AND deleted_at IS NULL", params![new, item], |r| r.get(0))
@@ -414,18 +418,21 @@ pub fn undo(s: &Session, t: &Turned) -> Result<(), String> {
         // What was made for the rotated file goes.
         let mut gone = Orphans { media: vec![t.new_object.clone()], thumbs: Vec::new() };
         {
-            let mut st = db.prepare("SELECT thumb_object_id, preview_object_id FROM media WHERE object_id = ?").map_err(e)?;
-            let rows = st.query_map([&t.new_object], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?))).map_err(e)?;
+            let mut st = db.prepare("SELECT thumb_object_id, preview_object_id, tiny_object_id FROM media WHERE object_id = ?").map_err(e)?;
+            let rows = st
+                .query_map([&t.new_object], |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))
+                .map_err(e)?;
             for row in rows {
-                let (a, b) = row.map_err(e)?;
+                let (a, b, c) = row.map_err(e)?;
                 gone.thumbs.extend(some(&a));
                 gone.thumbs.extend(some(&b));
+                gone.thumbs.extend(some(&c));
             }
         }
         let tx = db.unchecked_transaction().map_err(e)?;
         tx.execute(
             "UPDATE media SET object_id = ?1, size = ?2, sha256 = ?3, width = ?4, height = ?5, \
-             thumb_object_id = ?6, preview_object_id = ?7 WHERE object_id = ?8",
+             thumb_object_id = ?6, preview_object_id = ?7, tiny_object_id = NULL WHERE object_id = ?8",
             params![t.old_object, t.old_size, t.old_sha, t.old_width, t.old_height, t.old_thumb, t.old_preview, t.new_object],
         )
         .map_err(e)?;

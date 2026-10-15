@@ -1147,10 +1147,110 @@ pub fn rotate_video(s: &Arc<Session>, tool_path: &Path, item: i64, quarter: u8) 
     crate::rotate::replace(s, item, &out, quarter, true)
 }
 
+// ---- tiny preview clips -----------------------------------------------------------------
+
+/// Long side of a tiny preview clip, in pixels.
+pub const TINY_LONG_SIDE: u32 = 426;
+const TINY_FPS: u32 = 24;
+
+/// ffmpeg arguments for a tiny preview clip: `piece` seconds from each start,
+/// joined, small, silent, to stdout. H.264 in a fragmented MP4 when this ffmpeg
+/// has an H.264 encoder (the Windows window decodes it in hardware), else VP9
+/// or VP8 in WebM.
+fn tiny_args(tool: &Tool, url: &str, starts: &[f64], piece: f64) -> Result<Vec<String>, String> {
+    let mut a: Vec<String> = Vec::new();
+    for s in starts {
+        // Input seeking: jumps to the keyframe before, then decodes only from there.
+        a.extend(["-ss".into(), format!("{s:.3}"), "-t".into(), format!("{piece:.3}"), "-i".into(), url.to_string()]);
+    }
+    let l = TINY_LONG_SIDE;
+    let mut graph = String::new();
+    for i in 0..starts.len() {
+        graph.push_str(&format!(
+            "[{i}:v:0]scale=w='if(gte(iw,ih),{l},-2)':h='if(gte(iw,ih),-2,{l})':flags=bicubic,setsar=1,fps={TINY_FPS},format=yuv420p[v{i}];"
+        ));
+    }
+    for i in 0..starts.len() {
+        graph.push_str(&format!("[v{i}]"));
+    }
+    graph.push_str(&format!("concat=n={}:v=1:a=0[out]", starts.len()));
+    let push = |a: &mut Vec<String>, v: &[&str]| a.extend(v.iter().map(|x| x.to_string()));
+    push(&mut a, &["-filter_complex", &graph, "-map", "[out]", "-an", "-sn", "-dn", "-map_metadata", "-1"]);
+    // A keyframe at the start of every piece.
+    let gop = ((piece * TINY_FPS as f64).round() as u32).max(1).to_string();
+    if tool.has("libx264") || tool.has("libopenh264") || tool.has("h264_mf") {
+        a.extend(h264_args(tool, 30, 350_000));
+        if tool.has("libx264") {
+            // Smaller and quicker for a clip this size.
+            if let Some(i) = a.iter().position(|x| x == "medium") {
+                a[i] = "veryfast".into();
+            }
+            if let Some(i) = a.iter().position(|x| x == "high") {
+                a[i] = "main".into();
+            }
+        }
+        push(&mut a, &["-g", &gop, "-movflags", FRAG_MP4, "-f", "mp4", "pipe:1"]);
+    } else if tool.has("libvpx-vp9") {
+        push(&mut a, &["-c:v", "libvpx-vp9", "-b:v", "0", "-crf", "40", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1"]);
+        push(&mut a, &["-g", &gop, "-f", "webm", "pipe:1"]);
+    } else if tool.has("libvpx") {
+        push(&mut a, &["-c:v", "libvpx", "-b:v", "400k", "-deadline", "realtime", "-cpu-used", "8"]);
+        push(&mut a, &["-g", &gop, "-f", "webm", "pipe:1"]);
+    } else {
+        return Err("this copy of the video tool can't make small videos".into());
+    }
+    Ok(a)
+}
+
+/// Make a tiny preview clip of a video with ffmpeg, in memory. The pieces
+/// are chosen by the window (previews.ts), so both ways make the same clip.
+pub fn make_tiny(s: &Arc<Session>, tool_path: &Path, item: i64, starts: &[f64], piece: f64) -> Result<Vec<u8>, String> {
+    if starts.is_empty() || starts.len() > 8 || !(0.2..=10.0).contains(&piece) || starts.iter().any(|t| !t.is_finite() || *t < 0.0) {
+        return Err("Those pieces don't make a preview clip.".into());
+    }
+    let tool = Tool::probe(tool_path)?;
+    let row = load_row(s, item)?;
+    if row.kind != "video" {
+        return Err("Only videos get a tiny clip.".into());
+    }
+    let server = Server::start().map_err(|e| format!("The video tool couldn't be prepared ({e})."))?;
+    let url = serve_row(&server, s, &row, 0)?;
+    let stop = || s.is_closed();
+    let out = run(&tool, &tiny_args(&tool, &url, starts, piece)?, None, &stop, &mut |_| {})?;
+    drop(server);
+    if crate::protocol::tiny_mime(&out).is_none() {
+        return Err("the video tool made something unexpected".into());
+    }
+    Ok(out.to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session;
+
+    #[test]
+    fn tiny_clips_through_memory() {
+        let Some(ffmpeg) = test_tool() else {
+            eprintln!("ffmpeg not found: skipped");
+            return;
+        };
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(&t);
+        let video = make(&ffmpeg, &["-f", "lavfi", "-i", "testsrc2=size=640x360:rate=30:duration=12", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-g", "60", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1"]);
+        let id = import::add_bytes(&s, None, "clip.mp4", &video).unwrap();
+        let out = make_tiny(&s, &ffmpeg, id, &[1.0, 4.0, 7.0, 10.0], 1.25).unwrap();
+        assert_eq!(crate::protocol::tiny_mime(&out), Some("video/mp4"));
+        assert!(out.len() < 400_000, "{} bytes", out.len());
+        assert!(decodes(&ffmpeg, &out));
+        // Small: 426 on the long side.
+        let tool = Tool::probe(&ffmpeg).unwrap();
+        let server = Server::start().unwrap();
+        let url = server.add("t.mp4", Source::Bytes(Arc::new(Zeroizing::new(out))));
+        assert_eq!(probe_size(&tool, &url), Some((426, 240)));
+        assert!(make_tiny(&s, &ffmpeg, id, &[], 1.0).is_err());
+        assert!(make_tiny(&s, &ffmpeg, id, &[f64::NAN], 1.0).is_err());
+    }
 
     #[test]
     fn rotation_is_read_and_turned() {

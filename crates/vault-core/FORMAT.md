@@ -152,6 +152,10 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   that scanned the item (-1 = waiting to be scanned again with the new model).
 - `media.preview_object_id` — a video's preview clip: one JPEG holding 48 small frames
   (8 across, 6 down), stored like a thumbnail. Can be deleted; the app makes it again.
+- `media.tiny_object_id` (v11) — a video's tiny preview video: silent, about 426×240, a few
+  seconds made of short pieces spread through the video (WebM/VP9 or MP4/H.264, recognised by
+  its first bytes), stored like a thumbnail. NULL = not made yet, '' = couldn't be made. Can be
+  deleted; the app makes it again.
 - `clip(media_id, vec)` — smart-search vectors of an item: one or more groups of 512
   little-endian float32 values (each unit length, CLIP ViT-B/32 space); videos have the
   thumbnail plus moments from their preview clip

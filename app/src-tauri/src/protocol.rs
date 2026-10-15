@@ -1,6 +1,7 @@
 //! Streams media to the window without ever writing decrypted data to disk.
 //!
-//! `vault://localhost/media/<id>` and `/thumb/<id>` decrypt on the fly from
+//! `vault://localhost/media/<id>`, `/thumb/<id>`, `/preview/<id>` (frame
+//! strip) and `/tiny/<id>` (tiny preview clip) decrypt on the fly from
 //! the open vault, one 1 MiB chunk at a time, with HTTP Range support so
 //! videos can seek. `local://localhost/f/<hex path>` plays ordinary files the
 //! user dropped onto a player (outside any vault), only from folders they
@@ -35,6 +36,18 @@ pub fn mime_for(ext: &str) -> &'static str {
         "txt" | "md" | "log" | "csv" | "json" | "xml" | "nfo" | "ini" | "srt" | "vtt" | "yaml"
         | "yml" => "text/plain",
         _ => "application/octet-stream",
+    }
+}
+
+/// What a tiny preview clip is, from its first bytes: WebM (EBML header) or
+/// MP4 ("ftyp" box). Anything else is refused.
+pub fn tiny_mime(head: &[u8]) -> Option<&'static str> {
+    if head.len() >= 4 && head[..4] == [0x1A, 0x45, 0xDF, 0xA3] {
+        Some("video/webm")
+    } else if head.len() >= 8 && &head[4..8] == b"ftyp" {
+        Some("video/mp4")
+    } else {
+        None
     }
 }
 
@@ -160,15 +173,16 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
             None => plain(StatusCode::NOT_FOUND, "Not found."),
         };
     }
-    let row: Option<(String, Option<String>, String, Option<String>)> = s
+    type Row = (String, Option<String>, String, Option<String>, Option<String>);
+    let row: Option<Row> = s
         .db()
         .query_row(
-            "SELECT object_id, thumb_object_id, ext, preview_object_id FROM media WHERE id = ?",
+            "SELECT object_id, thumb_object_id, ext, preview_object_id, tiny_object_id FROM media WHERE id = ?",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
         )
         .ok();
-    let Some((obj, thumb, ext, preview)) = row else {
+    let Some((obj, thumb, ext, preview, tiny)) = row else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
     let (kind, hex, mime) = match what {
@@ -181,6 +195,11 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
             Some(t) => (ObjectKind::Thumbnail, t, "image/jpeg"),
             None => return plain(StatusCode::NOT_FOUND, "No preview clip yet."),
         },
+        // The type is found from the first bytes below.
+        "tiny" => match tiny.filter(|t| !t.is_empty()) {
+            Some(t) => (ObjectKind::Thumbnail, t, ""),
+            None => return plain(StatusCode::NOT_FOUND, "No tiny clip yet."),
+        },
         _ => return plain(StatusCode::NOT_FOUND, "Not found."),
     };
     let Ok(oid) = ObjectId::from_hex(&hex) else {
@@ -189,8 +208,21 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
     // Opening only needs the key briefly; reading happens without holding locks.
     let reader = s.vault().open_object(kind, &oid);
     match reader {
-        Ok(r) => {
+        Ok(mut r) => {
             let len = r.len();
+            let mime = if mime.is_empty() {
+                let mut head = [0u8; 12];
+                let n = r.read(&mut head).unwrap_or(0);
+                if r.seek(SeekFrom::Start(0)).is_err() {
+                    return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
+                }
+                match tiny_mime(&head[..n]) {
+                    Some(m) => m,
+                    None => return plain(StatusCode::INTERNAL_SERVER_ERROR, "This clip is damaged."),
+                }
+            } else {
+                mime
+            };
             respond(r, len, mime, header_str(req, header::RANGE))
         }
         Err(e) => plain(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -436,6 +468,14 @@ mod tests {
             Some((0, MAX_CHUNK - 1))
         );
         assert_eq!(parse_range(Some("items=0-1"), 1000), None);
+    }
+
+    #[test]
+    fn tiny_clips_are_recognised_by_their_first_bytes() {
+        assert_eq!(tiny_mime(&[0x1A, 0x45, 0xDF, 0xA3, 0x9F]), Some("video/webm"));
+        assert_eq!(tiny_mime(b"\0\0\0\x18ftypisom"), Some("video/mp4"));
+        assert_eq!(tiny_mime(b"\xff\xd8\xff\xe0 jpeg"), None);
+        assert_eq!(tiny_mime(b""), None);
     }
 
     #[test]

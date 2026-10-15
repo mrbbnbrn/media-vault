@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -439,6 +439,29 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
+    if v < 11 || !has_column(conn, "media", "tiny_object_id")? {
+        // v11: a tiny silent preview video per video (about 240p, a few
+        // seconds, stored with the thumbnails) that grids play straight away.
+        // NULL = not made yet, '' = couldn't be made. Only added if it isn't
+        // there yet, so this step is safe to run again.
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            if !has_column(conn, "media", "tiny_object_id")? {
+                conn.execute_batch("ALTER TABLE media ADD COLUMN tiny_object_id TEXT;")?;
+            }
+            if v < 11 {
+                conn.execute_batch("PRAGMA user_version = 11;")?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
     Ok(())
 }
 
@@ -618,6 +641,28 @@ mod tests {
         c.execute_batch("DROP TABLE face_rejects; DROP TABLE faces; DROP TABLE face_not_same; PRAGMA user_version = 9;").unwrap();
         migrate(&c).unwrap();
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn v11_adds_tiny_clips_and_keeps_preview_strips() {
+        let c = create_empty().unwrap();
+        c.execute(
+            "INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at, preview_object_id) \
+             VALUES ('o', 'video', 'a', 'mp4', 1, 'h', 0, 'strip')",
+            [],
+        )
+        .unwrap();
+        c.execute_batch("ALTER TABLE media DROP COLUMN tiny_object_id; PRAGMA user_version = 10;").unwrap();
+        migrate(&c).unwrap();
+        let (p, t): (String, Option<String>) =
+            c.query_row("SELECT preview_object_id, tiny_object_id FROM media", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((p.as_str(), t), ("strip", None));
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, 11);
+        // Running it again (or with the column already there) changes nothing.
+        migrate(&c).unwrap();
+        c.execute_batch("PRAGMA user_version = 10;").unwrap();
+        migrate(&c).unwrap();
     }
 }
