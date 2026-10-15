@@ -1,6 +1,9 @@
 // Smart search: find pictures by describing them ("beach at sunset",
 // "kırmızı araba"). Fully offline. Needs the model files of the full package
-// (a `models` folder next to MediaVault.exe).
+// (a `models` folder next to MediaVault.exe). Typed words are understood
+// here (WebAssembly). Pictures are analysed by the app itself when ONNX
+// Runtime is there (analyse.rs, graphics card or processor); this window
+// loop only analyses them when it isn't (the app then leaves them to it).
 
 import { api, modelUrl, previewUrl, thumbUrl } from '../api';
 import { loopJob } from '../jobs';

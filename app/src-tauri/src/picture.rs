@@ -28,8 +28,11 @@ pub const THUMB_QUALITY: u8 = 86;
 pub const FACES_MAX: usize = 1600;
 /// Smart search (CLIP) looks at SIZE × SIZE.
 pub const CLIP_SIZE: usize = 224;
-const CLIP_MEAN: [f32; 3] = [0.481_454_66, 0.457_827_5, 0.408_210_73];
-const CLIP_STD: [f32; 3] = [0.268_629_54, 0.261_302_58, 0.275_777_1];
+// Written exactly as in clipcore.ts (CLIP's own numbers).
+#[allow(clippy::excessive_precision)]
+const CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
+#[allow(clippy::excessive_precision)]
+const CLIP_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
 
 /// An RGB picture (8 bits per channel, row by row), wiped from memory when dropped.
 pub struct Rgb {

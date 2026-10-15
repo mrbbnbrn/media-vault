@@ -362,10 +362,11 @@ fn clip_job(s: &Session, t: &Task, thumb: &Rgb) -> ClipJob {
     ClipJob { id: t.id, input, frames }
 }
 
-/// Run the smart-search model over the prepared pictures and store the vectors.
-fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> usize {
+/// Run the smart-search model over the prepared pictures and store the
+/// vectors; returns the items done.
+fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> Vec<i64> {
     if jobs.is_empty() {
-        return 0;
+        return Vec::new();
     }
     let n: usize = jobs.iter().map(|j| j.frames).sum();
     let mut all = Vec::with_capacity(n * 3 * picture::CLIP_SIZE * picture::CLIP_SIZE);
@@ -373,17 +374,20 @@ fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> usize {
         all.extend_from_slice(&j.input);
     }
     // A model that can't run: left as they are (the window takes over).
-    let Ok(vecs) = smartnative::embed(&all, n) else { return 0 };
+    let Ok(vecs) = smartnative::embed(&all, n) else { return Vec::new() };
     let mut k = 0;
     let db = s.db();
+    let mut done = Vec::new();
     for j in &jobs {
         let v: Vec<f32> = vecs[k..k + j.frames].iter().flatten().copied().collect();
         k += j.frames;
-        let _ = clip::save(&db, j.id, &v);
+        if clip::save(&db, j.id, &v).is_ok() {
+            done.push(j.id);
+        }
         DONE.smart.fetch_add(1, Ordering::Relaxed);
     }
     s.mark_dirty();
-    jobs.len()
+    done
 }
 
 /// Background threads are polite: lower priority (and on Windows lower disk priority too).
@@ -423,10 +427,14 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
             });
         }
     });
+    let mut reports = reports.into_inner().unwrap();
     if !stop.load(Ordering::SeqCst) && !s.is_closed() {
-        finish_smart(s, jobs.into_inner().unwrap());
+        let done = finish_smart(s, jobs.into_inner().unwrap());
+        for r in reports.iter_mut() {
+            r.smart = done.contains(&r.id);
+        }
     }
-    reports.into_inner().unwrap()
+    reports
 }
 
 fn sleep_until_woken(ms: u64) {
@@ -502,6 +510,8 @@ pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
         if let Some(old) = r.take() {
             old.stop.store(true, Ordering::SeqCst);
         }
+        // Another vault: what couldn't be decoded there means nothing here.
+        NOT_HERE.lock().unwrap().clear();
         let stop = Arc::new(AtomicBool::new(false));
         *r = Some(Runner { session: s.clone(), stop: stop.clone() });
         for c in [&DONE.items, &DONE.thumbs, &DONE.prints, &DONE.smart, &DONE.faces] {
@@ -637,8 +647,48 @@ mod tests {
         c.last_insert_rowid()
     }
 
+    /// NOT_HERE is shared: tests that use it take turns.
+    static TURN: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn one_decode_makes_the_thumbnail_and_fingerprint() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let s = crate::session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap().0;
+        let img = image::RgbImage::from_fn(1200, 800, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, 90]));
+        let mut jpg = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(img).write_to(&mut jpg, image::ImageFormat::Jpeg).unwrap();
+        let good = crate::import::add_bytes(&s, None, "photo.jpg", &jpg.into_inner()).unwrap();
+        let bad = crate::import::add_bytes(&s, None, "broken.jpg", b"not really a jpeg at all").unwrap();
+        let caps = Caps::default();
+        let tasks = select(&s.db(), caps, 10, Some(&[good, bad])).unwrap();
+        assert_eq!(tasks.len(), 2);
+        let made = Mutex::new(Vec::new());
+        let reps = process(&s, &tasks, caps, &AtomicBool::new(false), &|id| made.lock().unwrap().push(id));
+        assert_eq!(made.into_inner().unwrap(), vec![good], "grids hear about the new thumbnail");
+        let (thumb, w, h, ps): (String, i64, i64, i64) = s
+            .db()
+            .query_row("SELECT thumb_object_id, width, height, phash_state FROM media WHERE id = ?", [good], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
+            .unwrap();
+        assert_eq!((w, h, ps), (1200, 800, 1));
+        let back = picture::decode(&read(&s, ObjectKind::Thumbnail, &thumb).unwrap()).unwrap();
+        assert_eq!((back.w, back.h), (640, 427));
+        let r = reps.iter().find(|r| r.id == good).unwrap();
+        assert!(r.thumb && r.print.is_some() && !r.left_to_window);
+        // The broken one is left to the window, which then sees it again.
+        assert!(reps.iter().find(|r| r.id == bad).unwrap().left_to_window);
+        let thumb_bad: Option<String> = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [bad], |r| r.get(0)).unwrap();
+        assert_eq!(thumb_bad, None);
+        assert!(NOT_HERE.lock().unwrap().contains(&bad));
+        assert!(select(&s.db(), caps, 10, Some(&[bad])).unwrap().is_empty());
+        NOT_HERE.lock().unwrap().clear();
+        // Nothing left to do for the good one.
+        assert!(select(&s.db(), caps, 10, Some(&[good])).unwrap().is_empty());
+    }
+
     #[test]
     fn picks_what_it_can_do_and_leaves_the_rest() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
         let c = db::create_empty().unwrap();
         let jpg = add(&c, "image", "JPG", None);
         let heic = add(&c, "image", "heic", None);
@@ -757,6 +807,34 @@ mod tests {
             for i in STRIP_FRAMES {
                 let inp = picture::clip_input(&s, Some(((i % 8) as f64 * cw, (i / 8) as f64 * ch, cw, ch)));
                 cells.push(smartnative::embed(&inp, 1).unwrap().remove(0));
+            }
+        }
+        // The whole pass in a real vault: one decode, everything stored.
+        {
+            let t = tempfile::tempdir().unwrap();
+            let s = crate::session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap().0;
+            let ids: Vec<i64> = files
+                .iter()
+                .filter(|p| !p.ends_with("strip.jpg"))
+                .take(4)
+                .map(|p| crate::import::add_bytes(&s, None, &p.file_name().unwrap().to_string_lossy(), &std::fs::read(p).unwrap()).unwrap())
+                .collect();
+            if faces_on {
+                faces::queue(&s.db(), &faces::ScanRequest { ids: ids.clone(), folder: None, all: false, again: true }).unwrap();
+            }
+            let c = Caps { smart: true, faces: faces_on };
+            let t0 = Instant::now();
+            let tasks = select(&s.db(), c, 10, Some(&ids)).unwrap();
+            let reps = process(&s, &tasks, c, &AtomicBool::new(false), &|_| {});
+            eprintln!("pass over {} pictures in a vault: {:?} ({:?})", ids.len(), t0.elapsed(), reps);
+            for id in &ids {
+                let (cs, ps, fs): (i64, i64, i64) = s
+                    .db()
+                    .query_row("SELECT clip_state, phash_state, faces_state FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .unwrap();
+                assert_eq!((cs, ps), (1, 1), "item {id}");
+                assert!(reps.iter().any(|r| r.id == *id && r.smart));
+                assert!(!faces_on || fs == 1, "faces of item {id}: {fs}");
             }
         }
         if let Ok(path) = std::env::var("MV_NATIVE_OUT") {
