@@ -8,7 +8,7 @@ import { api, inTauri, localUrl, mediaUrl, onEvent, previewUrl, thumbUrl, type D
 import { animationMs, makeThumb } from './media';
 import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
-import { faceBackend, scanItem } from './ml/facescan';
+import { checkFaceEngine, faceBackend, scanItem } from './ml/facescan';
 import { embedPixels, embedQuery, pixelsOf, smartAvailable } from './ml/smart';
 import { cosine } from './ml/clipcore';
 
@@ -260,32 +260,65 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
     if (r.exported !== all.length || r.failed.length) throw new Error(`${r.exported} of ${all.length} exported, failed ${JSON.stringify(r.failed)}`);
     return `${r.exported} files, ${r.bytes} bytes`;
   });
+  // The app's own analysis pass: one decode per picture for thumbnail, fingerprint, smart search and faces.
+  const smartNative = (await api.smartEngine().catch(() => null))?.native ?? false;
+  if (pic) {
+    await step('native analysis (decode once)', async () => {
+      const t = performance.now();
+      const bytes = await fetchBytes(mediaUrl(pic.id));
+      const id = await api.addFileBytes(null, 'selftest native.jpg', bytes);
+      const [r] = await api.analyseNow([id], false);
+      if (!r?.thumb) throw new Error(`no thumbnail made (${JSON.stringify(r)})`);
+      if (!r.print) throw new Error('no fingerprint made');
+      const got = await checkImage(`${thumbUrl(id)}?v=1`);
+      return `thumbnail ${got} and fingerprint ${r.print} in ${r.ms} ms (${Math.round(performance.now() - t)} ms in all)`;
+    });
+  }
   const people = info.items.find((i) => i.name === 'sample1.jpg');
   if (people) {
-    await step('face recognition', async () => {
-      const t = performance.now();
-      const faces = await timeout(scanItem(people.id, 'image', 0), 240_000, 'scan');
-      if (faces.length < 2) throw new Error(`found ${faces.length} faces`);
-      await api.facesSave(people.id, faces, 0);
-      const st = await api.facesStatus();
-      return `${faces.length} faces in ${Math.round(performance.now() - t)} ms on ${faceBackend()}, ${st.faces} stored`;
-    });
+    const engine = await checkFaceEngine();
+    if (engine?.native.available) {
+      await step('face recognition (native pass)', async () => {
+        await api.facesQueue({ ids: [people.id] });
+        const t = performance.now();
+        const [r] = await timeout(api.analyseNow([people.id], false), 240_000, 'scan');
+        if ((r?.faces ?? 0) < 2) throw new Error(`found ${r?.faces ?? 'no'} faces (${JSON.stringify(r)})`);
+        const st = await api.facesStatus();
+        return `${r.faces} faces in ${Math.round(performance.now() - t)} ms, ${st.faces} stored`;
+      });
+      await step('face recognition (window decodes, app finds)', async () => {
+        const t = performance.now();
+        const faces = await timeout(scanItem(people.id, 'image'), 240_000, 'scan');
+        if (faces.length < 2) throw new Error(`found ${faces.length} faces`);
+        await api.facesSave(people.id, faces);
+        return `${faces.length} faces in ${Math.round(performance.now() - t)} ms on ${faceBackend()}`;
+      });
+    } else {
+      lines.push(`skip  face recognition: the faces pack isn't in this build (${engine?.native.problem ?? 'no answer'})`);
+    }
   }
   const monkey = info.items.find((i) => i.name === 'baboon.jpg');
   if (monkey && (await smartAvailable())) {
-    await step('smart search', async () => {
+    await step(`smart search (${smartNative ? 'native' : 'browser engine'})`, async () => {
       const t = performance.now();
       const pics = info.items.filter((i) => i.kind === 'image');
-      for (const p of pics) {
-        const img = await loadImage(thumbUrl(p.id));
-        await api.clipSave(p.id, Array.from(await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight))));
+      if (smartNative) {
+        const reps = await timeout(api.analyseNow(pics.map((p) => p.id), true), 240_000, 'analyse');
+        const missing = pics.filter((p) => !reps.some((r) => r.id === p.id && r.smart));
+        if (missing.length) throw new Error(`not analysed natively: ${missing.map((m) => m.name).join(', ')}`);
+      } else {
+        for (const p of pics) {
+          const img = await loadImage(thumbUrl(p.id));
+          await api.clipSave(p.id, Array.from(await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight))));
+        }
       }
       const q = await embedQuery('maymun');
       const hits = await api.smartSearch(Array.from(q), null, 5);
       if (hits[0]?.item.id !== monkey.id) throw new Error(`top hit ${hits[0]?.item.name}`);
       const img = await loadImage(mediaUrl(monkey.id));
       const full = await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight));
-      return `${pics.length} pictures, “maymun” → ${hits[0].item.name} (${hits[0].score.toFixed(3)}, full picture ${cosine(q, full).toFixed(3)}) in ${Math.round(performance.now() - t)} ms`;
+      const on = smartNative ? `, on the ${(await api.smartEngine()).device === 'gpu' ? 'graphics card' : 'processor'}` : '';
+      return `${pics.length} pictures${on}, “maymun” → ${hits[0].item.name} (${hits[0].score.toFixed(3)}, full picture ${cosine(q, full).toFixed(3)}) in ${Math.round(performance.now() - t)} ms`;
     });
   } else if (monkey) {
     lines.push('skip  smart search: no models folder');

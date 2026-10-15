@@ -116,6 +116,13 @@ function whoOf(s: Suggestion) {
 }
 
 function engine(): FaceEngineStatus {
+  // ?people=nopack: as without the faces pack.
+  if (/[?&]people=nopack\b/.test(location.search)) {
+    return {
+      native: { available: false, problem: "The face recognition pack isn't installed.", folder: 'C:\\MediaVault\\tools\\faces', device: null, deviceKnown: false, sharedRuntime: false },
+      active: 'none', upgradeLeft: 0, upgraded: 0,
+    };
+  }
   return {
     native: { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\faces', device: 'gpu', deviceKnown: true, sharedRuntime: false },
     active: 'buffalo_l', upgradeLeft: 1240, upgraded: 3760,

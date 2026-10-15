@@ -3,6 +3,11 @@
 
 mod access;
 mod activity;
+// The native analysis pass: decode each picture once for its thumbnail,
+// fingerprint, smart-search vector and faces (picture.rs, smartnative.rs).
+mod analyse;
+mod picture;
+mod smartnative;
 // Beat detection from the computer's own sound (analysis is plain Rust; the
 // capture side is Windows-only).
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -104,6 +109,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     upscale::forget_all();
     faces::forget_cache();
     faceid::unload();
+    analyse::stop();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         if s.is_dirty() {
@@ -753,8 +759,9 @@ struct ThumbTask {
 #[tauri::command]
 async fn thumbs_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<ThumbTask>, String> {
     read_db(state.inner(), move |c| {
+        // Pictures the native analysis pass reads are left to it (analyse.rs).
         let mut st = c
-            .prepare("SELECT id, kind FROM media WHERE thumb_object_id IS NULL ORDER BY id LIMIT ?")
+            .prepare(&format!("SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY id LIMIT ?", analyse::window_thumbs_sql()))
             .map_err(|e| e.to_string())?;
         let v = st
             .query_map([limit], |r| {
@@ -781,12 +788,24 @@ async fn save_thumb(
     duration_ms: Option<i64>,
     sharper: Option<bool>,
 ) -> Result<(), String> {
-    // A sharper copy of the same picture: its analysis (smart search, look-alike
-    // fingerprint) stays valid.
-    let same_picture = sharper.unwrap_or(false);
     let s = sess(state.inner())?;
-    blocking(move || {
-        let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, &data[..]).map_err(|e| e.to_string())?;
+    blocking(move || store_thumb(&s, id, &data, width, height, duration_ms, sharper.unwrap_or(false))).await
+}
+
+/// Store a new thumbnail for an item (from the window, or made natively by
+/// the analysis pass). `same_picture`: a sharper copy of the same picture,
+/// so its analysis (smart search, look-alike fingerprint) stays valid.
+fn store_thumb(
+    s: &Session,
+    id: i64,
+    data: &[u8],
+    width: Option<i64>,
+    height: Option<i64>,
+    duration_ms: Option<i64>,
+    same_picture: bool,
+) -> Result<(), String> {
+    {
+        let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
         let old: Option<String> = {
             let db = s.db();
             let old = db.query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
@@ -813,8 +832,7 @@ async fn save_thumb(
         }
         s.mark_dirty();
         Ok(())
-    })
-    .await
+    }
 }
 
 /// Older thumbnails (made smaller, before sharper thumbnails) still to remake:
@@ -1363,17 +1381,18 @@ async fn faces_queue(state: State<'_, Shared>, request: faces::ScanRequest) -> R
 
 #[tauri::command]
 async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces::ScanTask>, String> {
-    read_db(state.inner(), move |c| faces::needed(c, limit)).await
+    // Pictures the native analysis pass reads are left to it (analyse.rs).
+    read_db(state.inner(), move |c| analyse::window_faces(c, limit)).await
 }
 
 #[tauri::command]
 async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>, model: Option<i64>) -> Result<usize, String> {
-    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::FACEAPI))).await
+    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
 async fn faces_failed(state: State<'_, Shared>, media: i64, model: Option<i64>) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::FACEAPI))).await
+    edit_db_bg(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
@@ -1560,6 +1579,10 @@ async fn duel_restore(state: State<'_, Shared>, states: Vec<duel::DuelState>) ->
 
 #[tauri::command]
 async fn clip_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<clip::ClipTask>, String> {
+    // While the native analysis pass runs with its model, it does them all.
+    if analyse::window_skips_smart() {
+        return Ok(Vec::new());
+    }
     read_db(state.inner(), move |c| clip::needed(c, limit)).await
 }
 
@@ -1592,6 +1615,10 @@ async fn smart_search(
 
 #[tauri::command]
 async fn similar_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<similar::FpTask>, String> {
+    // While the native analysis pass runs, it makes them all.
+    if analyse::window_skips_prints() {
+        return Ok(Vec::new());
+    }
     read_db(state.inner(), move |c| similar::needed(c, limit)).await
 }
 
@@ -2088,6 +2115,14 @@ pub fn run() {
             faces_sort_offers,
             faces_sort_all,
             faceid::faces_detect,
+            faceid::faces_points,
+            // the native analysis pass (analyse.rs)
+            analyse::analyse_start,
+            analyse::analyse_status,
+            analyse::analyse_kick,
+            analyse::analyse_thumb,
+            analyse::analyse_now,
+            analyse::smart_engine,
             set_resume,
             clip_needed,
             clip_save,

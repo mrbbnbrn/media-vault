@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
-import { faceScanPaused, kickFaceScanner, onFaceProgress, setFaceScanPaused } from '../ml/facescan';
+import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused } from '../ml/facescan';
 import { openSortAll } from '../facesort';
 import { groupLabel, photos, ticks } from '../peoplelogic';
 import { plural } from '../undo';
@@ -87,6 +87,8 @@ export function PeopleView(props: {
   const people = review?.people ?? [];
   const st = review?.status;
   const engine = review?.engine;
+  // Faces are only scanned with the faces pack.
+  const noPack = engine?.active === 'none';
   const folderOf = (id: number) => props.folders.find((f) => f.id === id);
 
   const done = async (p: Promise<unknown>, text: string) => {
@@ -124,29 +126,28 @@ export function PeopleView(props: {
               {st.failed > 0 && ` · ${st.failed} couldn't be read`}
             </span>
           )}
-          {engine && (
+          {engine?.active === 'buffalo_l' && (
             <span className="faint" style={{ fontSize: 12 }}>
-              {engine.active === 'buffalo_l'
-                ? `InsightFace on the ${engine.native.device === 'gpu' ? 'graphics card' : 'processor'}`
-                : 'Built-in face model · the faces pack recognises people much better (Settings → Faces & smart search)'}
+              {`InsightFace on the ${engine.native.device === 'gpu' ? 'graphics card' : 'processor'}`}
             </span>
           )}
         </div>
         <div className="row" style={{ gap: 8 }}>
-          {st && st.queued > 0 && (
+          {st && st.queued > 0 && !noPack && (
             <button type="button" className="btn btn-sm" onClick={() => { setFaceScanPaused(!paused); setPaused(!paused); }}>
               {paused ? 'Resume scanning' : 'Pause scanning'}
             </button>
           )}
           <button type="button" className="btn btn-sm" title="Go through every recognised person and move (or free-copy) their photos into their folder — you choose, person by person"
             onClick={() => openSortAll()}>Sort into folders…</button>
-          <Dropdown className="btn btn-sm btn-primary" label={<><FaceIcon /> Scan for faces ▾</>} items={[
+          {!noPack && <Dropdown className="btn btn-sm btn-primary" label={<><FaceIcon /> Scan for faces ▾</>} items={[
             { label: 'Scan everything not scanned yet', onSelect: () => scanAll(false) },
             { label: 'Scan everything again', hint: 'keeps your answers', onSelect: () => scanAll(true) },
-          ]} />
+          ]} />}
         </div>
       </div>
 
+      {noPack && <div className="notice people-nopack"><FaceIcon size={16} /><span>{NO_FACE_PACK}</span></div>}
       {(err || error) && <div className="error"><span style={{ flex: 1 }}>{err ?? error}</span><button type="button" className="link" onClick={() => setError(null)}>Dismiss</button></div>}
       {msg && <div className="info row-between"><span>{msg}</span><button type="button" className="link" onClick={() => setMsg(null)}>Dismiss</button></div>}
       {engine && engine.upgradeLeft > 0 && (
@@ -156,7 +157,7 @@ export function PeopleView(props: {
         </div>
       )}
 
-      {review && people.length === 0 && review.unknown.length === 0 && (
+      {review && !noPack && people.length === 0 && review.unknown.length === 0 && (
         <div className="dropzone" style={{ minHeight: 0 }}>
           <FaceIcon size={28} />
           <b>No people yet</b>

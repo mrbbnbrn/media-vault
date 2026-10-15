@@ -2,14 +2,15 @@
 //! and the ArcFace R50 fingerprint model), run by ONNX Runtime on the
 //! graphics card (DirectML) or the processor, exactly like the upscaler.
 //!
-//! The window decodes a picture (or a video frame) in memory and sends its
-//! pixels here; faces are found, lined up and turned into 512-number
-//! fingerprints. Nothing is written anywhere.
+//! Pictures are decoded here by the analysis pass (analyse.rs); video
+//! frames (and pictures only the window can read) are decoded by the window
+//! in memory and their pixels sent here. Faces are found, lined up and turned
+//! into 512-number fingerprints. Nothing is written anywhere.
 //!
 //! The models are an optional download: `tools/faces` next to the app
-//! (det_10g.onnx, w600k_r50.onnx, and ONNX Runtime unless the upscaler pack
+//! (det_10g.onnx, w600k_r50.onnx, and ONNX Runtime unless another pack
 //! already has it), or the folder named by MV_FACES while developing.
-//! Without it the built-in face-api recognition (in the window) is used.
+//! Without it faces aren't scanned at all (People says where to get it).
 //! The buffalo_l weights are for non-commercial research use: personal use.
 
 use std::path::{Path, PathBuf};
@@ -43,12 +44,12 @@ pub fn pack_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("tools").join("faces"))
 }
 
-/// Where ONNX Runtime comes from: the faces pack itself, else the upscaler pack.
+/// Where ONNX Runtime comes from: the faces pack itself, else another pack that has it.
 fn runtime_dir(pack: &Path) -> Option<PathBuf> {
     if upscale::runtime_in(pack).is_some() {
         return Some(pack.to_path_buf());
     }
-    upscale::pack_dir().filter(|d| upscale::runtime_in(d).is_some())
+    crate::smartnative::runtime_dir()
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,8 +117,8 @@ struct Loaded {
 static MODELS: Mutex<Option<Loaded>> = Mutex::new(None);
 static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
 static LAST_DEVICE: Mutex<Option<bool>> = Mutex::new(None);
-/// The runtime or the models couldn't start at all (shown in Settings; the
-/// built-in recognition is used instead until the app restarts).
+/// The runtime or the models couldn't start at all (shown in Settings;
+/// faces aren't scanned until the app restarts).
 static BROKEN: Mutex<Option<String>> = Mutex::new(None);
 
 fn load(dir: &Path, gpu: bool) -> Result<Loaded, String> {
@@ -284,6 +285,25 @@ pub fn analyse(rgba: &[u8], w: usize, h: usize) -> Result<Vec<Found>, String> {
     })
 }
 
+/// The upscaler (GFPGAN): the five face points (eyes, nose tip, mouth
+/// corners) of every face in an RGBA picture, in its pixels.
+pub fn points(rgba: &[u8], w: usize, h: usize) -> Result<Vec<[[f32; 2]; 5]>, String> {
+    if w.checked_mul(h).and_then(|p| p.checked_mul(4)) != Some(rgba.len()) {
+        return Err("The picture didn't arrive whole.".into());
+    }
+    let plan = fm::det_plan(w, h, fm::DET_SIZE).ok_or("This picture is empty.")?;
+    let input = {
+        let rgb = Zeroizing::new(rgba.chunks_exact(4).flat_map(|p| [p[0] as f32, p[1] as f32, p[2] as f32]).collect::<Vec<f32>>());
+        let small = Zeroizing::new(upscale_img::resize(&rgb, 3, w, h, plan.w, plan.h));
+        fm::det_input(&small, &plan)
+    };
+    with_models(&mut |m| {
+        let mut dets: Vec<Detection> = run_det(&mut m.det, input.clone(), &plan)?.into_iter().map(|d| d.unscaled(plan.scale)).collect();
+        dets.truncate(MAX_FACES);
+        Ok(dets.into_iter().map(|d| d.kps).collect())
+    })
+}
+
 // ---- command ----------------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -306,8 +326,13 @@ pub fn split_body(body: &[u8]) -> Result<(DetectRequest, &[u8]), String> {
 
 /// Faces in one picture or video frame, as the library stores them.
 pub fn detect_faces(req: &DetectRequest, rgba: &[u8]) -> Result<Vec<crate::faces::FaceIn>, String> {
-    let (w, h) = (req.width as f32, req.height as f32);
-    Ok(analyse(rgba, req.width, req.height)?
+    faces_in(rgba, req.width, req.height, req.frame_ms)
+}
+
+/// Faces in an RGBA picture, as the library stores them (parts of the picture).
+pub fn faces_in(rgba: &[u8], width: usize, height: usize, frame_ms: i64) -> Result<Vec<crate::faces::FaceIn>, String> {
+    let (w, h) = (width as f32, height as f32);
+    Ok(analyse(rgba, width, height)?
         .into_iter()
         .map(|f| {
             let x1 = f.bbox[0].clamp(0.0, w);
@@ -315,7 +340,7 @@ pub fn detect_faces(req: &DetectRequest, rgba: &[u8]) -> Result<Vec<crate::faces
             let x2 = f.bbox[2].clamp(0.0, w);
             let y2 = f.bbox[3].clamp(0.0, h);
             crate::faces::FaceIn {
-                frame_ms: req.frame_ms,
+                frame_ms,
                 x: x1 / w,
                 y: y1 / h,
                 w: (x2 - x1) / w,
@@ -338,6 +363,19 @@ pub async fn faces_detect(state: State<'_, crate::Shared>, request: tauri::ipc::
     let (req, rgba) = split_body(body)?;
     let rgba = Zeroizing::new(rgba.to_vec());
     tauri::async_runtime::spawn_blocking(move || detect_faces(&req, &rgba)).await.map_err(|e| e.to_string())?
+}
+
+/// The face points of the picture the upscaler is about to rebuild faces in
+/// (only while a vault is open; needs the faces pack).
+#[tauri::command]
+pub async fn faces_points(state: State<'_, crate::Shared>, request: tauri::ipc::Request<'_>) -> Result<Vec<[[f32; 2]; 5]>, String> {
+    crate::sess(&state)?;
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("The picture didn't arrive.".into());
+    };
+    let (req, rgba) = split_body(body)?;
+    let rgba = Zeroizing::new(rgba.to_vec());
+    tauri::async_runtime::spawn_blocking(move || points(&rgba, req.width, req.height)).await.map_err(|e| e.to_string())?
 }
 
 #[cfg(test)]

@@ -5,7 +5,7 @@ import type { UpscaleModel } from './api';
 
 export const MODELS: { id: UpscaleModel; label: string; hint: string }[] = [
   { id: 'realesrgan', label: 'Real-ESRGAN', hint: 'The whole picture, faces left as they are (most faithful)' },
-  { id: 'gfpgan', label: 'GFPGAN', hint: 'Also rebuilds faces (sharpest faces)' },
+  { id: 'gfpgan', label: 'GFPGAN', hint: 'Also rebuilds faces (sharpest faces; needs the faces download)' },
 ];
 
 export const modelLabel = (m: UpscaleModel) => MODELS.find((x) => x.id === m)?.label ?? m;
@@ -27,21 +27,11 @@ export const factorText = (f: number) => `×${Number.isInteger(f) ? f : f.toFixe
 
 type Pt = [number, number];
 
-/** The 5 points GFPGAN lines faces up by, from face-api's 68: the eye on the
- * picture's left, the other eye, nose tip, mouth corner left, mouth corner right. */
-export function fivePoints(p68: Pt[]): Pt[] | null {
-  if (p68.length < 68) return null;
-  const mean = (from: number, to: number): Pt => {
-    let x = 0;
-    let y = 0;
-    for (let i = from; i <= to; i++) {
-      x += p68[i][0];
-      y += p68[i][1];
-    }
-    const n = to - from + 1;
-    return [x / n, y / n];
-  };
-  const pts: Pt[] = [mean(36, 41), mean(42, 47), p68[30], p68[48], p68[54]];
+/** The 5 points GFPGAN lines faces up by (the face finder of the faces pack
+ * gives exactly these): the eye on the picture's left, the other eye, nose
+ * tip, mouth corner left, mouth corner right. Anything else is left out. */
+export function fivePoints(pts: Pt[]): Pt[] | null {
+  if (pts.length !== 5) return null;
   return pts.every(([x, y]) => Number.isFinite(x) && Number.isFinite(y)) ? pts : null;
 }
 

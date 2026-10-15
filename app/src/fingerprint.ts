@@ -117,6 +117,11 @@ export function onFingerprintProgress(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
+/** Fingerprints were made (also by the app's own analysis pass). */
+export function noteFingerprintProgress() {
+  listeners.forEach((l) => l());
+}
+
 export function kickFingerprints() {
   wake?.();
 }

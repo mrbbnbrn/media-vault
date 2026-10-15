@@ -1,14 +1,12 @@
-// Settings → Faces: which face model is used, the optional faces pack, and
-// the one-time rescan when the pack arrives.
+// Settings → Faces: the faces pack (face recognition only runs with it),
+// where it runs, and the one-time rescan when the pack arrives.
 
 import { useEffect, useState } from 'react';
 import { api, type FaceEngineStatus, type ScanStatus } from '../api';
-import { checkFaceEngine, faceBackend, kickFaceScanner } from '../ml/facescan';
+import { checkFaceEngine, kickFaceScanner, NO_FACE_PACK } from '../ml/facescan';
 import './people.css';
 
-/** Where to get the faces pack (shown when it isn't installed). */
-export const NO_FACE_PACK =
-  'For much better recognition, download MediaVault-faces-windows.zip from the Releases page (the faces pack, once) and unzip it next to the app: it adds MediaVault\\tools\\faces.';
+export { NO_FACE_PACK };
 
 export function FaceSection() {
   const [faces, setFaces] = useState<ScanStatus | null>(null);
@@ -27,10 +25,7 @@ export function FaceSection() {
     setChecking(false);
   };
   const native = engine?.native;
-  const backend = faceBackend();
-  const runsOn = engine?.active === 'buffalo_l'
-    ? native?.device === 'gpu' ? 'graphics card' : 'processor'
-    : backend === 'webgl' ? 'graphics card' : backend ? 'processor' : null;
+  const runsOn = native?.available ? (native.device === 'gpu' ? 'graphics card' : 'processor') : null;
   const total = engine ? engine.upgraded + engine.upgradeLeft : 0;
   return (
     <section className="section face-engine">
@@ -42,7 +37,7 @@ export function FaceSection() {
       </p>
       {engine && (
         <div className="stats face-stats">
-          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Face model</span><b>{engine.active === 'buffalo_l' ? 'InsightFace buffalo_l' : 'Built-in (face-api)'}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Face model</span><b>{native?.available ? 'InsightFace buffalo_l' : 'Not installed'}</b></div>
           {runsOn && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{runsOn}</b></div>}
           {faces && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Scanned</span><b>{faces.scanned.toLocaleString()}</b></div>}
           {faces && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Faces found</span><b>{faces.faces.toLocaleString()}</b></div>}
@@ -57,7 +52,7 @@ export function FaceSection() {
       )}
       {native && (native.available ? (
         <div className="info">
-          Faces pack found{native.sharedRuntime ? ' (using the upscaler’s ONNX Runtime)' : ''}. InsightFace buffalo_l is for
+          Faces pack found{native.sharedRuntime ? ' (using ONNX Runtime from another download)' : ''}. InsightFace buffalo_l is for
           personal use only (its licence doesn't allow commercial use).
         </div>
       ) : (

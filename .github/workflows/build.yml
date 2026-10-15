@@ -89,14 +89,38 @@ jobs:
       - name: Build vault-export.exe
         run: cargo build --release --locked -p vault-export
 
-      - name: Smart-search models (from the models-v1 release of this repo)
+      - name: Smart-search models (from the models-v2 release of this repo, else models-v1)
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -e
           mkdir -p target/release/models
-          gh release download models-v1 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
+          if gh release view models-v2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release download models-v2 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
+            # Its ONNX Runtime too (kept out of the packaged folders), so the self-test analyses natively.
+            mkdir -p ortdl
+            gh release download models-v2 --repo "$GITHUB_REPOSITORY" --dir ortdl --pattern onnxruntime.dll --pattern DirectML.dll
+            echo "MV_ORT_DIR=$(cygpath -w "$PWD/ortdl")" >> "$GITHUB_ENV"
+            ls -la ortdl
+          else
+            gh release download models-v1 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
+          fi
           ls -la target/release/models
+      - name: Face recognition pack for the self-test (the newest faces-* release, if any)
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          ftag=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName -q '.[].tagName' | grep '^faces-' | sort -r | head -1 || true)
+          if [ -z "$ftag" ]; then echo "No faces pack release yet: the self-test skips face recognition."; exit 0; fi
+          # Unzipped outside target/release, so it never ends up in another download.
+          rm -rf facepack && mkdir facepack
+          gh release download "$ftag" --repo "$GITHUB_REPOSITORY" --dir facepack --pattern MediaVault-faces-windows.zip
+          (cd facepack && 7z x -y MediaVault-faces-windows.zip > /dev/null)
+          ls -la facepack/MediaVault/tools/faces
+          echo "MV_FACES=$(cygpath -w "$PWD/facepack/MediaVault/tools/faces")" >> "$GITHUB_ENV"
       - name: Video tool (ffmpeg, LGPL build pinned to one BtbN/FFmpeg-Builds release)
         shell: bash
         env:
@@ -195,16 +219,24 @@ jobs:
           utag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^upscaler-' | sort -r | head -1 || true)
           # The face recognition pack likewise (facepack.yml).
           ftag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^faces-' | sort -r | head -1 || true)
+          # The models with the native engine (modelspack.yml) once that release exists.
+          mtag=models-v1
+          v2note=""
+          if gh release view models-v2 >/dev/null 2>&1; then
+            mtag=models-v2
+            v2note="  (have the models from models-v1? download this once more: it adds the engine that analyses pictures on the graphics card)"
+          fi
           printf '%s\n' \
             "**Updating:** download only MediaVault-app-windows.zip (small), close the app, and unzip it over your MediaVault folder." \
             "" \
             "**First time:** also download, once, and unzip into the same place:" \
             "- the web engine: $repo/tag/$etag (MediaVault-engine-windows.zip)" \
-            "- the smart-search models: $repo/tag/models-v1 (MediaVault-models-windows.zip)" \
+            "- the smart-search models: $repo/tag/$mtag (MediaVault-models-windows.zip)" \
+            ${v2note:+"$v2note"} \
             "  (already have the models from before? just add MediaVault-models-english-addon.zip from the same page)" \
             "- the video tool, for converting and animations: $repo/tag/$ttag (MediaVault-videotool-windows.zip)" \
             ${utag:+"- the AI upscaler for pictures (optional, large): $repo/tag/$utag (MediaVault-upscaler-windows.zip)"} \
-            ${ftag:+"- better face recognition (optional, personal use): $repo/tag/$ftag (MediaVault-faces-windows.zip)"} \
+            ${ftag:+"- face recognition for People (optional, personal use): $repo/tag/$ftag (MediaVault-faces-windows.zip)"} \
             "" \
             "Without them the app still works: it then uses the web engine that comes with Windows, smart search is off, and converting isn't available." > notes.md
           gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --draft --notes-file notes.md

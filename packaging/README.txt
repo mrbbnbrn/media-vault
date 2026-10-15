@@ -26,6 +26,10 @@ What's in the full package
   models\     Offline smart-search models (find pictures by describing
               them, in 50+ languages). Without this folder smart search is
               simply turned off; everything else works.
+  tools\onnxruntime\
+              The engine that analyses pictures for smart search on the
+              graphics card (or all of the processor), from the newer models
+              download. Without it pictures are analysed in the window, slowly.
   tools\      The video tool (ffmpeg, LGPL build; licence and source in the
               folder) for converting items and making animations. It works
               in memory: nothing decrypted is written to disk. Without this
@@ -37,7 +41,12 @@ What's in the full package
               whole picture, GFPGAN to also rebuild faces (GFPGAN: personal
               use only, see LICENSES.txt there). Without it the Upscale
               button just explains where to get it.
-  Face recognition is built into MediaVault.exe and also works offline.
+  tools\faces\
+              Face recognition (a separate download, MediaVault-faces-
+              windows.zip from the newest "faces-..." release): finds and
+              recognises the people in your pictures, offline, on the graphics
+              card when it can (personal use only, see LICENSES.txt there).
+              Without it the People page just explains where to get it.
 
 Requirements
   Windows 10 or 11. The full package brings its own web engine. The light

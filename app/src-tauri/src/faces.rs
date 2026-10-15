@@ -1,7 +1,8 @@
 //! Face recognition, the library side. Faces are found and fingerprinted
-//! fully offline, either natively by InsightFace buffalo_l (faceid.rs, the
-//! optional faces pack; model 1) or by the built-in face-api in the window
-//! (model 0). This module stores them (inside the encrypted library) and
+//! fully offline by InsightFace buffalo_l (faceid.rs, the optional faces
+//! pack; model 1). Faces found by the old built-in face-api (model 0, no
+//! longer in the app) may still be stored until the pack scans them again.
+//! This module stores them (inside the encrypted library) and
 //! works out who is who (facegraph.rs):
 //!  - faces very much like someone you confirmed are named automatically
 //!    (listed as "recognised", easy to undo); less certain ones are asked;
@@ -28,7 +29,8 @@ fn e(err: rusqlite::Error) -> String {
 
 /// face-api fingerprints (model 0).
 pub const DIM: usize = 128;
-/// The built-in face-api.
+/// The old built-in face-api (its faces may still be stored).
+#[cfg(test)]
 pub const FACEAPI: i64 = 0;
 /// InsightFace buffalo_l (the faces pack).
 pub const ARCFACE: i64 = faceid::MODEL_ID;
@@ -288,7 +290,7 @@ pub fn set_person(conn: &Connection, folder: i64, on: bool) -> R<()> {
 #[serde(rename_all = "camelCase")]
 pub struct EngineStatus {
     pub native: faceid::EngineInfo,
-    /// "buffalo_l" (InsightFace) or "faceapi" (built in).
+    /// "buffalo_l" (InsightFace), or "none" without the faces pack (nothing is scanned).
     pub active: String,
     /// Items still to be scanned again with the new model.
     pub upgrade_left: i64,
@@ -300,7 +302,7 @@ pub fn engine_status(conn: &Connection) -> R<EngineStatus> {
     let native = faceid::info();
     let one = |sql: &str| -> R<i64> { conn.query_row(sql, [], |r| r.get(0)).map_err(e) };
     Ok(EngineStatus {
-        active: if native.available { "buffalo_l" } else { "faceapi" }.into(),
+        active: if native.available { "buffalo_l" } else { "none" }.into(),
         upgrade_left: one("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND faces_state = 2 AND faces_model = -1")?,
         upgraded: conn
             .query_row("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL AND faces_state IN (1, -1) AND faces_model = ?", [ARCFACE], |r| r.get(0))
@@ -1275,7 +1277,7 @@ mod tests {
         assert!(gm.suggestions.iter().any(|s| s.item.id == m1 && !s.sure), "less alike = suggested but not ticked");
         assert_eq!(r.unknown.len(), 1);
         assert_eq!(r.unknown[0].photos, 3);
-        assert_eq!(r.engine.active, if faceid::available() { "buffalo_l" } else { "faceapi" });
+        assert_eq!(r.engine.active, if faceid::available() { "buffalo_l" } else { "none" });
 
         // Accepting names the faces; nothing is moved or tagged.
         let fa: Vec<i64> = ga.suggestions.iter().map(|s| s.face_id).collect();

@@ -1,0 +1,127 @@
+name: models pack v2
+
+# Builds the "models-v2" download: the smart-search models of models-v1
+# (taken from this repo's own models-v1 release, checked against its
+# SHA256SUMS.txt) plus ONNX Runtime with DirectML, so pictures are analysed
+# natively on the graphics card (or all of the processor) instead of slowly
+# in the window. Run by hand (Actions → models pack v2 → Run workflow); it
+# never runs on a push. Runs on Linux: nothing in it needs Windows.
+#
+# MediaVault-models-windows.zip has the same name and layout as before, so
+# it unzips over an existing MediaVault folder:
+#   MediaVault\models\clip-*                    the smart-search models (unchanged from models-v1)
+#   MediaVault\tools\onnxruntime\onnxruntime.dll, DirectML.dll
+#                                               official NuGet packages, checked against nuget.org
+#                                               (the same versions as the faces and upscaler packs)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with facepack.yml and upscaler.yml (the app's ort crate asks for API 24).
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  TAG: models-v2
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The smart-search models (this repo's models-v1 release, checked)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p m && cd m
+          gh release download models-v1 --repo "$GITHUB_REPOSITORY" --pattern 'clip-*'
+          for f in clip-vision.onnx clip-text.onnx clip-text-tokenizer.json clip-text-tokenizer_config.json clip-text-dense.safetensors; do
+            [ -s "$f" ] || { echo "models-v1 has no $f"; exit 1; }
+          done
+          # Every model file listed in models-v1's checksums must match.
+          gh release download models-v1 --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS.txt --dir ../sums
+          grep ' clip-' ../sums/SHA256SUMS.txt > ../sums/want.sha256
+          sha256sum -c ../sums/want.sha256
+          ls -la
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget rt && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../rt/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../rt/
+          ls -la ../rt
+
+      - name: Licences, readme, checksums
+        run: |
+          set -euo pipefail
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — SMART SEARCH ENGINE: LICENCES"
+            echo "==========================================="
+            echo
+            echo "onnxruntime.dll          ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence),"
+            echo "    from the NuGet package Microsoft.ML.OnnxRuntime.DirectML $ORT_DML_VERSION."
+            echo "DirectML.dll             DirectML $DIRECTML_VERSION (Microsoft), from the NuGet package"
+            echo "    Microsoft.AI.DirectML $DIRECTML_VERSION; redistributed under its licence below."
+            echo
+            echo "The models in MediaVault\\models are unchanged from the models-v1 release (Xenova/clip-vit-base-patch32,"
+            echo "sentence-transformers/clip-ViT-B-32-multilingual-v1 on Hugging Face)."
+            echo
+            for f in "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ($(dirname "$f")) ===="; echo
+              cat "$f"
+            done
+          } > rt/LICENSES.txt
+          printf '%s\r\n' \
+            "Media Vault smart search engine" \
+            "" \
+            "ONNX Runtime with DirectML: the app analyses your pictures for smart search with it," \
+            "on the graphics card when it can, otherwise on all of the processor, instead of slowly" \
+            "inside the window. Pictures analysed before stay as they are." \
+            "" \
+            "Everything runs offline. Nothing decrypted is ever written to disk." > rt/README.txt
+          printf '%s\n' "$TAG" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > rt/VERSION.txt
+          (cd rt && sha256sum *.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zips and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p z/MediaVault/models z/MediaVault/tools/onnxruntime a/MediaVault/models
+          cp m/clip-* z/MediaVault/models/
+          cp rt/* z/MediaVault/tools/onnxruntime/
+          cp m/clip-en-* a/MediaVault/models/
+          (cd z && zip -qr -1 ../MediaVault-models-windows.zip MediaVault)
+          (cd a && zip -qr -1 ../MediaVault-models-english-addon.zip MediaVault)
+          ls -la *.zip
+          # The single files too (the build's self-test downloads the models and the runtime from here).
+          (cd m && sha256sum clip-* > ../SHA256SUMS.txt)
+          (cd rt && sha256sum onnxruntime.dll DirectML.dll >> ../SHA256SUMS.txt)
+          cat SHA256SUMS.txt
+          notes="Smart-search models plus the engine that analyses pictures on the graphics card (ONNX Runtime $ORT_DML_VERSION with DirectML). Unzip MediaVault-models-windows.zip into the same place as the app (over your MediaVault folder); it adds MediaVault\\models and MediaVault\\tools\\onnxruntime. Pictures analysed before stay as they are."
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$TAG" --prerelease --title "Smart search models v2 (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi
+          gh release upload "$TAG" m/clip-* rt/onnxruntime.dll rt/DirectML.dll SHA256SUMS.txt \
+            MediaVault-models-windows.zip MediaVault-models-english-addon.zip --clobber -R "$GITHUB_REPOSITORY"

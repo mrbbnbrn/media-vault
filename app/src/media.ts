@@ -303,10 +303,15 @@ async function sharpenSome(stopped: () => boolean): Promise<boolean> {
   for (const t of tasks) {
     if (stopped()) return false;
     try {
-      const r = await makeThumb(t.id, t.kind);
-      if (stopped()) return false;
-      await api.saveThumb(t.id, r.bytes, r.w, r.h, r.ms, true);
-      listeners.forEach((l) => l(t.id));
+      // Pictures the app reads itself are remade there (sharper, off the window).
+      if (await api.analyseThumb(t.id).catch(() => false)) {
+        listeners.forEach((l) => l(t.id));
+      } else {
+        const r = await makeThumb(t.id, t.kind);
+        if (stopped()) return false;
+        await api.saveThumb(t.id, r.bytes, r.w, r.h, r.ms, true);
+        listeners.forEach((l) => l(t.id));
+      }
     } catch {
       // Keep the old thumbnail.
     }
@@ -321,9 +326,15 @@ let running = false;
 let wake: (() => void) | null = null;
 const listeners = new Set<(id: number) => void>();
 
-/** Ask the thumbnailer to look for new work now (after an import). */
+/** Ask the thumbnailer (and the app's own analysis pass) to look for new work now (after an import). */
 export function kickThumbnails() {
   wake?.();
+  api.analyseKick().catch(() => {});
+}
+
+/** A thumbnail was made by the app's analysis pass: grids refresh that tile. */
+export function thumbMade(id: number) {
+  listeners.forEach((l) => l(id));
 }
 
 const changed = new Set<() => void>();

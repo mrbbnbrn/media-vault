@@ -8,7 +8,7 @@ import { UpscalerSection } from '../components/Upscale';
 import { FaceSection } from '../components/FaceEngine';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, StorageTask } from '../api';
+import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, SmartEngine, StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
@@ -610,10 +610,14 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
 function SmartSection() {
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [models, setModels] = useState<boolean | null>(null);
+  const [engine, setEngine] = useState<SmartEngine | null>(null);
   useEffect(() => {
     api.clipStatus().then(setClip).catch(() => {});
     smartAvailable().then(setModels);
+    api.smartEngine().then(setEngine).catch(() => {});
   }, []);
+  // Pictures are analysed by the app itself (graphics card or processor), else slowly in the window.
+  const runsOn = !engine ? null : engine.native ? (engine.device === 'gpu' ? 'graphics card' : 'processor') : 'browser engine (slow)';
   return (
     <>
       <FaceSection />
@@ -628,9 +632,13 @@ function SmartSection() {
           background (using their thumbnails); the results stay inside the encrypted vault.
         </p>
         {models === false && <div className="notice">This copy of the app doesn't include the smart-search models. Use the full package (it has a “models” folder next to MediaVault.exe).</div>}
+        {models && engine && !engine.native && (
+          <div className="info">Analysing runs in the browser engine, which is slow. The newer models download (“models-v2” on the Releases page) adds the engine that uses your graphics card: unzip it over your MediaVault folder.</div>
+        )}
         {models && clip && (
-          <div className="stats" style={{ flexWrap: 'wrap' }}>
+          <div className="stats" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 0 }}>
             <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Analysed</span><b>{clip.done.toLocaleString()} / {clip.total.toLocaleString()}</b></div>
+            {runsOn && <div className="stat" title={engine?.problem ?? undefined}><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{runsOn}</b></div>}
             {clip.failed > 0 && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Couldn't analyse</span><b>{clip.failed}</b></div>}
           </div>
         )}

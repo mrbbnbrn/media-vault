@@ -25,6 +25,7 @@ import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
 import { startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
+import { setNativeOptions, startNativeAnalyser } from './ml/native';
 import { startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
 import { runSelfTestIfRequested } from './selftest';
@@ -209,6 +210,11 @@ export function App() {
   useEffect(() => (open ? startFaceScanner() : undefined), [open]);
   const smartIndex = open && app?.config.smartIndex !== false;
   useEffect(() => (smartIndex ? startClipIndexer() : undefined), [smartIndex]);
+  // The app's own analysis pass: thumbnails, fingerprints, smart search and
+  // faces of the pictures it reads, each decoded once (the loops above and
+  // below only do the rest).
+  useEffect(() => (open ? startNativeAnalyser(smartIndex) : undefined), [open]);
+  useEffect(() => setNativeOptions({ smart: smartIndex }), [smartIndex]);
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
   useEffect(() => (makePreviews ? startPreviewMaker() : undefined), [makePreviews]);

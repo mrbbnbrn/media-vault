@@ -39,3 +39,18 @@ describe('look-alike fingerprints', () => {
     expect(sharpness(checker)).toBeGreaterThan(sharpness(gradient));
   });
 });
+
+// The same made-up picture as the Rust version's test (picture.rs): both
+// must give exactly the same fingerprint, so the app's native analysis and
+// the window agree.
+describe('same fingerprint as the native analysis', () => {
+  const g = Array.from({ length: 32 * 32 }, (_, i) => {
+    const x = i % 32;
+    const y = Math.floor(i / 32);
+    return Math.round(128 + 90 * Math.sin(x / 5) * Math.cos(y / 7) + 2 * x - y);
+  });
+  it('pHash and sharpness', () => {
+    expect(phash(g)).toBe('bd02ed03ad5253ad');
+    expect(sharpness(g, 32, 32)).toBeCloseTo(9.843332098765433, 9);
+  });
+});

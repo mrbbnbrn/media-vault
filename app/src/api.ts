@@ -287,7 +287,8 @@ export interface FaceEngineInfo {
 
 export interface FaceEngineStatus {
   native: FaceEngineInfo;
-  active: 'buffalo_l' | 'faceapi';
+  /** 'none': no faces pack, nothing is scanned. */
+  active: 'buffalo_l' | 'none';
   /** Items still to be scanned again with the new model. */
   upgradeLeft: number;
   upgraded: number;
@@ -331,6 +332,40 @@ export interface ClipStatus {
   total: number;
   done: number;
   failed: number;
+}
+
+/** Smart search's picture side: natively (graphics card / processor) or in the window (slow). */
+export interface SmartEngine {
+  models: boolean;
+  native: boolean;
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+  problem: string | null;
+}
+
+/** The native analysis pass (analyse.rs). */
+export interface AnalyseStatus {
+  running: boolean;
+  busy: boolean;
+  /** Items done since it started, and per step. */
+  done: number;
+  thumbs: number;
+  prints: number;
+  smart: number;
+  faces: number;
+  /** Items still with something to do. */
+  left: number;
+  facesLeft: number;
+}
+
+export interface AnalyseReport {
+  id: number;
+  thumb: boolean;
+  print: string | null;
+  smart: boolean;
+  faces: number | null;
+  leftToWindow: boolean;
+  ms: number;
 }
 
 export interface AppState {
@@ -734,9 +769,9 @@ export const api = {
   setPersonFolder: (folder: number, on: boolean) => call<void>('set_person_folder', { folder, on }),
   facesQueue: (request: ScanRequest) => call<number>('faces_queue', { request }),
   facesNeeded: (limit: number) => call<{ id: number; kind: Kind; durationMs: number | null }[]>('faces_needed', { limit }),
-  /** model: 0 = built-in face-api (128 numbers), 1 = InsightFace (512). */
-  facesSave: (media: number, faces: FaceIn[], model = 0) => call<number>('faces_save', { media, faces, model }),
-  facesFailed: (media: number, model = 0) => call<void>('faces_failed', { media, model }),
+  /** model 1 = InsightFace (512 numbers; the faces pack). */
+  facesSave: (media: number, faces: FaceIn[], model = 1) => call<number>('faces_save', { media, faces, model }),
+  facesFailed: (media: number, model = 1) => call<void>('faces_failed', { media, model }),
   facesStatus: () => call<ScanStatus>('faces_status'),
   facesReview: (request?: ReviewRequest) => call<FaceReview>('faces_review', { request: request ?? null }),
   /** Names sure faces automatically; returns how many changed. */
@@ -746,6 +781,8 @@ export const api = {
   facesUpgrade: () => call<number>('faces_upgrade'),
   /** Faces in one picture (RGBA), found natively; throws when the faces pack isn't there. */
   facesDetect: (request: { width: number; height: number; frameMs: number }, rgba: Uint8Array) => facesDetect(request, rgba),
+  /** The upscaler: the five face points (eyes, nose tip, mouth corners) of each face, in picture pixels (needs the faces pack). */
+  facesPoints: (request: { width: number; height: number }, rgba: Uint8Array) => facesPoints(request, rgba),
   facesFindOwner: (person: number) => call<OwnerProposal | null>('faces_find_owner', { person }),
   facesHide: (faceIds: number[], hidden: boolean) => call<number>('faces_hide', { faceIds, hidden }),
   facesMergePeople: (keep: number, other: number) => call<number>('faces_merge_people', { keep, other }),
@@ -769,6 +806,16 @@ export const api = {
   clipSave: (media: number, vec: number[]) => call<void>('clip_save', { media, vec }),
   clipFailed: (media: number) => call<void>('clip_failed', { media }),
   clipStatus: () => call<ClipStatus>('clip_status'),
+  /** Where pictures are analysed for smart search (Settings). */
+  smartEngine: () => call<SmartEngine>('smart_engine'),
+  // the native analysis pass: thumbnails, fingerprints, smart search and faces from one decode
+  analyseStart: (options: { smart: boolean; facesPaused: boolean }) => call<AnalyseStatus>('analyse_start', { options }),
+  analyseStatus: () => call<AnalyseStatus>('analyse_status'),
+  analyseKick: () => call<void>('analyse_kick'),
+  /** Remake one thumbnail natively; false when the window has to. */
+  analyseThumb: (id: number) => call<boolean>('analyse_thumb', { id }),
+  /** The self-test: the whole pass now for these items. */
+  analyseNow: (ids: number[], smart: boolean) => call<AnalyseReport[]>('analyse_now', { ids, smart }),
   smartSearch: (vec: number[], folder: number | null, limit?: number) =>
     call<{ item: Item; score: number }[]>('smart_search', { vec, folder, limit }),
   similarNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('similar_needed', { limit }),
@@ -1166,6 +1213,7 @@ const mock = {
       case 'folder_samples':
       case 'faces_needed':
       case 'clip_needed':
+      case 'similar_needed':
       case 'faces_of':
       case 'smart_search':
         return [];
@@ -1189,6 +1237,13 @@ const mock = {
         return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
       case 'clip_status':
         return { total: 0, done: 0, failed: 0 };
+      case 'smart_engine':
+        return { models: true, native: true, device: 'gpu', deviceKnown: false, problem: null } satisfies SmartEngine;
+      case 'analyse_start':
+      case 'analyse_status':
+        return { running: false, busy: false, done: 0, thumbs: 0, prints: 0, smart: 0, faces: 0, left: 0, facesLeft: 0 } satisfies AnalyseStatus;
+      case 'analyse_thumb':
+        return false;
       case 'folder_view':
         return { folder: null, subfolders: [], items: [] };
       default:
@@ -1358,6 +1413,15 @@ async function facesDetect(request: { width: number; height: number; frameMs: nu
   if (!inTauri) throw new Error('Preview: native face recognition works in the real app.');
   try {
     return await invoke<FaceIn[]>('faces_detect', upscaleBody(request as unknown as UpscaleRequest, rgba));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+async function facesPoints(request: { width: number; height: number }, rgba: Uint8Array): Promise<[number, number][][]> {
+  if (!inTauri) return [];
+  try {
+    return await invoke<[number, number][][]>('faces_points', upscaleBody({ ...request, frameMs: 0 } as unknown as UpscaleRequest, rgba));
   } catch (e) {
     throw new Error(typeof e === 'string' ? e : String(e));
   }

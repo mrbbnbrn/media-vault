@@ -7,9 +7,9 @@
 // UpscaleCompare.tsx). Nothing is saved until asked; results are kept in memory while
 // the viewer is open (per item and model) and forgotten when it closes.
 //
-// The window decodes the picture exactly as it shows it and, for GFPGAN,
-// finds the faces (face-api, offline); the upscaling itself runs in Rust
-// (upscale.rs) on the graphics card or the processor.
+// The window decodes the picture exactly as it shows it; for GFPGAN the
+// faces are found by the faces pack (faceid.rs, offline) and the upscaling
+// itself runs in Rust (upscale.rs) on the graphics card or the processor.
 
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
@@ -17,7 +17,6 @@ import {
   type UpscaleDone, type UpscaleModel, type UpscaleProgress, type UpscalerInfo,
 } from '../api';
 import { kickThumbnails, type PlayItem } from '../media';
-import { facePoints } from '../ml/facescan';
 import { pushUndo } from '../undo';
 import { factorText, fivePoints, MODELS, modelLabel, NO_PACK, savedModel, saveModel, upscaleFactor } from '../upscale';
 import { mockUpscaled } from '../upscalecompare';
@@ -179,7 +178,8 @@ export function useUpscale(o: {
         let faces: [number, number][][] = [];
         if (m === 'gfpgan') {
           setPhase({ kind: 'busy', model: m, stage: 'faces', fraction: 0 });
-          const pts = await facePoints(bmp, bmp.width, bmp.height).catch(() => [] as [number, number][][]);
+          // Without the faces pack the whole picture is upscaled and faces stay as they are.
+          const pts = await api.facesPoints({ width: bmp.width, height: bmp.height }, rgba).catch(() => [] as [number, number][][]);
           faces = pts.map(fivePoints).filter((p): p is [number, number][] => p != null);
           if (mine !== run.current) return;
         }

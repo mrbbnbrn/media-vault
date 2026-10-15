@@ -109,6 +109,11 @@ export function onClipProgress(cb: () => void): () => void {
   return () => listeners.delete(cb);
 }
 
+/** Vectors were stored (also by the app's own analysis pass). */
+export function noteClipProgress() {
+  listeners.forEach((l) => l());
+}
+
 export function kickClipIndexer() {
   wake?.();
 }

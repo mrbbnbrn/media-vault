@@ -12,15 +12,11 @@ describe('upscaler rules', () => {
     expect(factorText(2.36)).toBe('×2.4');
   });
 
-  it('takes the 5 face points from the 68', () => {
-    const p68 = Array.from({ length: 68 }, (_, i) => [i, 100 + i] as [number, number]);
-    const five = fivePoints(p68)!;
-    expect(five[0]).toEqual([38.5, 138.5]); // mean of 36…41
-    expect(five[1]).toEqual([44.5, 144.5]);
-    expect(five[2]).toEqual([30, 130]);
-    expect(five[3]).toEqual([48, 148]);
-    expect(five[4]).toEqual([54, 154]);
-    expect(fivePoints(p68.slice(0, 10))).toBeNull();
+  it('keeps faces with their 5 points', () => {
+    const five = Array.from({ length: 5 }, (_, i) => [i, 100 + i] as [number, number]);
+    expect(fivePoints(five)).toEqual(five);
+    expect(fivePoints(five.slice(0, 4))).toBeNull();
+    expect(fivePoints([...five.slice(0, 4), [Number.NaN, 1]])).toBeNull();
   });
 
   it('names the models', () => {

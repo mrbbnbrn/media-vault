@@ -1,161 +1,34 @@
-// Face recognition, the window side: decode pictures and video frames (in
-// memory, like thumbnails; nothing decrypted is written anywhere) and find
-// the faces in them, fully offline. With the faces pack (InsightFace
-// buffalo_l, run natively: faceid.rs) the pixels are sent to the app and
-// each face gets a 512-number fingerprint; without it the built-in face-api
-// (models in the app) makes 128-number ones, as before.
+// Face recognition, the window side. Faces are found by InsightFace
+// buffalo_l, run natively by the app (faceid.rs), and only with the faces
+// pack (tools\faces). Pictures the app reads itself (JPEG, PNG, WebP, GIF)
+// are scanned by its analysis pass (analyse.rs); this loop scans the rest:
+// videos (a few frames each) and pictures only the window can decode. They
+// are decoded here in memory (nothing decrypted is written anywhere) and the
+// pixels are sent to the app.
 
 import { api, mediaUrl, type FaceEngineStatus, type FaceIn, type Kind } from '../api';
 import { loopJob, updateJob } from '../jobs';
 
-type FaceApi = typeof import('@vladmandic/face-api');
-type Raw = { x: number; y: number; w: number; h: number; px: number; score: number; descriptor: number[] };
-
-const MODELS = '/facemodels';
-/** Faces smaller than this (pixels in the original) give unreliable fingerprints. */
-const MIN_FACE = 36;
-/** Pictures are scaled down to this before looking for faces. */
-const MAX_SIDE = 1280;
-
-let backend = '';
-/** "webgl" (graphics card) or "cpu", once loaded. */
-export const faceBackend = () => (model === 1 ? (nativeDevice === 'gpu' ? 'native-gpu' : 'native-cpu') : backend);
-
-// ---- preferred: a worker (keeps the window smooth) ---------------------------------------
-
-let worker: Worker | null = null;
-let workerOk: Promise<boolean> | null = null;
-let seq = 0;
-const waiting = new Map<number, (r: { faces?: Raw[]; backend?: string; error?: string }) => void>();
-
-function ask(msg: Record<string, unknown>): Promise<{ faces?: Raw[]; backend?: string; error?: string }> {
-  const id = ++seq;
-  return new Promise((res) => {
-    waiting.set(id, res);
-    worker!.postMessage({ ...msg, id });
-  });
-}
-
-function useWorker(): Promise<boolean> {
-  workerOk ??= (async () => {
-    try {
-      worker = new Worker(new URL('./faceworker.ts', import.meta.url), { type: 'module' });
-      worker.onmessage = (e) => {
-        const r = waiting.get(e.data.id);
-        waiting.delete(e.data.id);
-        r?.(e.data);
-      };
-      worker.onerror = () => waiting.forEach((r) => r({ error: 'worker failed' }));
-      const r = await Promise.race([
-        ask({ type: 'init' }),
-        new Promise<{ backend?: string; error?: string }>((res) => setTimeout(() => res({ error: 'timeout' }), 120_000)),
-      ]);
-      if (r.error) throw new Error(r.error);
-      backend = r.backend ?? '';
-      return true;
-    } catch {
-      worker?.terminate();
-      worker = null;
-      return false;
-    }
-  })();
-  return workerOk;
-}
-
-// ---- fallback: on the main thread ---------------------------------------------------------
-
-let lib: Promise<FaceApi> | null = null;
-function loadFaceApi(): Promise<FaceApi> {
-  lib ??= (async () => {
-    const f = await import('@vladmandic/face-api');
-    const tf = f.tf as unknown as { setBackend(b: string): Promise<boolean>; ready(): Promise<void>; getBackend(): string };
-    const ok = await tf.setBackend('webgl').catch(() => false);
-    if (!ok) await tf.setBackend('cpu');
-    await tf.ready();
-    backend = tf.getBackend();
-    await Promise.all([
-      f.nets.ssdMobilenetv1.loadFromUri(MODELS),
-      f.nets.faceLandmark68Net.loadFromUri(MODELS),
-      f.nets.faceRecognitionNet.loadFromUri(MODELS),
-    ]);
-    return f;
-  })().catch((e) => {
-    lib = null;
-    throw e;
-  });
-  return lib;
-}
-
-async function detectHere(c: HTMLCanvasElement): Promise<Raw[]> {
-  const f = await loadFaceApi();
-  const found = await f
-    .detectAllFaces(c, new f.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 40 }))
-    .withFaceLandmarks()
-    .withFaceDescriptors();
-  return found.map((r) => {
-    const b = r.detection.box;
-    return { x: b.x / c.width, y: b.y / c.height, w: b.width / c.width, h: b.height / c.height, px: b.width, score: r.detection.score, descriptor: Array.from(r.descriptor) };
-  });
-}
-
-function canvasOf(src: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
-  const s = Math.min(1, MAX_SIDE / Math.max(w, h));
-  const c = document.createElement('canvas');
-  c.width = Math.max(1, Math.round(w * s));
-  c.height = Math.max(1, Math.round(h * s));
-  c.getContext('2d', { willReadFrequently: true })!.drawImage(src, 0, 0, c.width, c.height);
-  return c;
-}
-
-/** Faces in one picture (coordinates as fractions of the picture). */
-export async function detect(src: CanvasImageSource, w: number, h: number, frameMs = 0): Promise<FaceIn[]> {
-  const c = canvasOf(src, w, h);
-  let raw: Raw[];
-  if (await useWorker()) {
-    const r = await ask({ type: 'detect', img: c.getContext('2d')!.getImageData(0, 0, c.width, c.height) });
-    if (r.error) throw new Error(r.error);
-    raw = r.faces ?? [];
-  } else {
-    raw = await detectHere(c);
-  }
-  const scale = c.width / w;
-  return raw
-    .filter((r) => r.px / scale >= MIN_FACE && r.px >= 24)
-    .map((r) => ({ frameMs, x: r.x, y: r.y, w: r.w, h: r.h, score: r.score, descriptor: r.descriptor }));
-}
-
-/** The upscaler: the 68 face points of every face in a picture, in its own pixels. */
-export async function facePoints(src: CanvasImageSource, w: number, h: number): Promise<[number, number][][]> {
-  const c = canvasOf(src, w, h);
-  let pts: [number, number][][];
-  if (await useWorker()) {
-    const r = (await ask({ type: 'points', img: c.getContext('2d')!.getImageData(0, 0, c.width, c.height) })) as { points?: [number, number][][]; error?: string };
-    if (r.error) throw new Error(r.error);
-    pts = r.points ?? [];
-  } else {
-    const f = await loadFaceApi();
-    const found = await f.detectAllFaces(c, new f.SsdMobilenetv1Options({ minConfidence: 0.5, maxResults: 40 })).withFaceLandmarks();
-    pts = found.map((r) => r.landmarks.positions.map((p) => [p.x, p.y] as [number, number]));
-  }
-  const k = w / c.width;
-  return pts.map((face) => face.map(([x, y]) => [x * k, y * k] as [number, number]));
-}
-
-// ---- native (the faces pack) ---------------------------------------------------------------
+/** Where to get the faces pack (shown when it isn't installed). */
+export const NO_FACE_PACK =
+  'Face recognition needs the faces download: on the Releases page, open the newest “faces-…” release, get MediaVault-faces-windows.zip and unzip it next to the app (it adds MediaVault\\tools\\faces).';
 
 /** Pictures are sent to the native model at most this big (it finds faces at 640, and lines them up from these pixels). */
 const NATIVE_SIDE = 1600;
-/** Which model the scanner uses: 1 = InsightFace (faces pack), 0 = built-in face-api. */
-let model: 0 | 1 = 0;
+let available = false;
 let nativeDevice: string | null = null;
 let nativeFailures = 0;
-export const faceModel = () => model;
 
-/** Ask the app whether the faces pack is there (and use it if so). */
+/** "native-gpu" or "native-cpu" once the faces pack is there, else "". */
+export const faceBackend = () => (available ? (nativeDevice === 'gpu' ? 'native-gpu' : 'native-cpu') : '');
+/** The faces pack is there and working. */
+export const facesReady = () => available;
+
+/** Ask the app whether the faces pack is there. */
 export async function checkFaceEngine(): Promise<FaceEngineStatus | null> {
   try {
     const e = await api.facesEngine();
-    model = e.native.available && nativeFailures < 3 ? 1 : 0;
+    available = e.native.available && nativeFailures < 3;
     nativeDevice = e.native.device;
     return e;
   } catch {
@@ -163,7 +36,7 @@ export async function checkFaceEngine(): Promise<FaceEngineStatus | null> {
   }
 }
 
-async function detectNative(src: CanvasImageSource, w: number, h: number, frameMs = 0): Promise<FaceIn[]> {
+async function detect(src: CanvasImageSource, w: number, h: number, frameMs = 0): Promise<FaceIn[]> {
   const s = Math.min(1, NATIVE_SIDE / Math.max(w, h));
   const c = document.createElement('canvas');
   c.width = Math.max(1, Math.round(w * s));
@@ -177,8 +50,8 @@ async function detectNative(src: CanvasImageSource, w: number, h: number, frameM
     nativeFailures = 0;
     return faces;
   } catch (e) {
-    // The model itself failing again and again: back to the built-in one.
-    if (++nativeFailures >= 3) model = 0;
+    // The model itself failing again and again: stop scanning until the app restarts.
+    if (++nativeFailures >= 3) available = false;
     throw e;
   } finally {
     c.width = c.height = 0;
@@ -191,32 +64,23 @@ function cosine(a: number[], b: number[]) {
   return s;
 }
 
-function dist(a: number[], b: number[]) {
-  let s = 0;
-  for (let i = 0; i < a.length; i++) s += (a[i] - b[i]) ** 2;
-  return Math.sqrt(s);
-}
-
 const timeout = <T,>(p: Promise<T>, ms: number) =>
   Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
 
-const find = (m: 0 | 1, src: CanvasImageSource, w: number, h: number, frameMs = 0) =>
-  m === 1 ? detectNative(src, w, h, frameMs) : detect(src, w, h, frameMs);
-
-async function scanImage(id: number, m: 0 | 1): Promise<FaceIn[]> {
+async function scanImage(id: number): Promise<FaceIn[]> {
   const img = new Image();
   img.crossOrigin = 'anonymous';
   img.src = mediaUrl(id);
   try {
     await timeout(img.decode(), 30_000);
-    return await find(m, img, img.naturalWidth, img.naturalHeight);
+    return await detect(img, img.naturalWidth, img.naturalHeight);
   } finally {
     img.src = '';
   }
 }
 
 /** A few frames spread through the video; the same person seen again is kept once. */
-async function scanVideo(id: number, m: 0 | 1): Promise<FaceIn[]> {
+async function scanVideo(id: number): Promise<FaceIn[]> {
   const v = document.createElement('video');
   v.crossOrigin = 'anonymous';
   v.muted = true;
@@ -244,8 +108,8 @@ async function scanVideo(id: number, m: 0 | 1): Promise<FaceIn[]> {
         );
       }
       if (!v.videoWidth) continue;
-      for (const face of await find(m, v, v.videoWidth, v.videoHeight, Math.round(t * 1000))) {
-        const same = kept.findIndex((k) => (m === 1 ? cosine(k.descriptor, face.descriptor) > 0.5 : dist(k.descriptor, face.descriptor) < 0.45));
+      for (const face of await detect(v, v.videoWidth, v.videoHeight, Math.round(t * 1000))) {
+        const same = kept.findIndex((k) => cosine(k.descriptor, face.descriptor) > 0.5);
         if (same < 0) kept.push(face);
         else if (face.score * face.w > kept[same].score * kept[same].w) kept[same] = face;
       }
@@ -257,9 +121,9 @@ async function scanVideo(id: number, m: 0 | 1): Promise<FaceIn[]> {
   }
 }
 
-/** Faces in one item, with the built-in model (0) or the faces pack (1, the default when it is there). */
-export function scanItem(id: number, kind: Kind, m: 0 | 1 = model): Promise<FaceIn[]> {
-  return kind === 'video' ? scanVideo(id, m) : scanImage(id, m);
+/** Faces in one item (needs the faces pack). */
+export function scanItem(id: number, kind: Kind): Promise<FaceIn[]> {
+  return kind === 'video' ? scanVideo(id) : scanImage(id);
 }
 
 // ---- background scanner ------------------------------------------------------------------
@@ -269,19 +133,33 @@ let stopFn: (() => void) | null = null;
 let wake: (() => void) | null = null;
 let paused = false;
 const listeners = new Set<() => void>();
+const pauseListeners = new Set<(p: boolean) => void>();
 
 export function onFaceProgress(cb: () => void): () => void {
   listeners.add(cb);
   return () => listeners.delete(cb);
 }
 
+/** Faces were stored (also by the app's own analysis pass): pages showing them refresh. */
+export function noteFaceProgress() {
+  listeners.forEach((l) => l());
+}
+
 export function kickFaceScanner() {
   wake?.();
+  api.analyseKick().catch(() => {});
 }
 
 export function setFaceScanPaused(p: boolean) {
   paused = p;
-  if (!p) wake?.();
+  pauseListeners.forEach((l) => l(p));
+  if (!p) kickFaceScanner();
+}
+
+/** The native analysis pass follows the pause too. */
+export function onFaceScanPaused(cb: (p: boolean) => void): () => void {
+  pauseListeners.add(cb);
+  return () => pauseListeners.delete(cb);
 }
 
 export function faceScanPaused() {
@@ -306,7 +184,7 @@ export function startFaceScanner(): () => void {
   let named = false;
   // Name sure faces automatically now and then while scanning (and at the end).
   const autoName = async (force = false) => {
-    if (model !== 1 || (!force && Date.now() - lastAuto < 20_000) || (!force && !named)) return;
+    if ((!force && Date.now() - lastAuto < 20_000) || (!force && !named)) return;
     lastAuto = Date.now();
     named = false;
     await api.facesAuto().catch(() => 0);
@@ -314,7 +192,7 @@ export function startFaceScanner(): () => void {
   const job = loopJob('faces', {
     label: 'Scanning faces',
     long: true,
-    left: () => api.facesStatus().then((s) => s.queued),
+    left: () => api.facesNeeded(1000).then((t) => t.length),
     cancel: () => {
       setFaceScanPaused(true);
       listeners.forEach((l) => l());
@@ -340,12 +218,18 @@ export function startFaceScanner(): () => void {
       let upgrading = false;
       try {
         const engine = await checkFaceEngine();
-        // The faces pack just arrived: everything is scanned again with it, once.
-        if (engine && model === 1 && !upgraded) {
+        if (!available) {
+          // No faces pack: nothing is scanned (People says where to get it).
+          job.idle();
+          await sleep(30_000);
+          continue;
+        }
+        // The faces pack just arrived: everything found by the old built-in model is scanned again, once.
+        if (engine && !upgraded) {
           upgraded = true;
           await api.facesUpgrade().catch(() => 0);
         }
-        upgrading = model === 1 && (engine?.upgradeLeft ?? 0) > 0;
+        upgrading = (engine?.upgradeLeft ?? 0) > 0;
         tasks = await api.facesNeeded(8);
       } catch {
         break; // locked
@@ -360,22 +244,21 @@ export function startFaceScanner(): () => void {
       job.batch();
       updateJob('faces', { label: upgrading ? 'Updating faces (new model)' : 'Scanning faces' });
       for (const t of tasks) {
-        if (stopped || paused) break;
-        const m = model;
+        if (stopped || paused || !available) break;
         try {
-          const faces = await scanItem(t.id, t.kind, m);
+          const faces = await scanItem(t.id, t.kind);
           if (stopped) break;
-          await api.facesSave(t.id, faces, m);
+          await api.facesSave(t.id, faces);
           if (faces.length) named = true;
         } catch {
           if (stopped) break;
-          // A native failure with a working built-in model left: try that before giving up.
-          if (m === 1 && model === 0) continue;
-          await api.facesFailed(t.id, m).catch(() => {});
+          // The model itself stopped working: leave the item queued.
+          if (!available) break;
+          await api.facesFailed(t.id).catch(() => {});
         }
         job.step();
         tell();
-        await new Promise((r) => setTimeout(r, m === 1 ? 20 : 60));
+        await new Promise((r) => setTimeout(r, 20));
       }
       await autoName();
     }
