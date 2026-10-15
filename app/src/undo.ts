@@ -30,6 +30,11 @@ export async function undoLast(): Promise<string | null> {
   return e.label;
 }
 
+/** The most recent action (what Ctrl+Z would undo), or null. */
+export function peekUndo(): UndoEntry | null {
+  return stack[stack.length - 1] ?? null;
+}
+
 export function clearUndo() {
   stack = [];
   notify();

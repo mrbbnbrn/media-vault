@@ -326,6 +326,18 @@ export function kickThumbnails() {
   wake?.();
 }
 
+const changed = new Set<() => void>();
+
+/** An item's stored file was replaced (a saved rotation): lists showing it load again. */
+export function noteItemsChanged() {
+  changed.forEach((f) => f());
+}
+
+export function onItemsChanged(cb: () => void): () => void {
+  changed.add(cb);
+  return () => changed.delete(cb);
+}
+
 /** Called whenever a thumbnail is ready, so grids can refresh that tile. */
 export function onThumb(cb: (id: number) => void): () => void {
   listeners.add(cb);

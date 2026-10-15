@@ -1065,10 +1065,165 @@ pub fn run_animation(
     done
 }
 
+// ---- saving a video's rotation ----------------------------------------------------------
+
+/// The rotation ffmpeg reports for the first video stream, in degrees
+/// counter-clockwise ("displaymatrix: rotation of -90.00 degrees"); 0 if none.
+fn rotation_in(probe: &str) -> f64 {
+    let mut in_video = false;
+    for l in probe.lines() {
+        let t = l.trim();
+        if t.starts_with("Stream #") {
+            if in_video {
+                break;
+            }
+            in_video = t.contains("Video:");
+            continue;
+        }
+        if in_video
+            && let Some(rest) = t.split("rotation of ").nth(1)
+            && let Some(v) = rest.split_whitespace().next().and_then(|v| v.parse::<f64>().ok())
+        {
+            return v;
+        }
+    }
+    0.0
+}
+
+/// The counter-clockwise angle to store after turning a further `quarter`
+/// clockwise quarter turns, in (-180, 180].
+fn rotated_angle(current_ccw: f64, quarter: u8) -> i64 {
+    let a = ((current_ccw / 90.0).round() as i64 * 90 - 90 * (quarter % 4) as i64).rem_euclid(360);
+    if a > 180 { a - 360 } else { a }
+}
+
+/// ffmpeg arguments that copy every frame and sound as they are and only set
+/// the rotation (the result streams to stdout as a fragmented MP4).
+fn rotate_args(url: &str, ccw: i64, subtitles: bool) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-display_rotation:v:0".into(), ccw.to_string(), "-i".into(), url.into()];
+    let push = |a: &mut Vec<String>, v: &[&str]| a.extend(v.iter().map(|x| x.to_string()));
+    push(&mut a, &["-map", "0:v:0", "-map", "0:a?"]);
+    if subtitles {
+        push(&mut a, &["-map", "0:s?"]);
+    }
+    push(&mut a, &["-dn", "-c", "copy", "-movflags", FRAG_MP4, "-f", "mp4", "pipe:1"]);
+    a
+}
+
+/// Video types whose rotation can be saved (MP4 holds it; WebM written to a
+/// stream would lose its index, so it isn't offered).
+pub fn can_rotate(ext: &str) -> bool {
+    matches!(ext, "mp4" | "m4v")
+}
+
+/// Save a video turned `quarter` clockwise quarter turns: only the rotation in
+/// the file changes, nothing is re-encoded. Through memory, like converting.
+pub fn rotate_video(s: &Arc<Session>, tool_path: &Path, item: i64, quarter: u8) -> Result<crate::rotate::Turned, String> {
+    let tool = Tool::probe(tool_path)?;
+    let row = load_row(s, item).map_err(|e| format!("It can't be rotated: {e}."))?;
+    if row.kind != "video" {
+        return Err("Only videos are rotated this way.".into());
+    }
+    if !can_rotate(&row.ext) {
+        return Err(format!("Saving the rotation works for MP4 videos; this one is {}.", row.ext.to_uppercase()));
+    }
+    let server = Server::start().map_err(|e| format!("The video tool couldn't be prepared ({e})."))?;
+    let url = serve_row(&server, s, &row, 0)?;
+    let probe = command(&tool.path)
+        .args(["-hide_banner", "-nostdin", "-i", &url])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .output()
+        .map_err(|e| format!("The video tool couldn't be started ({e})."))?;
+    let ccw = rotated_angle(rotation_in(&String::from_utf8_lossy(&probe.stderr)), quarter);
+    let stop = || s.is_closed();
+    let out = match run(&tool, &rotate_args(&url, ccw, true), None, &stop, &mut |_| {}) {
+        Ok(o) => o,
+        // Subtitles MP4 can't hold: without them.
+        Err(e) if e != STOPPED => run(&tool, &rotate_args(&url, ccw, false), None, &stop, &mut |_| {}).map_err(|_| format!("Couldn't save the rotation: {e}."))?,
+        Err(e) => return Err(e),
+    };
+    drop(server);
+    crate::rotate::replace(s, item, &out, quarter, true)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session;
+
+    #[test]
+    fn rotation_is_read_and_turned() {
+        let probe = "Input #0, mov,mp4,m4a,3gp,3g2,mj2, from '(the item)':\n  Stream #0:0[0x1](und): Video: h264 (High), yuv420p, 160x90\n      Metadata:\n        handler_name    : VideoHandler\n      Side data:\n        displaymatrix: rotation of -90.00 degrees\n  Stream #0:1[0x2](und): Audio: aac\n";
+        assert_eq!(rotation_in(probe), -90.0);
+        assert_eq!(rotation_in("  Stream #0:0: Video: vp9\n  Stream #0:1: Audio: opus\n      displaymatrix: rotation of 90.00 degrees\n"), 0.0);
+        assert_eq!(rotation_in(""), 0.0);
+        // Clockwise quarter turns lower ffmpeg's (counter-clockwise) angle.
+        assert_eq!(rotated_angle(0.0, 1), -90);
+        assert_eq!(rotated_angle(0.0, 3), 90);
+        assert_eq!(rotated_angle(-90.0, 1), 180);
+        assert_eq!(rotated_angle(180.0, 1), 90);
+        assert_eq!(rotated_angle(-180.0, 2), 0);
+        assert_eq!(rotated_angle(89.6, 1), 0);
+        let a = rotate_args("http://x/0.mp4", -90, false);
+        assert_eq!(&a[..4], &["-display_rotation:v:0", "-90", "-i", "http://x/0.mp4"]);
+        assert!(a.windows(2).any(|w| w == ["-c", "copy"]));
+        assert!(!a.iter().any(|x| x == "0:s?"));
+        assert!(can_rotate("mp4") && can_rotate("m4v") && !can_rotate("webm"));
+    }
+
+    #[test]
+    fn video_rotation_is_saved_without_re_encoding() {
+        let Some(ff) = test_tool() else {
+            eprintln!("ffmpeg not found: skipped");
+            return;
+        };
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(&t);
+        let video_path = t.path().join("clip.mp4");
+        make(&ff, &[
+            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10:duration=1", "-f", "lavfi", "-i", "sine=duration=1",
+            "-c:v", "mpeg4", "-c:a", "aac", "-shortest", "-y", video_path.to_str().unwrap(),
+        ]);
+        let video = std::fs::read(&video_path).unwrap();
+        let id = import::add_bytes(&s, None, "clip.mp4", &video).unwrap();
+        s.db().execute("UPDATE media SET width = 160, height = 90, duration_ms = 1000 WHERE id = ?", [id]).unwrap();
+        let probe = |data: &[u8]| -> String {
+            let p = t.path().join("probe.mp4");
+            std::fs::write(&p, data).unwrap();
+            let o = Command::new(&ff).args(["-hide_banner", "-nostdin", "-i", p.to_str().unwrap()]).stdin(Stdio::null()).output().unwrap();
+            String::from_utf8_lossy(&o.stderr).into_owned()
+        };
+        let packets = |data: &[u8]| -> String {
+            let p = t.path().join("packets.mp4");
+            std::fs::write(&p, data).unwrap();
+            let o = Command::new(&ff)
+                .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i", p.to_str().unwrap(), "-map", "0:v", "-c", "copy", "-f", "framemd5", "-"])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            String::from_utf8_lossy(&o.stdout).lines().filter(|l| !l.starts_with('#')).map(|l| l.rsplit(',').next().unwrap_or("").trim().to_string()).collect::<Vec<_>>().join(",")
+        };
+
+        let r = rotate_video(&s, &ff, id, 1).unwrap();
+        assert!(r.lossless);
+        assert_eq!((r.width, r.height), (Some(90), Some(160)));
+        let (_, _, turned) = object(&s, id);
+        assert_eq!(rotation_in(&probe(&turned)), -90.0, "a quarter turn clockwise");
+        assert!(decodes(&ff, &turned));
+        assert_eq!(packets(&turned), packets(&video), "the frames are copied, not re-encoded");
+        assert!(probe(&turned).contains("Audio:"), "the sound stays");
+
+        // Turning again builds on the stored rotation.
+        let r2 = rotate_video(&s, &ff, id, 1).unwrap();
+        assert_eq!(rotation_in(&probe(&object(&s, id).2)).abs(), 180.0);
+        crate::rotate::undo(&s, &r2).unwrap();
+        crate::rotate::undo(&s, &r).unwrap();
+        assert_eq!(object(&s, id).2, video, "back to the original file");
+
+        let webm = import::add_bytes(&s, None, "x.webm", &make(&ff, &["-f", "lavfi", "-i", "testsrc=size=32x32:rate=5:duration=1", "-c:v", "libvpx", "-f", "webm", "pipe:1"])).unwrap();
+        assert!(rotate_video(&s, &ff, webm, 1).unwrap_err().contains("MP4"));
+    }
 
     /// ffmpeg for tests: MV_FFMPEG, or the one on PATH. None = skip.
     fn test_tool() -> Option<PathBuf> {

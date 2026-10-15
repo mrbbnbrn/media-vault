@@ -77,11 +77,12 @@ export function MediaGrid(props: {
   const ref = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(800);
   const [view, setView] = useState({ top: 0, bottom: 1200 });
-  const [ready, setReady] = useState<Set<number>>(new Set());
+  // Thumbnails made (again) while this grid shows: how many times, so a remade one (e.g. after a saved rotation) loads afresh.
+  const [ready, setReady] = useState<Map<number, number>>(new Map());
   const mode = props.layout ?? 'grid';
   useResumeChanges();
 
-  useEffect(() => onThumb((id) => setReady((r) => new Set(r).add(id))), []);
+  useEffect(() => onThumb((id) => setReady((r) => new Map(r).set(id, (r.get(id) ?? 0) + 1))), []);
   const clipMode = usePreviewMode();
   const [made, setMade] = useState<Set<number>>(new Set());
   useEffect(() => onPreviewMade((id) => setMade((m) => new Set(m).add(id))), []);
@@ -350,7 +351,7 @@ export function MediaGrid(props: {
             }}
             onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
             {hasThumb && it.thumb !== 'failed' ? (
-              <img src={`${thumbUrl(it.id)}?v=${ready.has(it.id) ? 1 : 0}`} alt="" loading="lazy" draggable={false}
+              <img src={`${thumbUrl(it.id)}?v=${ready.get(it.id) ?? 0}`} alt="" loading="lazy" draggable={false}
                 style={place && props.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
             ) : it.thumb === 'failed' ? (
               <span className="tile-msg"><BrokenIcon /> Can't play</span>

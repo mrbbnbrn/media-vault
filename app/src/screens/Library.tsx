@@ -59,7 +59,7 @@ import {
 } from '../viewmemory';
 import type { ScrollAnchor } from '../viewmemory';
 import { monthGroups } from '../gridlayout';
-import { fromItem, kickThumbnails, onThumb } from '../media';
+import { fromItem, kickThumbnails, onItemsChanged, onThumb } from '../media';
 import { sorted, type Order } from '../playlist';
 import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
@@ -586,6 +586,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
 
   // Folder covers appear as soon as their first thumbnail is made.
   useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
+  // A rotation saved in the viewer changes an item's shape: load again once the viewer closes.
+  const itemsStale = useRef(false);
+  useEffect(() => onItemsChanged(() => { itemsStale.current = true; }), []);
+  useEffect(() => {
+    if (frozen || !itemsStale.current) return;
+    itemsStale.current = false;
+    reload();
+  }, [frozen]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!coverBump) return;
     const t = setTimeout(() => api.folders().then(setFolders).catch(() => {}), 1500);

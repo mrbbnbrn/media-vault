@@ -3,6 +3,7 @@
 // the vault (encrypted), never to disk.
 
 import { GIFEncoder, applyPalette, quantize } from 'gifenc';
+import { turnedSize, turnMatrix, type Quarter } from './rotation';
 
 /** "Holiday.mp4" + 83.4 s → "Holiday – 1m23s.jpg" */
 export function derivedName(name: string, seconds: number | null, ext: string, label = ''): string {
@@ -23,12 +24,16 @@ export function canvasBlob(c: HTMLCanvasElement, type: string, quality?: number)
 }
 
 /** The video's current frame at full size, as a JPEG. */
-export async function captureVideoFrame(v: HTMLVideoElement): Promise<Blob> {
+export async function captureVideoFrame(v: HTMLVideoElement, r: Quarter = 0): Promise<Blob> {
   if (!v.videoWidth) throw new Error('The video has no picture yet.');
   const c = document.createElement('canvas');
-  c.width = v.videoWidth;
-  c.height = v.videoHeight;
-  c.getContext('2d')!.drawImage(v, 0, 0);
+  // Turned as the viewer shows it.
+  const t = turnedSize({ w: v.videoWidth, h: v.videoHeight }, r);
+  c.width = t.w;
+  c.height = t.h;
+  const ctx = c.getContext('2d')!;
+  ctx.setTransform(...turnMatrix(r, 0, 0, t.w, t.h));
+  ctx.drawImage(v, 0, 0, v.videoWidth, v.videoHeight);
   return canvasBlob(c, 'image/jpeg', 0.95);
 }
 

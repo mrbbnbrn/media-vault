@@ -134,14 +134,14 @@ export function useUpscale(o: {
     job.current = null;
   };
 
-  // Another item: back to normal (results stay cached).
+  // Another item, or its file changed (a saved rotation): back to normal (results stay cached).
   useEffect(() => {
     stop();
     current.current = null;
     setPhase({ kind: 'idle' });
     setCompare(true);
     setHolding(false);
-  }, [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const start = async (m: UpscaleModel) => {
     const it = oRef.current.item;
@@ -149,8 +149,8 @@ export function useUpscale(o: {
     stop();
     const mine = run.current;
     setCompare(true);
-    current.current = { key: it.key, model: m };
-    const hit = cache.current.get(`${it.key}:${m}`);
+    current.current = { key: `${it.key}@${it.src}`, model: m };
+    const hit = cache.current.get(`${it.key}@${it.src}:${m}`);
     if (hit) return setPhase({ kind: 'done', model: m, result: hit, shown: false });
     const pack = info ?? (await (infoOnce ?? Promise.resolve(null)));
     if (!pack?.available) return setPhase({ kind: 'note', text: pack?.problem && pack.problem !== "The upscaler pack isn't installed." ? `${pack.problem} ${NO_PACK}` : NO_PACK });

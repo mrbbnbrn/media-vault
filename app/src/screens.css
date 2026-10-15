@@ -841,6 +841,8 @@ body.dragging, body.dragging * { cursor: grabbing !important; }
 /* ---- AI upscaler (components/Upscale.tsx) ---------------------------------------- */
 .upscaled-layer { position: absolute; inset: 0; }
 .upscaled-layer.hide { visibility: hidden; }
+.rotate-ctl { display: inline-flex; align-items: center; gap: 2px; }
+.rotate-ctl .rot-save { margin-left: 6px; white-space: nowrap; animation: pop-in 0.15s ease-out; }
 .upscale-ctl { display: inline-flex; align-items: center; gap: 6px; }
 .upscale-ctl .pbtn { gap: 6px; font-size: 13px; }
 .upscale-ctl .pbtn.dim { opacity: 0.6; }

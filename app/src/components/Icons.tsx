@@ -272,6 +272,16 @@ export const RestoreIcon = ({ size = 14 }: P) => (
     <path d="M3 4v5h5" />
   </svg>
 );
+/** A picture with a turning arrow over it (left = mirrored). */
+export const RotateIcon = ({ size = 16, dir = 'right' }: P & { dir?: 'left' | 'right' }) => (
+  <svg {...base(size)}>
+    <g transform={dir === 'left' ? 'translate(24 0) scale(-1 1)' : undefined}>
+      <rect x="4" y="11" width="11" height="9" rx="1.5" />
+      <path d="M5 7.5a8 8 0 0 1 14 2.5" />
+      <path d="M20.5 6l-1.3 4.2-4.2-1.3" />
+    </g>
+  </svg>
+);
 export const FaceIcon = ({ size = 16 }: P) => (
   <svg {...base(size)}>
     <circle cx="12" cy="8" r="4" />

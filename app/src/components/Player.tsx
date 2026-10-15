@@ -6,17 +6,21 @@
 // dismiss), right-drag = move the zoomed picture, 0 = reset zoom.
 // Videos: ←/→ jump (Shift = bigger jump), Ctrl+←/→ one frame, Ctrl+Space /
 // Shift+Space next / previous item, A/B/X loop, K bookmark, S save frame.
+// R / Shift+R rotate right / left (only how it shows, until "Save rotation").
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
-import { clipBox, drawnRect, type Box } from '../flip';
+import { clipBox, type Box } from '../flip';
 import { kickFaceScanner } from '../ml/facescan';
+import { saveWay, turn, turnBox, turnedRect, turnedStyle, turnLabel, type Quarter } from '../rotation';
+import { RotateNote, saveRotation, savedText } from '../rotatesave';
+import { peekUndo, pushUndo, undoLast, type UndoEntry } from '../undo';
 import { facesAt, kenBurnsPath, resumeStart, resumeValue } from '../viewerlogic';
 import { noteResume } from '../resumebus';
 import { captureVideoFrame, derivedName } from '../clips';
-import { formatTime, kickThumbnails, type PlayItem } from '../media';
+import { formatTime, kickThumbnails, noteItemsChanged, type PlayItem } from '../media';
 import { ORDERS, Playlist, type Order, type Repeat } from '../playlist';
 import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
 import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
@@ -28,7 +32,7 @@ import { useFaceAlign } from './FaceAlign';
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
-  PauseIcon, PlayIcon, PrevIcon, RepeatIcon, ShuffleIcon, SoundIcon,
+  PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
 } from './Icons';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
@@ -144,6 +148,10 @@ export function Player(props: PlayerProps) {
   const kbRef = useRef<HTMLDivElement>(null);
   const kbAnim = useRef<Animation | null>(null);
   const scanToken = useRef(0);
+  // Turned in the viewer (clockwise quarter turns); back to 0 on the next item.
+  const [rot, setRot] = useState<Quarter>(0);
+  const [rotSaving, setRotSaving] = useState(false);
+  const lastTurn = useRef<UndoEntry | null>(null);
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
   const isVideo = item?.kind === 'video';
@@ -186,6 +194,7 @@ export function Player(props: PlayerProps) {
     setFaces([]);
     setFaceFlash(false);
     setMenu(null);
+    setRot(0);
     scanToken.current += 1;
   }, [item?.key]);
 
@@ -271,7 +280,7 @@ export function Player(props: PlayerProps) {
     natural: isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null,
     stage: stageWH,
     fit: s.fit,
-    blocked: zoomed || failed,
+    blocked: zoomed || failed || rot !== 0,
     person: props.person,
     upcoming: () => listRef.current?.peek(5) ?? [],
     layer: kbRef,
@@ -603,7 +612,8 @@ export function Player(props: PlayerProps) {
     return () => ro.disconnect();
   }, []);
   const natural = isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : isVideo ? vidSize : null;
-  const drawn: Box | null = natural && stageWH.w > 0 && !failed ? drawnRect(stageWH.w, stageWH.h, natural.w, natural.h, s.fit, zoom) : null;
+  // Turned, the fit uses the turned shape.
+  const drawn: Box | null = natural && stageWH.w > 0 && !failed ? turnedRect(stageWH.w, stageWH.h, natural.w, natural.h, s.fit, rot, zoom) : null;
 
   // ---- faces ------------------------------------------------------------------------------------
 
@@ -661,7 +671,7 @@ export function Player(props: PlayerProps) {
     }
     if (token === scanToken.current) setFlash(`No faces found in this ${what}`);
   };
-  const shownFaces = showFaces ? facesAt(faces, isVideo, time.at) : [];
+  const shownFaces = showFaces ? facesAt(faces, isVideo, time.at).map((f) => turnBox(f, rot)) : [];
 
   // The offline AI upscaler (still pictures in the vault, full viewer only).
   const up = useUpscale({ item, enabled: inVault && item?.kind === 'image' && !props.compact && !props.bare && !mini && !failed,
@@ -723,7 +733,7 @@ export function Player(props: PlayerProps) {
       let blob: Blob | null;
       let name: string;
       if (isVideo && videoRef.current) {
-        blob = await captureVideoFrame(videoRef.current);
+        blob = await captureVideoFrame(videoRef.current, rot);
         name = derivedName(item.name, videoRef.current.currentTime, 'jpg');
       } else {
         blob = (await imgRef.current?.capture()) ?? null;
@@ -735,6 +745,64 @@ export function Player(props: PlayerProps) {
       setFlash(`Saved “${name}” in this folder`);
     } catch (e) {
       setFlash(`Couldn't save the frame: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
+
+  // ---- rotating ---------------------------------------------------------------------------
+
+  const canTurn = !!item && (isPicture || isVideo) && !failed && !mini;
+  const rotate = (by: number) => {
+    if (!canTurn) return;
+    const next = turn(rot, by);
+    setRot(next);
+    setZoom({ s: 1, x: 0, y: 0 });
+    setRect(null);
+    setFlash(next ? `${turnLabel(next)}${inVault ? ' · Save rotation keeps it' : ''}` : 'Back the right way round');
+  };
+  /** A new address for the same item, so the window reads its new file. */
+  const freshSrc = (src: string) => `${src.split('?')[0]}?r=${Date.now()}`;
+  const saveTurn = async () => {
+    if (!item || item.itemId == null || !rot || rotSaving) return;
+    const it = item;
+    const r = rot;
+    const how = saveWay(it.kind, it.name);
+    if (how.way === 'no') return setFlash(how.why);
+    setRotSaving(true);
+    setFlash('Saving the rotation…');
+    try {
+      const t = await saveRotation(it, r, (f) => setFlash(`Saving the rotation… ${Math.round(f * 100)}%`));
+      const showAgain = (width: number | null, height: number | null) =>
+        setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], src: freshSrc(it.src), width, height } }));
+      showAgain(t.width, t.height);
+      noteItemsChanged();
+      if (listRef.current?.current()?.key === it.key) setRot(0);
+      kickThumbnails();
+      kickFaceScanner();
+      setFaceReload((n) => n + 1);
+      pushUndo(`Saved the rotation of “${it.name}”`, async () => {
+        await api.rotateUndo(t);
+        showAgain(t.oldWidth, t.oldHeight);
+        noteItemsChanged();
+        kickThumbnails();
+        kickFaceScanner();
+        setFaceReload((n) => n + 1);
+      });
+      lastTurn.current = peekUndo();
+      setFlash(savedText(t));
+    } catch (e) {
+      setFlash(e instanceof RotateNote ? e.message : `Couldn't save the rotation: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setRotSaving(false);
+    }
+  };
+  /** Ctrl+Z in the viewer undoes a rotation saved here (other undo waits for the library). */
+  const undoTurn = async () => {
+    lastTurn.current = null;
+    try {
+      const label = await undoLast();
+      if (label) setFlash(`Undone: ${label}`);
+    } catch (e) {
+      setFlash(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
     }
   };
 
@@ -797,6 +865,18 @@ export function Player(props: PlayerProps) {
       if (menu) return; // the right-click menu handles its own keys
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
+      if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
+        if (lastTurn.current && peekUndo() === lastTurn.current) {
+          e.preventDefault();
+          undoTurn();
+        }
+        return;
+      }
+      if (k === 'r' && !e.ctrlKey && !e.altKey && !e.metaKey && canTurn) {
+        rotate(e.shiftKey ? -1 : 1);
+        poke();
+        return;
+      }
       if (k === ' ') {
         e.preventDefault();
         if (e.ctrlKey) go('next');
@@ -867,7 +947,8 @@ export function Player(props: PlayerProps) {
       );
     if (item.kind === 'video')
       return (
-        <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`} style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined }}
+        <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`}
+          style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined, ...turnedStyle(rot, stageWH.w, stageWH.h) }}
           src={item.src} autoPlay={!halted} crossOrigin="anonymous"
           playsInline preload="auto" onLoadedMetadata={() => vh.current.meta()} onTimeUpdate={() => vh.current.time()} onEnded={() => vh.current.end()}
           onError={() => setFailed(true)} />
@@ -875,9 +956,12 @@ export function Player(props: PlayerProps) {
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     return null;
-  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
+  const way = item ? saveWay(item.kind, item.name) : null;
+  const saveTip = way?.way === 'no' ? way.why : way?.way === 'jpeg' ? 'Keep it turned this way, without touching the picture itself (Ctrl+Z undoes it)'
+    : way?.way === 'video' ? 'Keep it turned this way, without re-encoding the video (Ctrl+Z undoes it)' : 'Keep it turned this way (Ctrl+Z undoes it)';
   const weight = item?.weight ?? 1;
   const timeline = !props.compact && isGif && gifFrame.count > 1 ? (
     <PositionBar at={gifFrame.index} dur={gifFrame.count - 1} onSeek={(i) => { setPaused(true); imgRef.current?.seek(i); }}
@@ -987,12 +1071,12 @@ export function Player(props: PlayerProps) {
             panMoved.current = false;
             return;
           }
-          if (faceCapable) setMenu({ x: e.clientX, y: e.clientY });
+          if (canTurn && !props.compact) setMenu({ x: e.clientX, y: e.clientY });
         }}>
         {isDoc ? media : (
           <div ref={kbRef} className="kb-layer">
             {isPicture && item && !failed ? (
-              <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom}
+              <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom} rot={rot}
                 prefs={prefs} paused={halted} className={anim}
                 onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })} onError={() => setFailed(true)} />
             ) : (
@@ -1000,7 +1084,7 @@ export function Player(props: PlayerProps) {
             )}
             {up.src && item && (
               <div ref={upLayer} className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
-                <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} prefs={prefs} paused
+                <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} rot={rot} prefs={prefs} paused
                   onInfo={up.onShown} onError={up.onFailed} />
               </div>
             )}
@@ -1036,9 +1120,15 @@ export function Player(props: PlayerProps) {
       )}
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} title={item?.name} onClose={() => setMenu(null)} items={[
-          { label: 'Show faces', hint: 'for a moment', onSelect: () => { setMenu(null); flashFaces(); } },
-          { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
-          { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
+          { label: 'Rotate right', hint: 'R', onSelect: () => { setMenu(null); rotate(1); } },
+          { label: 'Rotate left', hint: 'Shift+R', onSelect: () => { setMenu(null); rotate(-1); } },
+          ...(rot && inVault ? [{ label: rotSaving ? 'Saving the rotation…' : 'Save rotation', hint: 'keeps it turned', onSelect: () => { setMenu(null); saveTurn(); } }] : []),
+          ...(rot ? [{ label: 'Back the right way round', onSelect: () => { setMenu(null); rotate(-rot); } }] : []),
+          ...(faceCapable ? [
+            { label: 'Show faces', hint: 'for a moment', sepBefore: true, onSelect: () => { setMenu(null); flashFaces(); } },
+            { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
+            { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
+          ] : []),
         ]} />
       )}
       {miniControls}
@@ -1138,6 +1228,17 @@ export function Player(props: PlayerProps) {
             {speedButton}
             {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+              {canTurn && (
+                <div className="rotate-ctl" role="group" aria-label="Rotate">
+                  <button type="button" className="pbtn lg" aria-label="Rotate left" title="Rotate left (Shift+R)" onClick={() => rotate(-1)}><RotateIcon size={18} dir="left" /></button>
+                  <button type="button" className="pbtn lg" aria-label="Rotate right" title="Rotate right (R)" onClick={() => rotate(1)}><RotateIcon size={18} /></button>
+                  {rot !== 0 && inVault && (
+                    <button type="button" className="btn btn-sm btn-primary rot-save" disabled={rotSaving} onClick={saveTurn} title={saveTip}>
+                      {rotSaving ? 'Saving…' : 'Save rotation'}
+                    </button>
+                  )}
+                </div>
+              )}
               {up.button}
               {faceCapable && (
                 <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}

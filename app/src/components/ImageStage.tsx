@@ -12,6 +12,7 @@
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
 import { animationMs } from '../media';
 import type { ViewerSettings } from '../api';
+import { turnedSize, turnedStyle, turnMatrix, type Quarter } from '../rotation';
 
 export interface Zoom {
   s: number;
@@ -47,6 +48,8 @@ interface Props {
   name: string;
   fit: 'contain' | 'cover';
   zoom: Zoom;
+  /** Shown turned this many clockwise quarter turns (rotation.ts). */
+  rot?: Quarter;
   prefs: ViewerSettings;
   paused: boolean;
   className?: string;
@@ -107,29 +110,41 @@ export function ImageStage(props: Props) {
     }
     const ctx = c.getContext('2d');
     if (!ctx) return;
-    const k = p.fit === 'cover' ? Math.max(W / nw, H / nh) : Math.min(W / nw, H / nh);
-    const dw = nw * k;
-    const dh = nh * k;
+    // Turned: the fit uses the turned shape; the picture is drawn turned into that box.
+    const r = p.rot ?? 0;
+    const t = turnedSize({ w: nw, h: nh }, r);
+    const k = p.fit === 'cover' ? Math.max(W / t.w, H / t.h) : Math.min(W / t.w, H / t.h);
+    const dw = t.w * k;
+    const dh = t.h * k;
     const z = p.zoom;
     const x = (z.x + z.s * (W - dw) / 2) * dpr;
     const y = (z.y + z.s * (H - dh) / 2) * dpr;
     const w = z.s * dw * dpr;
     const h = z.s * dh * dpr;
-    const shrinking = w < nw - 0.5;
+    // The picture's own (unturned) drawn size.
+    const iw = r % 2 ? h : w;
+    const ih = r % 2 ? w : h;
+    const shrinking = iw < nw - 0.5;
     const smooth = shrinking ? p.prefs.smoothFit : p.prefs.smoothZoom;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, cw, ch);
     ctx.imageSmoothingEnabled = smooth;
     ctx.imageSmoothingQuality = 'high';
     const pre = hq.current;
-    if (shrinking && smooth && pre && Math.abs(pre.w - w) < 1.5 && Math.abs(pre.h - h) < 1.5 && !frame.current) {
-      ctx.drawImage(pre.bmp, Math.round(x), Math.round(y));
+    if (shrinking && smooth && pre && Math.abs(pre.w - iw) < 1.5 && Math.abs(pre.h - ih) < 1.5 && !frame.current) {
+      // Whole pixels, so the resampled picture stays sharp.
+      const bw = r % 2 ? pre.h : pre.w;
+      const bh = r % 2 ? pre.w : pre.h;
+      ctx.setTransform(...turnMatrix(r, Math.round(x), Math.round(y), bw, bh));
+      ctx.drawImage(pre.bmp, 0, 0);
     } else {
-      ctx.drawImage(src, x, y, w, h);
+      ctx.setTransform(...turnMatrix(r, x, y, w, h));
+      ctx.drawImage(src, 0, 0, iw, ih);
     }
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     c.style.filter = p.prefs.sharpen && smooth ? 'url(#mv-sharpen)' : '';
     // A high-quality resample for this size is made once the zoom settles.
-    if (shrinking && smooth && !frame.current && still.current && (!pre || Math.abs(pre.w - w) >= 1.5 || Math.abs(pre.h - h) >= 1.5)) scheduleHq(w, h);
+    if (shrinking && smooth && !frame.current && still.current && (!pre || Math.abs(pre.w - iw) >= 1.5 || Math.abs(pre.h - ih) >= 1.5)) scheduleHq(iw, ih);
   };
 
   const hqTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -315,10 +330,15 @@ export function ImageStage(props: Props) {
       const src: CanvasImageSource | null = frame.current ?? still.current;
       const { w, h } = natural.current;
       if (!src || !w || !h) return null;
+      // Turned as it is shown.
+      const r = propsRef.current.rot ?? 0;
+      const t = turnedSize({ w, h }, r);
       const c = document.createElement('canvas');
-      c.width = w;
-      c.height = h;
-      c.getContext('2d')!.drawImage(src, 0, 0, w, h);
+      c.width = t.w;
+      c.height = t.h;
+      const ctx = c.getContext('2d')!;
+      ctx.setTransform(...turnMatrix(r, 0, 0, t.w, t.h));
+      ctx.drawImage(src, 0, 0, w, h);
       return new Promise((res) => c.toBlob((b) => res(b), 'image/png'));
     },
   }));
@@ -329,7 +349,8 @@ export function ImageStage(props: Props) {
     return (
       <div ref={boxRef} className="image-stage">
         <div className="zoom-layer" style={{ transform: `translate(${z.x}px, ${z.y}px) scale(${z.s})` }}>
-          <img className={`media ${props.className ?? ''}`} style={{ objectFit: props.fit, imageRendering: props.prefs.smoothZoom ? undefined : 'pixelated' }}
+          <img className={`media ${props.className ?? ''}`}
+            style={{ objectFit: props.fit, imageRendering: props.prefs.smoothZoom ? undefined : 'pixelated', ...turnedStyle(props.rot ?? 0, size.w, size.h) }}
             src={fallback} alt={props.name} draggable={false} />
         </div>
       </div>

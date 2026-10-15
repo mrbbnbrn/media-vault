@@ -816,7 +816,46 @@ export const api = {
   upscaleSave: (token: number) => call<UpscaleSaved>('upscale_save', { token }),
   /** The viewer closed: forget results, free the models' memory. */
   upscaleForget: () => call<void>('upscale_forget'),
+
+  // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
+  /** A JPEG, losslessly (its EXIF orientation). */
+  rotatePicture: (item: number, quarter: number) => call<Turned>('rotate_picture', { item, quarter }),
+  /** PNG, WebP or GIF turned by the window: replaces the stored file. */
+  rotateReplace: (request: { itemId: number; quarter: number; lossless: boolean }, file: Uint8Array) => rotateReplace(request, file),
+  /** A video: only its rotation changes (needs the video tool). */
+  rotateVideo: (item: number, quarter: number) => call<Turned>('rotate_video', { item, quarter }),
+  /** Ctrl+Z: the file from before comes back. */
+  rotateUndo: (turned: Turned) => call<void>('rotate_undo', { turned }),
 };
+
+/** What "Save rotation" changed (handed back to undo it). */
+export interface Turned {
+  item: number;
+  quarter: number;
+  /** Free copies that share the file and turned too. */
+  copies: number;
+  /** Nothing was re-encoded. */
+  lossless: boolean;
+  oldObject: string;
+  newObject: string;
+  oldThumb: string | null;
+  oldPreview: string | null;
+  oldSize: number;
+  oldSha: string;
+  oldWidth: number | null;
+  oldHeight: number | null;
+  width: number | null;
+  height: number | null;
+}
+
+async function rotateReplace(request: { itemId: number; quarter: number; lossless: boolean }, file: Uint8Array): Promise<Turned> {
+  if (!inTauri) return mock.call('rotate_replace', { request }) as Promise<Turned>;
+  try {
+    return await invoke<Turned>('rotate_replace', upscaleBody(request as unknown as UpscaleRequest, file));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
 
 // ---- why is this here? / slot machine ----------------------------------------------
 
@@ -1103,6 +1142,12 @@ const mock = {
         return;
       case 'upscale_save':
         return { id: 999, name: 'Picture (upscaled).jpg' } satisfies UpscaleSaved;
+      case 'rotate_picture':
+      case 'rotate_replace':
+      case 'rotate_video':
+        throw new Error('Preview: saving the rotation works in the real app.');
+      case 'rotate_undo':
+        return;
       case 'library_folders':
       case 'query_items':
       case 'all_tags':

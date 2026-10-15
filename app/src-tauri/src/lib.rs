@@ -35,6 +35,7 @@ mod integrity;
 mod library;
 mod meta;
 mod protocol;
+mod rotate;
 mod selftest;
 mod session;
 mod share7z;
@@ -172,6 +173,8 @@ fn start_background(s: Arc<Session>) {
                 import::remove_objects(&s2, &o);
             }
         }
+        // Files kept for undoing rotations last time (the undo list is new now).
+        let _ = rotate::clean_retired(&s2);
     });
     meta::backfill(s);
 }
@@ -1285,6 +1288,50 @@ fn animation_start(app: AppHandle, state: State<'_, Shared>, request: videotool:
     })
 }
 
+// ---- saving a rotation from the viewer (rotate.rs) ------------------------------------
+
+/// A JPEG: losslessly, by its EXIF orientation.
+#[tauri::command]
+async fn rotate_picture(state: State<'_, Shared>, item: i64, quarter: u8) -> Result<rotate::Turned, String> {
+    let s = sess(state.inner())?;
+    blocking(move || rotate::turn_jpeg_item(&s, item, quarter)).await
+}
+
+/// PNG, WebP, GIF: the window sends the turned file (length, JSON, bytes).
+#[tauri::command]
+async fn rotate_replace(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<rotate::Turned, String> {
+    let s = sess(state.inner())?;
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("The rotated picture didn't arrive.".into());
+    };
+    let (req, bytes) = rotate::split_body(body)?;
+    let bytes = zeroize::Zeroizing::new(bytes.to_vec());
+    blocking(move || {
+        if !matches!(rotate::item_ext(&s, req.item_id)?.as_str(), "png" | "webp" | "gif") {
+            return Err("Only PNG, WebP and GIF pictures are saved this way.".into());
+        }
+        rotate::replace(&s, req.item_id, &bytes, req.quarter, req.lossless)
+    })
+    .await
+}
+
+/// A video: only its rotation changes (needs the video tool).
+#[tauri::command]
+async fn rotate_video(state: State<'_, Shared>, item: i64, quarter: u8) -> Result<rotate::Turned, String> {
+    let tool = videotool::tool_path().ok_or(
+        "Saving a video's rotation needs the video tool, which isn't installed. It comes with the full Media Vault package (tools\\ffmpeg.exe next to the app).",
+    )?;
+    let s = sess(state.inner())?;
+    blocking(move || videotool::rotate_video(&s, &tool, item, quarter)).await
+}
+
+/// Ctrl+Z: the file from before the rotation comes back.
+#[tauri::command]
+async fn rotate_undo(state: State<'_, Shared>, turned: rotate::Turned) -> Result<(), String> {
+    let s = sess(state.inner())?;
+    blocking(move || rotate::undo(&s, &turned)).await
+}
+
 // ---- web engine --------------------------------------------------------------------
 
 #[tauri::command]
@@ -2087,6 +2134,10 @@ pub fn run() {
             upscale::upscale_start,
             upscale::upscale_cancel,
             upscale::upscale_save,
+            rotate_picture,
+            rotate_replace,
+            rotate_video,
+            rotate_undo,
             upscale::upscale_forget,
         ])
         .build(tauri::generate_context!())

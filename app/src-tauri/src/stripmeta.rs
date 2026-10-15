@@ -208,7 +208,7 @@ pub fn clean_jpeg(d: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// The orientation (tag 0x0112) in IFD0 of an EXIF TIFF block.
-fn exif_orientation(t: &[u8]) -> Option<u16> {
+pub(crate) fn exif_orientation(t: &[u8]) -> Option<u16> {
     let be = match t.get(..2)? {
         b"MM" => true,
         b"II" => false,
@@ -240,7 +240,7 @@ fn exif_orientation(t: &[u8]) -> Option<u16> {
 }
 
 /// APP1 with an EXIF block that holds only the orientation.
-fn minimal_exif(orientation: u16) -> Vec<u8> {
+pub(crate) fn minimal_exif(orientation: u16) -> Vec<u8> {
     let mut p = vec![0xFF, 0xE1, 0, 34];
     p.extend_from_slice(b"Exif\0\0");
     p.extend_from_slice(b"MM\0\x2A\0\0\0\x08"); // big-endian TIFF, IFD0 at 8
