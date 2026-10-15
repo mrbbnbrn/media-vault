@@ -60,24 +60,30 @@ export function FaceLayer(props: {
         return (
           <button key={f.id} type="button" className={`face-box ${known ? 'known' : 'unknown'}`}
             style={{ left, top, width: f.w * r.width, height: f.h * r.height }}
-            title={known ? `See everything of ${name}` : 'Say who this is'}
-            aria-label={known ? `${name} — see everything of this person` : 'Unknown face — say who this is'}
+            title={known ? `${name} · click to change · double-click to see everything of ${name}` : 'Say who this is'}
+            aria-label={known ? `${name} — click to change, double-click to see everything of this person` : 'Unknown face — say who this is'}
             onPointerDown={(e) => e.stopPropagation()}
             onPointerEnter={() => setOver(true)} onPointerLeave={() => setOver(false)}
             onClick={(e) => {
               e.stopPropagation();
-              if (known) props.onShowPerson?.(f.person!);
-              else {
-                const b = e.currentTarget.getBoundingClientRect();
-                setAsk({ face: f, left: b.left, top: b.bottom + 6 });
-              }
+              const b = e.currentTarget.getBoundingClientRect();
+              setAsk({ face: f, left: b.left, top: b.bottom + 6 });
+            }}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (!known) return;
+              setAsk(null);
+              props.onShowPerson?.(f.person!);
             }}>
             <span className="face-tag">{name}</span>
           </button>
         );
       })}
       {ask && (
-        <WhoIsIt face={ask.face} left={ask.left} top={ask.top} onClose={() => { setAsk(null); setOver(false); }}
+        <WhoIsIt face={ask.face} left={ask.left} top={ask.top}
+          current={ask.face.person != null ? { id: ask.face.person, name: names.get(ask.face.person) ?? 'Someone you know' } : null}
+          onShowPerson={props.onShowPerson ? (id) => { setAsk(null); props.onShowPerson!(id); } : undefined}
+          onClose={() => { setAsk(null); setOver(false); }}
           onDone={(msg) => {
             setAsk(null);
             props.onMessage(msg);
@@ -88,7 +94,12 @@ export function FaceLayer(props: {
   );
 }
 
-function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () => void; onDone: (msg: string) => void }) {
+function WhoIsIt(props: {
+  face: FaceBox; left: number; top: number; onClose: () => void; onDone: (msg: string) => void;
+  /** The face already has a name: the box offers to change or remove it. */
+  current?: { id: number; name: string } | null;
+  onShowPerson?: (folderId: number) => void;
+}) {
   const [list, setList] = useState<FolderCard[] | null>(null);
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
@@ -106,14 +117,19 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
   }, [naming]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return (list ?? []).filter((f) => !t || f.name.toLowerCase().includes(t));
-  }, [list, q]);
+    return (list ?? []).filter((f) => f.id !== props.current?.id && (!t || f.name.toLowerCase().includes(t)));
+  }, [list, q, props.current?.id]);
+  const cur = props.current ?? null;
+  /** Takes the name off this face ("not this person": it won't be suggested for them again). */
+  const unname = async () => {
+    if (cur) await api.facesReject([props.face.id], cur.id);
+  };
 
   const accept = async (f: FolderCard) => {
     setBusy(true);
     try {
       await api.facesAccept([props.face.id], f.id);
-      props.onDone(`Marked as ${f.name}`);
+      props.onDone(cur ? `Changed to ${f.name}` : `Marked as ${f.name}`);
     } catch (e) {
       setBusy(false);
       props.onDone(`Couldn't save that: ${e instanceof Error ? e.message : String(e)}`);
@@ -124,13 +140,32 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
   return createPortal(
     <div onPointerDown={(e) => e.stopPropagation()} onMouseDown={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}
       onContextMenu={(e) => e.stopPropagation()} onWheel={(e) => e.stopPropagation()}>
-      <div ref={ref} className="who-pop" role="dialog" aria-label="Who is this?"
+      <div ref={ref} className="who-pop" role="dialog" aria-label={cur ? `Change ${cur.name}` : 'Who is this?'}
         style={{ left: Math.min(props.left, window.innerWidth - 260), top: Math.min(props.top, window.innerHeight - 320) }}
         onKeyDown={(e) => {
           if (e.key === 'Escape') props.onClose();
           if (e.key === 'Enter' && shown.length === 1) accept(shown[0]);
         }}>
-        <b>Who is this?</b>
+        {cur ? (
+          <>
+            <span className="row" style={{ justifyContent: 'space-between', gap: 8 }}>
+              <span>This is <b>{cur.name}</b></span>
+              {props.onShowPerson && <button type="button" className="link" onClick={() => props.onShowPerson!(cur.id)}>See all</button>}
+            </span>
+            <button type="button" className="btn btn-sm" disabled={busy}
+              onClick={async () => {
+                setBusy(true);
+                try {
+                  await unname();
+                  props.onDone(`Not ${cur.name} any more`);
+                } catch (e) {
+                  setBusy(false);
+                  props.onDone(`Couldn't change it: ${e instanceof Error ? e.message : String(e)}`);
+                }
+              }}>This isn't {cur.name}</button>
+            <span className="faint" style={{ fontSize: 12 }}>Or change it to:</span>
+          </>
+        ) : <b>Who is this?</b>}
         <input className="input small" autoFocus placeholder="Search people…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search people" />
         <div className="who-list">
           {list === null && <span className="faint">Loading…</span>}
@@ -147,6 +182,7 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
             onClick={async () => {
               setBusy(true);
               try {
+                await unname();
                 await api.facesHide([props.face.id], true);
                 props.onDone('Hidden: not important');
               } catch (e) {
@@ -161,6 +197,7 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
           hint="A person folder is made for them, and every photo they are recognised in shows on their page. Nothing is moved."
           onClose={() => setNaming(false)}
           onSubmit={async (name) => {
+            await unname();
             await api.facesNewPerson(name.trim(), null, [props.face.id]);
             personFolders(true).catch(() => {});
             props.onDone(`Made a folder for ${name.trim()}`);
