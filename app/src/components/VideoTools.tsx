@@ -65,7 +65,8 @@ export function PositionBar(props: {
           <div className={`ab-region${b == null ? ' open' : ''}`}
             style={{ left: pct(Math.min(a, b ?? a)), width: b != null ? `calc(${pct(Math.abs(b - a))})` : '2px' }} />
         )}
-        <input type="range" min={0} max={dur} step={props.frames ? 1 : 0.05} value={at} aria-label="Position"
+        <input type="range" min={0} max={dur} step={props.frames ? 1 : 0.05} value={at} aria-label="Position" tabIndex={-1}
+          onPointerUp={(e) => e.currentTarget.blur()}
           onChange={(e) => props.onSeek(Number(e.target.value))} />
         {props.bookmarks.map((bm) => (
           <button key={bm.id} type="button" className="bm-mark" style={{ left: pct(bm.positionMs / 1000) }}

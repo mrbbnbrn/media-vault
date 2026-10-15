@@ -141,7 +141,20 @@ function WhoIsIt(props: { face: FaceBox; left: number; top: number; onClose: () 
             </button>
           ))}
         </div>
-        <button type="button" className="btn btn-sm" disabled={busy} onClick={() => setNaming(true)}>New person…</button>
+        <div className="row" style={{ gap: 6 }}>
+          <button type="button" className="btn btn-sm" style={{ flex: 1 }} disabled={busy} onClick={() => setNaming(true)}>New person…</button>
+          <button type="button" className="btn btn-sm" style={{ flex: 1 }} disabled={busy} title="Hide this face: it's never suggested or asked about again (People → Hidden people shows it again)"
+            onClick={async () => {
+              setBusy(true);
+              try {
+                await api.facesHide([props.face.id], true);
+                props.onDone('Hidden: not important');
+              } catch (e) {
+                setBusy(false);
+                props.onDone(`Couldn't hide it: ${e instanceof Error ? e.message : String(e)}`);
+              }
+            }}>Not important</button>
+        </div>
       </div>
       {naming && (
         <PromptDialog title="New person" label="Name" confirm="Create" initial={q.trim()}

@@ -789,7 +789,11 @@ export function Player(props: PlayerProps) {
   useEffect(() => {
     if (!props.keys) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      // The play bar and volume sliders don't keep the keys: Space, arrows etc. work after clicking them.
+      const tgt = e.target as HTMLElement;
+      if (tgt instanceof HTMLInputElement && tgt.type === 'range' && tgt.closest('.player') && !tgt.closest('[role=dialog], .modal, .popover')) {
+        if (!['Tab'].includes(e.key)) tgt.blur();
+      } else if (tgt.closest('input, textarea, select, [role=dialog]')) return;
       if (menu) return; // the right-click menu handles its own keys
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
