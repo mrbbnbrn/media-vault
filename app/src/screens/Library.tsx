@@ -421,7 +421,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           // (Another view by now: its tiles aren't the ones that were scrolled.)
           if (!restoring.current && viewKRef.current === k) setScrollAnchor(k, findAnchor(sc));
         });
-      }, 120);
+      }, 250);
     };
     // Scrolling by hand ends any restoring still going on.
     const byHand = () => {
