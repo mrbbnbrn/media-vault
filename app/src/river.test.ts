@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
-  cardSize, Deck, fill, flowText, hitTest, LAYERS, layerSpeed, margin, MAX_FLOW, MIN_FLOW, NEAREST, placed, seeded, step, stepFlow, wheelFlow,
+  cardSize, Deck, DEFAULT_LAYERS, fill, flowText, flowToSlider, hitTest, LAYERS, layerSpeed, loose, makeLayers, margin, MAX_FLOW, MAX_LAYERS, MIN_FLOW, MIN_LAYERS,
+  Momentum, NEAREST, placed, seeded, setDensity, setLayerCount, sliderToFlow, step, stepFlow, wheelFlow,
   type Drifter, type Spawner, type View,
 } from './river';
 
@@ -232,5 +233,107 @@ describe('flow', () => {
     expect(flowText(1)).toBe('×1');
     expect(flowText(1.5)).toBe('×1.5');
     expect(flowText(0.25)).toBe('×0.25');
+  });
+});
+
+describe('layers, flow amount, speed range', () => {
+  it('two layers are the front row and the row just behind; more than five are in between', () => {
+    const two = makeLayers(2);
+    expect(two).toHaveLength(2);
+    expect(two[1].size).toBeCloseTo(0.31);
+    expect(two[0].size).toBeCloseTo(0.215);
+    const eight = makeLayers(8);
+    expect(eight).toHaveLength(8);
+    for (let i = 1; i < eight.length; i++) expect(eight[i].size).toBeGreaterThan(eight[i - 1].size);
+    expect(makeLayers(99)).toHaveLength(MAX_LAYERS);
+    expect(makeLayers(0)).toHaveLength(MIN_LAYERS);
+  });
+
+  it('even the furthest layer stays easy to see', () => {
+    for (const l of makeLayers(8)) {
+      expect(l.opacity).toBeGreaterThanOrEqual(0.55);
+      expect(l.blur).toBeLessThanOrEqual(1.4);
+    }
+  });
+
+  it('the layer count changes everywhere at once; more flow means more cards', () => {
+    try {
+      setLayerCount(3);
+      expect(LAYERS).toHaveLength(3);
+      expect(NEAREST).toBe(2);
+      const s = spawner(400);
+      const few = fill(V, s);
+      expect(new Set(few.map((x) => x.layer)).size).toBe(3);
+      setDensity(2.5);
+      const many = fill(V, spawner(400));
+      expect(many.length).toBeGreaterThan(few.length * 1.6);
+    } finally {
+      setLayerCount(DEFAULT_LAYERS);
+      setDensity(1);
+    }
+  });
+
+  it('the speed slider covers very slow to very fast, evenly', () => {
+    expect(MIN_FLOW).toBeLessThanOrEqual(0.1);
+    expect(MAX_FLOW).toBeGreaterThanOrEqual(8);
+    expect(sliderToFlow(0)).toBeCloseTo(MIN_FLOW);
+    expect(sliderToFlow(1)).toBeCloseTo(MAX_FLOW);
+    for (const f of [0.1, 0.5, 1, 3, 8]) expect(sliderToFlow(flowToSlider(f))).toBeCloseTo(f);
+  });
+});
+
+describe('holding, flicking and freezing', () => {
+  const card = (o: Partial<Drifter> = {}): Drifter => ({ key: 9001, layer: NEAREST, item: 0, x: 500, y: 400, w: 200, h: 150, phase: 0, tilt: 0, lift: 0, shown: 1, ...o });
+
+  it('a held or frozen card stays put; others pass instead of queueing behind it', () => {
+    const s = spawner(200);
+    const list = fill(V, s);
+    s.list = list;
+    const held = card({ held: true });
+    const frozen = card({ key: 9002, frozen: true, x: 900 });
+    list.push(held, frozen);
+    run(list, s, 5);
+    expect([held.x, held.y]).toEqual([500, 400]);
+    expect([frozen.x, frozen.y]).toEqual([900, 400]);
+    expect(loose(held) && loose(frozen)).toBe(true);
+    // The stream kept flowing past them.
+    expect(list.filter((x) => !loose(x)).length).toBeGreaterThan(10);
+  });
+
+  it('a flicked card flies on, slows to the current and rejoins it — or leaves if thrown off screen', () => {
+    const s = spawner(200);
+    const list: Drifter[] = [];
+    s.list = list;
+    const thrown = card({ vx: 0, vy: -900 });
+    list.push(thrown);
+    step(list, 0.05, 1, V, s, null);
+    expect(thrown.y).toBeLessThan(400 - 30);
+    const off = card({ key: 9003, vx: -6000, vy: 0, x: 100 });
+    list.push(off);
+    let left = false;
+    for (let i = 0; i < 40 && !left; i++) left = step(list, 1 / 30, 1, V, s, null).gone.includes(off);
+    expect(left).toBe(true);
+    const slow = card({ key: 9004, vx: 300, vy: 0 });
+    list.push(slow);
+    for (let i = 0; i < 120; i++) step(list, 1 / 30, 1, V, s, null);
+    expect(loose(slow)).toBe(false);
+  });
+
+  it("the hand's speed counts only the last moment before letting go", () => {
+    const m = new Momentum();
+    m.add(0, 0, 0);
+    m.add(50, 0, 50);
+    m.add(100, 0, 100);
+    expect(m.velocity(100).x).toBeCloseTo(1000);
+    // Held still before letting go: no throw.
+    expect(m.velocity(300)).toEqual({ x: 0, y: 0 });
+    m.clear();
+    expect(m.velocity(0)).toEqual({ x: 0, y: 0 });
+  });
+
+  it('a held card is what the mouse is on', () => {
+    const held = card({ held: true, layer: 0 });
+    const near = card({ key: 9005, layer: NEAREST });
+    expect(hitTest([near, held], 500, 400, 0, { ...V, reduced: true })?.key).toBe(9001);
   });
 });

@@ -76,6 +76,8 @@ export interface Nav {
   app: AppState;
   go: (s: Screen) => void;
   refresh: () => Promise<AppState>;
+  /** Plays something in the mini player, staying where you are (the river's middle-click). */
+  mini?: (r: Omit<ViewerRoute, 'name' | 'back'>) => void;
 }
 
 const LOCK_MESSAGES: Record<LockReason, string> = {
@@ -252,7 +254,13 @@ export function App() {
   };
   const libraryShown = !!app.session && tabs.ready
     && (screen.name === 'library' || (screen.name === 'viewer' && !!screen.overLibrary));
-  const nav: Nav = { app, go, refresh };
+  const nav: Nav = {
+    app, go, refresh,
+    mini: (r) => {
+      viewerTab.current = tabs.activeId;
+      setMini({ ...r, name: 'viewer', back: tabs.view });
+    },
+  };
   const viewerRoute: ViewerRoute | null = screen.name === 'viewer' ? screen : mini && app.session && (screen.name === 'library' || screen.name === 'settings') ? mini : null;
   let viewerId = 0;
   if (viewerRoute) {

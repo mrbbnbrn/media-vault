@@ -23,15 +23,69 @@ export interface LayerSpec {
   sway: number;
 }
 
-export const LAYERS: LayerSpec[] = [
-  { size: 0.07, speed: 6, opacity: 0.3, blur: 3.2, bright: 0.5, yMin: 0.24, yMax: 0.6, gapMin: 0.3, gapMax: 1.3, bob: 0.003, sway: 0.4 },
-  { size: 0.105, speed: 10, opacity: 0.45, blur: 2.2, bright: 0.6, yMin: 0.2, yMax: 0.68, gapMin: 0.45, gapMax: 1.6, bob: 0.004, sway: 0.6 },
-  { size: 0.15, speed: 16, opacity: 0.62, blur: 1.2, bright: 0.74, yMin: 0.16, yMax: 0.76, gapMin: 0.6, gapMax: 1.9, bob: 0.006, sway: 0.9 },
-  { size: 0.215, speed: 26, opacity: 0.85, blur: 0.4, bright: 0.88, yMin: 0.14, yMax: 0.84, gapMin: 0.9, gapMax: 2.5, bob: 0.008, sway: 1.2 },
+/** The five designed depths, far to near. Even the furthest stays recognisable. */
+const BASE: LayerSpec[] = [
+  { size: 0.085, speed: 6, opacity: 0.55, blur: 1.4, bright: 0.68, yMin: 0.24, yMax: 0.6, gapMin: 0.3, gapMax: 1.3, bob: 0.003, sway: 0.4 },
+  { size: 0.115, speed: 10, opacity: 0.66, blur: 0.9, bright: 0.76, yMin: 0.2, yMax: 0.68, gapMin: 0.45, gapMax: 1.6, bob: 0.004, sway: 0.6 },
+  { size: 0.155, speed: 16, opacity: 0.78, blur: 0.5, bright: 0.85, yMin: 0.16, yMax: 0.76, gapMin: 0.6, gapMax: 1.9, bob: 0.006, sway: 0.9 },
+  { size: 0.215, speed: 26, opacity: 0.92, blur: 0.15, bright: 0.94, yMin: 0.14, yMax: 0.84, gapMin: 0.9, gapMax: 2.5, bob: 0.008, sway: 1.2 },
   { size: 0.31, speed: 41, opacity: 1, blur: 0, bright: 1, yMin: 0.16, yMax: 0.86, gapMin: 1.4, gapMax: 3.4, bob: 0.01, sway: 1.5 },
 ];
 
-export const NEAREST = LAYERS.length - 1;
+/** How many depths the river can have (the Layers slider). */
+export const MIN_LAYERS = 2;
+export const MAX_LAYERS = 8;
+export const DEFAULT_LAYERS = BASE.length;
+
+/**
+ * `n` depths, far to near. Fewer than five keeps the nearest ones (two = a
+ * front row and the row just behind it); more than five puts extra depths in
+ * between, for a crowded screen.
+ */
+export function makeLayers(n: number): LayerSpec[] {
+  const count = Math.max(MIN_LAYERS, Math.min(MAX_LAYERS, Math.round(n)));
+  const from = count >= BASE.length ? 0 : BASE.length - count;
+  const span = BASE.length - 1 - from;
+  const out: LayerSpec[] = [];
+  for (let i = 0; i < count; i++) {
+    const at = from + (count === 1 ? span : (span * i) / (count - 1));
+    const a = BASE[Math.floor(at)];
+    const b = BASE[Math.min(BASE.length - 1, Math.floor(at) + 1)];
+    const t = at - Math.floor(at);
+    const mix = (k: keyof LayerSpec) => a[k] + (b[k] - a[k]) * t;
+    out.push({
+      size: mix('size'), speed: mix('speed'), opacity: mix('opacity'), blur: mix('blur'), bright: mix('bright'), yMin: mix('yMin'), yMax: mix('yMax'),
+      gapMin: mix('gapMin'), gapMax: mix('gapMax'), bob: mix('bob'), sway: mix('sway'),
+    });
+  }
+  // With more than five, each depth gets a little less crowded, so the screen stays readable.
+  if (count > BASE.length) for (const l of out) {
+    l.gapMin *= count / BASE.length;
+    l.gapMax *= count / BASE.length;
+  }
+  return out;
+}
+
+/** The depths in use (changed in place by setLayerCount, so every importer sees the change). */
+export const LAYERS: LayerSpec[] = makeLayers(DEFAULT_LAYERS);
+// eslint-disable-next-line import/no-mutable-exports
+export let NEAREST = LAYERS.length - 1;
+
+export function setLayerCount(n: number) {
+  const next = makeLayers(n);
+  LAYERS.length = 0;
+  LAYERS.push(...next);
+  NEAREST = LAYERS.length - 1;
+}
+
+/** How many items flow (the Flow amount slider): 1 = as designed; more = smaller gaps. */
+export const MIN_DENSITY = 0.4;
+export const MAX_DENSITY = 2.5;
+let density = 1;
+export function setDensity(d: number) {
+  density = Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, d));
+}
+export const getDensity = () => density;
 
 export interface Drifter {
   /** Unique, for the drawing to keep its card. */
@@ -51,7 +105,17 @@ export interface Drifter {
   lift: number;
   /** 0–1: faded in after appearing (eased). */
   shown: number;
+  /** Held by the mouse: follows it, nothing else moves it. */
+  held?: boolean;
+  /** Frozen in place (right-click while holding): stays until grabbed again. */
+  frozen?: boolean;
+  /** Thrown: its own speed (px/s), slowing down; the current carries it as well. */
+  vx?: number;
+  vy?: number;
 }
+
+/** Out of the stream (held, frozen or thrown): others don't queue behind it, and it can leave any way. */
+export const loose = (d: Drifter) => !!(d.held || d.frozen || d.vx || d.vy);
 
 export interface View {
   w: number;
@@ -140,16 +204,32 @@ function make(layer: number, x: number, v: View, s: Spawner, leftOf?: Drifter): 
   let y = lo + s.rand() * Math.max(0, hi - lo);
   // Not straight behind the one it follows: keeps the stream loose, not a queue.
   if (leftOf && Math.abs(leftOf.y - y) < h * 0.35) y = y < v.h / 2 ? Math.min(hi, y + h * 0.45) : Math.max(lo, y - h * 0.45);
+  let right = x;
+  if (leftOf && right > leftOf.x - leftOf.w / 2 - 4 && Math.abs(leftOf.y - y) < (h + leftOf.h) / 2 + 4) {
+    // A busy river packs cards closer than a card's width: then this one takes a row above or below
+    // the one it follows; with no room for that, it waits its turn behind it.
+    const need = (h + leftOf.h) / 2 + 6;
+    const up = leftOf.y - need;
+    const down = leftOf.y + need;
+    const fits = [up, down].filter((c) => c >= lo && c <= hi);
+    if (fits.length) y = fits.reduce((a, c) => (Math.abs(c - y) < Math.abs(a - y) ? c : a));
+    else right = leftOf.x - leftOf.w / 2 - 4;
+  }
   return {
-    key: nextKey++, layer, item: p.item, x: x - w / 2, y, w, h, phase: s.rand() * Math.PI * 2, tilt: (s.rand() - 0.5) * 2 * L.sway * 0.8,
+    key: nextKey++, layer, item: p.item, x: right - w / 2, y, w, h, phase: s.rand() * Math.PI * 2, tilt: (s.rand() - 0.5) * 2 * L.sway * 0.8,
     lift: 0, shown: 0,
   };
 }
 
 const gapFor = (layer: number, h: number, r: Rand) => {
   const L = LAYERS[layer];
-  return h * (L.gapMin + r() * (L.gapMax - L.gapMin));
+  const g = (h * (L.gapMin + r() * (L.gapMax - L.gapMin))) / density;
+  // Above the designed amount, the next card may start before this one ends (it takes another row).
+  return density > 1 ? g - h * 0.9 * (1 - 1 / density) : g;
 };
+
+/** A thrown card slows to the current's pace over about a second. */
+const THROW_FRICTION = 1.8;
 
 /** The opening picture: every layer filled across the whole width, at random spacing. */
 export function fill(v: View, s: Spawner): Drifter[] {
@@ -183,8 +263,28 @@ export function step(list: Drifter[], dt: number, flow: number, v: View, s: Spaw
   const ease = (from: number, to: number, rate: number) => from + (to - from) * (1 - Math.exp(-rate * dts));
   const m = margin(v);
   for (let layer = 0; layer < LAYERS.length; layer++) {
-    const mine = list.filter((d) => d.layer === layer).sort((a, b) => b.x - a.x);
+    const all = list.filter((d) => d.layer === layer);
     const base = layerSpeed(layer, flow, v);
+    // Held, frozen and thrown cards move on their own.
+    for (const d of all) {
+      if (!loose(d)) continue;
+      d.lift = ease(d.lift, d.held || d.key === hovered ? 1 : 0, 7);
+      d.shown = 1;
+      if (d.held || d.frozen) continue;
+      const k = Math.exp(-THROW_FRICTION * dts);
+      d.x += ((d.vx ?? 0) + base) * dts;
+      d.y += (d.vy ?? 0) * dts;
+      d.vx = (d.vx ?? 0) * k;
+      d.vy = (d.vy ?? 0) * k;
+      // Slowed down to the current: back in the stream.
+      if (Math.hypot(d.vx, d.vy) < 8) {
+        d.vx = 0;
+        d.vy = 0;
+      }
+      const out = d.x - d.w / 2 > v.w + m || d.x + d.w / 2 < -m * 3 || d.y - d.h / 2 > v.h + m || d.y + d.h / 2 < -m;
+      if (out) gone.push(d);
+    }
+    const mine = all.filter((d) => !loose(d)).sort((a, b) => b.x - a.x);
     for (let i = 0; i < mine.length; i++) {
       const d = mine[i];
       d.lift = ease(d.lift, d.key === hovered ? 1 : 0, d.key === hovered ? 7 : 4);
@@ -235,7 +335,7 @@ export interface Placed {
 /** Where a card is drawn now (with its bob, sway and lift). */
 export function placed(d: Drifter, t: number, v: View): Placed {
   const L = LAYERS[d.layer];
-  const calm = v.reduced ? 0 : 1;
+  const calm = v.reduced || d.held || d.frozen ? 0 : 1;
   const bob = Math.sin(t * 0.55 + d.phase) * L.bob * v.h * calm * (1 - d.lift);
   const sway = Math.sin(t * 0.37 + d.phase * 1.7) * L.sway * calm * (1 - d.lift);
   const scale = 1 + d.lift * (d.layer === NEAREST ? 0.1 : 0.22);
@@ -253,7 +353,7 @@ export function hitTest(list: Drifter[], px: number, py: number, t: number, v: V
     // A little generous around the one already under the mouse, so it doesn't flicker at the edge.
     const pad = d.key === hovered ? 6 : 0;
     if (Math.abs(px - p.x) > (p.w * p.scale) / 2 + pad || Math.abs(py - p.y) > (p.h * p.scale) / 2 + pad) continue;
-    const r = (d.key === hovered ? 100 : 0) + d.layer * 10 + i / list.length;
+    const r = (d.held ? 1000 : 0) + (d.key === hovered ? 100 : 0) + (d.frozen ? 50 : 0) + d.layer * 10 + i / list.length;
     if (r > rank) {
       rank = r;
       best = d;
@@ -263,7 +363,7 @@ export function hitTest(list: Drifter[], px: number, py: number, t: number, v: V
 }
 
 /** Flow speeds (the wheel moves smoothly between these; ←/→ step through them). */
-export const FLOWS = [0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4];
+export const FLOWS = [0.1, 0.25, 0.5, 0.75, 1, 1.5, 2, 3, 4, 6, 8];
 export const MIN_FLOW = FLOWS[0];
 export const MAX_FLOW = FLOWS[FLOWS.length - 1];
 
@@ -279,3 +379,33 @@ export function wheelFlow(flow: number, deltaY: number): number {
 }
 
 export const flowText = (flow: number) => `×${flow >= 1 ? Math.round(flow * 10) / 10 : Math.round(flow * 100) / 100}`;
+
+/** The speed slider: 0–1 along the whole range (even steps feel even: logarithmic). */
+export const flowToSlider = (flow: number) => Math.log(flow / MIN_FLOW) / Math.log(MAX_FLOW / MIN_FLOW);
+export const sliderToFlow = (u: number) => MIN_FLOW * Math.pow(MAX_FLOW / MIN_FLOW, Math.max(0, Math.min(1, u)));
+
+/**
+ * The mouse's speed while holding a card (px/s), from its recent moves: the
+ * last ~0.1 s count, so a flick is a flick and a stop before letting go is a stop.
+ */
+export class Momentum {
+  private pts: { x: number; y: number; t: number }[] = [];
+  add(x: number, y: number, t: number) {
+    this.pts.push({ x, y, t });
+    while (this.pts.length > 2 && t - this.pts[0].t > 100) this.pts.shift();
+  }
+  clear() {
+    this.pts = [];
+  }
+  velocity(now: number): { x: number; y: number } {
+    const p = this.pts;
+    if (p.length < 2 || now - p[p.length - 1].t > 80) return { x: 0, y: 0 };
+    const a = p[0];
+    const b = p[p.length - 1];
+    const dt = (b.t - a.t) / 1000;
+    if (dt <= 0) return { x: 0, y: 0 };
+    const cap = 4000;
+    const c = (v: number) => Math.max(-cap, Math.min(cap, v));
+    return { x: c((b.x - a.x) / dt), y: c((b.y - a.y) / dt) };
+  }
+}

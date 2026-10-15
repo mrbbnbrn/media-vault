@@ -5,7 +5,8 @@
 // The maths is river.ts.
 
 import {
-  Deck, fill, flowText, unit, hitTest, LAYERS, NEAREST, placed, step, stepFlow, wheelFlow, type Drifter, type Spawner, type View,
+  Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, setDensity, setLayerCount, step, stepFlow, wheelFlow,
+  type Drifter, type Spawner, type View,
 } from '../../river';
 
 export interface RiverItem {
@@ -28,9 +29,17 @@ export interface Sources {
 
 export interface EngineEvents {
   onOpen: (index: number) => void;
-  /** Flow changed or paused (for the little speed note). */
-  onFlow: (text: string) => void;
+  /** Flow changed or paused (for the little speed note); `flow` is the new current. */
+  onFlow: (text: string, flow: number) => void;
   onLeave: () => void;
+  /** Middle-click: this item in the mini player. */
+  onMini?: (index: number) => void;
+}
+
+export interface RiverOptions {
+  flow?: number;
+  density?: number;
+  layers?: number;
 }
 
 interface Card {
@@ -78,6 +87,9 @@ export class RiverEngine {
   // The title stays a little longer at the start.
   private lastMove = performance.now() + 3000;
   private stats = { frames: 0, maxCards: 0, ms: 0 };
+  /** The card held by the mouse, where on it it was taken, and whether it has been moved yet. */
+  private grab: { d: Drifter; dx: number; dy: number; sx: number; sy: number; moved: boolean } | null = null;
+  private readonly momentum = new Momentum();
 
   constructor(
     private readonly root: HTMLElement,
@@ -87,7 +99,12 @@ export class RiverEngine {
     private readonly src: Sources,
     private readonly ev: EngineEvents,
     reduced: boolean,
+    opts: RiverOptions = {},
   ) {
+    setLayerCount(opts.layers ?? 5);
+    setDensity(opts.density ?? 1);
+    this.pool = LAYERS.map(() => []);
+    this.flow = this.target = Math.max(MIN_FLOW, Math.min(MAX_FLOW, opts.flow ?? 1));
     this.view = { w: root.clientWidth || 1280, h: root.clientHeight || 720, reduced };
     this.deck = new Deck(items.length);
     const showing = () => new Set(this.drifters.map((d) => d.item));
@@ -135,29 +152,121 @@ export class RiverEngine {
 
   togglePause() {
     this.paused = !this.paused;
-    this.ev.onFlow(this.paused ? 'Paused' : `Current ${flowText(this.target)}`);
+    this.ev.onFlow(this.paused ? 'Paused' : `Current ${flowText(this.target)}`, this.target);
   }
 
   faster(dir: 1 | -1) {
     this.target = stepFlow(this.target, dir);
     if (this.paused) this.paused = false;
-    this.ev.onFlow(`Current ${flowText(this.target)}`);
+    this.ev.onFlow(`Current ${flowText(this.target)}`, this.target);
   }
 
   wheel(deltaY: number) {
     this.target = wheelFlow(this.target, deltaY);
     if (this.paused) this.paused = false;
-    this.ev.onFlow(`Current ${flowText(this.target)}`);
+    this.ev.onFlow(`Current ${flowText(this.target)}`, this.target);
+  }
+
+  /** The speed slider. */
+  setFlow(flow: number) {
+    this.target = Math.max(MIN_FLOW, Math.min(MAX_FLOW, flow));
+    if (this.paused) this.paused = false;
+  }
+
+  /** The flow amount slider (new cards come closer together or further apart). */
+  setDensity(d: number) {
+    setDensity(d);
+  }
+
+  /** The layers slider: the river starts over with this many depths (frozen cards are let go). */
+  setLayers(n: number) {
+    if (Math.round(n) === LAYERS.length) return;
+    this.grab = null;
+    for (const d of this.drifters) this.detach(d);
+    this.drifters = [];
+    this.setHover(null);
+    setLayerCount(n);
+    this.pool = LAYERS.map(() => []);
+    this.drifters = fill(this.view, this.spawner);
+    for (const d of this.drifters) {
+      d.shown = 0;
+      this.attach(d);
+    }
   }
 
   pointer(x: number | null, y = 0) {
     this.mouse = x == null || this.covered ? null : { x, y };
     this.lastMove = performance.now();
+    const g = this.grab;
+    if (g && x != null) {
+      if (!g.moved && Math.hypot(x - g.sx, y - g.sy) > 5) g.moved = true;
+      g.d.x = x + g.dx;
+      g.d.y = y + g.dy;
+      this.momentum.add(x, y, performance.now());
+    }
   }
 
-  click(x: number, y: number) {
+  /** The card under a point (index into the items), if any. */
+  itemAt(x: number, y: number): number | null {
     const d = hitTest(this.drifters, x, y, this.t, this.view, this.hovered?.key ?? null);
-    if (d) this.ev.onOpen(d.item);
+    return d ? d.item : null;
+  }
+
+  /** Left button down: take the card under the mouse (true if there was one). */
+  press(x: number, y: number): boolean {
+    const d = hitTest(this.drifters, x, y, this.t, this.view, this.hovered?.key ?? null);
+    if (!d) return false;
+    d.held = true;
+    d.frozen = false;
+    d.vx = 0;
+    d.vy = 0;
+    this.grab = { d, dx: d.x - x, dy: d.y - y, sx: x, sy: y, moved: false };
+    this.momentum.clear();
+    this.momentum.add(x, y, performance.now());
+    this.setHover(d);
+    const c = this.cards.get(d.key);
+    if (c) {
+      c.el.classList.remove('rv-frozen');
+      c.el.style.zIndex = '210';
+    }
+    this.root.classList.add('rv-holding');
+    return true;
+  }
+
+  /** Left button up: a card that wasn't moved opens; a moved one flies on with the mouse's speed. */
+  release() {
+    const g = this.grab;
+    if (!g) return;
+    this.grab = null;
+    this.root.classList.remove('rv-holding');
+    g.d.held = false;
+    if (!g.moved) {
+      this.ev.onOpen(g.d.item);
+      return;
+    }
+    const v = this.momentum.velocity(performance.now());
+    g.d.vx = v.x;
+    g.d.vy = v.y;
+  }
+
+  /** Right-click while holding: the card stays right there. */
+  freeze(): boolean {
+    const g = this.grab;
+    if (!g) return false;
+    this.grab = null;
+    this.root.classList.remove('rv-holding');
+    g.d.held = false;
+    g.d.frozen = true;
+    g.d.vx = 0;
+    g.d.vy = 0;
+    const c = this.cards.get(g.d.key);
+    if (c) c.el.classList.add('rv-frozen');
+    this.ev.onFlow('Frozen here · grab it again to let it go', this.target);
+    return true;
+  }
+
+  get holding() {
+    return !!this.grab;
   }
 
   /** For the UI tests. */
@@ -199,12 +308,13 @@ export class RiverEngine {
     this.dt = dt;
     const goal = this.paused ? 0 : this.target;
     this.flow += (goal - this.flow) * (1 - Math.exp(-dt * (this.paused ? 3 : 2)));
-    const hit = this.mouse ? hitTest(this.drifters, this.mouse.x, this.mouse.y, this.t, this.view, this.hovered?.key ?? null) : null;
+    const hit = this.grab ? this.grab.d : this.mouse ? hitTest(this.drifters, this.mouse.x, this.mouse.y, this.t, this.view, this.hovered?.key ?? null) : null;
     if (hit !== this.hovered) this.setHover(hit);
     const { gone, added } = step(this.drifters, dt, this.flow, this.view, this.spawner, this.hovered?.key ?? null);
     for (const d of gone) this.detach(d);
     for (const d of added) this.attach(d);
     if (this.hovered && gone.includes(this.hovered)) this.setHover(null);
+    if (this.grab && gone.includes(this.grab.d)) this.grab = null;
     this.stats.maxCards = Math.max(this.stats.maxCards, this.drifters.length);
   }
 
@@ -217,6 +327,7 @@ export class RiverEngine {
       const p = placed(d, this.t, v);
       c.el.style.transform = `translate3d(${(p.x - p.w / 2).toFixed(1)}px, ${(p.y - p.h / 2).toFixed(1)}px, 0) rotate(${p.rot.toFixed(2)}deg) scale(${p.scale.toFixed(3)})`;
       const L = LAYERS[d.layer];
+      if (!L) continue;
       const op = (L.opacity + (1 - L.opacity) * d.lift) * d.shown;
       if (Math.abs(op - c.shownOpacity) > 0.004) {
         c.el.style.opacity = op.toFixed(3);
@@ -230,7 +341,7 @@ export class RiverEngine {
       }
     }
     // The mouse rests: hide the pointer, as in the viewer.
-    this.root.classList.toggle('rv-idle', now - this.lastMove > IDLE_MS && !this.hovered);
+    this.root.classList.toggle('rv-idle', now - this.lastMove > IDLE_MS && !this.hovered && !this.grab);
     this.drawMotes();
   }
 
@@ -244,6 +355,7 @@ export class RiverEngine {
     c.el.style.height = `${d.h.toFixed(1)}px`;
     c.el.style.opacity = '0';
     c.el.style.zIndex = String(10 + d.layer * 10);
+    this.lookFor(c, d.layer);
     c.shownOpacity = 0;
     c.lift = -1;
     c.full = false;
@@ -304,6 +416,17 @@ export class RiverEngine {
     });
   }
 
+  /** Depth: further away is dimmer, softer and a little cooler (pointing at it clears it). */
+  private lookFor(c: Card, layer: number) {
+    const L = LAYERS[layer];
+    const n = LAYERS.length;
+    // The style sheet knows five depth bands (reflections, shadows): far … near.
+    const band = n <= 1 ? 4 : Math.round(4 - (4 * (n - 1 - layer)) / Math.max(4, n - 1));
+    c.el.className = `rv-item rv-l${Math.max(0, Math.min(4, band))}`;
+    c.card.style.filter = L.blur > 0 || L.bright < 1 ? `blur(${L.blur}px) brightness(${L.bright}) saturate(${(0.6 + 0.4 * L.bright).toFixed(2)})` : '';
+    c.card.style.borderRadius = `${Math.round(4 + (L.size / 0.31) * 8)}px`;
+  }
+
   private makeCard(layer: number): Card {
     const el = document.createElement('div');
     el.className = `rv-item rv-l${layer}`;
@@ -311,10 +434,6 @@ export class RiverEngine {
     glow.className = 'rv-glow';
     const card = document.createElement('div');
     card.className = 'rv-card';
-    // Depth: further away is dimmer, softer and a little cooler (pointing at it clears it).
-    const L = LAYERS[layer];
-    if (L.blur > 0 || L.bright < 1) card.style.filter = `blur(${L.blur}px) brightness(${L.bright}) saturate(${(0.55 + 0.45 * L.bright).toFixed(2)})`;
-    card.style.borderRadius = `${4 + layer * 2}px`;
     const img = document.createElement('img');
     img.className = 'rv-img';
     img.alt = '';
@@ -334,11 +453,11 @@ export class RiverEngine {
     this.stopVideo(c);
     c.img.onload = null;
     c.img.onerror = null;
-    c.el.classList.remove('rv-lifted');
+    c.el.classList.remove('rv-lifted', 'rv-frozen');
     c.el.remove();
     c.key = 0;
     // A few spare cards per layer are plenty.
-    if (this.pool[c.layer].length < 6) this.pool[c.layer].push(c);
+    if (this.pool[c.layer] && this.pool[c.layer].length < 6) this.pool[c.layer].push(c);
     else c.img.removeAttribute('src');
   }
 
@@ -346,7 +465,7 @@ export class RiverEngine {
     const before = this.hovered && this.cards.get(this.hovered.key);
     if (before) {
       before.el.classList.remove('rv-lifted');
-      before.el.style.zIndex = String(10 + before.layer * 10);
+      before.el.style.zIndex = String(10 + before.layer * 10 + (this.hovered?.frozen ? 5 : 0));
       this.stopVideo(before);
     }
     window.clearTimeout(this.videoTimer);
@@ -356,7 +475,7 @@ export class RiverEngine {
     const c = this.cards.get(d.key);
     if (!c) return;
     c.el.classList.add('rv-lifted');
-    c.el.style.zIndex = '90';
+    c.el.style.zIndex = d.held ? '210' : '200';
     const it = this.items[d.item];
     if (it.kind === 'video') this.videoTimer = window.setTimeout(() => this.playVideo(c, d.key, it), 450);
     else if (!c.full) this.upgrade(c, d.key, it);

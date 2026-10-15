@@ -101,7 +101,11 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
     keys: [
       ['Point at a picture', 'It slows, comes closer and shows its name (videos play, muted)'],
       ['Click', 'Open it in the viewer (closing the viewer carries on where the river was)'],
+      ['Hold and move', 'Carry a picture around; let go while moving to flick it (it keeps your speed)'],
+      ['Right-click while holding', 'Freeze it right there (grab it again to let it go)'],
+      ['Middle-click', 'Open it in the mini player'],
       ['Mouse wheel  /  ← →', 'Slower or faster current'],
+      ['Mouse at the bottom', 'Speed, flow amount and layers'],
       ['Space', 'Pause / carry on'],
       ['Esc', 'Leave the river'],
     ],

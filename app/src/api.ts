@@ -41,12 +41,16 @@ export interface ViewerSettings {
   depthAmount?: number;
   /** 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way). */
   depthReact?: number;
+  /** Discovery river: the current's speed (1 = normal), how many items flow (1 = as designed) and how many depth layers. */
+  riverFlow?: number;
+  riverDensity?: number;
+  riverLayers?: number;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
-  depthMouse: false, depthAmount: 1, depthReact: 1,
+  depthMouse: false, depthAmount: 1, depthReact: 1, riverFlow: 1, riverDensity: 1, riverLayers: 5,
 };
 
 export interface AppConfig {

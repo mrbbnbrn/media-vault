@@ -102,6 +102,10 @@ export function RiverHost({ nav }: { nav: Nav }) {
         onOpen={(index) => {
           if (session) set({ ...session, viewing: session.items[index]?.id ?? null });
         }}
+        onMini={nav.mini ? (index) => {
+          const id = session?.items[index]?.id;
+          if (id != null) nav.mini?.({ items: play, startKey: `v${id}`, title: s.title, auto: false });
+        } : undefined}
       />
       {s.viewing != null && (
         <div className="river-viewer">

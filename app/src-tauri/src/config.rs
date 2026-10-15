@@ -73,6 +73,12 @@ pub struct ViewerSettings {
     pub depth_amount: f64,
     /// 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way; 0.3–3).
     pub depth_react: f64,
+    /// Discovery river: the current's speed (0.1–8, 1 = normal).
+    pub river_flow: f64,
+    /// Discovery river: how many items flow (0.4–2.5, 1 = as designed).
+    pub river_density: f64,
+    /// Discovery river: how many depth layers (2–8).
+    pub river_layers: u32,
 }
 
 impl Default for ViewerSettings {
@@ -95,6 +101,9 @@ impl Default for ViewerSettings {
             depth_mouse: false,
             depth_amount: 1.0,
             depth_react: 1.0,
+            river_flow: 1.0,
+            river_density: 1.0,
+            river_layers: 5,
         }
     }
 }
