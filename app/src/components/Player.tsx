@@ -1108,7 +1108,7 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && imgInfo && (
-              <Depth3D key={item.key + tick} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
                 showMs={s.imageSeconds * 1000} halted={halted} sharpen={prefs.sharpen && prefs.smoothFit} />
             )}
             {/* 3D photos (end) */}
