@@ -471,6 +471,12 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::SeqCst) && !s.is_closed() {
         let c = caps();
         let tasks = select(&s.db(), c, ROUND, None).unwrap_or_default();
+        // Poor faces: faces found before they were measured, a few pictures
+        // at a time when there's nothing else to do (names are kept).
+        if tasks.is_empty() && c.faces && crate::poorfaces::measure_round(&s, &here_sql()) > 0 {
+            named = true; // auto-names of faces now known to be poor are taken back
+            continue;
+        }
         if tasks.is_empty() {
             BUSY.store(false, Ordering::SeqCst);
             if named {

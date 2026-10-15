@@ -46,12 +46,15 @@ export interface ViewerSettings {
   riverFlow?: number;
   riverDensity?: number;
   riverLayers?: number;
+  /** Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed). */
+  poorFaces?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1, riverFlow: 1, riverDensity: 1, riverLayers: 5,
+  poorFaces: false,
 };
 
 export interface AppConfig {
@@ -84,7 +87,30 @@ export interface AppConfig {
   notifyDone: boolean;
   vaults: { path: string }[];
   lastVault: string | null;
+  /** Settings → Faces → Poor faces: when a face is too small, blurry or turned to be trusted. */
+  poorFaces?: PoorFaceSettings;
 }
+
+// ---- poor faces (begin) ----
+/** A face below these is a "poor face": never named on its own or learned from, unless you name it. */
+export interface PoorFaceSettings {
+  /** Shorter than this (pixels of the item itself) = too small. 0 = off. */
+  minPx: number;
+  /** Less sharp than this, on a 0–100 scale = too blurry. 0 = off. */
+  blur: number;
+  /** Turned further away than this (degrees) = too turned. 90 = off. */
+  turn: number;
+}
+
+export const DEFAULT_POOR_FACES: PoorFaceSettings = { minPx: 40, blur: 25, turn: 60 };
+
+/** A poor face on the People page, and why it is one. */
+export interface PoorFace extends Suggestion {
+  small: boolean;
+  blurry: boolean;
+  turned: boolean;
+}
+// ---- poor faces (end) ----
 
 export const DEFAULT_LOOK: LookSettings = {
   sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [], minimap: true,
@@ -226,6 +252,10 @@ export interface FaceIn {
   h: number;
   score: number;
   descriptor: number[];
+  /** Poor faces: height (px), sharpness and turn (degrees), measured when found. */
+  px?: number;
+  sharp?: number;
+  turn?: number;
 }
 
 export interface FaceBox {
@@ -240,6 +270,8 @@ export interface FaceBox {
   auto?: boolean;
   /** Marked "not important" (only listed when asked for). */
   hidden?: boolean;
+  /** Too small, blurry or turned to be trusted: shown only with "Show poor faces too". */
+  poor?: boolean;
 }
 
 export interface Suggestion {
@@ -319,6 +351,9 @@ export interface FaceReview {
   unknownTotal?: number;
   /** "Not important" people. */
   hidden?: UnknownGroup[];
+  /** Faces too small, blurry or turned to be trusted, newest first. */
+  poor?: PoorFace[];
+  poorTotal?: number;
   /** "These look like the same person — merge?" */
   merges?: MergeHint[];
   status: ScanStatus;
@@ -332,6 +367,8 @@ export interface ReviewRequest {
   /** Per person: how many recognised faces. */
   recent?: [number, number][];
   groups?: number;
+  /** How many poor faces. */
+  poor?: number;
 }
 
 export interface OwnerProposal {

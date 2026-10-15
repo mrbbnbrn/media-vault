@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 16;
+pub const SCHEMA_VERSION: i64 = 17;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -584,6 +584,46 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- cover framing (end) ----
+    // ---- poor faces (begin) ----
+    let faces_table = table_exists(conn, "faces")?;
+    if v < 17 || (faces_table && (!has_column(conn, "faces", "px")? || !has_column(conn, "faces", "sharp")? || !has_column(conn, "faces", "turn")?)) {
+        // v17: what's needed to tell a "poor face" (too small, too blurry or
+        // turned too far away to be trusted): its height in the item's own
+        // pixels, how sharp it is (variance of the Laplacian of a small grey
+        // crop; -1 = couldn't be measured) and how far it is turned (degrees,
+        // 0 = looking straight at the camera). NULL = not measured yet, which
+        // counts as fine. Whether a face is poor is decided when asked, from
+        // the settings, so nothing here changes names. Heights are filled in
+        // straight away from the item's size; sharpness and turn are measured
+        // in the background. Each column only if it isn't there yet, so this
+        // is safe to run again (with or without v16 before it).
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            if faces_table {
+                for col in ["px", "sharp", "turn"] {
+                    if !has_column(conn, "faces", col)? {
+                        conn.execute_batch(&format!("ALTER TABLE faces ADD COLUMN {col} REAL;"))?;
+                    }
+                }
+                conn.execute_batch(
+                    "UPDATE faces SET px = h * (SELECT m.height FROM media m WHERE m.id = faces.media_id) \
+                     WHERE px IS NULL AND (SELECT m.height FROM media m WHERE m.id = faces.media_id) > 0;",
+                )?;
+            }
+            if v < 17 {
+                conn.execute_batch("PRAGMA user_version = 17;")?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
+    // ---- poor faces (end) ----
     Ok(())
 }
 
@@ -1053,4 +1093,39 @@ mod tests {
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
         assert_eq!(v, SCHEMA_VERSION);
     }
+
+    // ---- poor faces tests (begin) ----
+    #[test]
+    fn v17_adds_poor_face_measures_and_can_run_again() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at, height) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0, 1000)", []).unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('p', 'image', 'b', 'jpg', 1, 'h', 0)", []).unwrap();
+        c.execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor) VALUES (1, 0, 0, 0.1, 0.05, 1, x'00')", []).unwrap();
+        c.execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor) VALUES (2, 0, 0, 0.1, 0.5, 1, x'00')", []).unwrap();
+        // Back to how a v15 library looked (no v16 either), then upgrade.
+        c.execute_batch("ALTER TABLE faces DROP COLUMN px; ALTER TABLE faces DROP COLUMN sharp; ALTER TABLE faces DROP COLUMN turn; PRAGMA user_version = 15;").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let rows: Vec<(Option<f64>, Option<f64>, Option<f64>)> = c
+            .prepare("SELECT px, sharp, turn FROM faces ORDER BY id")
+            .unwrap()
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(rows, vec![(Some(50.0), None, None), (None, None, None)], "height filled in where the item's size is known");
+        // Measured values survive running it again: from v15 or v16, with a column missing, or as it is.
+        c.execute("UPDATE faces SET sharp = 12.5, turn = 30 WHERE id = 1", []).unwrap();
+        for back in ["PRAGMA user_version = 15;", "PRAGMA user_version = 16;", "ALTER TABLE faces DROP COLUMN turn;", ""] {
+            c.execute_batch(back).unwrap();
+            migrate(&c).unwrap();
+            assert!(has_column(&c, "faces", "turn").unwrap());
+            let s: Option<f64> = c.query_row("SELECT sharp FROM faces WHERE id = 1", [], |r| r.get(0)).unwrap();
+            assert_eq!(s, Some(12.5));
+            let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+            assert_eq!(v, SCHEMA_VERSION);
+        }
+    }
+    // ---- poor faces tests (end) ----
 }

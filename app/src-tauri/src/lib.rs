@@ -40,6 +40,8 @@ mod focus;
 mod faceid;
 mod faceid_math;
 mod facegraph;
+// Poor faces: too small, blurry or turned to be trusted (judged from Settings → Faces).
+mod poorfaces;
 // The vault's size by month (Statistics chart, Settings sparkline).
 mod growth;
 mod import;
@@ -279,6 +281,7 @@ fn save_config(
     next.last_vault = cfg.last_vault.clone();
     config::save(&state.config_dir, &next).map_err(|e| format!("Couldn't save settings: {e}"))?;
     nocapture::apply_all(&app, next.block_capture);
+    poorfaces::set_rule(&next.poor_faces); // poor faces re-sorted at once
     *cfg = next.clone();
     Ok(next)
 }
@@ -2231,6 +2234,7 @@ async fn vault_growth(state: State<'_, Shared>) -> Result<growth::Growth, String
 pub fn run() {
     let config_dir = config::config_dir();
     let cfg = config::load(&config_dir);
+    poorfaces::set_rule(&cfg.poor_faces);
     let engine = engine::prepare(&config_dir, cfg.builtin_engine);
     let inner: Shared = Arc::new(Inner {
         config_dir,
