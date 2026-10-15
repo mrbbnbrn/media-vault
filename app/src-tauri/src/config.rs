@@ -65,6 +65,14 @@ pub struct ViewerSettings {
     pub open_close_anim: bool,
     /// Slideshow: a small ring by the Slideshow button shows the time to the next item.
     pub slide_ring: bool,
+    /// Face boxes in the viewer include the faces marked "not important" (dimmed).
+    pub hidden_faces: bool,
+    /// 3D photos: the picture follows the mouse (the 3D button in the viewer).
+    pub depth_mouse: bool,
+    /// 3D photos: how strong the depth is (1 = as designed; 0.3–3).
+    pub depth_amount: f64,
+    /// 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way; 0.3–3).
+    pub depth_react: f64,
 }
 
 impl Default for ViewerSettings {
@@ -83,6 +91,10 @@ impl Default for ViewerSettings {
             align_faces: false,
             open_close_anim: true,
             slide_ring: true,
+            hidden_faces: false,
+            depth_mouse: false,
+            depth_amount: 1.0,
+            depth_react: 1.0,
         }
     }
 }

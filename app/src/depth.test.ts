@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseDepth } from './api';
-import { cropScale, DOLLY, pickPath, pivotOf, poseAt, progress, SHIFT, shiftUv, type DepthPath } from './depth';
+import { DOLLY, SHIFT, cropScale, easeToward, mouseLean, mousePose, pickPath, pivotOf, poseAt, progress, scalePose, shiftUv, type DepthPath } from './depth';
 import { normalize } from './presets';
 
 const paths: DepthPath[] = [
@@ -91,5 +91,31 @@ describe('3D photos: depth maps and the setting', () => {
     expect(normalize({}).depth3d).toBe(false);
     expect(normalize({ depth3d: true }).depth3d).toBe(true);
     expect(normalize({ depth3d: 'yes' as unknown as boolean }).depth3d).toBe(false);
+  });
+});
+
+describe('3D with the mouse', () => {
+  it('leans with the mouse, held within the furthest lean', () => {
+    expect(mouseLean(0, 0, 1)).toEqual({ x: 0, y: 0 });
+    expect(mouseLean(0.5, -0.5, 1)).toEqual({ x: 0.5, y: -0.5 });
+    expect(mouseLean(0.5, 0, 3).x).toBe(1);
+    expect(mouseLean(-2, 0, 1).x).toBe(-1);
+    expect(Math.abs(mouseLean(0.5, 0, 0.3).x - 0.15)).toBeLessThan(1e-9);
+  });
+  it('is stronger or weaker with the depth setting', () => {
+    const a = mousePose({ x: 1, y: 0 }, 1);
+    const b = mousePose({ x: 1, y: 0 }, 2);
+    expect(b.x).toBeCloseTo(a.x * 2);
+    expect(mousePose({ x: 0, y: 0 }, 3)).toEqual({ x: 0, y: 0, dolly: 0 });
+    expect(scalePose({ x: 0.01, y: 0.02, dolly: 0.03 }, 0.5)).toEqual({ x: 0.005, y: 0.01, dolly: 0.015 });
+    // Even the strongest lean leaves the picture filling its frame.
+    expect(cropScale(shiftUv(mousePose({ x: 1, y: 1 }, 3), 1600, 900), 0, 0.85)).toBeLessThan(2);
+  });
+  it('eases toward where the mouse is, whatever the frame rate', () => {
+    expect(easeToward(0, 1, 0)).toBe(0);
+    const one = easeToward(0, 1, 32);
+    const two = easeToward(easeToward(0, 1, 16), 1, 16);
+    expect(one).toBeCloseTo(two, 9);
+    expect(easeToward(0, 1, 1000)).toBeGreaterThan(0.99);
   });
 });

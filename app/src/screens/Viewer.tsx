@@ -341,6 +341,21 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
             )}
           </span>
 
+          {/* 3D strength (begin): for the slideshow motion and the 3D button (the picture follows the mouse) */}
+          <label htmlFor="ps-depth">3D depth</label>
+          <span className="row" style={{ gap: 8 }}>
+            <input id="ps-depth" type="range" min={0.3} max={3} step={0.1} value={prefs.depthAmount ?? 1}
+              onChange={(e) => saveViewerPrefs({ depthAmount: Number(e.target.value) })} style={{ flex: 1 }} />
+            <span className="faint" style={{ minWidth: 40, fontSize: 12 }}>{Math.round((prefs.depthAmount ?? 1) * 100)}%</span>
+          </span>
+          <label htmlFor="ps-react">3D mouse reaction</label>
+          <span className="row" style={{ gap: 8 }} title="With the 3D button on: how far you move the mouse for the picture to lean all the way (higher = less mouse movement needed)">
+            <input id="ps-react" type="range" min={0.3} max={3} step={0.1} value={prefs.depthReact ?? 1}
+              onChange={(e) => saveViewerPrefs({ depthReact: Number(e.target.value) })} style={{ flex: 1 }} />
+            <span className="faint" style={{ minWidth: 40, fontSize: 12 }}>{Math.round((prefs.depthReact ?? 1) * 100)}%</span>
+          </span>
+          {/* 3D strength (end) */}
+
           <span>Faces</span>
           <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
             <label className="check"><input type="checkbox" checked={!!prefs.alignFaces} onChange={(e) => saveViewerPrefs({ alignFaces: e.target.checked })} /> Line up faces</label>

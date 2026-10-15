@@ -1302,6 +1302,62 @@ pub fn unsure_items(conn: &Connection, person: i64) -> R<Vec<Item>> {
     Ok(out)
 }
 
+/// Every person's average face (per model), from up to 200 of their faces
+/// outside `except_media` (named by you first, then the newest).
+fn person_centres(conn: &Connection, except_media: i64) -> R<Vec<(i64, i64, Vec<f32>)>> {
+    let mut by: HashMap<(i64, i64), Vec<Vec<f32>>> = HashMap::new();
+    let mut st = conn
+        .prepare(
+            "SELECT f.person_id, f.model, f.descriptor FROM faces f JOIN folders d ON d.id = f.person_id JOIN media m ON m.id = f.media_id \
+             WHERE d.person = 1 AND d.deleted_at IS NULL AND m.deleted_at IS NULL AND f.hidden = 0 AND f.media_id <> ? ORDER BY f.auto, f.id DESC",
+        )
+        .map_err(e)?;
+    let rows = st.query_map([except_media], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, from_blob(&r.get::<_, Vec<u8>>(2)?)))).map_err(e)?;
+    for r in rows {
+        let (p, m, d) = r.map_err(e)?;
+        let v = by.entry((p, m)).or_default();
+        if v.len() < 200 {
+            v.push(d);
+        }
+    }
+    Ok(by
+        .into_iter()
+        .filter_map(|((p, m), v)| fg::centroid(m, &v.iter().map(|x| &x[..]).collect::<Vec<_>>()).map(|c| (p, m, c)))
+        .collect())
+}
+
+/// "Who is it?" for one face: how likely each person is (0–99, the same
+/// scale as the People page), most likely first. Only people it looks at
+/// least a little like are listed, and never one you said it isn't.
+pub fn face_matches(conn: &Connection, face: i64) -> R<Vec<(i64, u32)>> {
+    let Some((media, model, desc)) = conn
+        .query_row("SELECT media_id, model, descriptor FROM faces WHERE id = ?", [face], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, from_blob(&r.get::<_, Vec<u8>>(2)?)))
+        })
+        .optional()
+        .map_err(e)?
+    else {
+        return Ok(Vec::new());
+    };
+    let rejected: HashSet<i64> = conn
+        .prepare("SELECT folder_id FROM face_rejects WHERE face_id = ?")
+        .map_err(e)?
+        .query_map([face], |r| r.get(0))
+        .map_err(e)?
+        .collect::<rusqlite::Result<_>>()
+        .map_err(e)?;
+    let maybe = fg::metric(model).maybe;
+    let mut out: Vec<(i64, u32)> = person_centres(conn, media)?
+        .into_iter()
+        .filter(|c| c.1 == model && c.2.len() == desc.len() && !rejected.contains(&c.0))
+        .map(|c| (c.0, fg::similarity(model, &desc, &c.2)))
+        .filter(|x| x.1 >= maybe)
+        .map(|(p, sim)| (p, confidence(model, sim)))
+        .collect();
+    out.sort_by_key(|x| std::cmp::Reverse(x.1));
+    Ok(out)
+}
+
 /// Quick sort: people recognised in an item (1.0), else the person its
 /// faces are most like (their average face, same model only), best first.
 pub fn person_matches(conn: &Connection, media: i64) -> R<Vec<(i64, f32)>> {
@@ -1320,25 +1376,7 @@ pub fn person_matches(conn: &Connection, media: i64) -> R<Vec<(i64, f32)>> {
         }
     }
     if !unnamed.is_empty() {
-        let mut by: HashMap<(i64, i64), Vec<Vec<f32>>> = HashMap::new();
-        let mut st = conn
-            .prepare(
-                "SELECT f.person_id, f.model, f.descriptor FROM faces f JOIN folders d ON d.id = f.person_id JOIN media m ON m.id = f.media_id \
-                 WHERE d.person = 1 AND d.deleted_at IS NULL AND m.deleted_at IS NULL AND f.media_id <> ? ORDER BY f.auto, f.id DESC",
-            )
-            .map_err(e)?;
-        let rows = st.query_map([media], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, from_blob(&r.get::<_, Vec<u8>>(2)?)))).map_err(e)?;
-        for r in rows {
-            let (p, m, d) = r.map_err(e)?;
-            let v = by.entry((p, m)).or_default();
-            if v.len() < 200 {
-                v.push(d);
-            }
-        }
-        let centres: Vec<(i64, i64, Vec<f32>)> = by
-            .into_iter()
-            .filter_map(|((p, m), v)| fg::centroid(m, &v.iter().map(|x| &x[..]).collect::<Vec<_>>()).map(|c| (p, m, c)))
-            .collect();
+        let centres = person_centres(conn, media)?;
         for (_, model, d) in unnamed {
             let best = centres
                 .iter()
@@ -1555,6 +1593,36 @@ mod tests {
         assert_eq!(r.hidden.len(), 1);
         hide(&l.conn(), &r.hidden[0].face_ids, false).unwrap();
         assert_eq!(review(&l, &ReviewRequest::default()).unwrap().unknown.len(), 1);
+    }
+
+    #[test]
+    fn who_is_it_lists_the_likeliest_person_first() {
+        let c = db::create_empty().unwrap();
+        let ayse = library::create_folder(&c, None, "Ayşe").unwrap();
+        let baran = library::create_folder(&c, None, "Baran").unwrap();
+        set_person(&c, ayse, true).unwrap();
+        set_person(&c, baran, true).unwrap();
+        // Two known photos of each.
+        for (p, who) in [(0, ayse), (1, baran)] {
+            for seed in 0..2 {
+                let m = add(&c, None);
+                save(&c, m, &[arc(p, 10 * p as u64 + seed, 0.2)], ARCFACE).unwrap();
+                let f = faces_of(&c, m).unwrap()[0].id;
+                accept(&c, &[f], who).unwrap();
+            }
+        }
+        // A new photo of Baran.
+        let m = add(&c, None);
+        save(&c, m, &[arc(1, 99, 0.4)], ARCFACE).unwrap();
+        let f = faces_of(&c, m).unwrap()[0].id;
+        let list = face_matches(&c, f).unwrap();
+        assert_eq!(list.first().map(|x| x.0), Some(baran), "{list:?}");
+        assert!(list.iter().all(|x| x.0 != ayse), "not like Ayşe at all: {list:?}");
+        assert!(list[0].1 >= 66, "{list:?}");
+        // Said it isn't Baran: not offered any more.
+        reject(&c, &[f], baran).unwrap();
+        assert!(face_matches(&c, f).unwrap().iter().all(|x| x.0 != baran));
+        assert!(face_matches(&c, 123_456).unwrap().is_empty());
     }
 
     #[test]

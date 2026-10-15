@@ -148,25 +148,29 @@ function TabStrip({ tabs, onTab }: { tabs: LibraryTabs; onTab?: () => void }) {
     tabs.activate(id);
     onTab?.();
   };
+  // Closing a tab that isn't the one showing (say while the viewer is open)
+  // leaves everything where it is; only losing the current tab switches.
   const close = (id: number) => {
     if (modalOpen()) return;
+    const current = id === tabs.activeId;
     tabs.close(id);
-    onTab?.();
+    if (current) onTab?.();
   };
   const tabMenu = (e: React.MouseEvent, t: TabInfo) => {
     e.preventDefault();
     if (modalOpen()) return;
     const i = tabs.list.findIndex((x) => x.id === t.id);
-    const run = (fn: () => void) => () => {
+    const run = (fn: () => void, switches = true) => () => {
       fn();
-      onTab?.();
+      if (switches) onTab?.();
     };
+    const activeAt = tabs.list.findIndex((x) => x.active);
     setMenu({ x: e.clientX, y: e.clientY, items: [
       { label: 'New tab', hint: 'Ctrl+T', onSelect: run(() => tabs.newTab()) },
       { label: 'Duplicate', onSelect: run(() => tabs.duplicate(t.id)) },
-      { label: 'Close', hint: 'Ctrl+W', sepBefore: true, onSelect: run(() => tabs.close(t.id)) },
-      { label: 'Close other tabs', disabled: tabs.list.length < 2, onSelect: run(() => tabs.closeOthers(t.id)) },
-      { label: 'Close tabs to the right', disabled: i === tabs.list.length - 1, onSelect: run(() => tabs.closeToRight(t.id)) },
+      { label: 'Close', hint: 'Ctrl+W', sepBefore: true, onSelect: run(() => tabs.close(t.id), t.active) },
+      { label: 'Close other tabs', disabled: tabs.list.length < 2, onSelect: run(() => tabs.closeOthers(t.id), !t.active) },
+      { label: 'Close tabs to the right', disabled: i === tabs.list.length - 1, onSelect: run(() => tabs.closeToRight(t.id), activeAt > i) },
       { label: 'Reopen closed tab', hint: 'Ctrl+Shift+T', sepBefore: true, disabled: !tabs.canReopen, onSelect: run(() => tabs.reopen()) },
     ] });
   };

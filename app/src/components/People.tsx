@@ -213,7 +213,11 @@ export function PeopleView(props: {
                 </button>
                 <div className="pcol" style={{ gap: 4, minWidth: 0, flex: 1 }}>
                   <b>{groupLabel(i)} <span className="faint" style={{ fontWeight: 400 }}>· {photos(u.photos)}</span></b>
-                  <div className="found-strip">{u.samples.slice(1, 5).map((s) => <FaceCrop key={s.faceId} s={s} size={34} />)}</div>
+                  <div className="found-strip">{u.samples.slice(1, 5).map((s) => (
+                    <button key={s.faceId} type="button" className="found-face" title="Open this photo" aria-label="Open this photo" onClick={() => props.onOpenItem(s.item)}>
+                      <FaceCrop s={s} size={34} />
+                    </button>
+                  ))}</div>
                   {u.looksLike && (
                     <div className="row found-hint" style={{ gap: 6 }}>
                       <span>Looks like {u.looksLike.name}?</span>
@@ -243,7 +247,11 @@ export function PeopleView(props: {
           <div className="found-list" style={{ marginTop: 12 }}>
             {review.hidden!.map((u) => (
               <div key={u.key ?? u.faceIds[0]} className="found small">
-                {u.samples[0] && <FaceCrop s={u.samples[0]} size={56} />}
+                {u.samples[0] && (
+                  <button type="button" className="found-face" title="Open a photo" onClick={() => props.onOpenItem(u.samples[0].item)}>
+                    <FaceCrop s={u.samples[0]} size={56} />
+                  </button>
+                )}
                 <div className="pcol" style={{ gap: 4 }}>
                   <span className="faint" style={{ fontSize: 12 }}>{photos(u.photos)}</span>
                   <button type="button" className="btn btn-sm" onClick={() => done(api.facesHide(u.faceIds, false), 'Shown again.')}>Show again</button>
@@ -352,7 +360,11 @@ function PersonCard(props: {
 
       {owner && (
         <div className="owner-hint">
-          <div className="row" style={{ gap: 4 }}>{owner.samples.map((x) => <FaceCrop key={x.faceId} s={x} size={44} />)}</div>
+          <div className="row" style={{ gap: 4 }}>{owner.samples.map((x) => (
+            <button key={x.faceId} type="button" className="found-face" title="Open this photo" aria-label="Open this photo" onClick={() => props.onOpenItem(x.item)}>
+              <FaceCrop s={x} size={44} />
+            </button>
+          ))}</div>
           <div className="pcol" style={{ gap: 2, flex: 1 }}>
             <b>This looks like {name} in {photos(owner.photos)}</b>
             <span className="faint" style={{ fontSize: 12 }}>The face that appears again and again in their folder. Check it once and {name} is recognised everywhere.</span>

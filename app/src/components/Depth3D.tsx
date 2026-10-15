@@ -17,7 +17,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { inTauri, type DepthInfo, type DepthMap } from '../api';
-import { cropScale, depthOf, depthPack, NO_DEPTH_PACK, pickPath, pivotOf, poseAt, progress, shiftUv } from '../depth';
+import { cropScale, depthOf, depthPack, easeToward, mouseLean, mousePose, NO_DEPTH_PACK, pickPath, pivotOf, poseAt, progress, scalePose, shiftUv } from '../depth';
 import { drawnRect } from '../flip';
 
 interface Props {
@@ -33,6 +33,10 @@ interface Props {
   sharpen: boolean;
   /** Told once the moving picture is showing (true) or given up (false). */
   onLive?: (live: boolean) => void;
+  /** How strong the depth is (1 = as designed; Timing ▾ → 3D depth). */
+  amount?: number;
+  /** Follow the mouse instead of moving on its own; `react` = how strongly (1 = the edge of the picture leans all the way). */
+  mouse?: { react: number };
 }
 
 /** Less than this left of the picture's time: not worth starting. */
@@ -235,6 +239,7 @@ export function Depth3D(props: Props) {
     let scene: Scene | null = null;
     let raf = 0;
     let picture: ImageBitmap | null = null;
+    let stopMouse = () => {};
     const give = (ok: boolean) => alive && propsRef.current.onLive?.(ok);
     (async () => {
       const canvas = canvasRef.current;
@@ -257,7 +262,8 @@ export function Depth3D(props: Props) {
       if (!map || !bmp) return give(false);
       const start = now();
       const end = propsRef.current.showMs;
-      if (end - start < MIN_MOVE_MS) return give(false);
+      const byMouse = !!propsRef.current.mouse;
+      if (!byMouse && end - start < MIN_MOVE_MS) return give(false);
       scene = makeScene(canvas, bmp, map);
       bmp.close();
       picture = null;
@@ -269,6 +275,10 @@ export function Depth3D(props: Props) {
       const path = pickPath();
       const pivot = pivotOf(map);
       const s = scene;
+      // With the mouse: where it points (target) and where the camera is (eased toward it).
+      const lean = { x: 0, y: 0 };
+      const want = { x: 0, y: 0 };
+      let lastT = performance.now();
       const frame = () => {
         raf = 0;
         if (!alive) return;
@@ -283,8 +293,17 @@ export function Depth3D(props: Props) {
           canvas.height = bh;
         }
         const d = drawnRect(cw, ch, nw, nh, p.fit);
-        const u = progress(now(), start, end);
-        const pose = poseAt(u, path);
+        const amount = Math.max(0, p.amount ?? 1);
+        const u = byMouse ? 0 : progress(now(), start, end);
+        const t = performance.now();
+        if (byMouse) {
+          // (After a still moment the first step is one frame, not the whole pause.)
+          const dt = Math.min(t - lastT, 34);
+          lean.x = easeToward(lean.x, want.x, dt);
+          lean.y = easeToward(lean.y, want.y, dt);
+        }
+        lastT = t;
+        const pose = byMouse ? mousePose(lean, amount) : scalePose(poseAt(u, path), amount);
         const shift = shiftUv(pose, d.width, d.height);
         const { gl } = s;
         gl.clear(gl.COLOR_BUFFER_BIT);
@@ -298,13 +317,40 @@ export function Depth3D(props: Props) {
         gl.uniform1f(s.u.pivot, pivot);
         gl.uniform2f(s.u.focus, 0.5, 0.5);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-        // Still (paused, or done moving): no need to keep drawing.
-        if (!clock.current.halted && u < 1) raf = requestAnimationFrame(frame);
+        // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
+        const moving = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) > 0.0005 : !clock.current.halted && u < 1;
+        if (moving) raf = requestAnimationFrame(frame);
       };
       frame();
       kick.current = () => {
         if (!raf && alive) raf = requestAnimationFrame(frame);
       };
+      if (byMouse) {
+        const onMove = (e: PointerEvent) => {
+          const b = canvas.getBoundingClientRect();
+          const d = drawnRect(b.width, b.height, nw, nh, propsRef.current.fit);
+          const cx = b.left + d.left + d.width / 2;
+          const cy = b.top + d.top + d.height / 2;
+          const r = mouseLean((e.clientX - cx) / (d.width / 2 || 1), (e.clientY - cy) / (d.height / 2 || 1), propsRef.current.mouse?.react ?? 1);
+          want.x = r.x;
+          want.y = r.y;
+          kick.current();
+        };
+        // The mouse left the window: back to the middle.
+        const onLeave = () => {
+          want.x = 0;
+          want.y = 0;
+          kick.current();
+        };
+        window.addEventListener('pointermove', onMove);
+        document.documentElement.addEventListener('pointerleave', onLeave);
+        window.addEventListener('blur', onLeave);
+        stopMouse = () => {
+          window.removeEventListener('pointermove', onMove);
+          document.documentElement.removeEventListener('pointerleave', onLeave);
+          window.removeEventListener('blur', onLeave);
+        };
+      }
       setLive(true);
       give(true);
     })().catch(() => give(false));
@@ -312,15 +358,16 @@ export function Depth3D(props: Props) {
       alive = false;
       cancelAnimationFrame(raf);
       kick.current = () => {};
+      stopMouse();
       picture?.close();
       if (scene) dropScene(scene);
     };
-  }, [props.src, nw, nh]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [props.src, nw, nh, !!props.mouse]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resumed, resized or refitted: draw again.
+  // Resumed, resized, refitted or made stronger: draw again.
   useEffect(() => {
     kick.current();
-  }, [props.halted, props.fit]);
+  }, [props.halted, props.fit, props.amount]);
   useEffect(() => {
     const el = canvasRef.current;
     if (!el) return;

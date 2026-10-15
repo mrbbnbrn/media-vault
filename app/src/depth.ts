@@ -187,6 +187,36 @@ export function poseAt(u: number, p: DepthPath): Pose {
   return { x: k * SHIFT * 0.35 * c, y: k * SHIFT * 0.35 * s, dolly: DOLLY * k };
 }
 
+/** A pose made stronger or weaker (Settings: 3D depth, 1 = as designed). */
+export function scalePose(p: Pose, amount: number): Pose {
+  return { x: p.x * amount, y: p.y * amount, dolly: p.dolly * amount };
+}
+
+/** 3D with the mouse: how far the camera leans at the edge of the picture (share of SHIFT). */
+const MOUSE_REACH = 1.6;
+
+/**
+ * Where the mouse is over the picture (−1…1 each way from the middle), made
+ * more or less sensitive by `react` (1 = the edge of the picture leans all
+ * the way), held within the furthest lean.
+ */
+export function mouseLean(dx: number, dy: number, react: number): { x: number; y: number } {
+  const k = Math.max(0.05, react);
+  const c = (v: number) => Math.max(-1, Math.min(1, v * k));
+  return { x: c(dx), y: c(dy) };
+}
+
+/** The camera for a mouse lean (−1…1 each way): sideways and up/down, a little less up/down. */
+export function mousePose(lean: { x: number; y: number }, amount: number): Pose {
+  return { x: lean.x * SHIFT * MOUSE_REACH * amount, y: lean.y * SHIFT * MOUSE_REACH * 0.75 * amount, dolly: 0 };
+}
+
+/** Eases `from` toward `to` over about 1/8 s, whatever the frame rate. */
+export function easeToward(from: number, to: number, dtMs: number): number {
+  const k = 1 - Math.exp(-Math.max(0, dtMs) / 120);
+  return from + (to - from) * k;
+}
+
 /**
  * The shift in picture coordinates (0–1 each way) for a picture of this
  * shape, so the movement is the same in pixels both ways.

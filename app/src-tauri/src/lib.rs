@@ -1806,6 +1806,12 @@ async fn faces_of(state: State<'_, Shared>, media: i64, hidden: Option<bool>) ->
     read_db(state.inner(), move |c| faces::faces_of_with(c, media, hidden.unwrap_or(false))).await
 }
 
+/// "Who is it?": the people this face most likely is, with how likely (0–99).
+#[tauri::command]
+async fn faces_matches(state: State<'_, Shared>, face: i64) -> Result<Vec<(i64, u32)>, String> {
+    read_db(state.inner(), move |c| faces::face_matches(c, face)).await
+}
+
 /// "Reset and re-scan" the faces of these items (viewer right-click).
 #[tauri::command]
 async fn faces_reset(state: State<'_, Shared>, media: Vec<i64>) -> Result<usize, String> {
@@ -2433,6 +2439,7 @@ pub fn run() {
             faces_new_person,
             faces_of,
             faces_reset,
+            faces_matches,
             faces_unsure,
             faces_of_many,
             faces_auto,

@@ -33,7 +33,7 @@ import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage'
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
-import { depthAhead, depthPack } from '../depth';
+import { depthAhead, depthPack, NO_DEPTH_PACK } from '../depth';
 import { lazyPart } from '../lazypart';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
@@ -156,8 +156,9 @@ export function Player(props: PlayerProps) {
   // While you're saying who a face is, the shown faces stay.
   const [faceAsking, setFaceAsking] = useState(false);
   const [faceReload, setFaceReload] = useState(0);
-  // "Show 'not important' faces too" (to fix one marked by mistake).
-  const [hiddenFaces, setHiddenFaces] = useState(false);
+  // "Show 'not important' faces too" (to fix one marked by mistake). Remembered.
+  const hiddenFaces = prefs.hiddenFaces === true;
+  const setHiddenFaces = (on: boolean) => saveViewerPrefs({ hiddenFaces: on });
   const [resetAsk, setResetAsk] = useState(false);
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null);
   const panMoved = useRef(false);
@@ -771,19 +772,34 @@ export function Player(props: PlayerProps) {
   // pictures without a depth map (or without the pack) simply show as usual.
   const [depthPackOk, setDepthPackOk] = useState(false);
   useEffect(() => {
-    if (!s.depth3d) return;
+    if (!s.depth3d && !prefs.depthMouse) return;
     let alive = true;
     depthPack().then((i) => alive && setDepthPackOk(!!i?.available));
     return () => {
       alive = false;
     };
-  }, [s.depth3d]);
-  const depthRunning = s.depth3d && depthPackOk && slideshow && !mini;
-  const depth3d = depthRunning && item?.kind === 'image' && !zoomed && !failed && rot === 0 && !beatDriving && !up.src && !!imgInfo;
+  }, [s.depth3d, prefs.depthMouse]);
+  // The 3D button: the picture follows the mouse (slideshow or not).
+  const depthByMouse = !!prefs.depthMouse && depthPackOk && !mini && !props.compact;
+  const depthRunning = ((s.depth3d && slideshow) || depthByMouse) && depthPackOk && !mini;
+  const depth3d = depthRunning && item?.kind === 'image' && !zoomed && !failed && rot === 0 && (depthByMouse || !beatDriving) && !up.src && !!imgInfo;
   useEffect(() => {
     // The next pictures' depth is worked out ahead, so the slideshow doesn't wait.
     if (depthRunning) depthAhead((listRef.current?.peek(2) ?? []).filter((x) => x.kind === 'image').map((x) => x.src));
   }, [item?.key, depthRunning]);
+  const toggleDepthMouse = async () => {
+    const on = !prefs.depthMouse;
+    if (on) {
+      const info = await depthPack(true);
+      if (!info?.available) {
+        setFlash(NO_DEPTH_PACK);
+        return;
+      }
+      setDepthPackOk(true);
+    }
+    saveViewerPrefs({ depthMouse: on });
+    setFlash(on ? '3D: move the mouse over the picture · strength in Timing ▾' : '3D off');
+  };
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
   // ---- video and GIF tools ------------------------------------------------------------------
@@ -1197,7 +1213,8 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && imgInfo && (
-              <Depth3D key={`3d:${item.key}:${tick}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'show'}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+                amount={prefs.depthAmount ?? 1} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 showMs={s.imageSeconds * 1000} halted={halted} sharpen={prefs.sharpen && prefs.smoothFit} />
             )}
             {/* 3D photos (end) */}
@@ -1375,6 +1392,13 @@ export function Player(props: PlayerProps) {
                 </div>
               )}
               {up.button}
+              {isPicture && item?.kind === 'image' && !failed && (
+                <button type="button" className={`pbtn lg depth-btn${prefs.depthMouse ? ' on' : ''}`} aria-pressed={!!prefs.depthMouse}
+                  aria-label="3D photo" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in Timing ▾) · click to turn off' : '3D: the picture moves in depth with your mouse'}
+                  onClick={toggleDepthMouse}>
+                  3D
+                </button>
+              )}
               {faceCapable && (
                 <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}
                   aria-label="Face boxes" title={prefs.faceBoxes ? 'Hide face boxes' : 'Show boxes around faces'} onClick={() => setFaceBoxes(!prefs.faceBoxes)}>

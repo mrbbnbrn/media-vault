@@ -219,13 +219,20 @@ function WhoIsIt(props: {
   onShowPerson?: (folderId: number) => void;
 }) {
   const [list, setList] = useState<FolderCard[] | null>(null);
+  // How likely each person is (the face matcher's guess), most likely first.
+  const [likely, setLikely] = useState<Map<number, number>>(new Map());
   const [q, setQ] = useState('');
   const [busy, setBusy] = useState(false);
   const [naming, setNaming] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     personFolders().then(setList).catch(() => setList([]));
-  }, []);
+    let alive = true;
+    api.facesMatches(props.face.id).then((m) => alive && setLikely(new Map(m))).catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [props.face.id]);
   useEffect(() => {
     const close = (e: MouseEvent) => {
       if (!naming && !ref.current?.contains(e.target as Node)) props.onClose();
@@ -235,8 +242,11 @@ function WhoIsIt(props: {
   }, [naming]); // eslint-disable-line react-hooks/exhaustive-deps
   const shown = useMemo(() => {
     const t = q.trim().toLowerCase();
-    return (list ?? []).filter((f) => f.id !== props.current?.id && (!t || f.name.toLowerCase().includes(t)));
-  }, [list, q, props.current?.id]);
+    // Best guesses on top (most likely first), then everyone else by name.
+    return (list ?? [])
+      .filter((f) => f.id !== props.current?.id && (!t || f.name.toLowerCase().includes(t)))
+      .sort((a, b) => (likely.get(b.id) ?? -1) - (likely.get(a.id) ?? -1) || a.name.localeCompare(b.name));
+  }, [list, q, props.current?.id, likely]);
   const cur = props.current ?? null;
   /** Takes the name off this face ("not this person": it won't be suggested for them again). */
   const unname = async () => {
@@ -289,8 +299,10 @@ function WhoIsIt(props: {
           {list === null && <span className="faint">Loading…</span>}
           {list !== null && shown.length === 0 && <span className="faint">{list.length ? 'Nobody with that name.' : 'No person folders yet.'}</span>}
           {shown.map((f) => (
-            <button key={f.id} type="button" className="who-row" disabled={busy} onClick={() => accept(f)}>
+            <button key={f.id} type="button" className={`who-row${likely.has(f.id) ? ' likely' : ''}`} disabled={busy} onClick={() => accept(f)}
+              title={likely.has(f.id) ? `Looks ${likely.get(f.id)}% like ${f.name}` : undefined}>
               This is <b>{f.name}</b>
+              {likely.has(f.id) && <span className="who-likely">{likely.get(f.id)}%</span>}
             </button>
           ))}
         </div>

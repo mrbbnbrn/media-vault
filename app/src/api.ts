@@ -33,11 +33,20 @@ export interface ViewerSettings {
   openCloseAnim?: boolean;
   /** Slideshow: a small ring by the Slideshow button shows the time to the next item. */
   slideRing?: boolean;
+  /** Face boxes in the viewer include the "not important" faces (dimmed). */
+  hiddenFaces?: boolean;
+  /** 3D photos: the picture follows the mouse (the viewer's 3D button). */
+  depthMouse?: boolean;
+  /** 3D photos: how strong the depth is (1 = as designed). */
+  depthAmount?: number;
+  /** 3D photos with the mouse: how strongly it reacts (1 = the picture's edge leans all the way). */
+  depthReact?: number;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
-  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true,
+  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
+  depthMouse: false, depthAmount: 1, depthReact: 1,
 };
 
 export interface AppConfig {
@@ -854,6 +863,8 @@ export const api = {
   facesOf: (media: number, hidden = false) => call<FaceBox[]>('faces_of', { media, hidden }),
   /** "Reset and re-scan": forget every face in these items and look again. */
   facesReset: (media: number[]) => call<number>('faces_reset', { media }),
+  /** "Who is it?": [person folder, how likely 0–99], most likely first. */
+  facesMatches: (face: number) => call<[number, number][]>('faces_matches', { face }),
   facesOfMany: (media: number[]) => call<[number, FaceBox[]][]>('faces_of_many', { media }),
   setResume: (id: number, ms: number | null) => call<void>('set_resume', { id, ms }),
   facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),
