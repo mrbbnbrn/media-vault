@@ -5,6 +5,7 @@ import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components
 import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
 import { DamageReportView, ExportDialog } from '../components/Safety';
 import { UpscalerSection } from '../components/Upscale';
+import { DepthSection } from '../components/Depth3D';
 import { FaceSection } from '../components/FaceEngine';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
@@ -647,6 +648,10 @@ function SmartSection() {
       <div className="divider" />
 
       <UpscalerSection />
+
+      <div className="divider" />
+
+      <DepthSection />
     </>
   );
 }

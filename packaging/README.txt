@@ -47,6 +47,12 @@ What's in the full package
               recognises the people in your pictures, offline, on the graphics
               card when it can (personal use only, see LICENSES.txt there).
               Without it the People page just explains where to get it.
+  tools\depth\
+              3D photos (a separate download, MediaVault-depth-windows.zip):
+              still pictures in slideshows move gently in depth (Timing >
+              3D photos). Depth Anything V2 Small, Apache-2.0, offline. Uses
+              its own ONNX Runtime, or the upscaler's or faces pack's.
+              Without it pictures show as usual.
 
 Requirements
   Windows 10 or 11. The full package brings its own web engine. The light

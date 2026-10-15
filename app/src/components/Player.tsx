@@ -30,6 +30,10 @@ import { PdfView, TextView } from './DocViews';
 import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage';
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
+// 3D photos (begin)
+import { Depth3D } from './Depth3D';
+import { depthAhead, depthPack } from '../depth';
+// 3D photos (end)
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
@@ -703,6 +707,26 @@ export function Player(props: PlayerProps) {
     keys: !!props.keys, onMessage: setFlash, onStart: () => setPaused(true) });
   const upLayer = useRef<HTMLDivElement>(null);
 
+  // ---- 3D photos (begin): gentle depth parallax for still pictures in the slideshow ----------
+  // It works inside the same layer as slow pan and zoom and Line up faces, so those still apply;
+  // pictures without a depth map (or without the pack) simply show as usual.
+  const [depthPackOk, setDepthPackOk] = useState(false);
+  useEffect(() => {
+    if (!s.depth3d) return;
+    let alive = true;
+    depthPack().then((i) => alive && setDepthPackOk(!!i?.available));
+    return () => {
+      alive = false;
+    };
+  }, [s.depth3d]);
+  const depthRunning = s.depth3d && depthPackOk && slideshow && !mini;
+  const depth3d = depthRunning && item?.kind === 'image' && !zoomed && !failed && rot === 0 && !beatDriving && !up.src && !!imgInfo;
+  useEffect(() => {
+    // The next pictures' depth is worked out ahead, so the slideshow doesn't wait.
+    if (depthRunning) depthAhead((listRef.current?.peek(2) ?? []).filter((x) => x.kind === 'image').map((x) => x.src));
+  }, [item?.key, depthRunning]);
+  // ---- 3D photos (end) ------------------------------------------------------------------------
+
   // ---- video and GIF tools ------------------------------------------------------------------
 
   const seekTo = (t: number) => {
@@ -1112,6 +1136,12 @@ export function Player(props: PlayerProps) {
             ) : (
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
+            {/* 3D photos (begin) */}
+            {depth3d && item && imgInfo && (
+              <Depth3D key={`3d:${item.key}:${tick}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
+                showMs={s.imageSeconds * 1000} halted={halted} sharpen={prefs.sharpen && prefs.smoothFit} />
+            )}
+            {/* 3D photos (end) */}
             {up.src && item && (
               <div ref={upLayer} className={`upscaled-layer${up.hidden ? ' hide' : ''}`}>
                 <ImageStage key={up.src} src={up.src} kind="image" name={`${item.name} (upscaled)`} fit={s.fit} zoom={zoom} rot={rot} prefs={prefs} paused

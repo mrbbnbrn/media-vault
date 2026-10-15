@@ -1,0 +1,131 @@
+name: depth pack
+
+# Builds the optional "3D photos" download, MediaVault-depth-windows.zip, and
+# publishes it once under its own tag (like the upscaler and faces packs). Run
+# by hand (Actions → depth pack → Run workflow); it never runs on a push. Runs
+# on Linux: nothing in it needs Windows, and nothing is converted.
+#
+# The zip unzips next to the app and adds MediaVault\tools\depth\:
+#   depth_anything_v2_vits.onnx    Depth Anything V2 Small (Apache-2.0; only the Small model is,
+#                                  Base/Large/Giant are CC-BY-NC-4.0), exported to ONNX (518 × 518)
+#                                  by the Depth-Anything-ONNX project (Apache-2.0), release v2.0.0, checked
+#   onnxruntime.dll, DirectML.dll  official NuGet packages, checked against nuget.org
+#                                  (the same versions as the upscaler and faces packs, so any one can serve all)
+#   LICENSES.txt, README.txt, SHA256SUMS.txt, VERSION.txt
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (default depth-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with upscaler.yml and facepack.yml (the app's ort crate asks for API 24).
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  DEPTH_URL: https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits.onnx
+  DEPTH_SHA256: d2b11a11c1d4a12b47608fa65a17ee9a4c605b55ee1730c8e3b526304f2562be
+  # The licences, from fixed commits of the two projects.
+  DA2_LICENSE_URL: https://raw.githubusercontent.com/DepthAnything/Depth-Anything-V2/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE
+  ONNX_LICENSE_URL: https://raw.githubusercontent.com/fabio-sim/Depth-Anything-ONNX/9abf814d22ac06f50fa96c9c632c30430be8a828/LICENSE
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - name: The model (Depth Anything V2 Small, ONNX export, checked)
+        run: |
+          set -euo pipefail
+          mkdir -p w pack
+          curl -fsSL --retry 4 -o pack/depth_anything_v2_vits.onnx "$DEPTH_URL"
+          echo "$DEPTH_SHA256  pack/depth_anything_v2_vits.onnx" | sha256sum -c
+          curl -fsSL --retry 4 -o w/depth-anything-v2-LICENSE.txt "$DA2_LICENSE_URL"
+          curl -fsSL --retry 4 -o w/depth-anything-onnx-LICENSE.txt "$ONNX_LICENSE_URL"
+          grep -q "Apache License" w/depth-anything-v2-LICENSE.txt
+          grep -q "Apache License" w/depth-anything-onnx-LICENSE.txt
+          ls -la pack
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+          ls -la ../pack
+
+      - name: Licences, readme, checksums
+        run: |
+          set -euo pipefail
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — 3D PHOTOS (DEPTH) PACK: LICENCES"
+            echo "=============================================="
+            echo
+            echo "depth_anything_v2_vits.onnx  Depth Anything V2 Small (ViT-S), by the Depth Anything team"
+            echo "    (https://github.com/DepthAnything/Depth-Anything-V2). The Depth-Anything-V2-Small model is under the"
+            echo "    Apache-2.0 licence (the Base, Large and Giant models are not, and are not included)."
+            echo "    Exported to ONNX by the Depth-Anything-ONNX project (https://github.com/fabio-sim/Depth-Anything-ONNX,"
+            echo "    Apache-2.0), unchanged from $DEPTH_URL"
+            echo "    (SHA-256 $DEPTH_SHA256)."
+            echo "onnxruntime.dll          ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence),"
+            echo "    from the NuGet package Microsoft.ML.OnnxRuntime.DirectML $ORT_DML_VERSION."
+            echo "DirectML.dll             DirectML $DIRECTML_VERSION (Microsoft), from the NuGet package"
+            echo "    Microsoft.AI.DirectML $DIRECTML_VERSION; redistributed under its licence below."
+            echo
+            for f in w/depth-anything-v2-LICENSE.txt w/depth-anything-onnx-LICENSE.txt "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ($(dirname "$f")) ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          printf '%s\r\n' \
+            "Media Vault 3D photos (depth) pack" \
+            "" \
+            "Unzip into the same place as the app: this adds MediaVault\\tools\\depth." \
+            "Then tick Timing > 3D photos in the viewer: still pictures in slideshows move gently in depth." \
+            "" \
+            "Depth Anything V2 Small works out how far away each part of a picture is." \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="depth-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" \
+            "depth anything v2 small (Depth-Anything-ONNX v2.0.0, 518x518)" > pack/VERSION.txt
+          (cd pack && sha256sum *.onnx *.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p z/MediaVault/tools/depth
+          cp pack/* z/MediaVault/tools/depth/
+          (cd z && zip -qr -6 ../MediaVault-depth-windows.zip MediaVault)
+          ls -la MediaVault-depth-windows.zip
+          notes="3D photos for slideshows (Depth Anything V2 Small, Apache-2.0; ONNX Runtime $ORT_DML_VERSION with DirectML). Unzip into the same place as the app; it adds MediaVault\\tools\\depth. Then tick Timing ▾ → 3D photos in the viewer."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" MediaVault-depth-windows.zip --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" MediaVault-depth-windows.zip --prerelease --title "3D photos $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi

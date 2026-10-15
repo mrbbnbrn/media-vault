@@ -29,6 +29,8 @@ export interface PlaybackSettings {
   beatMinSeconds: number;
   /** Pictures slowly pan and zoom while they show. */
   kenBurns: boolean;
+  /** 3D photos: still pictures move with gentle depth parallax (needs the depth pack). */
+  depth3d: boolean;
 }
 
 export const DEFAULT_PLAYBACK: PlaybackSettings = {
@@ -49,6 +51,7 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   beatEvery: 1,
   beatMinSeconds: 0.3,
   kenBurns: false,
+  depth3d: false,
 };
 
 export const SPEEDS = [0.5, 1, 2];
@@ -71,6 +74,7 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     beatMinSeconds: s.beatMinSeconds === 2 ? 0.3 : num(s.beatMinSeconds, 0.3, 0.1, 60),
     fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
     kenBurns: s.kenBurns === true,
+    depth3d: s.depth3d === true,
   };
 }
 
