@@ -1,0 +1,81 @@
+/* The discovery river (components/river). Only transforms and opacity change per frame. */
+.river { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 45; overflow: hidden; user-select: none; background: #04080a; color: #e9fbf8; cursor: default; contain: strict; }
+.river.rv-pointing { cursor: pointer; }
+.river.rv-idle { cursor: none; }
+
+.rv-sky { position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(90% 55% at 50% 44%, rgba(34, 104, 98, 0.30), rgba(12, 40, 40, 0.10) 55%, transparent 75%),
+    radial-gradient(70% 38% at 50% 104%, rgba(46, 196, 182, 0.10), transparent 70%),
+    radial-gradient(40% 30% at 18% 20%, rgba(90, 120, 170, 0.08), transparent 70%),
+    radial-gradient(35% 28% at 84% 30%, rgba(120, 90, 160, 0.07), transparent 70%),
+    radial-gradient(45% 30% at 22% 86%, rgba(200, 140, 70, 0.05), transparent 70%),
+    linear-gradient(180deg, #020507 0%, #061115 46%, #050c0e 70%, #030708 100%); }
+/* A broad, faint band of light drifting with the current. */
+.rv-sheen { position: absolute; top: -10%; bottom: -10%; left: -60%; width: 220%; pointer-events: none; opacity: 0.9;
+  background: linear-gradient(100deg, transparent 38%, rgba(157, 226, 218, 0.028) 47%, rgba(157, 226, 218, 0.045) 50%, rgba(157, 226, 218, 0.028) 53%, transparent 62%);
+  animation: rv-sheen 46s linear infinite; will-change: transform; }
+@keyframes rv-sheen { from { transform: translate3d(-22%, 0, 0); } to { transform: translate3d(22%, 0, 0); } }
+
+/* The stage makes no stacking context: the motes sit between the far and the near layers. */
+.rv-stage { position: absolute; inset: 0; pointer-events: none; }
+.rv-motes { position: absolute; inset: 0; width: 100%; height: 100%; z-index: 25; pointer-events: none; }
+
+.rv-item { position: absolute; left: 0; top: 0; pointer-events: none; will-change: transform, opacity; transform-origin: 50% 50%; contain: layout style; }
+.rv-card { position: absolute; inset: 0; border-radius: 10px; overflow: hidden; background: #0b1517;
+  box-shadow: 0 22px 44px -18px rgba(0, 0, 0, 0.85), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  -webkit-box-reflect: below 7px linear-gradient(transparent 64%, rgba(255, 255, 255, 0.16)); }
+.rv-img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.rv-clip { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; transition: opacity 0.6s ease; }
+.rv-clip.on { opacity: 1; }
+
+/* Depth (blur, dimming, corner size) comes from the layer (engine.ts); far cards have fainter reflections. */
+.rv-l0 .rv-card, .rv-l1 .rv-card { -webkit-box-reflect: below 4px linear-gradient(transparent 70%, rgba(255, 255, 255, 0.08)); }
+.rv-l2 .rv-card { -webkit-box-reflect: below 5px linear-gradient(transparent 68%, rgba(255, 255, 255, 0.11)); }
+.rv-l4 .rv-card { box-shadow: 0 34px 60px -22px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.07); }
+.rv-item .rv-card { transition: filter 0.9s ease; }
+.rv-lifted .rv-card { filter: none !important; transition-duration: 0.45s; }
+
+.rv-glow { position: absolute; inset: -1px; border-radius: 12px; opacity: 0; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(157, 226, 218, 0.55), 0 0 26px 2px rgba(46, 196, 182, 0.34), 0 0 90px 14px rgba(46, 196, 182, 0.14); }
+.rv-name { position: absolute; left: 50%; top: 100%; transform: translate(-50%, 14px); max-width: max(160%, 220px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0;
+  padding: 5px 13px; border-radius: 999px; background: rgba(5, 14, 16, 0.72); border: 1px solid rgba(157, 226, 218, 0.22); backdrop-filter: blur(8px);
+  font-size: 13px; font-weight: 500; letter-spacing: 0.01em; color: #e9fbf8; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+/* Videos: a small play mark. */
+.rv-video .rv-card::after { content: ''; position: absolute; left: 9px; bottom: 9px; width: 0; height: 0; border-style: solid; border-width: 5px 0 5px 8px;
+  border-color: transparent transparent transparent rgba(255, 255, 255, 0.85); filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); }
+.rv-l0.rv-video .rv-card::after, .rv-l1.rv-video .rv-card::after, .rv-l2.rv-video .rv-card::after { display: none; }
+
+.rv-mist { position: absolute; inset: 0; z-index: 50; pointer-events: none;
+  background: linear-gradient(180deg, rgba(2, 5, 7, 0.92) 0%, rgba(2, 5, 7, 0.35) 9%, transparent 20%, transparent 74%, rgba(3, 8, 9, 0.5) 88%, rgba(3, 7, 8, 0.9) 100%); }
+.rv-vignette { position: absolute; inset: 0; z-index: 51; pointer-events: none; background: radial-gradient(120% 95% at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.62) 100%); }
+.rv-grain { position: absolute; inset: -64px; z-index: 52; pointer-events: none; opacity: 0.035; background-size: 128px 128px; animation: rv-grain 0.9s steps(6) infinite; will-change: transform; }
+@keyframes rv-grain {
+  0% { transform: translate3d(0, 0, 0); } 17% { transform: translate3d(-37px, 21px, 0); } 33% { transform: translate3d(23px, -45px, 0); }
+  50% { transform: translate3d(-12px, 53px, 0); } 67% { transform: translate3d(48px, 9px, 0); } 83% { transform: translate3d(-51px, -28px, 0); } 100% { transform: translate3d(0, 0, 0); }
+}
+
+.rv-top { position: absolute; left: 18px; right: 18px; top: 16px; z-index: 60; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; pointer-events: none; transition: opacity 0.8s ease; }
+.river.rv-idle .rv-top { opacity: 0; }
+.rv-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 2px 4px; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8); }
+.rv-title b { font-size: 19px; font-weight: 600; letter-spacing: 0.01em; color: #eafaf7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-kicker { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--accent-text, #9de2da); opacity: 0.8; }
+.rv-leave { pointer-events: auto; background: rgba(5, 14, 16, 0.6); border-color: rgba(157, 226, 218, 0.18); backdrop-filter: blur(6px); }
+.rv-note { position: absolute; left: 50%; top: 22px; z-index: 61; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(5, 14, 16, 0.7); border: 1px solid rgba(157, 226, 218, 0.22);
+  backdrop-filter: blur(6px); font-size: 12.5px; color: #e9fbf8; pointer-events: none; animation: rv-note 1.4s ease forwards; }
+@keyframes rv-note { 0% { opacity: 0; transform: translate(-50%, -4px); } 12% { opacity: 1; transform: translate(-50%, 0); } 75% { opacity: 1; } 100% { opacity: 0; } }
+.rv-hint { position: absolute; left: 50%; bottom: 22px; z-index: 60; transform: translateX(-50%); max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  padding: 7px 16px; border-radius: 999px; background: rgba(5, 14, 16, 0.55); backdrop-filter: blur(6px); font-size: 12.5px; color: rgba(233, 251, 248, 0.82);
+  pointer-events: none; opacity: 0; transition: opacity 1.6s ease; }
+.rv-hint.on { opacity: 1; transition-duration: 0.5s; }
+
+/* The viewer over the river (the river waits underneath). */
+.river-viewer { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 46; }
+body:has(.river) .flip-ghost { display: none !important; }
+
+@media (prefers-reduced-motion: reduce) {
+  .rv-sheen, .rv-grain { animation: none; }
+  .rv-item .rv-card, .rv-clip { transition: none; }
+  .rv-note { animation-duration: 2s; }
+}
+@media (max-width: 640px) { .rv-hint { display: none; } }

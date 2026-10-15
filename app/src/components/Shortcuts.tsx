@@ -92,7 +92,18 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['X', 'Clear the loop'],
       ['K', 'Add a bookmark here'],
       ['S', 'Save this frame as a picture'],
+      ['Right-click › Find the best frames…', 'Looks through the video for its sharpest, best-lit moments; tick the ones to save as pictures'],
       ['Hover the position bar', 'See the time (and a small frame) there'],
+    ],
+  },
+  {
+    group: 'Discovery river',
+    keys: [
+      ['Point at a picture', 'It slows, comes closer and shows its name (videos play, muted)'],
+      ['Click', 'Open it in the viewer (closing the viewer carries on where the river was)'],
+      ['Mouse wheel  /  ← →', 'Slower or faster current'],
+      ['Space', 'Pause / carry on'],
+      ['Esc', 'Leave the river'],
     ],
   },
   {
