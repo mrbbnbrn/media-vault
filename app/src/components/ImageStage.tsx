@@ -173,6 +173,8 @@ export function ImageStage(props: Props) {
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     c.style.filter = p.prefs.sharpen && smooth ? 'url(#mv-sharpen)' : '';
+    // Shown only once it holds a picture: a new, still-empty canvas can flash white for a frame on some graphics cards.
+    if (c.style.visibility) c.style.visibility = '';
     // A high-quality resample for this size is made once the zoom settles.
     // (Only from a source with at least that many pixels: blowing up the screen-sized copy gains nothing.)
     const base = stillSrc();
@@ -419,7 +421,7 @@ export function ImageStage(props: Props) {
   }
   return (
     <div ref={boxRef} className="image-stage">
-      <canvas ref={canvasRef} className={`media-canvas ${props.className ?? ''}`} role="img" aria-label={props.name} />
+      <canvas ref={canvasRef} className={`media-canvas ${props.className ?? ''}`} role="img" aria-label={props.name} style={{ visibility: 'hidden' }} />
     </div>
   );
 }

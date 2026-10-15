@@ -31,6 +31,8 @@
 
 * { box-sizing: border-box; }
 html, body, #root { margin: 0; height: 100%; }
+/* The page's own background is dark too, so nothing behind the app can ever show white. */
+html { background: #0d0e10; color-scheme: dark; }
 /* Only the app's own panels scroll, never the page itself. */
 html, body { overflow: hidden; }
 body {
