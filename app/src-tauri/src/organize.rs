@@ -48,8 +48,8 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         let orig = original_of(&tx, id)?;
         tx.execute(
             &format!(
-                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, folder_id, original_name, copy_of, clip_state, faces_state, faces_model, {COPY_COLS}) \
-                 SELECT object_id, thumb_object_id, preview_object_id, ?2, original_name, ?3, clip_state, faces_state, faces_model, {COPY_COLS} FROM media WHERE id = ?1"
+                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, tiny_object_id, folder_id, original_name, copy_of, clip_state, faces_state, faces_model, {COPY_COLS}) \
+                 SELECT object_id, thumb_object_id, preview_object_id, tiny_object_id, ?2, original_name, ?3, clip_state, faces_state, faces_model, {COPY_COLS} FROM media WHERE id = ?1"
             ),
             params![id, folder, orig],
         )
@@ -157,10 +157,10 @@ fn duplicate_object(s: &Session, kind: ObjectKind, hex: &str) -> Result<String, 
 }
 
 fn copy_one(s: &Session, id: i64, folder: Option<i64>) -> Result<i64, String> {
-    let (obj, thumb, preview): (String, Option<String>, Option<String>) = s
+    let (obj, thumb, preview, tiny): (String, Option<String>, Option<String>, Option<String>) = s
         .db()
-        .query_row("SELECT object_id, thumb_object_id, preview_object_id FROM media WHERE id = ?", [id], |r| {
-            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        .query_row("SELECT object_id, thumb_object_id, preview_object_id, tiny_object_id FROM media WHERE id = ?", [id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
         })
         .map_err(e)?;
     let new_obj = duplicate_object(s, ObjectKind::Media, &obj)?;
@@ -173,13 +173,14 @@ fn copy_one(s: &Session, id: i64, folder: Option<i64>) -> Result<i64, String> {
     };
     let new_thumb = dup(thumb);
     let new_preview = dup(preview);
+    let new_tiny = dup(tiny);
     let db = s.db();
     db.execute(
         &format!(
-            "INSERT INTO media(object_id, thumb_object_id, preview_object_id, folder_id, original_name, {COPY_COLS}) \
-             SELECT ?2, ?3, ?4, ?5, original_name, {COPY_COLS} FROM media WHERE id = ?1"
+            "INSERT INTO media(object_id, thumb_object_id, preview_object_id, tiny_object_id, folder_id, original_name, {COPY_COLS}) \
+             SELECT ?2, ?3, ?4, ?6, ?5, original_name, {COPY_COLS} FROM media WHERE id = ?1"
         ),
-        params![id, new_obj, new_thumb, new_preview, folder],
+        params![id, new_obj, new_thumb, new_preview, folder, new_tiny],
     )
     .map_err(e)?;
     let new_id = db.last_insert_rowid();

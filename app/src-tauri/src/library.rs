@@ -45,6 +45,8 @@ pub struct Item {
     pub deleted_at: Option<i64>,
     /// Videos: a small preview clip exists (for smooth grids).
     pub preview: bool,
+    /// Videos: a tiny preview clip (a few seconds of small silent video) exists.
+    pub tiny: bool,
     /// A free copy: the original's id (shares its stored file).
     pub copy_of: Option<i64>,
     /// Other items (originals or free copies) share this item's stored file.
@@ -62,7 +64,7 @@ const ITEM_COLS: &str = "m.id, m.kind, m.original_name, m.ext, m.size, m.width, 
      COALESCE(NULLIF(m.taken_at, 0), NULLIF(m.file_mtime, 0), m.imported_at), m.views, m.deleted_at, \
      IFNULL(m.preview_object_id, '') <> '', m.copy_of, \
      EXISTS(SELECT 1 FROM media x WHERE x.object_id = m.object_id AND x.id <> m.id AND x.deleted_at IS NULL), \
-     m.note, m.resume_ms, m.sketch";
+     m.note, m.resume_ms, m.sketch, IFNULL(m.tiny_object_id, '') <> ''";
 
 fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
     let thumb: Option<String> = r.get(10)?;
@@ -94,6 +96,7 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
         note: r.get(19)?,
         resume_ms: r.get(20)?,
         sketch: r.get::<_, Option<String>>(21)?.filter(|s| !s.is_empty()),
+        tiny: r.get(22)?,
     })
 }
 
@@ -832,7 +835,7 @@ pub struct Orphans {
 pub fn unused_only(conn: &Connection, o: Orphans) -> R<Orphans> {
     let used = |id: &str| -> R<bool> {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM media WHERE object_id = ?1 OR thumb_object_id = ?1 OR preview_object_id = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM media WHERE object_id = ?1 OR thumb_object_id = ?1 OR preview_object_id = ?1 OR tiny_object_id = ?1)",
             [id],
             |r| r.get::<_, bool>(0),
         )
@@ -856,19 +859,24 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
     let mut o = Orphans::default();
     let mut st = conn
         .prepare(&format!(
-            "SELECT object_id, thumb_object_id, preview_object_id FROM media WHERE {where_sql}"
+            "SELECT object_id, thumb_object_id, preview_object_id, tiny_object_id FROM media WHERE {where_sql}"
         ))
         .map_err(e)?;
     for row in st
         .query_map(params_from_iter(args.iter().cloned()), |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+            ))
         })
         .map_err(e)?
     {
-        let (m, t, p) = row.map_err(e)?;
+        let (m, t, p, tiny) = row.map_err(e)?;
         o.media.push(m);
-        // Preview clips live with the thumbnails.
-        for x in [t, p].into_iter().flatten().filter(|x| !x.is_empty()) {
+        // Preview strips and tiny clips live with the thumbnails.
+        for x in [t, p, tiny].into_iter().flatten().filter(|x| !x.is_empty()) {
             o.thumbs.push(x);
         }
     }

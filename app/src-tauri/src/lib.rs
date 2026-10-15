@@ -898,16 +898,32 @@ async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
     .await
 }
 
-// ---- preview clips (a strip of small frames per video, made by the window) ----------------
+// ---- preview clips (made by the window, or by the video tool) -----------------------------
+// Two kinds per video: the frame strip (one JPEG holding 48 small frames, for
+// flip-books, seek-bar previews and smart search) and the tiny clip (a silent
+// ~240p video of a few seconds that grid tiles play straight away). Both are
+// stored encrypted with the thumbnails. NULL = not made yet, '' = couldn't be.
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewTask {
     id: i64,
     duration_ms: Option<i64>,
+    /// The frame strip is still missing.
+    need_strip: bool,
+    /// The tiny clip is still missing.
+    need_tiny: bool,
 }
 
-/// Videos without a preview clip yet; `prefer` (those on screen) first.
+const PREVIEW_TASK_COLS: &str = "id, duration_ms, preview_object_id IS NULL, tiny_object_id IS NULL";
+const PREVIEW_TASK_WHERE: &str = "kind = 'video' AND (preview_object_id IS NULL OR tiny_object_id IS NULL) \
+     AND deleted_at IS NULL AND thumb_object_id IS NOT NULL AND thumb_object_id <> ''";
+
+fn preview_task(r: &rusqlite::Row) -> rusqlite::Result<PreviewTask> {
+    Ok(PreviewTask { id: r.get(0)?, duration_ms: r.get(1)?, need_strip: r.get(2)?, need_tiny: r.get(3)? })
+}
+
+/// Videos still missing a frame strip or a tiny clip; `prefer` (those on screen) first.
 #[tauri::command]
 async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>) -> Result<Vec<PreviewTask>, String> {
     read_db(state.inner(), move |c| {
@@ -915,10 +931,9 @@ async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>)
         let mut out: Vec<PreviewTask> = Vec::new();
         for id in prefer.iter().take(64) {
             if let Ok(t) = c.query_row(
-                "SELECT id, duration_ms FROM media WHERE id = ? AND kind = 'video' AND preview_object_id IS NULL \
-                 AND deleted_at IS NULL AND IFNULL(thumb_object_id, 'x') <> ''",
+                &format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE id = ? AND {PREVIEW_TASK_WHERE}"),
                 [id],
-                |r| Ok(PreviewTask { id: r.get(0)?, duration_ms: r.get(1)? }),
+                preview_task,
             ) {
                 out.push(t);
             }
@@ -927,16 +942,9 @@ async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>)
             }
         }
         let mut st = c
-            .prepare(
-                "SELECT id, duration_ms FROM media WHERE kind = 'video' AND preview_object_id IS NULL AND deleted_at IS NULL \
-                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY id DESC LIMIT ?",
-            )
+            .prepare(&format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE {PREVIEW_TASK_WHERE} ORDER BY id DESC LIMIT ?"))
             .map_err(e)?;
-        for t in st
-            .query_map([limit], |r| Ok(PreviewTask { id: r.get(0)?, duration_ms: r.get(1)? }))
-            .map_err(e)?
-            .flatten()
-        {
+        for t in st.query_map([limit], preview_task).map_err(e)?.flatten() {
             if out.len() as i64 >= limit {
                 break;
             }
@@ -949,32 +957,36 @@ async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>)
     .await
 }
 
+/// Store a preview object for an item (and its free copies), replacing the old one.
+fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Result<(), String> {
+    let (pid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
+    let old: Option<String> = {
+        let db = s.db();
+        let old = db.query_row(&format!("SELECT {column} FROM media WHERE id = ?"), [id], |r| r.get(0)).ok().flatten();
+        db.execute(
+            &format!("UPDATE media SET {column} = ?1 WHERE object_id = (SELECT object_id FROM media WHERE id = ?2)"),
+            rusqlite::params![pid.to_hex(), id],
+        )
+        .map_err(|e| e.to_string())?;
+        if column == "preview_object_id" {
+            // Smart search looks at the clip's moments too: analyse again.
+            let _ = clip::reset(&db, id);
+        }
+        old
+    };
+    if let Some(o) = old.filter(|o| !o.is_empty())
+        && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
+    {
+        let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
+    }
+    s.mark_dirty();
+    Ok(())
+}
+
 #[tauri::command]
 async fn save_preview(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Result<(), String> {
     let s = sess(state.inner())?;
-    blocking(move || {
-        let (pid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, &data[..]).map_err(|e| e.to_string())?;
-        let old: Option<String> = {
-            let db = s.db();
-            let old = db.query_row("SELECT preview_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
-            db.execute(
-                "UPDATE media SET preview_object_id = ?1 WHERE object_id = (SELECT object_id FROM media WHERE id = ?2)",
-                rusqlite::params![pid.to_hex(), id],
-            )
-                .map_err(|e| e.to_string())?;
-            // Smart search looks at the clip's moments too: analyse again.
-            let _ = clip::reset(&db, id);
-            old
-        };
-        if let Some(o) = old.filter(|o| !o.is_empty())
-            && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
-        {
-            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
-        }
-        s.mark_dirty();
-        Ok(())
-    })
-    .await
+    blocking(move || store_preview_object(&s, id, "preview_object_id", &data)).await
 }
 
 #[tauri::command]
@@ -983,6 +995,43 @@ async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String>
         c.execute("UPDATE media SET preview_object_id = '' WHERE id = ? AND preview_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
+    })
+    .await
+}
+
+/// A tiny clip made by the window (WebM or MP4 bytes).
+#[tauri::command]
+async fn save_tiny(state: State<'_, Shared>, id: i64, data: Vec<u8>) -> Result<(), String> {
+    if protocol::tiny_mime(&data).is_none() {
+        return Err("That isn't a WebM or MP4 video.".into());
+    }
+    let s = sess(state.inner())?;
+    blocking(move || store_preview_object(&s, id, "tiny_object_id", &data)).await
+}
+
+#[tauri::command]
+async fn tiny_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+    edit_db_bg(state.inner(), move |c| {
+        c.execute("UPDATE media SET tiny_object_id = '' WHERE id = ? AND tiny_object_id IS NULL", [id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+}
+
+/// Make the tiny clip with the video tool (when it is installed): pieces of
+/// `piece` seconds starting at `starts`. Ok(false) = no video tool here (the
+/// window makes it instead). Nothing touches the disk (videotool.rs).
+#[tauri::command]
+async fn make_tiny_with_tool(state: State<'_, Shared>, id: i64, starts: Vec<f64>, piece: f64) -> Result<bool, String> {
+    let Some(tool) = videotool::tool_path() else {
+        return Ok(false);
+    };
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let bytes = videotool::make_tiny(&s, &tool, id, &starts, piece)?;
+        store_preview_object(&s, id, "tiny_object_id", &bytes)?;
+        Ok(true)
     })
     .await
 }
@@ -1884,10 +1933,7 @@ async fn background_left(state: State<'_, Shared>) -> Result<BackgroundLeft, Str
         Ok(BackgroundLeft {
             // The window's share (the native analysis pass counts its own).
             thumbs: one(&format!("SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL{}", analyse::window_thumbs_sql()))?,
-            previews: one(
-                "SELECT COUNT(*) FROM media WHERE kind = 'video' AND preview_object_id IS NULL AND deleted_at IS NULL \
-                 AND thumb_object_id IS NOT NULL AND thumb_object_id <> ''",
-            )?,
+            previews: one(&format!("SELECT COUNT(*) FROM media WHERE {PREVIEW_TASK_WHERE}"))?,
         })
     })
     .await
@@ -2075,6 +2121,9 @@ pub fn run() {
             previews_needed,
             save_preview,
             preview_failed,
+            save_tiny,
+            tiny_failed,
+            make_tiny_with_tool,
             cache_info,
             ui_get,
             save_now,

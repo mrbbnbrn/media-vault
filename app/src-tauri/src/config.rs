@@ -103,6 +103,9 @@ pub struct AppConfig {
     pub preview: String,
     /// While previewing, the hovered video/GIF shows uncropped.
     pub whole_on_hover: bool,
+    /// Video previews: "auto" (tiny clips first, the real video when the PC
+    /// keeps up) or "tiny" (tiny clips only; hover still plays the real video).
+    pub preview_quality: String,
     /// Grid shows every item at its true shape (no cropping).
     pub grid_shape: bool,
     pub viewer: ViewerSettings,
@@ -180,6 +183,7 @@ impl Default for AppConfig {
             fullscreen_controls_on_mouse: true,
             preview: "hover".into(),
             whole_on_hover: false,
+            preview_quality: "auto".into(),
             grid_shape: false,
             viewer: ViewerSettings::default(),
             builtin_engine: true,
@@ -205,6 +209,9 @@ impl AppConfig {
         self.accent = self.accent.to_ascii_lowercase();
         if !["all", "hover", "off"].contains(&self.preview.as_str()) {
             self.preview = "hover".into();
+        }
+        if !["auto", "tiny"].contains(&self.preview_quality.as_str()) {
+            self.preview_quality = "auto".into();
         }
         let l = &mut self.look;
         l.ui_scale = if l.ui_scale.is_finite() { (l.ui_scale * 20.0).round().clamp(10.0, 40.0) / 20.0 } else { 1.0 };

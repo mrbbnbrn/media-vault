@@ -400,7 +400,15 @@ body.clean-fs .toast { display: none; }
 .damage-list { display: flex; flex-direction: column; gap: 6px; max-height: 260px; overflow: auto; padding: 10px 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--line); font-size: 13px; }
 .person-mark { display: inline-flex; color: var(--accent); opacity: 0.8; margin-left: 4px; flex-shrink: 0; }
 /* Preview clips: a strip of small frames shown one at a time. */
-.clip-frame { overflow: hidden; display: block; }
+.clip-frame { overflow: hidden; display: block; position: absolute; inset: 0; }
+/* Video tiles: flip-book, tiny clip and real video stacked over the thumbnail; each fades in once its first picture is drawn. */
+.vstack, .vlayer, .vslot { position: absolute; inset: 0; display: block; pointer-events: none; }
+/* Its own stack, so badges, ticks and hearts stay on top. */
+.vstack { z-index: 0; }
+.vlayer { opacity: 0; transition: opacity 0.24s ease; overflow: hidden; }
+.vlayer.ready { opacity: 1; }
+.vslot video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.whole-pop .vstack img, .whole-pop > img { position: absolute; inset: 0; }
 .clip { position: absolute; display: block; background-size: 800% 600%; background-repeat: no-repeat; }
 body.dragging, body.dragging * { cursor: grabbing !important; }
 

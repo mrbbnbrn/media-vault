@@ -92,20 +92,30 @@ pub fn cache_info(s: &Session) -> Result<CacheInfo, String> {
         ids.iter().filter_map(|(_, o)| v.object_location(ObjectKind::Thumbnail, o)).map(|(_, _, len)| len).sum()
     };
     let t = cache_ids(s, "thumb_object_id")?;
+    // "Preview clips" are both kinds: frame strips and tiny clips.
     let p = cache_ids(s, "preview_object_id")?;
-    Ok(CacheInfo { thumbs: t.len(), thumb_bytes: size(&t), previews: p.len(), preview_bytes: size(&p) })
+    let tiny = cache_ids(s, "tiny_object_id")?;
+    Ok(CacheInfo { thumbs: t.len(), thumb_bytes: size(&t), previews: p.len().max(tiny.len()), preview_bytes: size(&p) + size(&tiny) })
 }
 
 /// Delete every thumbnail (they are made again as needed) or every preview
 /// clip, then give the space back.
 pub fn delete_cache(s: &Session, thumbs: bool) -> Result<String, String> {
-    let column = if thumbs { "thumb_object_id" } else { "preview_object_id" };
-    let ids = cache_ids(s, column)?;
+    let columns: &[&str] = if thumbs { &["thumb_object_id"] } else { &["preview_object_id", "tiny_object_id"] };
+    let mut ids = Vec::new();
+    for column in columns {
+        ids.extend(cache_ids(s, column)?);
+    }
     {
         let db = s.db();
-        db.execute(&format!("UPDATE media SET {column} = NULL WHERE {column} IS NOT NULL"), [])
-            .map_err(|e| e.to_string())?;
+        for column in columns {
+            db.execute(&format!("UPDATE media SET {column} = NULL WHERE {column} IS NOT NULL"), [])
+                .map_err(|e| e.to_string())?;
+        }
     }
+    // Free copies share them: each stored file once.
+    ids.sort_by_key(|(_, o)| o.to_hex());
+    ids.dedup_by_key(|(_, o)| o.to_hex());
     s.mark_dirty();
     s.save().map_err(|e| e.to_string())?;
     let v = s.vault();
@@ -223,7 +233,8 @@ fn check_all_present(s: &Session) -> Result<(), String> {
             .prepare(
                 "SELECT 1, object_id FROM media UNION ALL \
                  SELECT 2, thumb_object_id FROM media WHERE thumb_object_id IS NOT NULL AND thumb_object_id <> '' UNION ALL \
-                 SELECT 2, preview_object_id FROM media WHERE preview_object_id IS NOT NULL AND preview_object_id <> ''",
+                 SELECT 2, preview_object_id FROM media WHERE preview_object_id IS NOT NULL AND preview_object_id <> '' UNION ALL \
+                 SELECT 2, tiny_object_id FROM media WHERE tiny_object_id IS NOT NULL AND tiny_object_id <> ''",
             )
             .map_err(|e| e.to_string())?;
         st.query_map([], |r| {

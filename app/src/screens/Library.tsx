@@ -2,7 +2,7 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind,
@@ -46,6 +46,8 @@ import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
 import { MediaGrid } from '../components/MediaGrid';
+import { CoverVideo } from '../components/VideoPreview';
+import { setPreviewCover } from '../previewgate';
 import { RoundCover } from '../components/RoundCover';
 import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
 import { StatsView } from '../components/StatsView';
@@ -1002,11 +1004,17 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     return () => setLibraryReveal(null);
   }, []);
   // While frozen: grid videos are paused where they are, folder cards stop cycling.
+  // Grid and card previews rest through previewgate.ts; any other video here is paused too.
+  const coverKey = useId();
+  useEffect(() => {
+    setPreviewCover(coverKey, frozen);
+    return () => setPreviewCover(coverKey, false);
+  }, [frozen, coverKey]);
   useEffect(() => {
     const el = root.current;
     if (!frozen || !el) return;
     setHoverCard(null);
-    const paused = [...el.querySelectorAll('video')].filter((v) => !v.paused);
+    const paused = [...el.querySelectorAll('video')].filter((v) => !v.paused && !v.dataset.gated);
     paused.forEach((v) => v.pause());
     return () => paused.forEach((v) => { if (v.isConnected) v.play().catch(() => {}); });
   }, [frozen]);
@@ -1706,7 +1714,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const animated = f.coverKind === 'video' || f.coverKind === 'gif';
     if (f.cover && playing && animated) {
       const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
-      if (f.coverKind === 'video') return <>{still}<video src={mediaUrl(f.cover)} muted loop autoPlay playsInline preload="auto" /></>;
+      if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
       return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
     }
     const list = samples[f.id];
@@ -1752,6 +1760,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         ...PREVIEWS.map((p) => ({ label: p.label, hint: p.hint, checked: p.id === preview, onSelect: () => saveCfg({ preview: p.id }) })),
         { label: 'Show the whole video on hover', hint: 'uncropped', checked: !!cfg.wholeOnHover, sepBefore: true,
           disabled: preview === 'off', onSelect: () => saveCfg({ wholeOnHover: !cfg.wholeOnHover }) },
+        { label: 'Video quality: automatic', hint: 'real videos when your PC keeps up', checked: (cfg.previewQuality ?? 'auto') === 'auto', sepBefore: true,
+          disabled: preview === 'off', onSelect: () => saveCfg({ previewQuality: 'auto' }) },
+        { label: 'Video quality: tiny clips only', hint: 'lightest; hover still plays the video', checked: cfg.previewQuality === 'tiny',
+          disabled: preview === 'off', onSelect: () => saveCfg({ previewQuality: 'tiny' }) },
       ]} /> },
     slideshow: { label: 'Slideshow', node: <button type="button" className="btn btn-sm" onClick={() => playItems(true)} disabled={!shown.length || inTrash}
       title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button> },
@@ -2297,6 +2309,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 onContext={itemContext}
                 preview={inTrash ? 'off' : scrollMode ? 'all' : preview}
                 wholeOnHover={!!cfg.wholeOnHover && !scrollMode}
+                previewQuality={cfg.previewQuality ?? 'auto'}
                 layout={shape || scrollMode ? 'shape' : 'grid'}
                 groups={groups}
                 hoverInfo={look.hoverInfo && !scrollMode}

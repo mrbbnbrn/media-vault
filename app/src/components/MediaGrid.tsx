@@ -6,11 +6,13 @@
 // optionally in groups with a header (the timeline's months).
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { mediaUrl, previewUrl, thumbUrl, type FaceBox, type Item } from '../api';
+import { mediaUrl, thumbUrl, type FaceBox, type Item } from '../api';
 import { formatBytes } from '../theme';
-import {
-  clipFpsChanged, onPreviewMade, playClip, preferPreviews, setWantedVideos, stopClip, unwatchVideo, usePreviewMode, watchVideo,
-} from '../previews';
+// ---- video previews (VideoPreview.tsx, previewplan.ts) ----
+import { preferPreviews, useMadePreviews } from '../previews';
+import { chooseLayers, type Layer, type TileWant } from '../previewplan';
+import { reportPlan, useRealBudget, VideoPreview } from './VideoPreview';
+// ---- end video previews ----
 import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayout';
 import { startMoveDrag } from '../dragmove';
 import { formatTime, onThumb } from '../media';
@@ -45,6 +47,8 @@ export function MediaGrid(props: {
   preview: 'all' | 'hover' | 'off';
   /** The hovered video/GIF shows uncropped (grid mode only). */
   wholeOnHover?: boolean;
+  /** Videos: tiny clips first and the real video when the PC keeps up, or tiny clips only. */
+  previewQuality?: 'auto' | 'tiny';
   layout?: 'grid' | 'shape';
   groups?: Group[];
   scroller: React.RefObject<HTMLElement | null>;
@@ -86,10 +90,12 @@ export function MediaGrid(props: {
   useResumeChanges();
 
   useEffect(() => onThumb((id) => setReady((r) => new Map(r).set(id, (r.get(id) ?? 0) + 1))), []);
-  const clipMode = usePreviewMode();
-  const [made, setMade] = useState<Set<number>>(new Set());
-  useEffect(() => onPreviewMade((id) => setMade((m) => new Set(m).add(id))), []);
-  useEffect(() => clipFpsChanged(), [clipMode.fps]);
+  // ---- video previews ----
+  const made = useMadePreviews();
+  const realBudget = useRealBudget();
+  /** Tiles playing the real video last time: they keep it (no swapping back and forth while scrolling). */
+  const wasReal = useRef<Set<number>>(new Set());
+  // ---- end video previews ----
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -257,18 +263,29 @@ export function MediaGrid(props: {
     const b = layout.boxes[i];
     return b.y + b.h > view.top && b.y < view.bottom;
   };
-  const liveVideos: Item[] = [];
+  // ---- video previews: what each playing video tile shows (previewplan.ts) ----
+  const hasStrip = (it: Item) => it.preview || !!made.get(it.id)?.has('strip');
+  const hasTiny = (it: Item) => !!it.tiny || !!made.get(it.id)?.has('tiny');
+  const wants: TileWant[] = [];
+  const mid = (view.top + view.bottom) / 2;
   for (let i = from; i < to; i++) {
     const it = props.items[i];
-    if (it.kind === 'video' && onScreen(i) && live(it, props.preview, hover)) liveVideos.push(it);
+    if (it.kind !== 'video' || !onScreen(i) || !live(it, props.preview, hover)) continue;
+    const b = layout.boxes[i];
+    wants.push({ id: it.id, hasTiny: hasTiny(it), hasStrip: hasStrip(it), hovered: hover === it.id, rank: Math.abs(b.y + b.h / 2 - mid) - (wasReal.current.has(it.id) ? 100_000 : 0) });
   }
-  const hasPreview = (it: Item) => it.preview || made.has(it.id);
-  const wantKey = liveVideos.map((x) => x.id).join(',');
+  const layers = chooseLayers(wants, realBudget, props.previewQuality ?? 'auto');
+  const realCount = [...layers.values()].filter((l) => l === 'real').length;
+  wasReal.current = new Set([...layers].filter(([, l]) => l === 'real').map(([id]) => id));
+  const wantKey = wants.map((x) => `${x.id}${x.hasTiny ? 't' : ''}${x.hasStrip ? 's' : ''}`).join(',');
   useEffect(() => {
-    setWantedVideos(liveVideos.length);
-    if (clipMode.clips) preferPreviews(liveVideos.filter((x) => !hasPreview(x)).map((x) => x.id));
-  }, [wantKey, clipMode.clips]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => setWantedVideos(0), []);
+    reportPlan(wants.length, realCount);
+    // Make the missing stand-ins of the videos on screen first.
+    preferPreviews(wants.filter((x) => !x.hasTiny || !x.hasStrip).map((x) => x.id));
+  }, [wantKey, realCount]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => () => reportPlan(0, 0), []);
+  const layerOf = (id: number): Layer => layers.get(id) ?? 'thumb';
+  // ---- end video previews ----
 
   // One rule for clicks, arrow keys and everything else (selection.ts).
   const click = (e: React.MouseEvent, item: Item) => {
@@ -358,7 +375,6 @@ export function MediaGrid(props: {
         const hasThumb = it.thumb === 'ok' || ready.has(it.id);
         const sel = props.selected.has(it.id);
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
-        const asClip = playing && it.kind === 'video' && clipMode.clips;
         const place = (props.faceBoxes || props.faceCrop) && props.faces?.has(it.id) ? placement(it, b.w, b.h) : null;
         const watched = watchedShare(it.kind, it.durationMs, resumeOf(it));
         return (
@@ -380,14 +396,10 @@ export function MediaGrid(props: {
             ) : (
               <span className="tile-msg"><span className="spinner small" /></span>
             )}
-            {playing && it.kind === 'video' && !asClip && (
-              <video className="live" src={mediaUrl(it.id)} muted loop autoPlay playsInline preload="auto"
-                ref={(v) => {
-                  watchVideo(v);
-                  return () => { if (v) unwatchVideo(v); };
-                }} />
+            {playing && it.kind === 'video' && (
+              <VideoPreview id={it.id} layer={layerOf(it.id)} eager={hover === it.id} hasStrip={hasStrip(it)} hasTiny={hasTiny(it)} durationMs={it.durationMs}
+                w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} fit={mode === 'shape' ? 'contain' : 'cover'} />
             )}
-            {asClip && hasPreview(it) && <Clip id={it.id} w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} />}
             {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
             {props.faceBoxes && place && (it.kind === 'image' || it.kind === 'gif') && props.faces?.get(it.id)?.map((f) => {
               const known = f.person != null;
@@ -422,10 +434,12 @@ export function MediaGrid(props: {
       })}
       {pop && (
         <div className="whole-pop" style={{ left: pop.left, top: pop.top, width: pop.w, height: pop.h }} aria-hidden="true">
-          {pop.item.kind === 'video' && clipMode.clips
-            ? (hasPreview(pop.item) ? <Clip key={pop.item.id} id={pop.item.id} w={pop.w} h={pop.h} aspect={pop.w / pop.h} /> : <img src={thumbUrl(pop.item.id)} alt="" draggable={false} />)
-            : pop.item.kind === 'video'
-            ? <video key={pop.item.id} src={mediaUrl(pop.item.id)} muted loop autoPlay playsInline preload="auto" />
+          {pop.item.kind === 'video'
+            ? <>
+                <img src={thumbUrl(pop.item.id)} alt="" draggable={false} />
+                <VideoPreview key={pop.item.id} id={pop.item.id} layer="real" eager hasStrip={hasStrip(pop.item)} hasTiny={hasTiny(pop.item)} durationMs={pop.item.durationMs}
+                  w={pop.w} h={pop.h} aspect={pop.w / pop.h} fit="contain" />
+              </>
             : <img key={pop.item.id} src={mediaUrl(pop.item.id)} alt="" draggable={false} />}
         </div>
       )}
@@ -477,18 +491,3 @@ function QueuedThumb(props: { url: string; prio: number; style?: React.CSSProper
   );
 }
 
-/** A preview clip: one picture holding 48 small frames, moved by a shared timer. */
-function Clip(props: { id: number; w: number; h: number; aspect: number }) {
-  // Cover the tile like the video would (centre, edges cropped).
-  const w = Math.max(props.w, props.h * props.aspect);
-  const h = w / props.aspect;
-  return (
-    <span className="live clip-frame" aria-hidden="true">
-      <span className="clip" style={{ width: w, height: h, left: (props.w - w) / 2, top: (props.h - h) / 2, backgroundImage: `url("${previewUrl(props.id)}")` }}
-        ref={(el) => {
-          playClip(el);
-          return () => { if (el) stopClip(el); };
-        }} />
-    </span>
-  );
-}

@@ -47,6 +47,8 @@ export interface AppConfig {
   preview: 'all' | 'hover' | 'off';
   /** While previewing, the hovered video/GIF shows uncropped. */
   wholeOnHover: boolean;
+  /** Video previews: tiny clips first and the real video when the PC keeps up, or tiny clips only (hover still plays the real video). */
+  previewQuality?: 'auto' | 'tiny';
   /** Grid shows every item at its true shape (no cropping). */
   gridShape: boolean;
   viewer: ViewerSettings;
@@ -396,8 +398,10 @@ export interface Item {
   views: number;
   /** In the trash since (ms). */
   deletedAt: number | null;
-  /** Videos: a small preview clip exists. */
+  /** Videos: a small preview clip (frame strip) exists. */
   preview: boolean;
+  /** Videos: a tiny preview video (a few seconds, small, silent) exists. */
+  tiny?: boolean;
   /** A free copy: the original's id. */
   copyOf: number | null;
   /** Other items share this item's stored file (original or free copies). */
@@ -750,9 +754,15 @@ export const api = {
   uiSet: (key: string, value: string) => call<void>('ui_set', { key, value }),
 
   // preview clips
-  previewsNeeded: (limit: number, prefer: number[]) => call<{ id: number; durationMs: number | null }[]>('previews_needed', { limit, prefer }),
+  previewsNeeded: (limit: number, prefer: number[]) =>
+    call<{ id: number; durationMs: number | null; needStrip: boolean; needTiny: boolean }[]>('previews_needed', { limit, prefer }),
   savePreview: (id: number, data: number[]) => call<void>('save_preview', { id, data }),
   previewFailed: (id: number) => call<void>('preview_failed', { id }),
+  /** A tiny preview video made by the window (WebM or MP4 bytes). */
+  saveTiny: (id: number, data: number[]) => call<void>('save_tiny', { id, data }),
+  tinyFailed: (id: number) => call<void>('tiny_failed', { id }),
+  /** Make the tiny clip with the video tool; false = no video tool installed. */
+  makeTinyWithTool: (id: number, starts: number[], piece: number) => call<boolean>('make_tiny_with_tool', { id, starts, piece }),
 
   // outside-vault player
   scanLocal: (paths: string[]) => call<LocalSet>('scan_local', { paths }),
@@ -1057,6 +1067,7 @@ function proto(scheme: string, path: string): string {
 export const mediaUrl = (id: number) => proto('vault', `media/${id}`);
 export const thumbUrl = (id: number) => proto('vault', `thumb/${id}`);
 export const previewUrl = (id: number) => proto('vault', `preview/${id}`);
+export const tinyUrl = (id: number) => proto('vault', `tiny/${id}`);
 export const localUrl = (key: string) => proto('local', `f/${key}`);
 export const modelUrl = (name: string) => proto('models', name);
 
@@ -1106,6 +1117,7 @@ const mock = {
       fullscreenControlsOnMouse: true,
       preview: 'hover',
       wholeOnHover: false,
+      previewQuality: 'auto',
       gridShape: false,
       viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0, ambient: false, faceBoxes: false },
       builtinEngine: true,
@@ -1225,6 +1237,8 @@ const mock = {
         return { queued: 0, scanned: 0, faces: 0, failed: 0 };
       case 'faces_review':
         return { people: [], unknown: [], status: { queued: 0, scanned: 0, faces: 0, failed: 0 } };
+      case 'make_tiny_with_tool':
+        return false;
       case 'previews_needed':
       case 'thumbs_to_sharpen':
         return [];
