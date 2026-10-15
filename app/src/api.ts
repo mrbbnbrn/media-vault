@@ -669,6 +669,10 @@ export const api = {
 
   // library
   folders: () => call<FolderCard[]>('library_folders'),
+  /** Folders, tags and (with a filter) items in one call; `focusHere` also
+   *  points background work at these items first. */
+  libraryPage: (filter: ItemFilter | null, focusHere = false) =>
+    call<{ folders: FolderCard[]; tags: TagCount[]; items: Item[] | null }>('library_page', { filter, focusHere }),
   folderView: (folder: number | null) => call<FolderView>('folder_view', { folder }),
   queryItems: (filter: ItemFilter) => call<Item[]>('query_items', { filter }),
   getItem: (id: number) => call<Item>('get_item', { id }),
@@ -677,12 +681,22 @@ export const api = {
   /** All or nothing; folders can swap names. */
   renameMany: (folders: [number, string][], items: [number, string][]) => call<void>('rename_many', { folders, items }),
   moveFolder: (id: number, parent: number | null) => call<void>('move_folder', { id, parent }),
+  /** Several folders at once (each to its own parent), one save. Stops at the
+   *  first that can't move: `done` before it moved, `error` says why. */
+  moveFolders: async (moves: [number, number | null][]) => {
+    if (!moves.length) return { done: 0, error: null as string | null };
+    const r = await call<{ done: number; error: string | null }>('move_folders', { moves });
+    return { done: Math.min(r.done, moves.length), error: r.error };
+  },
   /** Moves to the trash. */
   deleteFolder: (id: number) => call<number>('delete_folder', { id }),
+  /** Several folders to the trash in one go. */
+  deleteFolders: (ids: number[]) => (ids.length ? call<number>('delete_folders', { ids }) : Promise.resolve(0)),
   /** Moves to the trash. */
   deleteItems: (ids: number[]) => call<number>('delete_items', { ids }),
   restoreItems: (ids: number[]) => call<number>('restore_items', { ids }),
   restoreFolder: (id: number) => call<void>('restore_folder', { id }),
+  restoreFolders: (ids: number[]) => (ids.length ? call<void>('restore_folders', { ids }) : Promise.resolve()),
   /** Move everything inside a folder up into its parent (the folder stays, empty). */
   extractFolder: (id: number) => call<Extracted>('extract_folder', { id }),
   unextractFolder: (id: number, extracted: Extracted) => call<void>('unextract_folder', { id, extracted }),
@@ -1232,6 +1246,24 @@ const mock = {
   } as AppState,
   pickFolder: async () => 'D:\\Vaults',
   async call(cmd: string, a: Record<string, unknown>): Promise<unknown> {
+    // The batched commands, made of the single ones the previews answer.
+    if (cmd === 'library_page') {
+      const [folders, tags, items] = await Promise.all([
+        this.call('library_folders', {}),
+        this.call('all_tags', {}),
+        a.filter ? this.call('query_items', { filter: a.filter }) : Promise.resolve(null),
+      ]);
+      return { folders: folders ?? [], tags: tags ?? [], items };
+    }
+    if (cmd === 'move_folders') {
+      for (const [id, parent] of a.moves as [number, number | null][]) await this.call('move_folder', { id, parent });
+      return { done: (a.moves as unknown[]).length, error: null };
+    }
+    if (cmd === 'delete_folders' || cmd === 'restore_folders') {
+      let n = 0;
+      for (const id of a.ids as number[]) n += Number((await this.call(cmd.slice(0, -1), { id })) ?? 0);
+      return n;
+    }
     await new Promise((r) => setTimeout(r, cmd.startsWith('unlock') || cmd === 'create_vault' ? 600 : 50));
     // Preview with sample folders, people and tags: open the page with ?demo.
     if (typeof location !== 'undefined' && /[?&]demo\b/.test(location.search)) {

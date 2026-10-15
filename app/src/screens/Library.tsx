@@ -555,11 +555,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       // A folder's own card and its subfolders come from the full folder
       // list, so the library works out every folder's counts once, not twice.
       const inFolder = view.kind === 'folder' ? view.id : undefined;
-      const [f, t, folderItems] = await Promise.all([
-        api.folders(),
-        api.allTags(),
-        inFolder !== undefined ? api.queryItems({ folder: inFolder }) : Promise.resolve(null),
-      ]);
+      // One call for folders, tags and the folder's items (and its focus).
+      const page = await api.libraryPage(inFolder !== undefined ? { folder: inFolder } : null, inFolder !== undefined);
+      const { folders: f, tags: t, items: folderItems } = page;
       setFolders(f);
       tabsRef.current?.onFolders(f);
       setTags(t);
@@ -570,8 +568,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         setFolder(here);
         setSubfolders(f.filter((x) => (x.parentId ?? null) === (view.id ?? null)));
         setItems(folderItems);
-        // Background work (thumbnails, faces, smart search) does this folder first.
-        api.setFocus({ folder: view.id ?? null, inFolder: true, ids: folderItems.slice(0, 300).map((i) => i.id) }).catch(() => {});
+        // (Background work already does this folder first: libraryPage's focusHere.)
       } else {
         setFolder(null);
         setSubfolders([]);
@@ -1245,12 +1242,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const movedFolders = fs.filter((f) => f.parentId !== target);
     const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
     bumpMoveStat(target);
-    for (const f of movedFolders) await api.moveFolder(f.id, target);
+    const mv = await api.moveFolders(movedFolders.map((f) => [f.id, target]));
+    if (mv.error) throw new Error(mv.error);
     if (ids.length) await api.moveItems(ids, target);
     const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
     const what = [movedFolders.length ? plural(movedFolders.length, 'folder') : '', ids.length ? plural(ids.length, 'item') : ''].filter(Boolean).join(' and ');
     did(`Moved ${what} to “${name}”`, async () => {
-      for (const f of movedFolders) await api.moveFolder(f.id, f.parentId);
+      await api.moveFolders(movedFolders.map((f) => [f.id, f.parentId]));
       for (const [f, g] of before) await api.moveItems(g, f);
     });
     setSelFolders(new Set());
@@ -1393,7 +1391,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const what = [r.folders.length ? plural(r.folders.length, 'folder') : '', r.items.length ? plural(r.items.length, 'item') : ''].filter(Boolean).join(' and ');
     did(`Copied ${what || 'nothing'}`, async () => {
       if (r.items.length) await api.deleteItems(r.items);
-      for (const f of r.folders) await api.deleteFolder(f);
+      await api.deleteFolders(r.folders);
     });
     kickThumbnails();
     await reload();
@@ -1500,11 +1498,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
   };
   const deleteMany = async (fs: FolderCard[], items: number[], links: CopyLinks[] = []) => {
-    for (const f of fs) await api.deleteFolder(f.id);
+    await api.deleteFolders(fs.map((f) => f.id));
     if (items.length) await api.deleteItems(items);
     const what = [fs.length ? plural(fs.length, 'folder') : '', items.length ? plural(items.length, 'item') : ''].filter(Boolean).join(' and ');
     did(`Moved ${what} to the trash`, async () => {
-      for (const f of fs) await api.restoreFolder(f.id);
+      await api.restoreFolders(fs.map((f) => f.id));
       if (items.length) await api.restoreItems(items);
       for (const l of links) await api.restoreLinks(l);
     });
@@ -1516,15 +1514,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const moveFolders = async (fs: FolderCard[], parent: number | null) => {
     const done: FolderCard[] = [];
     try {
-      for (const f of fs) {
-        if (f.parentId === parent) continue;
-        await api.moveFolder(f.id, parent);
-        done.push(f);
-      }
+      const todo = fs.filter((f) => f.parentId !== parent);
+      const r = await api.moveFolders(todo.map((f) => [f.id, parent]));
+      done.push(...todo.slice(0, r.done));
+      if (r.error) throw new Error(r.error);
     } finally {
       if (done.length) {
         did(done.length === 1 ? `Moved “${done[0].name}”` : `Moved ${plural(done.length, 'folder')}`, async () => {
-          for (const f of done) await api.moveFolder(f.id, f.parentId);
+          await api.moveFolders(done.map((f) => [f.id, f.parentId]));
         });
       }
       setSelFolders(new Set());
@@ -1613,7 +1610,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const unseed = await ownOrderFirst();
     const parent = target.parentId;
     const moving = group.filter((g) => g.parentId !== parent);
-    for (const g of moving) await api.moveFolder(g.id, parent);
+    const mv = await api.moveFolders(moving.map((g) => [g.id, parent]));
+    if (mv.error) throw new Error(mv.error);
     // Siblings as you see them (after switching, your own order is what you saw).
     const siblings = tree.filter((x) => x.parentId === parent).map((x) => x.id);
     const order = placeIds(siblings, group.map((g) => g.id), targetId, edge);
@@ -1621,7 +1619,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const label = group.length === 1 ? `Moved “${group[0].name}”` : `Moved ${plural(group.length, 'folder')}`;
     did(switchedText(label, !!unseed), async () => {
       await api.restoreFolderOrder(before);
-      for (const g of moving) await api.moveFolder(g.id, g.parentId);
+      await api.moveFolders(moving.map((g) => [g.id, g.parentId]));
       if (unseed) await unseed();
     });
     await reload();

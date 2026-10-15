@@ -489,6 +489,88 @@ async fn library_folders(state: State<'_, Shared>) -> Result<Vec<library::Folder
     read_db(state.inner(), library::all_folders).await
 }
 
+/// What the library needs to show a page, in one call instead of three: every
+/// folder card, every tag, and (for a folder page) its items. With
+/// `focus_here`, background work also does this folder's items first (what
+/// set_focus would do in a fourth call).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LibraryPage {
+    folders: Vec<library::FolderCard>,
+    tags: Vec<library::TagCount>,
+    items: Option<Vec<library::Item>>,
+}
+
+#[tauri::command]
+async fn library_page(state: State<'_, Shared>, filter: Option<library::ItemFilter>, focus_here: Option<bool>) -> Result<LibraryPage, String> {
+    let page = read_db(state.inner(), move |c| {
+        let items = match &filter {
+            Some(f) => Some(library::query_items(c, f)?),
+            None => None,
+        };
+        let folder = filter.as_ref().and_then(|f| f.folder.flatten());
+        Ok((LibraryPage { folders: library::all_folders(c)?, tags: library::all_tags(c)?, items }, folder))
+    })
+    .await?;
+    let (page, folder) = page;
+    if focus_here.unwrap_or(false)
+        && let Some(items) = &page.items
+    {
+        crate::focus::set(Some(crate::focus::Focus { folder, in_folder: true, ids: items.iter().take(300).map(|i| i.id).collect() }));
+        analyse::kick();
+    }
+    Ok(page)
+}
+
+/// How far a batch got: the first `done` steps happened; `error` is why the
+/// next one couldn't (None = all done).
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchDone {
+    done: usize,
+    error: Option<String>,
+}
+
+/// Several folders moved at once (each to its own new parent), one save. Stops
+/// at the first one that can't move; the ones before it stay moved.
+#[tauri::command]
+async fn move_folders(state: State<'_, Shared>, moves: Vec<(i64, Option<i64>)>) -> Result<BatchDone, String> {
+    edit_db(state.inner(), move |c| {
+        for (i, (id, parent)) in moves.into_iter().enumerate() {
+            if let Err(e) = library::move_folder(c, id, parent) {
+                return Ok(BatchDone { done: i, error: Some(e) });
+            }
+        }
+        Ok(BatchDone { done: usize::MAX, error: None })
+    })
+    .await
+}
+
+/// Several folders to the trash at once, one save. Returns how many items went with them.
+#[tauri::command]
+async fn delete_folders(state: State<'_, Shared>, ids: Vec<i64>) -> Result<i64, String> {
+    edit_db(state.inner(), move |c| {
+        let mut n = 0;
+        for id in ids {
+            n += library::trash_folder(c, id)?;
+        }
+        Ok(n)
+    })
+    .await
+}
+
+/// Several folders back from the trash at once, one save.
+#[tauri::command]
+async fn restore_folders(state: State<'_, Shared>, ids: Vec<i64>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| {
+        for id in ids {
+            library::restore_folder(c, id)?;
+        }
+        Ok(())
+    })
+    .await
+}
+
 #[tauri::command]
 async fn folder_view(
     state: State<'_, Shared>,
@@ -2256,6 +2338,10 @@ pub fn run() {
             lock_vault,
             report_activity,
             library_folders,
+            library_page,
+            move_folders,
+            delete_folders,
+            restore_folders,
             folder_view,
             query_items,
             get_item,
