@@ -33,6 +33,16 @@ import torch.nn as nn
 MODEL, REPO, OUT = sys.argv[1], sys.argv[2], Path(sys.argv[3])
 OUT.mkdir(parents=True, exist_ok=True)
 STANDARD, HIGH, PATCH = 518, 756, 14
+
+
+def _cartesian_prod(a, b):
+    """torch.cartesian_prod for two 1-D tensors, built from ops ONNX knows
+    (the Base model's rotary position code uses it; the exporters don't)."""
+    ga, gb = torch.meshgrid(a, b, indexing="ij")
+    return torch.stack((ga.reshape(-1), gb.reshape(-1)), dim=-1)
+
+
+torch.cartesian_prod = _cartesian_prod
 MEAN = np.array([0.485, 0.456, 0.406], np.float32)
 STD = np.array([0.229, 0.224, 0.225], np.float32)
 
@@ -53,7 +63,8 @@ def build():
     state = {k[len("model."):] if k.startswith("model.") else k: v for k, v in state.items()}
     missing, unexpected = net.load_state_dict(state, strict=False)
     # Only camera / GS parts may be missing or extra; the backbone and head must load.
-    bad = [k for k in missing if k.startswith(("backbone.", "head."))]
+    # (The head's "aux" branch predicts camera rays, which we don't use; it may be missing.)
+    bad = [k for k in missing if k.startswith(("backbone.", "head.")) and "_aux" not in k]
     print(f"weights: {len(state)} tensors; missing {len(missing)} (backbone/head: {len(bad)}), unexpected {len(unexpected)}")
     if bad:
         raise SystemExit(f"backbone/head weights missing: {bad[:10]}")
@@ -149,6 +160,7 @@ def main():
             raise RuntimeError("any-size export doesn't match PyTorch")
         made["dynamic"] = True
     except Exception as e:  # noqa: BLE001 — any failure means: use the fixed size
+        made["dynamicProblem"] = f"{type(e).__name__}: {str(e)[:600]}"
         print(f"any-size export not usable ({e}); exporting at {STANDARD} × {STANDARD}")
         fp32.unlink(missing_ok=True)
         export(wrap, fp32, dynamic=False)
@@ -160,14 +172,47 @@ def main():
     sides = [STANDARD, HIGH] if made["dynamic"] else [STANDARD]
 
     final = OUT / "model.onnx"
-    try:
-        import onnx
-        from onnxconverter_common import float16
+    half = OUT / "model-fp16.onnx"
+    import os
 
-        m = float16.convert_float_to_float16(onnx.load(str(fp32)), keep_io_types=True,
-                                             op_block_list=["Resize", "ReduceMax", "Pow", "Sqrt", "ReduceMean"])
-        half = OUT / "model-fp16.onnx"
+    try:
+        # Half precision is smaller and faster on graphics cards, but the ONNX
+        # Runtime builds the app ships run it extremely slowly on the processor
+        # (the fallback when the graphics card can't), so it's off unless asked for.
+        if os.environ.get("DA3_FP16") != "1":
+            raise RuntimeError("half precision not asked for (DA3_FP16=1)")
+        import onnx
+        # ONNX Runtime's own converter (it handles the graph's existing Cast
+        # nodes, which onnxconverter-common turned into a broken model).
+        from onnxruntime.transformers.float16 import convert_float_to_float16
+
+        m = convert_float_to_float16(onnx.load(str(fp32)), keep_io_types=True,
+                                     op_block_list=["Resize", "ReduceMax", "Pow", "Sqrt", "ReduceMean", "Erf", "Softmax", "Range", "Sin", "Cos", "Floor", "Mod", "ConstantOfShape"])
+        # The converter can insert the same Cast twice (same input, same output
+        # name): keep the first, drop the identical copies; then make node names unique.
+        kept, outs = [], {}
+        for node in m.graph.node:
+            if node.op_type == "Cast":
+                to = next((a.i for a in node.attribute if a.name == "to"), None)
+                sig = (tuple(node.input), to)
+                key = tuple(node.output)
+                if outs.get(key) == sig:
+                    continue
+                outs[key] = sig
+            kept.append(node)
+        dropped = len(m.graph.node) - len(kept)
+        del m.graph.node[:]
+        m.graph.node.extend(kept)
+        seen = {}
+        for node in m.graph.node:
+            if node.name in seen:
+                seen[node.name] += 1
+                node.name = f"{node.name}_{seen[node.name]}"
+            else:
+                seen[node.name] = 0
+        print(f"half precision: dropped {dropped} duplicate casts")
         onnx.save(m, str(half))
+        del m
         s16 = check(half, wrap, sides)
         print(f"half precision: worst correlation {s16:.5f}")
         if s16 >= 0.99:
@@ -178,6 +223,8 @@ def main():
         else:
             half.unlink()
     except Exception as e:  # noqa: BLE001
+        made["fp16Problem"] = f"{type(e).__name__}: {str(e)[:600]}"
+        half.unlink(missing_ok=True)
         print(f"half precision not usable ({e}); keeping 32-bit")
     if not final.exists():
         fp32.rename(final)

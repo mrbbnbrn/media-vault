@@ -59,7 +59,9 @@ jobs:
           grep -q "Apache License" Depth-Anything-3/LICENSE
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
-          pip install einops addict omegaconf huggingface_hub safetensors "numpy<2" pillow onnx onnxscript onnxruntime onnxconverter-common
+          pip install einops addict omegaconf huggingface_hub safetensors "numpy<2" pillow onnx onnxscript onnxruntime
+          # The newer exporter needs a recent ml_dtypes (an old one breaks it).
+          pip install --upgrade "ml_dtypes>=0.5" onnxscript onnx-ir
           pip install --no-deps -e Depth-Anything-3
 
       - name: Convert and check against PyTorch
