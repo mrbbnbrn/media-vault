@@ -108,7 +108,7 @@ export function demoAnswer(cmd: string, a: Record<string, unknown>): unknown {
       const f = d.folders[i];
       const media = (a.media as number | null) ?? f.cover;
       d.folders[i] = cmd === 'set_cover'
-        ? { ...f, cover: media, coverPos: media === f.cover ? f.coverPos : null }
+        ? { ...f, cover: media, coverKind: d.items.find((x) => x.id === media)?.kind ?? f.coverKind, coverPos: media === f.cover ? f.coverPos : null }
         : { ...f, cover: media, coverPos: (a.pos as FolderCard['coverPos']) ?? null };
       return null;
     }

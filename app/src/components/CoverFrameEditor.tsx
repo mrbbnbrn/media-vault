@@ -54,7 +54,7 @@ export function CoverFrameEditor(props: { folder: FolderCard; onClose: () => voi
       e.preventDefault();
       const r = el.getBoundingClientRect();
       const p = nowRef.current();
-      const z = p.zoom * Math.exp(-e.deltaY * 0.0015);
+      const z = p.zoom * Math.exp(-e.deltaY * 0.001);
       setPos(zoomAround(p, z, (e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height, a, 1));
     };
     el.addEventListener('wheel', onWheel, { passive: false });

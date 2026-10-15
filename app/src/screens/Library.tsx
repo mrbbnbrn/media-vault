@@ -2550,7 +2550,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         const f = folders.find((x) => x.id === dialog.folder);
         if (!f || f.cover == null) return null;
         return (
-          <CoverFrameEditor folder={f} onClose={() => setDialog(null)} onSave={async (pos) => {
+          // (starts afresh when the cover itself changes underneath, e.g. right after choosing it)
+          <CoverFrameEditor key={`${f.id}:${f.cover}`} folder={f} onClose={() => setDialog(null)} onSave={async (pos) => {
             const was = f.coverPos ?? null;
             await api.setCoverFrame(f.id, f.cover, pos);
             did(pos ? `Adjusted the cover of “${f.name}”` : `“${f.name}” cover framed automatically again`, () => api.setCoverFrame(f.id, f.cover, was));
