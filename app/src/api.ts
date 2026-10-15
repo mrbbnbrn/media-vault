@@ -4,7 +4,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { demoCall, demoOn, NOT_DEMO } from './mockdemo';
 
 export interface LockSettings {
   idleMinutes: number;
@@ -1214,7 +1213,8 @@ const mock = {
   async call(cmd: string, a: Record<string, unknown>): Promise<unknown> {
     await new Promise((r) => setTimeout(r, cmd.startsWith('unlock') || cmd === 'create_vault' ? 600 : 50));
     // Preview with sample folders, people and tags: open the page with ?demo.
-    if (demoOn()) {
+    if (typeof location !== 'undefined' && /[?&]demo\b/.test(location.search)) {
+      const { demoCall, NOT_DEMO } = await import('./mockdemo');
       const d = demoCall(cmd, a);
       if (d !== NOT_DEMO) return d;
     }

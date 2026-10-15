@@ -915,12 +915,14 @@ mod tests {
         let got = crate::half::f16_blob_to_f32(&back);
         assert!(got.iter().zip(&v).all(|(a, b)| (a - b).abs() < 1e-4));
         let ver: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(ver, 13);
+        assert!(ver >= 13);
         // Running it again changes nothing.
         c.execute_batch("PRAGMA user_version = 12;").unwrap();
         migrate(&c).unwrap();
         assert_eq!(stats(&c), vec![(1, 2, 20)]);
         assert_eq!(c.query_row("SELECT vec FROM clip", [], |r| r.get::<_, Vec<u8>>(0)).unwrap(), back);
+    }
+
     #[test]
     fn v14_adds_thumbnail_pages_and_can_run_again() {
         let c = create_empty().unwrap();

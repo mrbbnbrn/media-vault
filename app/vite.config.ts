@@ -21,7 +21,10 @@ function pdfjsAssets(): Plugin {
     },
     writeBundle(opts) {
       const out = resolve(opts.dir ?? 'dist', 'pdfjs');
-      for (const p of parts) cpSync(resolve(src, p), resolve(out, p), { recursive: true });
+      // Not needed: QuickJS is only for PDF scripting (pdf.sandbox, never loaded here), and
+      // the "nowasm" decoders only for engines without WebAssembly (WebView2 has it; the CSP allows it).
+      const unused = (f: string) => /quickjs|_nowasm_fallback/.test(f);
+      for (const p of parts) cpSync(resolve(src, p), resolve(out, p), { recursive: true, filter: (f) => !unused(f) });
     },
   };
 }
@@ -32,6 +35,8 @@ export default defineConfig({
   worker: { format: 'es' },
   clearScreen: false,
   server: { port: 5173, strictPort: true },
-  build: { target: 'es2022', outDir: 'dist', emptyOutDir: true, assetsInlineLimit: 0 },
+  // WebView2 is an evergreen Chromium: modern output, and no module-preload polyfill.
+  // The screens and big dialogs are separate files that load when first needed (lazypart.tsx).
+  build: { target: 'es2022', outDir: 'dist', emptyOutDir: true, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
   test: { environment: 'node' },
 });

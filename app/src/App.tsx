@@ -11,16 +11,15 @@ import { CreateVault } from './screens/CreateVault';
 import { RecoveryWords } from './screens/RecoveryWords';
 import { Recover } from './screens/Recover';
 import { NewPassword } from './screens/NewPassword';
-import { Library, type LibView } from './screens/Library';
-import { Settings } from './screens/Settings';
-import { Viewer, type TitleCard } from './screens/Viewer';
+import type { LibView } from './screens/Library';
+import type { TitleCard } from './screens/Viewer';
+import { lazyPart, preloadParts } from './lazypart';
 import { MiniFrame } from './components/MiniFrame';
 import { TitleBar } from './components/TitleBar';
 import { useLibraryTabs, useTabKeys } from './tabs/useTabs';
 import type { Box } from './flip';
 import { playClose, revealTile } from './viewerflip';
 import { viewKey } from './viewmemory';
-import { MultiScreen } from './screens/MultiScreen';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
 import { resetGrid, whenGridShown } from './firstgrid';
@@ -29,9 +28,15 @@ import { startClipIndexer } from './ml/smart';
 import { setNativeOptions, startNativeAnalyser } from './ml/native';
 import { startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
-import { runSelfTestIfRequested } from './selftest';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
+
+// Screens load when first needed (lazypart.tsx): the start screen comes up
+// without compiling the library, viewer and settings first.
+const Library = lazyPart(() => import('./screens/Library').then((m) => m.Library), true);
+const Viewer = lazyPart(() => import('./screens/Viewer').then((m) => m.Viewer), true);
+const Settings = lazyPart(() => import('./screens/Settings').then((m) => m.Settings));
+const MultiScreen = lazyPart(() => import('./screens/MultiScreen').then((m) => m.MultiScreen));
 
 export type Screen =
   | { name: 'start'; select?: string }
@@ -163,14 +168,17 @@ export function App() {
 
   refreshRef.current = refresh;
   useEffect(() => {
-    runSelfTestIfRequested().catch(() => {});
+    import('./selftest').then((m) => m.runSelfTestIfRequested()).catch(() => {});
     // The window is up: the built-in web engine (if used) works.
     api.engineStarted().catch(() => {});
     refresh()
       .then((s) => {
         if (s.session) setScreen(s.session.needsNewPassword ? { name: 'newPassword' } : { name: 'library' });
       })
-      .catch((e) => setFatal(String(e)));
+      .catch((e) => setFatal(String(e)))
+      // Once the first screen is up: the rest of the app's code in the background (the
+      // library first), ready by the time the password is in (lazypart.tsx).
+      .finally(() => setTimeout(preloadParts, 300));
     const stopTracking = startActivityTracking();
     // Ctrl+S: save everything now (changes are also saved by themselves right away).
     const onSaveKey = (e: KeyboardEvent) => {

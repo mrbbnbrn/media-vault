@@ -31,8 +31,11 @@ import { ImageStage, type ImageInfo, type ImageStageHandle } from './ImageStage'
 import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
-import { Depth3D } from './Depth3D';
 import { depthAhead, depthPack } from '../depth';
+import { lazyPart } from '../lazypart';
+// The 3D picture and the upscale comparison (both WebGL) load when first used.
+const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
+const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.UpscaleCompare));
 // 3D photos (end)
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
@@ -42,7 +45,6 @@ import {
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
-import { UpscaleCompare } from './UpscaleCompare';
 import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 
 export interface PlayerHandle {

@@ -171,6 +171,8 @@ function cover(t: THREE.Texture, iw: number, ih: number, w: number, h: number) {
 
 /** The renderer's full pixel ratio (before the automatic lowering). */
 const basePixelRatio = new WeakMap<THREE.WebGLRenderer, number>();
+/** three.js's shared DFG lookup texture, once a wing has drawn with it (see releaseRenderer). */
+let sharedLut: THREE.Texture | null = null;
 
 export class MuseumEngine {
   private canvas: HTMLCanvasElement;
@@ -245,6 +247,20 @@ export class MuseumEngine {
     r.toneMappingExposure = 0.9;
     r.info.autoReset = false;
     return r;
+  }
+
+  /**
+   * Done with a renderer for good (the museum closed): its GPU memory and
+   * context go now, rather than when the browser gets round to it.
+   */
+  static releaseRenderer(r: THREE.WebGLRenderer) {
+    // three.js keeps one lookup texture (the standard materials' DFG LUT) for
+    // all renderers; until it is disposed, every renderer that drew with it
+    // stays reachable through it (its listener). Disposing it lets them go; the
+    // next museum simply uploads it again.
+    sharedLut?.dispose();
+    r.dispose();
+    r.forceContextLoss();
   }
 
   constructor(
@@ -458,6 +474,15 @@ export class MuseumEngine {
     this.resizeObs.disconnect();
     for (const s of this.slots) this.dropAll(s);
     this.uploads.length = 0;
+    if (!sharedLut) {
+      for (const m of this.mats.values()) {
+        const lut = (this.renderer.properties.get(m) as { uniforms?: Record<string, { value?: unknown }> }).uniforms?.dfgLUT?.value;
+        if (lut instanceof THREE.Texture) {
+          sharedLut = lut;
+          break;
+        }
+      }
+    }
     this.scene.traverse((o) => {
       const m = o as THREE.Mesh;
       if (m.geometry && !m.userData.shared) m.geometry.dispose();
