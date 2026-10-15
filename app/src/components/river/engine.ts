@@ -248,12 +248,17 @@ export class RiverEngine {
     c.lift = -1;
     c.full = false;
     c.el.classList.toggle('rv-video', it.kind === 'video');
+    // Shown once its picture is in (no empty boxes while loading).
+    c.el.classList.add('rv-wait');
     c.name.textContent = it.name.replace(/\.[^.]+$/, '');
     // Thumbnails mostly; GIFs move when near; the nearest pictures get the full picture when the thumbnail would be soft.
     const near = d.layer >= NEAREST - 1;
     const wantFull = it.kind === 'gif' ? near : it.kind === 'image' && (!it.thumb || (d.layer === NEAREST && d.h * this.dpr > 600));
+    let loaded = false;
     c.img.onload = () => {
-      if (c.key !== d.key) return;
+      if (c.key !== d.key || loaded) return;
+      loaded = true;
+      c.el.classList.remove('rv-wait');
       this.learnShape(d, c, it);
       if (wantFull && it.thumb && !c.full) this.upgrade(c, d.key, it);
     };
@@ -262,6 +267,8 @@ export class RiverEngine {
     } : null;
     c.img.src = it.thumb ? this.src.thumb(it.id) : this.src.full(it.id);
     if (!it.thumb) c.full = true;
+    // Already there (the same picture again): no load event may come.
+    if (c.img.complete && c.img.naturalWidth) c.img.onload?.(new Event('load'));
     this.stage.appendChild(c.el);
     this.cards.set(d.key, c);
   }
@@ -290,6 +297,7 @@ export class RiverEngine {
       c.img.onerror = null;
       c.img.src = full.src;
       c.full = true;
+      c.el.classList.remove('rv-wait');
     };
     full.decode().then(swap, () => {
       /* stays a thumbnail */
