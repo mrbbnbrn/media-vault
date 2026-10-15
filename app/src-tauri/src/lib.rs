@@ -1022,7 +1022,7 @@ async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
 }
 
 // ---- preview clips (made by the window, or by the video tool) -----------------------------
-// Two kinds per video: the frame strip (one JPEG holding 48 small frames, for
+// Two kinds per video: the frame strip (one picture holding 48 small frames — WebP, older ones JPEG — for
 // flip-books, seek-bar previews and smart search) and the tiny clip (a silent
 // ~240p video of a few seconds that grid tiles play straight away). Both are
 // stored encrypted with the thumbnails. NULL = not made yet, '' = couldn't be.
@@ -1112,8 +1112,13 @@ async fn save_preview(state: State<'_, Shared>, request: tauri::ipc::Request<'_>
     let s = sess(state.inner())?;
     let (IdArgs { id }, data) = binbody::request(&request)?;
     let data = zeroize::Zeroizing::new(data.to_vec());
-    blocking(move || store_preview_object(&s, id, "preview_object_id", &data)).await
+    blocking(move || {
+        let strip = picture::strip_as_webp(&data);
+        store_preview_object(&s, id, "preview_object_id", strip.as_deref().map_or(&data[..], |v| &v[..]))
+    })
+    .await
 }
+
 
 #[tauri::command]
 async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {

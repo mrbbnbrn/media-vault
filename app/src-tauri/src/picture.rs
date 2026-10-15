@@ -372,6 +372,18 @@ pub fn image_mime(head: &[u8]) -> Option<&'static str> {
     }
 }
 
+/// Frame strips are stored as WebP: a JPEG strip is re-encoded (about a third
+/// smaller at the same look) when that comes out smaller. Anything else, or a
+/// strip that can't be read here, is stored as it came.
+pub fn strip_as_webp(data: &[u8]) -> Option<zeroize::Zeroizing<Vec<u8>>> {
+    if !data.starts_with(&[0xFF, 0xD8, 0xFF]) {
+        return None;
+    }
+    let pic = decode(data).ok()?;
+    let webp = encode_webp(&pic, 80.0).ok()?;
+    (webp.len() < data.len()).then_some(webp)
+}
+
 pub fn encode_jpeg(p: &Rgb, quality: u8) -> Result<Zeroizing<Vec<u8>>, String> {
     let (w, h) = (u16::try_from(p.w).map_err(|_| "Too big.")?, u16::try_from(p.h).map_err(|_| "Too big.")?);
     let mut out = Zeroizing::new(Vec::new());
@@ -586,6 +598,20 @@ mod tests {
         let mut b = Cursor::new(Vec::new());
         img.write_to(&mut b, f).unwrap();
         b.into_inner()
+    }
+
+    #[test]
+    fn strips_become_smaller_webp() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(640, 360, |x, y| image::Rgb([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8])));
+        let jpeg = encode(img.clone(), ImageFormat::Jpeg);
+        let w = strip_as_webp(&jpeg).expect("smaller as WebP");
+        assert!(w.len() < jpeg.len());
+        assert_eq!(image_mime(&w), Some("image/webp"));
+        let back = decode(&w).unwrap();
+        assert_eq!((back.w, back.h), (640, 360));
+        // Not a JPEG: stored as it came.
+        assert!(strip_as_webp(&encode(img, ImageFormat::Png)).is_none());
+        assert!(strip_as_webp(b"nonsense").is_none());
     }
 
     #[test]
