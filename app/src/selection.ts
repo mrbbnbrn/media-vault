@@ -95,3 +95,43 @@ export function folderPick(order: readonly number[], selected: ReadonlySet<numbe
   const p = clickPick(order, selected, anchor ?? id, id, m);
   return { selected: p.selected, anchor: p.anchor, additive: p.additive };
 }
+
+/**
+ * Which ids are in a set, for many small subscribers (one per grid tile).
+ * Setting a new set tells only the ids whose membership changed, so a click
+ * redraws the two tiles involved, not every tile on screen.
+ */
+export class MemberStore {
+  private cur: ReadonlySet<number> = new Set();
+  private subs = new Map<number, Set<() => void>>();
+
+  has(id: number): boolean {
+    return this.cur.has(id);
+  }
+
+  /** Replace the set; returns how many watched ids changed (for tests). */
+  set(next: ReadonlySet<number>): number {
+    const prev = this.cur;
+    if (prev === next) return 0;
+    this.cur = next;
+    const changed: (() => void)[] = [];
+    const note = (id: number) => {
+      const s = this.subs.get(id);
+      if (s) changed.push(...s);
+    };
+    for (const id of prev) if (!next.has(id)) note(id);
+    for (const id of next) if (!prev.has(id)) note(id);
+    for (const f of changed) f();
+    return changed.length;
+  }
+
+  subscribe(id: number, f: () => void): () => void {
+    let s = this.subs.get(id);
+    if (!s) this.subs.set(id, (s = new Set()));
+    s.add(f);
+    return () => {
+      s.delete(f);
+      if (!s.size && this.subs.get(id) === s) this.subs.delete(id);
+    };
+  }
+}

@@ -5,7 +5,7 @@
 // Layouts: equal tiles ("grid") or every item at its true shape ("shape"),
 // optionally in groups with a header (the timeline's months).
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { mediaUrl, thumbUrl, type FaceBox, type Item } from '../api';
 import { formatBytes } from '../theme';
 // ---- video previews (VideoPreview.tsx, previewplan.ts) ----
@@ -21,7 +21,7 @@ import { AltEnlarge } from './AltEnlarge';
 import { Minimap, MINIMAP_RESERVE } from './Minimap';
 import { wantsMinimap, watchedShare } from '../tilemaths';
 import { resumeOf, useResumeChanges } from '../resumebus';
-import { clickPick, moveFrom, movePick } from '../selection';
+import { clickPick, MemberStore, moveFrom, movePick } from '../selection';
 import { useGridReveal } from '../viewerflip';
 import { lookAhead, thumbQueue, tilePriority } from '../loadqueue';
 import { sketchUrl } from '../sketch';
@@ -88,6 +88,31 @@ export function MediaGrid(props: {
   const [ready, setReady] = useState<Map<number, number>>(new Map());
   const mode = props.layout ?? 'grid';
   useResumeChanges();
+
+  // Tiles are drawn by <Tile> (memoised): a tile redraws only when something
+  // about it changes. Whether it is selected comes from this store, which
+  // tells just the tiles whose state changed (a click redraws two tiles).
+  const selStore = useMemo(() => new MemberStore(), []);
+  useLayoutEffect(() => {
+    selStore.set(props.selected);
+  }, [props.selected, selStore]);
+  // Thumbnails that have loaded: their tile no longer needs its (scroll-dependent) queue priority.
+  const loaded = useRef(new Set<string>());
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    // load / error don't bubble, but they do pass ancestors in the capture phase.
+    const seen = (e: Event) => {
+      const t = e.target as HTMLElement;
+      if (t instanceof HTMLImageElement && t.classList.contains('thumb')) loaded.current.add(t.getAttribute('src') ?? '');
+    };
+    el.addEventListener('load', seen, true);
+    el.addEventListener('error', seen, true);
+    return () => {
+      el.removeEventListener('load', seen, true);
+      el.removeEventListener('error', seen, true);
+    };
+  }, []);
 
   useEffect(() => onThumb((id) => setReady((r) => new Map(r).set(id, (r.get(id) ?? 0) + 1))), []);
   // ---- video previews ----
@@ -287,6 +312,14 @@ export function MediaGrid(props: {
   const layerOf = (id: number): Layer => layers.get(id) ?? 'thumb';
   // ---- end video previews ----
 
+  // ---- tile events: one set of handlers on the grid, not five per tile ----
+  const byId = useMemo(() => new Map(props.items.map((x) => [x.id, x])), [props.items]);
+  const itemOf = (target: EventTarget | null): Item | null => {
+    const el = (target as Element | null)?.closest?.<HTMLElement>('[data-item]');
+    if (!el || !ref.current?.contains(el)) return null;
+    return byId.get(Number(el.dataset.item)) ?? null;
+  };
+
   // One rule for clicks, arrow keys and everything else (selection.ts).
   const click = (e: React.MouseEvent, item: Item) => {
     const p = clickPick(props.items.map((x) => x.id), props.selected, props.anchor, item.id, { ctrl: e.ctrlKey || e.metaKey, shift: e.shiftKey });
@@ -307,26 +340,41 @@ export function MediaGrid(props: {
     props.onDragStart?.(e, ids);
   };
 
-  /** Where the picture sits inside a cropped tile: object-position (0–1) and its drawn size. */
-  const placement = (it: Item, w: number, h: number) => {
-    if (!it.width || !it.height) return null;
-    const s0 = mode === 'shape' ? Math.min(w / it.width, h / it.height) : Math.max(w / it.width, h / it.height);
-    const dw = it.width * s0;
-    const dh = it.height * s0;
-    let px = 0.5;
-    let py = 0.5;
-    const fs = props.faces?.get(it.id);
-    if (props.faceCrop && mode !== 'shape' && fs?.length) {
-      // Centre the biggest face (as far as the crop allows).
-      const f = fs.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
-      const cx = f.x + f.w / 2;
-      const cy = f.y + f.h / 2;
-      const ox = Math.min(0, Math.max(w - dw, w / 2 - cx * dw));
-      const oy = Math.min(0, Math.max(h - dh, h / 2 - cy * dh));
-      px = dw > w ? ox / (w - dw) : 0.5;
-      py = dh > h ? oy / (h - dh) : 0.5;
-    }
-    return { px, py, dw, dh, ox: (w - dw) * px, oy: (h - dh) * py };
+  const tileEvents = {
+    onClick: (e: React.MouseEvent) => {
+      const it = itemOf(e.target);
+      if (it) click(e, it);
+    },
+    onDoubleClick: (e: React.MouseEvent) => {
+      const it = itemOf(e.target);
+      if (it) props.onOpen(it);
+    },
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key !== 'Enter') return;
+      const it = itemOf(e.target);
+      if (it) props.onOpen(it);
+    },
+    onPointerDown: (e: React.PointerEvent) => {
+      const it = itemOf(e.target);
+      if (it) startDrag(e, it);
+    },
+    onContextMenu: (e: React.MouseEvent) => {
+      const it = itemOf(e.target);
+      if (!it) return;
+      e.preventDefault();
+      props.onContext(e, it);
+    },
+    // pointerenter / pointerleave don't bubble; over / out do (out also fires moving between a tile's own parts).
+    onPointerOver: (e: React.PointerEvent) => {
+      const it = itemOf(e.target);
+      if (it) setHover(it.id);
+    },
+    onPointerOut: (e: React.PointerEvent) => {
+      const el = (e.target as Element).closest?.('[data-item]');
+      if (!el || (e.relatedTarget instanceof Node && el.contains(e.relatedTarget))) return;
+      const id = Number((el as HTMLElement).dataset.item);
+      setHover((h) => (h === id ? null : h));
+    },
   };
 
   // The hovered video/GIF uncropped: same scale as in its tile, the tile
@@ -361,7 +409,8 @@ export function MediaGrid(props: {
   };
 
   return (
-    <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height, width: showMini ? `calc(100% - ${MINIMAP_RESERVE}px)` : undefined }} role="grid" aria-label="Media">
+    <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height, width: showMini ? `calc(100% - ${MINIMAP_RESERVE}px)` : undefined }} role="grid" aria-label="Media"
+      {...tileEvents}>
       <AltEnlarge root={ref} items={props.items} />
       {showMini && <Minimap items={props.items} layout={layout} gridW={width} scroller={props.scroller} grid={ref} view={view} labelAt={labelAt} />}
       {layout.headers.filter((h) => h.y + HEADER_H >= view.top - 600 && h.y <= view.bottom + 600).map((h) => (
@@ -372,64 +421,19 @@ export function MediaGrid(props: {
       {props.items.slice(from, to).map((it, k) => {
         const i = from + k;
         const b = layout.boxes[i];
-        const hasThumb = it.thumb === 'ok' || ready.has(it.id);
-        const sel = props.selected.has(it.id);
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
-        const place = (props.faceBoxes || props.faceCrop) && props.faces?.has(it.id) ? placement(it, b.w, b.h) : null;
-        const watched = watchedShare(it.kind, it.durationMs, resumeOf(it));
+        const ver = ready.get(it.id);
+        const url = `${thumbUrl(it.id)}?v=${ver ?? 0}`;
+        const faces = props.faceBoxes || props.faceCrop ? props.faces?.get(it.id) : undefined;
         return (
-          <button key={it.id} type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
-            className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${props.dimmed?.has(it.id) ? ' cut' : ''}${props.hoverInfo ? ' hinfo' : ''}`}
-            style={{ left: b.x, top: b.y, width: b.w, height: b.h, ...sketchStyle(it, place && props.faceCrop ? place : null) }}
-            onClick={(e) => click(e, it)} onDoubleClick={() => props.onOpen(it)}
-            onKeyDown={(e) => e.key === 'Enter' && props.onOpen(it)} onPointerDown={(e) => startDrag(e, it)}
-            onContextMenu={(e) => {
-              e.preventDefault();
-              props.onContext(e, it);
-            }}
-            onPointerEnter={() => setHover(it.id)} onPointerLeave={() => setHover((h) => (h === it.id ? null : h))}>
-            {hasThumb && it.thumb !== 'failed' ? (
-              <QueuedThumb key={ready.get(it.id) ?? 0} url={`${thumbUrl(it.id)}?v=${ready.get(it.id) ?? 0}`} prio={tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
-                style={place && props.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
-            ) : it.thumb === 'failed' ? (
-              <span className="tile-msg"><BrokenIcon /> Can't play</span>
-            ) : (
-              <span className="tile-msg"><span className="spinner small" /></span>
-            )}
-            {playing && it.kind === 'video' && (
-              <VideoPreview id={it.id} layer={layerOf(it.id)} eager={hover === it.id} hasStrip={hasStrip(it)} hasTiny={hasTiny(it)} durationMs={it.durationMs}
-                w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} fit={mode === 'shape' ? 'contain' : 'cover'} />
-            )}
-            {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
-            {props.faceBoxes && place && (it.kind === 'image' || it.kind === 'gif') && props.faces?.get(it.id)?.map((f) => {
-              const known = f.person != null;
-              const name = known ? props.personName?.(f.person!) : undefined;
-              const small = b.w < 120;
-              const left = place.ox + f.x * place.dw;
-              const top = place.oy + f.y * place.dh;
-              return (
-                <span key={f.id} className={`tile-face${known ? '' : ' unknown'}${small ? ' small' : ''}`} aria-hidden="true"
-                  style={{ left, top, width: f.w * place.dw, height: f.h * place.dh }}>
-                  {(known ? name : !small) && <span className="tile-face-tag">{known ? name : '?'}</span>}
-                </span>
-              );
-            })}
-            {props.hoverInfo && (
-              <span className="tile-info" aria-hidden="true">
-                <span className="ellipsis">{it.name}</span>
-                <span className="faint">{[it.width && it.height ? `${it.width}×${it.height}` : '', formatBytes(it.size)].filter(Boolean).join(' · ')}</span>
-              </span>
-            )}
-            {it.linked && <span className="linked" title={it.copyOf != null ? 'A free copy (shares the original’s stored file)' : 'Has free copies'}>⧉</span>}
-            {sel && <span className="tick" aria-hidden="true">✓</span>}
-            {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
-            {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
-            {it.kind === 'video' && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
-            {watched != null && <span className="tile-progress" title={`Watched ${Math.round(watched * 100)}%`}><span style={{ width: `${watched * 100}%` }} /></span>}
-            {it.kind === 'gif' && <span className="badge">GIF</span>}
-            {it.kind === 'pdf' && <span className="badge">PDF</span>}
-            {it.kind === 'text' && <span className="badge">{it.ext.toUpperCase()}</span>}
-          </button>
+          <Tile key={it.id} it={it} x={b.x} y={b.y} w={b.w} h={b.h} mode={mode} store={selStore}
+            ready={ver} prio={loaded.current.has(url) ? 0 : tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
+            dimmed={!!props.dimmed?.has(it.id)} hoverInfo={!!props.hoverInfo}
+            playing={playing} layer={playing && it.kind === 'video' ? layerOf(it.id) : 'thumb'} eager={hover === it.id}
+            hasStrip={hasStrip(it)} hasTiny={hasTiny(it)}
+            faces={faces} faceBoxes={!!props.faceBoxes} faceCrop={!!props.faceCrop}
+            faceNames={props.faceBoxes && faces?.length ? faces.map((f) => (f.person != null ? props.personName?.(f.person) ?? '' : '')).join('\u0001') : ''}
+            watched={watchedShare(it.kind, it.durationMs, resumeOf(it))} />
         );
       })}
       {pop && (
@@ -446,6 +450,119 @@ export function MediaGrid(props: {
     </div>
   );
 }
+
+/** Where the picture sits inside a cropped tile: object-position (0–1) and its drawn size. */
+function placement(it: Item, w: number, h: number, mode: 'grid' | 'shape', fs: FaceBox[] | undefined, faceCrop: boolean) {
+  if (!it.width || !it.height) return null;
+  const s0 = mode === 'shape' ? Math.min(w / it.width, h / it.height) : Math.max(w / it.width, h / it.height);
+  const dw = it.width * s0;
+  const dh = it.height * s0;
+  let px = 0.5;
+  let py = 0.5;
+  if (faceCrop && mode !== 'shape' && fs?.length) {
+    // Centre the biggest face (as far as the crop allows).
+    const f = fs.reduce((a, b) => (b.w * b.h > a.w * a.h ? b : a));
+    const cx = f.x + f.w / 2;
+    const cy = f.y + f.h / 2;
+    const ox = Math.min(0, Math.max(w - dw, w / 2 - cx * dw));
+    const oy = Math.min(0, Math.max(h - dh, h / 2 - cy * dh));
+    px = dw > w ? ox / (w - dw) : 0.5;
+    py = dh > h ? oy / (h - dh) : 0.5;
+  }
+  return { px, py, dw, dh, ox: (w - dw) * px, oy: (h - dh) * py };
+}
+
+/** Is `id` in the store's set? Redraws the caller only when that answer changes. */
+function useMember(store: MemberStore, id: number): boolean {
+  const sub = useMemo(() => (f: () => void) => store.subscribe(id, f), [store, id]);
+  return useSyncExternalStore(sub, () => store.has(id));
+}
+
+/**
+ * One grid tile. Memoised, with only plain values (and stable objects) as
+ * props, so scrolling, hovering and selecting redraw just the tiles they
+ * change; clicks etc. are handled once on the grid (tileEvents).
+ */
+const Tile = memo(function Tile(p: {
+  it: Item;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  mode: 'grid' | 'shape';
+  store: MemberStore;
+  /** How many times its thumbnail was made again while the grid shows (undefined: not at all). */
+  ready: number | undefined;
+  prio: number;
+  dimmed: boolean;
+  hoverInfo: boolean;
+  playing: boolean;
+  layer: Layer;
+  eager: boolean;
+  hasStrip: boolean;
+  hasTiny: boolean;
+  faces: FaceBox[] | undefined;
+  faceBoxes: boolean;
+  faceCrop: boolean;
+  /** The face boxes' names, joined by U+0001 (a plain string keeps the memo working). */
+  faceNames: string;
+  watched: number | null;
+}) {
+  const { it, w, h, mode, watched } = p;
+  const b = { w, h };
+  const sel = useMember(p.store, it.id);
+  const hasThumb = it.thumb === 'ok' || p.ready !== undefined;
+  const playing = p.playing;
+  const place = p.faces ? placement(it, w, h, mode, p.faces, p.faceCrop) : null;
+  const names = p.faceNames.split('\u0001');
+  return (
+    <button type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
+      className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${p.dimmed ? ' cut' : ''}${p.hoverInfo ? ' hinfo' : ''}`}
+      style={{ left: p.x, top: p.y, width: w, height: h, ...sketchStyle(it, place && p.faceCrop ? place : null) }}>
+      {hasThumb && it.thumb !== 'failed' ? (
+        <QueuedThumb key={p.ready ?? 0} url={`${thumbUrl(it.id)}?v=${p.ready ?? 0}`} prio={p.prio}
+          style={place && p.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
+      ) : it.thumb === 'failed' ? (
+        <span className="tile-msg"><BrokenIcon /> Can't play</span>
+      ) : (
+        <span className="tile-msg"><span className="spinner small" /></span>
+      )}
+      {playing && it.kind === 'video' && (
+        <VideoPreview id={it.id} layer={p.layer} eager={p.eager} hasStrip={p.hasStrip} hasTiny={p.hasTiny} durationMs={it.durationMs}
+          w={b.w} h={b.h} aspect={it.width && it.height ? it.width / it.height : b.w / b.h} fit={mode === 'shape' ? 'contain' : 'cover'} />
+      )}
+      {playing && it.kind === 'gif' && <img className="live" src={mediaUrl(it.id)} alt="" draggable={false} />}
+      {p.faceBoxes && place && (it.kind === 'image' || it.kind === 'gif') && p.faces?.map((f, fi) => {
+        const known = f.person != null;
+        const name = known ? names[fi] || undefined : undefined;
+        const small = b.w < 120;
+        const left = place.ox + f.x * place.dw;
+        const top = place.oy + f.y * place.dh;
+        return (
+          <span key={f.id} className={`tile-face${known ? '' : ' unknown'}${small ? ' small' : ''}`} aria-hidden="true"
+            style={{ left, top, width: f.w * place.dw, height: f.h * place.dh }}>
+            {(known ? name : !small) && <span className="tile-face-tag">{known ? name : '?'}</span>}
+          </span>
+        );
+      })}
+      {p.hoverInfo && (
+        <span className="tile-info" aria-hidden="true">
+          <span className="ellipsis">{it.name}</span>
+          <span className="faint">{[it.width && it.height ? `${it.width}×${it.height}` : '', formatBytes(it.size)].filter(Boolean).join(' · ')}</span>
+        </span>
+      )}
+      {it.linked && <span className="linked" title={it.copyOf != null ? 'A free copy (shares the original’s stored file)' : 'Has free copies'}>⧉</span>}
+      {sel && <span className="tick" aria-hidden="true">✓</span>}
+      {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
+      {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
+      {it.kind === 'video' && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
+      {watched != null && <span className="tile-progress" title={`Watched ${Math.round(watched * 100)}%`}><span style={{ width: `${watched * 100}%` }} /></span>}
+      {it.kind === 'gif' && <span className="badge">GIF</span>}
+      {it.kind === 'pdf' && <span className="badge">PDF</span>}
+      {it.kind === 'text' && <span className="badge">{it.ext.toUpperCase()}</span>}
+    </button>
+  );
+});
 
 // ---- instant colour sketches and queued thumbnails (sketch.ts, loadqueue.ts) -------------
 

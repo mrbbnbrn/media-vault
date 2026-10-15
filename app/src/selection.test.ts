@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bandPick, clickPick, folderPick, moveFrom, movePick, rangeOf, returnPick } from './selection';
+import { bandPick, clickPick, folderPick, MemberStore, moveFrom, movePick, rangeOf, returnPick } from './selection';
 
 const order = [10, 11, 12, 13, 14, 15];
 const ids = (s: Set<number>) => [...s].sort((a, b) => a - b);
@@ -78,5 +78,26 @@ describe('selection', () => {
     expect(ids(folderPick(f, new Set([1]), 1, 3, { shift: true }).selected)).toEqual([1, 2, 3]);
     // No anchor yet: Shift + click starts from the folder clicked.
     expect(ids(folderPick(f, new Set(), null, 2, { shift: true }).selected)).toEqual([2]);
+  });
+});
+
+describe('MemberStore', () => {
+  it('tells only the ids whose membership changed', () => {
+    const st = new MemberStore();
+    const calls: number[] = [];
+    const off = [1, 2, 3, 4].map((id) => st.subscribe(id, () => calls.push(id)));
+    st.set(new Set([1, 2]));
+    expect(calls.sort()).toEqual([1, 2]);
+    calls.length = 0;
+    st.set(new Set([2, 3]));
+    expect(calls.sort()).toEqual([1, 3]);
+    expect(st.has(2) && st.has(3) && !st.has(1)).toBe(true);
+    calls.length = 0;
+    // Ids nobody watches (off screen) cost nothing but are still answered.
+    expect(st.set(new Set([2, 3, 99]))).toBe(0);
+    expect(st.has(99)).toBe(true);
+    off.forEach((f) => f());
+    expect(st.set(new Set())).toBe(0);
+    expect(calls).toEqual([]);
   });
 });

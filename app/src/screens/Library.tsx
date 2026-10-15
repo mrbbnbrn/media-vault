@@ -396,13 +396,23 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     sd?.addEventListener('scroll', onSide, { passive: true });
     const sc = scroller.current;
     let frame = 0;
+    let idle: ReturnType<typeof setTimeout> | null = null;
     const onMain = () => {
       if (!sc || restoring.current) return;
       setScroll(viewKRef.current, sc.scrollTop);
-      if (!frame) frame = requestAnimationFrame(() => {
-        frame = 0;
-        if (!restoring.current) setScrollAnchor(viewKRef.current, findAnchor(sc));
-      });
+      // The anchor tile is looked for once the scrolling pauses, not every frame
+      // (it measures every tile on screen, which forces a layout mid-scroll).
+      const k = viewKRef.current;
+      if (idle) clearTimeout(idle);
+      idle = setTimeout(() => {
+        idle = null;
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          frame = 0;
+          // (Another view by now: its tiles aren't the ones that were scrolled.)
+          if (!restoring.current && viewKRef.current === k) setScrollAnchor(k, findAnchor(sc));
+        });
+      }, 120);
     };
     // Scrolling by hand ends any restoring still going on.
     const byHand = () => {
@@ -413,6 +423,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     sc?.addEventListener('pointerdown', byHand, { passive: true });
     return () => {
       cancelAnimationFrame(frame);
+      if (idle) clearTimeout(idle);
       sd?.removeEventListener('scroll', onSide);
       sc?.removeEventListener('scroll', onMain);
       sc?.removeEventListener('wheel', byHand);
