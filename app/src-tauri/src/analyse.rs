@@ -277,7 +277,10 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                                     smart = c && caps.smart;
                                 }
                             }
-                            Err(_) => rep.left_to_window = true,
+                            Err(_) => {
+                                not_here(t.id);
+                                rep.left_to_window = true;
+                            }
                         },
                         Err(_) => {
                             not_here(t.id);
@@ -794,7 +797,7 @@ mod tests {
         let per_batched = t.elapsed().as_micros() / k as u128;
         let n = n.max(1) as u128;
         eprintln!(
-            "per picture (ms): decode {:.1}, thumbnail {:.1}, fingerprint {:.1}, smart {:.1} (in a batch of {k}: {:.1}), faces {:.1}; device {:?}",
+            "per picture (ms): decode {:.1}, thumbnail {:.1}, fingerprint {:.1}, smart {:.1} (8 in one call: {:.1} each), faces {:.1}; device {:?}",
             t_decode as f64 / n as f64 / 1000.0, t_thumb as f64 / n as f64 / 1000.0, t_print as f64 / n as f64 / 1000.0,
             t_clip as f64 / n as f64 / 1000.0, per_batched as f64 / 1000.0, t_faces as f64 / n as f64 / 1000.0, smartnative::info().device
         );

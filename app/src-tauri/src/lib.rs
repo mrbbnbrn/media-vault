@@ -1875,7 +1875,8 @@ async fn background_left(state: State<'_, Shared>) -> Result<BackgroundLeft, Str
     read_db(state.inner(), |c| {
         let one = |sql: &str| c.query_row(sql, [], |r| r.get::<_, i64>(0)).map_err(|e| e.to_string());
         Ok(BackgroundLeft {
-            thumbs: one("SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL")?,
+            // The window's share (the native analysis pass counts its own).
+            thumbs: one(&format!("SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL{}", analyse::window_thumbs_sql()))?,
             previews: one(
                 "SELECT COUNT(*) FROM media WHERE kind = 'video' AND preview_object_id IS NULL AND deleted_at IS NULL \
                  AND thumb_object_id IS NOT NULL AND thumb_object_id <> ''",
