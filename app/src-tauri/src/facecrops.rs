@@ -339,7 +339,7 @@ pub fn measure(s: &crate::session::Session, job: &str, ids: &[i64], progress: &m
     let total = ids.len();
     let mut done = known.len();
     progress(done, total);
-    let pack = crate::faceid::available();
+    let pack = crate::faceid::info().available;
     let mut points = |rgba: &[u8], w: usize, h: usize| if pack { crate::faceid::points(rgba, w, h).ok() } else { None };
     let mut out: Vec<FaceMeasure> = known.into_values().collect();
     for (media, list) in by_media {
@@ -363,11 +363,21 @@ pub fn measure(s: &crate::session::Session, job: &str, ids: &[i64], progress: &m
 
 // ---- commands ---------------------------------------------------------------------------------
 
-/// A person's faces in pictures, oldest first (see `person_faces`).
+/// A person's faces in pictures, oldest first (see `person_faces`); with
+/// `min_px`, only faces at least that tall. (The window asks for all of them
+/// so its "Smallest face" slider can count live without asking again.)
 #[tauri::command]
-pub async fn face_crops_list(state: State<'_, crate::Shared>, person: i64) -> Result<Vec<PersonFace>, String> {
+pub async fn face_crops_list(state: State<'_, crate::Shared>, person: i64, min_px: Option<f32>) -> Result<Vec<PersonFace>, String> {
     let s = crate::sess(&state)?;
-    tauri::async_runtime::spawn_blocking(move || person_faces(&s.db(), person)).await.map_err(|x| x.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let all = person_faces(&s.db(), person)?;
+        Ok(match min_px {
+            Some(m) => at_least(&all, m),
+            None => all,
+        })
+    })
+    .await
+    .map_err(|x| x.to_string())?
 }
 
 /// Measure these faces (see `measure`); `job` names the run for progress and stopping.
