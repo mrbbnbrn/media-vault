@@ -1,8 +1,8 @@
 /* "Time to next slide" ring around the Slideshow button's icon (SlideRing.tsx). */
 .btn.slideshow.ringed { padding-left: 11px; gap: 8px; }
 .slide-ring { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; flex: none; transition: opacity 0.2s; }
-.slide-ring svg { position: absolute; inset: 0; overflow: visible; }
-.slide-ring circle { fill: none; stroke: currentColor; stroke-width: 2.2; }
+.slide-ring > svg { position: absolute; inset: 0; overflow: visible; }
+.slide-ring > svg circle { fill: none; stroke: currentColor; stroke-width: 2.2; }
 .slide-ring-track { opacity: 0.26; }
 .slide-ring-arc { stroke-linecap: butt; }
 /* Segment gaps (GIF loops, beats) are cut in the button's own colour. */
