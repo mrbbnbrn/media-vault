@@ -422,13 +422,16 @@ impl Vault {
     /// (for importing several files at once: each is encrypted on its own
     /// thread, then stored in order with [`Vault::add_encrypted`]). Reads
     /// the source once; the SHA-256 is computed on the way.
-    pub fn encrypt_to_memory(&self, kind: ObjectKind, mut source: impl Read) -> Result<Encrypted> {
+    /// `size_hint`: the expected plaintext length (room is made for it once).
+    pub fn encrypt_to_memory(&self, kind: ObjectKind, mut source: impl Read, size_hint: u64) -> Result<Encrypted> {
         self.require_write()?;
         if kind == ObjectKind::Database {
             return Err(Error::Invalid("the database is not stored in packs".into()));
         }
         let id = ObjectId::random();
-        let mut ow = ObjectWriter::new(std::io::Cursor::new(Vec::new()), id, kind, DEFAULT_CHUNK_LOG2)?;
+        let chunks = size_hint.div_ceil(1 << DEFAULT_CHUNK_LOG2).max(1);
+        let room = size_hint.saturating_add(crate::stream::HEADER_LEN + chunks.saturating_mul(crate::crypto::TAG_LEN as u64)).min(1 << 30) as usize;
+        let mut ow = ObjectWriter::new(std::io::Cursor::new(Vec::with_capacity(room)), id, kind, DEFAULT_CHUNK_LOG2)?;
         ow.set_threads(1);
         std::io::copy(&mut source, &mut ow)?;
         let (cur, written) = ow.finish(&self.master)?;

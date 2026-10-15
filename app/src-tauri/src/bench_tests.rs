@@ -250,38 +250,32 @@ fn bench_encrypt_decrypt_and_import() {
     }
     drop(enc);
 
-    // Importing a folder: 120 pictures of 2 MB and two 40 MB videos.
+    // Importing a folder: 80 pictures of 2 MB and a 40 MB video, the old
+    // way (each file streamed in, one after another) and the new one.
     let t = tempfile::tempdir().unwrap();
     let src = t.path().join("Import");
     std::fs::create_dir_all(&src).unwrap();
     let mut total = 0usize;
-    for i in 0..122usize {
-        let len = if i % 61 == 60 { 40 << 20 } else { 2 << 20 };
+    for i in 0..81usize {
+        let len = if i == 40 { 40 << 20 } else { 2 << 20 };
         let name = if len > 2 << 20 { format!("v{i:03}.mp4") } else { format!("p{i:03}.jpg") };
         let body: Vec<u8> = (0..len).map(|k| ((k * 131 + i * 7) >> 3) as u8).collect();
         std::fs::write(src.join(name), body).unwrap();
         total += len;
     }
-    let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
-    // One by one, one core each (as before).
-    let t0 = Instant::now();
-    let mut files: Vec<_> = std::fs::read_dir(&src).unwrap().map(|e| e.unwrap().path()).collect();
-    files.sort();
-    for f in &files {
-        let e = s.vault().encrypt_to_memory(ObjectKind::Media, std::fs::File::open(f).unwrap()).unwrap();
-        s.vault().add_encrypted(&e).unwrap();
+    let mb = total as f64 / 1e6;
+    for (label, small, in_flight) in [("one file after another (as before)", 0, 0), ("several at once (now)", 32 << 20, 192 << 20)] {
+        let v = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(v.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        import::TEST_SMALL_FILE.store(small, std::sync::atomic::Ordering::SeqCst);
+        import::TEST_IN_FLIGHT.store(in_flight, std::sync::atomic::Ordering::SeqCst);
+        let t0 = Instant::now();
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        let r = import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
+        let secs = t0.elapsed().as_secs_f64();
+        assert_eq!(r.imported, 81, "{:?}", r.failed);
+        eprintln!("import of {mb:.0} MB in 81 files, {label}: {:.0} MB/s ({} cores)", mb / secs, vault_core::stream::default_threads());
     }
-    let before = t0.elapsed().as_secs_f64();
-    let t0 = Instant::now();
-    let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
-    let r = import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
-    let after = t0.elapsed().as_secs_f64();
-    assert_eq!(r.imported, 122);
-    eprintln!(
-        "import of {:.0} MB in 122 files: {:.0} MB/s one at a time on one core, {:.0} MB/s now ({} cores)",
-        total as f64 / 1e6,
-        total as f64 / 1e6 / before,
-        total as f64 / 1e6 / after,
-        vault_core::stream::default_threads()
-    );
+    import::TEST_SMALL_FILE.store(64 << 10, std::sync::atomic::Ordering::SeqCst);
+    import::TEST_IN_FLIGHT.store(256 << 10, std::sync::atomic::Ordering::SeqCst);
 }

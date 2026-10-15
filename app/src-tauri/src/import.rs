@@ -534,11 +534,37 @@ fn folder_for(
 // being worked on at a time; bigger files are streamed straight into the
 // vault (encrypted on all cores, a few chunks at a time) when their turn comes.
 
-/// Files up to this size are encrypted in memory by a worker (smaller in
-/// tests, so both ways are tried).
-const SMALL_FILE: u64 = if cfg!(test) { 64 << 10 } else { 32 << 20 };
+/// Files up to this size are encrypted in memory by a worker.
+#[cfg(not(test))]
+const SMALL_FILE: u64 = 32 << 20;
 /// Bytes of files being encrypted or waiting for their turn, at most.
-const IN_FLIGHT: u64 = if cfg!(test) { 256 << 10 } else { 192 << 20 };
+#[cfg(not(test))]
+const IN_FLIGHT: u64 = 192 << 20;
+
+// Smaller in tests, so both ways are tried (and changeable for measuring).
+#[cfg(test)]
+pub static TEST_SMALL_FILE: AtomicU64 = AtomicU64::new(64 << 10);
+#[cfg(test)]
+pub static TEST_IN_FLIGHT: AtomicU64 = AtomicU64::new(256 << 10);
+
+/// Encrypted in memory by a worker (else streamed in when its turn comes).
+#[cfg(not(test))]
+fn pooled(size: u64) -> bool {
+    size <= SMALL_FILE
+}
+#[cfg(test)]
+fn pooled(size: u64) -> bool {
+    size <= TEST_SMALL_FILE.load(Ordering::SeqCst)
+}
+
+#[cfg(not(test))]
+fn in_flight_limit() -> u64 {
+    IN_FLIGHT
+}
+#[cfg(test)]
+fn in_flight_limit() -> u64 {
+    TEST_IN_FLIGHT.load(Ordering::SeqCst)
+}
 
 /// One file to import.
 struct FileJob {
@@ -581,13 +607,13 @@ enum Prepared {
     Failed(String),
 }
 
-fn prepare(s: &Session, cancel: &AtomicBool, bytes: &AtomicU64, path: &Path) -> Prepared {
+fn prepare(s: &Session, cancel: &AtomicBool, bytes: &AtomicU64, path: &Path, size: u64) -> Prepared {
     let f = match File::open(path) {
         Ok(f) => f,
         Err(e) => return Prepared::Failed(e.to_string()),
     };
     let mut tap = Tap { inner: f, head: Vec::new(), bytes, cancel, s };
-    let r = s.vault().encrypt_to_memory(ObjectKind::Media, &mut tap);
+    let r = s.vault().encrypt_to_memory(ObjectKind::Media, &mut tap, size);
     match r {
         Ok(enc) => Prepared::Ready(enc, tap.head),
         Err(e) => Prepared::Failed(e.to_string()),
@@ -624,7 +650,7 @@ fn import_files(ctx: &mut Ctx, jobs: Vec<FileJob>) {
     }
     let workers = vault_core::stream::default_threads().clamp(1, 8).min(jobs.len());
     let (s, cancel, bytes) = (ctx.s, ctx.cancel, ctx.bytes);
-    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(usize, PathBuf)>(workers * 2);
+    let (job_tx, job_rx) = std::sync::mpsc::sync_channel::<(usize, PathBuf, u64)>(workers * 2);
     let job_rx = std::sync::Mutex::new(job_rx);
     let (done_tx, done_rx) = std::sync::mpsc::channel::<(usize, Prepared)>();
     std::thread::scope(|sc| {
@@ -633,8 +659,8 @@ fn import_files(ctx: &mut Ctx, jobs: Vec<FileJob>) {
             sc.spawn(move || {
                 loop {
                     let next = job_rx.lock().unwrap_or_else(|x| x.into_inner()).recv();
-                    let Ok((k, path)) = next else { break };
-                    if done_tx.send((k, prepare(s, cancel, bytes, &path))).is_err() {
+                    let Ok((k, path, size)) = next else { break };
+                    if done_tx.send((k, prepare(s, cancel, bytes, &path, size))).is_err() {
                         break;
                     }
                 }
@@ -645,10 +671,10 @@ fn import_files(ctx: &mut Ctx, jobs: Vec<FileJob>) {
         let (mut sent, mut next, mut in_flight) = (0usize, 0usize, 0u64);
         while next < jobs.len() && !ctx.stopped() {
             // Hand out more work while there is room.
-            while sent < jobs.len() && sent - next < workers * 3 && (in_flight < IN_FLIGHT || sent == next) {
+            while sent < jobs.len() && sent - next < workers * 3 && (in_flight < in_flight_limit() || sent == next) {
                 let size = jobs[sent].size;
-                if size <= SMALL_FILE {
-                    if job_tx.send((sent, jobs[sent].path.clone())).is_err() {
+                if pooled(size) {
+                    if job_tx.send((sent, jobs[sent].path.clone(), size)).is_err() {
                         break;
                     }
                     in_flight += size;
@@ -659,7 +685,7 @@ fn import_files(ctx: &mut Ctx, jobs: Vec<FileJob>) {
             }
             // Store whatever is next in line, else wait for a worker.
             if let Some(p) = waiting.remove(&next) {
-                if jobs[next].size <= SMALL_FILE {
+                if pooled(jobs[next].size) {
                     in_flight -= jobs[next].size;
                 }
                 commit(ctx, &jobs[next], p);
