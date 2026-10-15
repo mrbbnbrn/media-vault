@@ -221,13 +221,21 @@ impl<W: Write + Seek> ObjectWriter<W> {
         }
         self.threads = threads.max(1);
         self.batch = if self.threads == 1 { 1 } else { (PARALLEL_BYTES / self.chunk_size).clamp(1, 64) };
-        let want = self.chunk_size * self.batch + 1;
-        if self.buf.capacity() < want {
-            // Sized once, so it never moves (no stray copies of plaintext).
-            let mut b = Zeroizing::new(Vec::with_capacity(want));
-            b.extend_from_slice(&self.buf);
-            self.buf = b;
+    }
+
+    /// Make room for `extra` more bytes. The buffer grows by moving to a
+    /// bigger one and wiping the old one, so no stray copies of plaintext are
+    /// left behind (small objects such as thumbnails never get a big buffer).
+    fn reserve(&mut self, extra: usize) {
+        let need = self.buf.len() + extra;
+        if need <= self.buf.capacity() {
+            return;
         }
+        let most = self.chunk_size * self.batch + 1;
+        let cap = need.max(self.buf.capacity() * 2).max(64 << 10).min(most.max(need));
+        let mut b = Zeroizing::new(Vec::with_capacity(cap));
+        b.extend_from_slice(&self.buf);
+        self.buf = b; // the old one is wiped as it is dropped
     }
 
     /// Encrypt and write `full` whole chunks from the front of the buffer,
@@ -295,6 +303,7 @@ impl<W: Write + Seek> Write for ObjectWriter<W> {
             // Never more than one batch plus one byte in the buffer.
             let room = (limit + 1 - self.buf.len()).min(rest.len());
             let (now, later) = rest.split_at(room);
+            self.reserve(now.len());
             self.buf.extend_from_slice(now);
             rest = later;
             // Keep at least one byte back so the final chunk is always the one
