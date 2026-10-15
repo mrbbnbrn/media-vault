@@ -1,87 +1,71 @@
-// Smooth grid previews.
+// Video previews in the grid.
 //
-// With few videos on screen the grid plays the originals. When playback
-// can't keep up (dropped video frames or a stuttering window), every
-// previewing tile switches together to a small preview clip: a strip of 48
-// little frames made once per video and kept encrypted with the thumbnails.
-// If it still stutters, the clips are shown with fewer frames per second.
-// When there are clearly fewer videos on screen again, the originals return.
+// Every video gets two small things, made once in the background and kept
+// encrypted with the thumbnails:
+//  - a frame strip: 48 little frames in one JPEG (flip-books, seek-bar
+//    previews, smart search), and
+//  - a tiny clip: a few seconds of small silent video, made of short pieces
+//    spread through the video (tinyclip.ts in the window, or the video tool).
+// A tile shows, as each becomes ready: thumbnail → flip-book → tiny clip →
+// the real video (when the PC keeps up; previewplan.ts decides). Hover always
+// plays the real video.
 
 import { useSyncExternalStore } from 'react';
 import { api, jobsApi, mediaUrl } from './api';
 import { loopJob } from './jobs';
+import { makeVideoPreviews } from './tinyclip';
+import { previewsPaused, onPreviewsPaused, whenPreviewsMayRun } from './previewgate';
 
 export const COLS = 8;
 export const ROWS = 6;
 export const FRAMES = COLS * ROWS;
-/** Frames per second of a preview clip at full smoothness. */
+/** Frames per second of a flip-book. */
 export const CLIP_FPS = 8;
-const CELL = 240;
 
-// ---- making a clip ------------------------------------------------------------------------
+// ---- what is taken from where ----------------------------------------------------------------
 
-/** When (seconds) each frame is taken: a few short moments spread through the video. */
+/** When (seconds) each strip frame is taken: a few short moments spread through the video. */
 export function frameTimes(duration: number): number[] {
   if (!Number.isFinite(duration) || duration <= 0) return Array.from({ length: FRAMES }, () => 0);
   const per = FRAMES / 4;
   const step = 1 / CLIP_FPS;
   if (duration >= 4 * per * step * 1.6) {
-    const starts = [0.1, 0.33, 0.56, 0.79].map((p) => p * duration);
+    const starts = PIECE_AT.map((p) => p * duration);
     return starts.flatMap((s) => Array.from({ length: per }, (_, i) => Math.min(duration - 0.05, s + i * step)));
   }
   // Short videos: frames spread over the whole video.
   return Array.from({ length: FRAMES }, (_, i) => Math.min(duration - 0.05, (i * duration) / FRAMES));
 }
 
-const timeout = <T,>(p: Promise<T>, ms: number) =>
-  Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('timeout')), ms))]);
+/** Where the pieces start, as parts of the video's length (the same moments as the strip). */
+const PIECE_AT = [0.1, 0.33, 0.56, 0.79];
+/** Length of one piece of a tiny clip (s): the strip's 12 frames at 8 a second. */
+export const TINY_PIECE = (FRAMES / 4) / CLIP_FPS;
+/** Longest tiny clip of a short video (s). */
+export const TINY_MAX = 6;
 
-/** Make the frame strip of one video, in memory (JPEG bytes). */
-export async function makePreviewStrip(id: number): Promise<Uint8Array> {
-  const v = document.createElement('video');
-  v.crossOrigin = 'anonymous';
-  v.muted = true;
-  v.preload = 'auto';
-  v.playsInline = true;
-  try {
-    v.src = mediaUrl(id);
-    await timeout(
-      new Promise<void>((res, rej) => {
-        v.onloadeddata = () => res();
-        v.onerror = () => rej(new Error('unsupported'));
-      }),
-      30_000,
-    );
-    if (!v.videoWidth) throw new Error('no picture');
-    const a = v.videoWidth / v.videoHeight;
-    const cw = Math.round(a >= 1 ? CELL : CELL * a);
-    const ch = Math.round(a >= 1 ? CELL / a : CELL);
-    const c = document.createElement('canvas');
-    c.width = cw * COLS;
-    c.height = ch * ROWS;
-    const g = c.getContext('2d')!;
-    g.imageSmoothingQuality = 'high';
-    const times = frameTimes(v.duration);
-    for (let i = 0; i < FRAMES; i++) {
-      const t = times[i];
-      if (Math.abs(v.currentTime - t) > 0.01) {
-        await timeout(
-          new Promise<void>((res) => {
-            v.onseeked = () => res();
-            v.currentTime = t;
-          }),
-          10_000,
-        );
-      }
-      g.drawImage(v, (i % COLS) * cw, Math.floor(i / COLS) * ch, cw, ch);
-    }
-    const blob = await new Promise<Blob | null>((res) => c.toBlob(res, 'image/jpeg', 0.72));
-    if (!blob) throw new Error('could not encode');
-    return new Uint8Array(await blob.arrayBuffer());
-  } finally {
-    v.removeAttribute('src');
-    v.load();
-  }
+/** The pieces a tiny clip is made of: four 1.5 s pieces of a long video, or its start. */
+export function tinyPieces(duration: number): { starts: number[]; piece: number } {
+  if (!Number.isFinite(duration) || duration <= 0) return { starts: [0], piece: 1 };
+  if (duration >= 4 * TINY_PIECE * 1.6) return { starts: PIECE_AT.map((p) => Math.round(p * duration * 1000) / 1000), piece: TINY_PIECE };
+  return { starts: [0], piece: Math.max(0.2, Math.min(TINY_MAX, duration - 0.05)) };
+}
+
+/** Where in the real video a moment of the tiny clip comes from (to carry on from there). */
+export function tinyToSource(tinyTime: number, duration: number): number {
+  const { starts, piece } = tinyPieces(duration);
+  const total = starts.length * piece;
+  const t = ((tinyTime % total) + total) % total;
+  const k = Math.min(starts.length - 1, Math.floor(t / piece));
+  return Math.min(Math.max(0, duration - 0.1), starts[k] + (t - k * piece));
+}
+
+/** Size of a tiny clip: 426 on the long side, even numbers, never bigger than the video. */
+export function tinySize(w: number, h: number): { w: number; h: number } {
+  const long = Math.min(426, Math.max(w, h));
+  const s = long / Math.max(w, h, 1);
+  const even = (x: number) => Math.max(2, Math.round((x * s) / 2) * 2);
+  return { w: even(w), h: even(h) };
 }
 
 // ---- background maker -----------------------------------------------------------------------
@@ -90,16 +74,17 @@ let running = false;
 let stopFn: (() => void) | null = null;
 let wake: (() => void) | null = null;
 let prefer: number[] = [];
-const madeListeners = new Set<(id: number) => void>();
+export type PreviewKind = 'strip' | 'tiny';
+const madeListeners = new Set<(id: number, kind: PreviewKind) => void>();
 
-/** Videos on screen that need a clip now (made first). */
+/** Videos on screen that need a strip or tiny clip now (made first). */
 export function preferPreviews(ids: number[]) {
   const fresh = ids.some((id) => !prefer.includes(id));
   prefer = ids.slice(0, 64);
   if (fresh) wake?.();
 }
 
-export function onPreviewMade(cb: (id: number) => void): () => void {
+export function onPreviewMade(cb: (id: number, kind: PreviewKind) => void): () => void {
   madeListeners.add(cb);
   return () => madeListeners.delete(cb);
 }
@@ -108,7 +93,63 @@ export function kickPreviews() {
   wake?.();
 }
 
-/** Makes preview clips one at a time in the background. Stops on lock. */
+/** Make the frame strip of one video, in memory (JPEG bytes). */
+export async function makePreviewStrip(id: number): Promise<Uint8Array> {
+  const m = await makeVideoPreviews(mediaUrl(id), { strip: true, tiny: false });
+  return m.strip!;
+}
+
+/** The last few makes, for the measurements (Settings → About → self-test, dev tools). */
+export const makerLog: { id: number; ms: number; how: string }[] = [];
+
+let noTool = false;
+
+/** Make what one video is missing. */
+async function makeFor(t: { id: number; durationMs: number | null; needStrip: boolean; needTiny: boolean }, stopped: () => boolean) {
+  const t0 = performance.now();
+  let needTiny = t.needTiny;
+  let how = '';
+  // The video tool makes tiny clips outside the window (and in H.264) when it is installed.
+  if (needTiny && !noTool && t.durationMs) {
+    const plan = tinyPieces(t.durationMs / 1000);
+    try {
+      if (await api.makeTinyWithTool(t.id, plan.starts, plan.piece)) {
+        needTiny = false;
+        how = 'tool';
+        madeListeners.forEach((l) => l(t.id, 'tiny'));
+      } else noTool = true;
+    } catch {
+      // The window tries instead.
+    }
+  }
+  if (stopped() || (!t.needStrip && !needTiny)) return how;
+  let made;
+  try {
+    made = await makeVideoPreviews(mediaUrl(t.id), { strip: t.needStrip, tiny: needTiny });
+  } catch {
+    if (stopped()) return how;
+    if (t.needStrip) await api.previewFailed(t.id).catch(() => {});
+    if (needTiny) await api.tinyFailed(t.id).catch(() => {});
+    return how + ' failed';
+  }
+  if (stopped()) return how;
+  if (made.strip) {
+    await api.savePreview(t.id, Array.from(made.strip));
+    madeListeners.forEach((l) => l(t.id, 'strip'));
+  }
+  if (needTiny) {
+    if (made.tiny) {
+      await api.saveTiny(t.id, Array.from(made.tiny));
+      madeListeners.forEach((l) => l(t.id, 'tiny'));
+    } else {
+      // No video encoder here: the flip-book stands in.
+      await api.tinyFailed(t.id).catch(() => {});
+    }
+  }
+  return `${how ? how + '+' : ''}window ${Math.round(performance.now() - t0)} ms`;
+}
+
+/** Makes strips and tiny clips one video at a time in the background. Stops on lock. */
 export function startPreviewMaker(): () => void {
   if (running) return stopFn ?? (() => {});
   running = true;
@@ -124,7 +165,7 @@ export function startPreviewMaker(): () => void {
   const job = loopJob('previews', { label: 'Making preview clips', unit: '', left: () => jobsApi.backgroundLeft().then((l) => l.previews) });
   (async () => {
     while (!stopped) {
-      let tasks: { id: number }[] = [];
+      let tasks: { id: number; durationMs: number | null; needStrip: boolean; needTiny: boolean }[] = [];
       try {
         tasks = await api.previewsNeeded(4, prefer);
       } catch {
@@ -138,14 +179,16 @@ export function startPreviewMaker(): () => void {
       job.batch();
       for (const t of tasks) {
         if (stopped) break;
+        // Not while the window is minimised or hidden (nothing would be drawn).
+        await whenPreviewsMayRun(() => stopped);
+        if (stopped) break;
+        const t0 = performance.now();
         try {
-          const bytes = await makePreviewStrip(t.id);
-          if (stopped) break;
-          await api.savePreview(t.id, Array.from(bytes));
-          madeListeners.forEach((l) => l(t.id));
+          const how = await makeFor(t, () => stopped);
+          makerLog.push({ id: t.id, ms: Math.round(performance.now() - t0), how });
+          if (makerLog.length > 50) makerLog.shift();
         } catch {
-          if (stopped) break;
-          await api.previewFailed(t.id).catch(() => {});
+          // Saving failed (locked?): the next round tries again.
         }
         job.step();
         // A short rest so the window stays smooth.
@@ -163,145 +206,13 @@ export function startPreviewMaker(): () => void {
   return stopFn;
 }
 
-// ---- watching for lag ---------------------------------------------------------------------------
-
-export interface PreviewMode {
-  /** Every previewing tile shows its preview clip instead of the original. */
-  clips: boolean;
-  /** Frames per second for the clips (8, 4 or 2). */
-  fps: number;
-}
-
-let mode: PreviewMode = { clips: false, fps: CLIP_FPS };
-const subs = new Set<() => void>();
-const setMode = (m: PreviewMode) => {
-  if (m.clips === mode.clips && m.fps === mode.fps) return;
-  mode = m;
-  subs.forEach((s) => s());
-};
-
-export function usePreviewMode(): PreviewMode {
-  return useSyncExternalStore(
-    (cb) => {
-      subs.add(cb);
-      startMonitor();
-      return () => subs.delete(cb);
-    },
-    () => mode,
-  );
-}
-
-const videos = new Set<HTMLVideoElement>();
-const lastQuality = new WeakMap<HTMLVideoElement, { total: number; dropped: number }>();
-let wanted = 0;
-/** How many videos were playing when it started to lag. */
-let threshold = Infinity;
-
-/** The grid says how many tiles want to play a video right now. */
-export function setWantedVideos(n: number) {
-  wanted = n;
-  if (mode.clips && n <= Math.max(2, Math.floor(threshold * 0.6))) {
-    setMode({ clips: false, fps: CLIP_FPS });
-  }
-}
-
-/** Ref callback for grid videos: they are watched for dropped frames. */
-export function watchVideo(v: HTMLVideoElement | null) {
-  if (v) videos.add(v);
-}
-export function unwatchVideo(v: HTMLVideoElement) {
-  videos.delete(v);
-}
-
-let monitoring = false;
-function startMonitor() {
-  if (monitoring) return;
-  monitoring = true;
-  let last = performance.now();
-  let frames = 0;
-  let slow = 0;
-  let sum = 0;
-  let windowStart = last;
-  let lagStreak = 0;
-  let calm = 0;
-  const loop = (now: number) => {
-    const dt = now - last;
-    last = now;
-    if (dt < 1000 && document.visibilityState === 'visible') {
-      frames++;
-      sum += dt;
-      if (dt > 50) slow++;
-    }
-    if (now - windowStart >= 2000) {
-      evaluate(frames ? slow / frames : 0, frames ? sum / frames : 16);
-      frames = 0;
-      slow = 0;
-      sum = 0;
-      windowStart = now;
-    }
-    requestAnimationFrame(loop);
-  };
-  const evaluate = (slowShare: number, avg: number) => {
-    if (wanted === 0) {
-      lagStreak = 0;
-      return;
-    }
-    const jank = slowShare > 0.15 || avg > 34;
-    if (!mode.clips) {
-      // Dropped video frames since the last look, over all grid videos.
-      let total = 0;
-      let dropped = 0;
-      for (const v of videos) {
-        if (!v.isConnected) {
-          videos.delete(v);
-          continue;
-        }
-        const q = v.getVideoPlaybackQuality?.();
-        if (!q) continue;
-        const prev = lastQuality.get(v) ?? { total: q.totalVideoFrames, dropped: q.droppedVideoFrames };
-        total += Math.max(0, q.totalVideoFrames - prev.total);
-        dropped += Math.max(0, q.droppedVideoFrames - prev.dropped);
-        lastQuality.set(v, { total: q.totalVideoFrames, dropped: q.droppedVideoFrames });
-      }
-      const droppy = total > 30 && dropped / total > 0.12;
-      lagStreak = wanted >= 3 && (droppy || jank) ? lagStreak + 1 : 0;
-      if (lagStreak >= 2) {
-        lagStreak = 0;
-        calm = 0;
-        threshold = wanted;
-        setMode({ clips: true, fps: CLIP_FPS });
-      }
-      return;
-    }
-    // Already on clips: fewer frames if it still stutters, more after a long calm.
-    if (jank) {
-      lagStreak++;
-      calm = 0;
-      if (lagStreak >= 2 && mode.fps > 2) {
-        lagStreak = 0;
-        setMode({ clips: true, fps: mode.fps / 2 });
-      }
-    } else {
-      lagStreak = 0;
-      calm++;
-      if (calm >= 15 && mode.fps < CLIP_FPS) {
-        calm = 0;
-        setMode({ clips: true, fps: mode.fps * 2 });
-      }
-    }
-  };
-  requestAnimationFrame(loop);
-}
-
-// ---- playing clips ----------------------------------------------------------------------------
+// ---- flip-books (frame strips played by one shared timer) ------------------------------------
 
 const clipEls = new Set<HTMLElement>();
 let ticker: ReturnType<typeof setInterval> | null = null;
-let tickerFps = 0;
 
-function frameAt(fps: number): number {
-  const step = CLIP_FPS / fps;
-  return (Math.floor(performance.now() / (1000 / fps)) * step) % FRAMES;
+function frameAt(): number {
+  return Math.floor(performance.now() / (1000 / CLIP_FPS)) % FRAMES;
 }
 
 export function framePosition(i: number): string {
@@ -311,35 +222,53 @@ export function framePosition(i: number): string {
 }
 
 function ensureTicker() {
-  const fps = mode.fps;
-  if (ticker && tickerFps === fps) return;
-  if (ticker) clearInterval(ticker);
-  tickerFps = fps;
+  if (ticker || previewsPaused()) return;
   ticker = setInterval(() => {
-    if (!clipEls.size) {
+    if (!clipEls.size || previewsPaused()) {
       clearInterval(ticker!);
       ticker = null;
       return;
     }
-    const pos = framePosition(frameAt(tickerFps));
+    const pos = framePosition(frameAt());
     for (const el of clipEls) {
       if (el.isConnected) el.style.backgroundPosition = pos;
       else clipEls.delete(el);
     }
-  }, 1000 / fps);
+  }, 1000 / CLIP_FPS);
 }
+onPreviewsPaused((paused) => {
+  if (!paused && clipEls.size) ensureTicker();
+});
 
-/** Ref callback for a clip element: one shared timer moves every clip on screen. */
+/** Ref callback for a flip-book element: one shared timer moves every flip-book on screen. */
 export function playClip(el: HTMLElement | null) {
   if (!el) return;
   clipEls.add(el);
-  el.style.backgroundPosition = framePosition(frameAt(mode.fps));
+  el.style.backgroundPosition = framePosition(frameAt());
   ensureTicker();
 }
 export function stopClip(el: HTMLElement) {
   clipEls.delete(el);
 }
-/** The frame rate changed: restart the timer. */
-export function clipFpsChanged() {
-  if (clipEls.size) ensureTicker();
+
+// ---- which stand-ins exist (also those made while browsing) ----------------------------------
+
+let madeNow = new Map<number, Set<PreviewKind>>();
+const madeSubs = new Set<() => void>();
+onPreviewMade((id, kind) => {
+  const next = new Map(madeNow);
+  next.set(id, new Set([...(next.get(id) ?? []), kind]));
+  madeNow = next;
+  madeSubs.forEach((s) => s());
+});
+
+/** Strips and tiny clips made since the lists were loaded. */
+export function useMadePreviews(): Map<number, Set<PreviewKind>> {
+  return useSyncExternalStore(
+    (cb) => {
+      madeSubs.add(cb);
+      return () => madeSubs.delete(cb);
+    },
+    () => madeNow,
+  );
 }

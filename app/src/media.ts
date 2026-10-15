@@ -5,6 +5,7 @@ import { api, jobsApi, mediaUrl, localUrl, thumbUrl, type Item, type Kind, type 
 import { loopJob } from './jobs';
 import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
+import { httpRanges, keyframeNear, readKeyframes } from './keyframes';
 
 /** Something a player can show: from the vault or from a dropped folder. */
 export interface PlayItem extends Entry {
@@ -201,6 +202,18 @@ async function imageThumb(id: number) {
   return { bytes, w, h, ms: null as number | null };
 }
 
+/**
+ * Where a video thumbnail is taken: about 10% in (at most 5 s), moved to the
+ * nearest keyframe when there is one close by, so only that one picture has
+ * to be decoded (not everything from the keyframe before up to the moment).
+ */
+export async function thumbMoment(src: string, duration: number): Promise<number> {
+  const at = Math.min(duration * 0.1, 5);
+  if (at <= 0.05) return 0;
+  const index = await withTimeout(readKeyframes(httpRanges(src)), 4000).catch(() => null);
+  return keyframeNear(index, at, Math.max(2.5, duration * 0.05), duration);
+}
+
 async function videoThumb(id: number) {
   const v = document.createElement('video');
   v.crossOrigin = 'anonymous';
@@ -217,7 +230,7 @@ async function videoThumb(id: number) {
       30_000,
     );
     const dur = Number.isFinite(v.duration) ? v.duration : 0;
-    const at = Math.min(dur * 0.1, 5);
+    const at = await thumbMoment(mediaUrl(id), dur);
     if (at > 0.05) {
       await withTimeout(
         new Promise<void>((res) => {
