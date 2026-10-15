@@ -187,7 +187,12 @@ export default function FaceTimelapse(props: {
     } else if (e.key === 'ArrowRight') {
       setPlaying(false);
       goTo(index + 1);
-    } else return;
+    } else {
+      // Other keys stay with the time-lapse (its own buttons and sliders still
+      // get them): nothing reaches the library underneath, e.g. Enter opening a tile.
+      if (!e.ctrlKey && !e.metaKey && !e.altKey) e.stopPropagation();
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
   };
