@@ -112,10 +112,10 @@ export function FaceLayer(props: {
         const top = r.top + f.y * r.height;
         const name = f.hidden ? 'Not important' : known ? nameOf(f)! : 'Who is it?';
         const hint = f.hidden
-          ? 'Marked not important · Ctrl+middle-click or right-click to make it important again'
+          ? 'Not important · Ctrl+middle-click: important again'
           : known
-            ? `${name} · click to change · double-click to see everything of ${name} · middle-click: open in a new tab · Ctrl+middle-click: not important · right-click: more`
-            : 'Say who this is · Ctrl+middle-click: not important · right-click: more';
+            ? `${name} · double-click: see all · middle-click: new tab · right-click: more`
+            : 'Who is it? · click to say · right-click: more';
         return (
           <button key={f.id} type="button" className={`face-box ${f.hidden ? 'hidden-face' : known ? 'known' : 'unknown'}`}
             ref={(el) => {
