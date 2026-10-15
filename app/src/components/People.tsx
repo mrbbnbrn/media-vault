@@ -7,6 +7,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
 import { faceScanPaused, kickFaceScanner, onFaceProgress, setFaceScanPaused } from '../ml/facescan';
+import { openSortAll } from '../facesort';
 import { groupLabel, photos, ticks } from '../peoplelogic';
 import { plural } from '../undo';
 import { Dropdown, Modal, PromptDialog, type MenuItem } from './Dialogs';
@@ -137,6 +138,8 @@ export function PeopleView(props: {
               {paused ? 'Resume scanning' : 'Pause scanning'}
             </button>
           )}
+          <button type="button" className="btn btn-sm" title="Go through every recognised person and move (or free-copy) their photos into their folder — you choose, person by person"
+            onClick={() => openSortAll()}>Sort into folders…</button>
           <Dropdown className="btn btn-sm btn-primary" label={<><FaceIcon /> Scan for faces ▾</>} items={[
             { label: 'Scan everything not scanned yet', onSelect: () => scanAll(false) },
             { label: 'Scan everything again', hint: 'keeps your answers', onSelect: () => scanAll(true) },

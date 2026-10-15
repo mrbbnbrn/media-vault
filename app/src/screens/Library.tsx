@@ -1357,8 +1357,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       .slice(0, n)
       .map(([id]) => byId.get(id)!);
   };
-  const moveSub = (go: (f: FolderCard) => void, except: number[] = []): MenuItem[] =>
-    topFolders(6, except).map((f) => ({ label: f.name, hint: f.path.map((c) => c.name).join(' › ') || undefined, onSelect: () => go(f) }));
+  /** Most-used folders; `people` = person folders of the people in the picture, listed first. */
+  const moveSub = (go: (f: FolderCard) => void, except: number[] = [], people: number[] = []): MenuItem[] => {
+    const persons = people.map((id) => folders.find((f) => f.id === id)).filter((f): f is FolderCard => !!f && !except.includes(f.id));
+    const rest = topFolders(6, [...except, ...persons.map((f) => f.id)]);
+    return [
+      ...persons.map((f) => ({ label: f.name, hint: 'in this picture', onSelect: () => go(f) })),
+      ...rest.map((f, k) => ({ label: f.name, hint: f.path.map((c) => c.name).join(' › ') || undefined, sepBefore: k === 0 && persons.length > 0, onSelect: () => go(f) })),
+    ];
+  };
   const finishMerge = async (m: Merged, target: FolderCard, sources: FolderCard[]) => {
     did(`Merged ${plural(sources.length, 'folder')} into “${target.name}”`, () => api.unmergeFolders(m));
     if (view.kind === 'folder' && sources.some((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folder', id: target.id });
@@ -1593,7 +1600,22 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setCtx({ x: e.clientX, y: e.clientY, title: f.name, items: folderMenu(f) });
   };
 
-  const itemContext = (e: React.MouseEvent, it: Item) => {
+  /** Person folders of the people recognised in these items (for "Move to"); quick, local. */
+  const peopleIn = async (ids: number[]): Promise<number[]> => {
+    try {
+      const r = await Promise.race([
+        api.facesOfMany(ids.slice(0, 60)),
+        new Promise<[number, FaceBox[]][]>((res) => setTimeout(() => res([]), 250)),
+      ]);
+      const count = new Map<number, number>();
+      for (const [, fs] of r) for (const p of new Set(fs.map((f) => f.person).filter((x): x is number => x != null))) count.set(p, (count.get(p) ?? 0) + 1);
+      return [...count].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([p]) => p);
+    } catch {
+      return [];
+    }
+  };
+  const itemContext = async (e: React.MouseEvent, it: Item) => {
+    const at = { clientX: e.clientX, clientY: e.clientY };
     // Right-clicking outside the selection selects just that item.
     let sel = selected;
     if (!selected.has(it.id)) {
@@ -1615,9 +1637,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     }
     const allFav = ids.every((id) => itemById(id)?.favourite);
     const home = it.folderId != null ? folders.find((f) => f.id === it.folderId) : null;
+    const people = await peopleIn(ids);
     setCtx({
-      x: e.clientX,
-      y: e.clientY,
+      x: at.clientX,
+      y: at.clientY,
       title: many ? `${ids.length} items` : it.name,
       items: [
         { label: 'Open', onSelect: () => playItems(false, it.id) },
@@ -1631,9 +1654,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         { label: 'Tags…', onSelect: () => setDialog({ t: 'tagItems', ids }) },
         { label: 'Weight…', hint: `now ${it.weight}`, onSelect: () => setDialog({ t: 'weight', ids, current: it.weight }) },
         { label: 'Move to…', onSelect: () => setDialog({ t: 'moveItems', ids }),
-          sub: moveSub((to) => { moveItems(ids, to.id).catch((err) => setError(errText(err))); }, it.folderId != null ? [it.folderId] : []) },
+          sub: moveSub((to) => { moveItems(ids, to.id).catch((err) => setError(errText(err))); }, it.folderId != null ? [it.folderId] : [], people) },
         { label: 'Free copy to…', hint: 'no extra space', onSelect: () => setDialog({ t: 'freeCopy', ids }),
-          sub: moveSub((to) => { freeCopyTo(ids, to.id).catch((err) => setError(errText(err))); }) },
+          sub: moveSub((to) => { freeCopyTo(ids, to.id).catch((err) => setError(errText(err))); }, [], people) },
         ...(!many && it.linked ? [{ label: it.copyOf != null ? 'Show the original and other copies' : 'Show its free copies', onSelect: () => { showCopies(it).catch((err) => setError(errText(err))); } }] : []),
         { label: 'Rename…', hint: 'F2', onSelect: () => {
           const list = shown.filter((x) => sel.has(x.id));

@@ -1029,6 +1029,24 @@ pub const SORT_MIN: usize = 3;
 /// Of these (newly imported) items: who is in them, and which aren't in
 /// that person's folder yet. Runs the automatic naming first.
 pub fn sort_offers(lib: &dyn Lib, ids: &[i64]) -> R<SortOffers> {
+    offers_for(lib, ids, SORT_MIN)
+}
+
+/// "Sort people into their folders": every recognised person with the items
+/// showing them anywhere in the vault that aren't in their folder yet.
+pub fn sort_all(lib: &dyn Lib) -> R<SortOffers> {
+    let ids: Vec<i64> = {
+        let conn = lib.conn();
+        let mut st = conn
+            .prepare("SELECT DISTINCT f.media_id FROM faces f JOIN media m ON m.id = f.media_id WHERE f.person_id IS NOT NULL AND f.hidden = 0 AND m.deleted_at IS NULL ORDER BY f.media_id")
+            .map_err(e)?;
+        let rows = st.query_map([], |r| r.get(0)).map_err(e)?;
+        rows.collect::<rusqlite::Result<Vec<i64>>>().map_err(e)?
+    };
+    offers_for(lib, &ids, 1)
+}
+
+fn offers_for(lib: &dyn Lib, ids: &[i64], min: usize) -> R<SortOffers> {
     let (views, facts) = analyse_all(lib)?;
     let conn = lib.conn();
     let changed = apply(&conn, &views)?;
@@ -1050,7 +1068,7 @@ pub fn sort_offers(lib: &dyn Lib, ids: &[i64]) -> R<SortOffers> {
                 list.push(it.clone());
             }
         }
-        if list.len() >= SORT_MIN {
+        if list.len() >= min {
             offers.push(SortOffer { folder: p.id, name: facts.names[&p.id].clone(), items: list });
         }
     }
@@ -1466,6 +1484,11 @@ mod tests {
         assert_eq!(o.offers.len(), 1);
         assert_eq!(o.offers[0].folder, a);
         assert_eq!(o.offers[0].items.len(), 3);
+        // "Sort people into their folders" finds the same, from the whole vault.
+        let all = sort_all(&l).unwrap();
+        assert_eq!(all.offers.len(), 1);
+        assert_eq!(all.offers[0].folder, a);
+        assert!(news[..3].iter().all(|m| all.offers[0].items.iter().any(|it| it.id == *m)));
         // Quick sort's suggestion for one of them.
         assert_eq!(person_matches(&l.conn(), news[0]).unwrap()[0].0, a);
         assert!(person_matches(&l.conn(), news[3]).unwrap().is_empty());

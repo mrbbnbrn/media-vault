@@ -83,6 +83,23 @@ export function watchImports(): () => void {
   };
 }
 
+// "Sort people into their folders…" (People page, or the after-import card).
+let sortAllOpen = false;
+const sortSubs = new Set<() => void>();
+export function openSortAll(open = true) {
+  sortAllOpen = open;
+  sortSubs.forEach((s) => s());
+}
+export function useSortAllOpen(): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      sortSubs.add(cb);
+      return () => sortSubs.delete(cb);
+    },
+    () => sortAllOpen,
+  );
+}
+
 /** Browser preview / tests: show an offer. */
 export function showOffer(o: Offer) {
   offers = [...offers, o];

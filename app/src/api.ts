@@ -753,6 +753,8 @@ export const api = {
   /** After an import (seconds): queues the new pictures for scanning; returns them. */
   facesAfterImport: (since: number) => call<number[]>('faces_after_import', { since }),
   facesSortOffers: (ids: number[]) => call<SortOffers>('faces_sort_offers', { ids }),
+  /** Every recognised person with the photos of them that aren't in their folder yet. */
+  facesSortAll: () => call<SortOffers>('faces_sort_all'),
   facesAccept: (faceIds: number[], person: number) => call<{ named?: number; moved: number; tagged: number }>('faces_accept', { faceIds, person }),
   facesReject: (faceIds: number[], person: number) => call<void>('faces_reject', { faceIds, person }),
   facesNewPerson: (name: string, parent: number | null, faceIds: number[]) =>

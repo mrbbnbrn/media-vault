@@ -1465,6 +1465,20 @@ async fn faces_sort_offers(state: State<'_, Shared>, ids: Vec<i64>) -> Result<fa
     .await
 }
 
+/// "Sort people into their folders": every person and the photos of them outside their folder.
+#[tauri::command]
+async fn faces_sort_all(state: State<'_, Shared>) -> Result<faces::SortOffers, String> {
+    let s = sess(state.inner())?;
+    blocking(move || {
+        let r = faces::sort_all(&*s)?;
+        if r.changed > 0 {
+            s.mark_dirty();
+        }
+        Ok(r)
+    })
+    .await
+}
+
 #[tauri::command]
 async fn faces_accept(state: State<'_, Shared>, face_ids: Vec<i64>, person: i64) -> Result<faces::Accepted, String> {
     edit_db(state.inner(), move |c| faces::accept(c, &face_ids, person)).await
@@ -2072,6 +2086,7 @@ pub fn run() {
             faces_not_same,
             faces_after_import,
             faces_sort_offers,
+            faces_sort_all,
             faceid::faces_detect,
             set_resume,
             clip_needed,
