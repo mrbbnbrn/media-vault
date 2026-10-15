@@ -151,6 +151,8 @@ fn install_session(inner: &Inner, s: Session) -> SessionInfo {
     if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
         old.close();
     }
+    // Nothing decrypted from another vault stays in memory.
+    protocol::forget_cache();
     start_background(s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
