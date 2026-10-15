@@ -428,7 +428,8 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
       </p>
       {cache && (
         <div className="stats" style={{ flexWrap: 'wrap' }}>
-          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Thumbnails</span><b>{cache.thumbs.toLocaleString()} · {formatBytes(cache.thumbBytes)}</b></div>
+          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Thumbnails</span><b>{cache.thumbs.toLocaleString()} · {formatBytes(cache.thumbBytes)}</b>
+            {!!cache.pages && <span className="faint" style={{ fontSize: 11 }} title="Each folder's thumbnails packed into a few pages, so grids open faster. Made again by themselves.">+ {cache.pages.toLocaleString()} pages · {formatBytes(cache.pageBytes ?? 0)}</span>}</div>
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Preview clips</span><b>{cache.previews.toLocaleString()} · {formatBytes(cache.previewBytes)}</b></div>
         </div>
       )}

@@ -94,7 +94,7 @@ export function Minimap(props: {
             const b = layout.boxes[i];
             const it = props.items[i];
             return it.thumb === 'ok'
-              ? <img key={it.id} src={thumbUrl(it.id)} alt="" draggable={false} style={{ left: b.x * k, top: (b.y - wTop) * k, width: b.w * k, height: b.h * k }} />
+              ? <img key={it.id} src={thumbUrl(it.id, it.thumbV, true)} alt="" draggable={false} style={{ left: b.x * k, top: (b.y - wTop) * k, width: b.w * k, height: b.h * k }} />
               : <span key={it.id} style={{ left: b.x * k, top: (b.y - wTop) * k, width: b.w * k, height: b.h * k }} />;
           })}
         </div>

@@ -44,6 +44,11 @@ image = { version = "=0.25.10", default-features = false, features = ["gif", "jp
 # A faster memory allocator for the app (main.rs): many threads allocating
 # chunk buffers, pictures and query rows at once.
 mimalloc = { version = "=0.1.52", default-features = false }
+# Lossy WebP thumbnails, small thumbnails and thumbnail pages (picture.rs):
+# libwebp 1.6 itself, compiled from its C sources by `cc` (MSVC on Windows,
+# gcc/clang on Linux); its Rust bindings are pre-made, so no clang/bindgen.
+# Only the encoder is used (decoding stays with `image`).
+libwebp-sys = { version = "=0.14.4", default-features = false, features = ["std"] }
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

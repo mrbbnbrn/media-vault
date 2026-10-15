@@ -3,11 +3,32 @@
 // heading towards, then those it left behind); only a few load at a time, so
 // when you fling the grid the tiles you have already scrolled past never get
 // a turn, instead of queueing hundreds of decryptions ahead of the ones you
-// look at. A tile that goes away (scrolled out) leaves the queue.
+// look at. A tile that goes away (scrolled out) leaves the queue, and its
+// load, if it had started, is cancelled (its AbortSignal fires).
+//
+// Tiles on screen always come first: when every place is taken and a tile on
+// screen is waiting, the load of a tile far off screen is cancelled and
+// queued again behind it.
+
+/** Priorities below this are tiles on screen (see `tilePriority`). */
+export const ON_SCREEN = 1;
+/** Loads of tiles at least this far off screen (px) give their place to tiles on screen. */
+export const FAR_PX = 400;
+
+type Grant = (signal: AbortSignal) => void;
+
+interface Running {
+  prio: number;
+  grant: Grant;
+  ctrl: AbortController;
+  timer: ReturnType<typeof setTimeout> | null;
+}
 
 export class LoadQueue {
-  private waiting = new Map<string, { prio: number; grant: () => void }>();
-  private running = new Map<string, ReturnType<typeof setTimeout> | null>();
+  private waiting = new Map<string, { prio: number; grant: Grant }>();
+  private running = new Map<string, Running>();
+  /** Loads cancelled to make room for tiles on screen (for the measurements). */
+  preempted = 0;
 
   constructor(
     /** At most this many loading at once. */
@@ -16,9 +37,19 @@ export class LoadQueue {
     private stuckMs = 8000,
   ) {}
 
-  /** Ask (again) for `key`; `grant` is called once when its turn comes. A new priority replaces the old one. */
-  want(key: string, prio: number, grant: () => void) {
-    if (this.running.has(key)) return;
+  /**
+   * Ask (again) for `key`; `grant` is called when its turn comes, with a
+   * signal that fires if the load is cancelled (dropped, or put back to make
+   * room). A new priority replaces the old one, also while it loads.
+   */
+  want(key: string, prio: number, grant: Grant) {
+    const r = this.running.get(key);
+    if (r) {
+      r.prio = prio;
+      r.grant = grant;
+      this.pump();
+      return;
+    }
     const w = this.waiting.get(key);
     if (w) {
       w.prio = prio;
@@ -29,18 +60,22 @@ export class LoadQueue {
 
   /** It loaded (or failed): the next one may start. */
   done(key: string) {
-    if (this.running.has(key)) {
-      const t = this.running.get(key);
-      if (t) clearTimeout(t);
+    const r = this.running.get(key);
+    if (r) {
+      if (r.timer) clearTimeout(r.timer);
       this.running.delete(key);
       this.pump();
     }
   }
 
-  /** Not wanted any more (the tile went away). */
+  /** Not wanted any more (the tile went away): a load in progress is cancelled. */
   drop(key: string) {
     this.waiting.delete(key);
-    this.done(key);
+    const r = this.running.get(key);
+    if (r) {
+      r.ctrl.abort();
+      this.done(key);
+    }
   }
 
   get pending(): number {
@@ -51,8 +86,26 @@ export class LoadQueue {
     return this.running.size;
   }
 
+  /** Is `key` loading right now? */
+  isRunning(key: string): boolean {
+    return this.running.has(key);
+  }
+
+  /** Is `key` waiting or loading? */
+  has(key: string): boolean {
+    return this.running.has(key) || this.waiting.has(key);
+  }
+
+  private start(key: string, w: { prio: number; grant: Grant }) {
+    this.waiting.delete(key);
+    const ctrl = new AbortController();
+    const timer = this.stuckMs > 0 ? setTimeout(() => this.done(key), this.stuckMs) : null;
+    this.running.set(key, { prio: w.prio, grant: w.grant, ctrl, timer });
+    w.grant(ctrl.signal);
+  }
+
   private pump() {
-    while (this.running.size < this.limit && this.waiting.size) {
+    for (;;) {
       let best: string | null = null;
       let bp = Infinity;
       for (const [k, w] of this.waiting) {
@@ -62,10 +115,29 @@ export class LoadQueue {
         }
       }
       if (best == null) return;
-      const w = this.waiting.get(best)!;
-      this.waiting.delete(best);
-      this.running.set(best, this.stuckMs > 0 ? setTimeout(() => this.done(best), this.stuckMs) : null);
-      w.grant();
+      if (this.running.size < this.limit) {
+        this.start(best, this.waiting.get(best)!);
+        continue;
+      }
+      // Full. A tile on screen is waiting: the farthest load off screen makes room.
+      if (bp >= ON_SCREEN) return;
+      let worst: string | null = null;
+      let wp = ON_SCREEN + FAR_PX;
+      for (const [k, r] of this.running) {
+        if (r.prio >= wp) {
+          wp = r.prio;
+          worst = k;
+        }
+      }
+      if (worst == null) return;
+      const r = this.running.get(worst)!;
+      if (r.timer) clearTimeout(r.timer);
+      this.running.delete(worst);
+      r.ctrl.abort();
+      this.preempted += 1;
+      // Back in line, behind the tiles on screen.
+      this.waiting.set(worst, { prio: r.prio, grant: r.grant });
+      this.start(best, this.waiting.get(best)!);
     }
   }
 }
@@ -81,7 +153,7 @@ export function tilePriority(y0: number, y1: number, viewTop: number, viewBottom
   const below = y0 >= viewBottom;
   const dist = below ? y0 - viewBottom : viewTop - y1;
   const ahead = dir === 0 || (dir > 0) === below;
-  return 1 + (ahead ? dist : dist * 3);
+  return ON_SCREEN + (ahead ? dist : dist * 3);
 }
 
 /** How far past the view to draw tiles in the direction of travel, from the scroll speed (px per ms). */

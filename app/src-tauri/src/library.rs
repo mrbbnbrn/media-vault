@@ -35,6 +35,9 @@ pub struct Item {
     pub weight: f64,
     /// "ok", "pending" (not made yet) or "failed" (the file can't be shown).
     pub thumb: String,
+    /// The thumbnail's version: the start of its object id (a new one when it
+    /// is remade), put in its address so the window never shows an old copy.
+    pub thumb_v: Option<String>,
     pub imported_at: i64,
     pub folder_id: Option<i64>,
     /// Best known date: when the photo/video was taken, else the original
@@ -85,6 +88,7 @@ fn item_row(r: &rusqlite::Row) -> rusqlite::Result<Item> {
             Some(_) => "ok",
         }
         .into(),
+        thumb_v: thumb.as_deref().filter(|t| t.len() >= 8).map(|t| t[..8].to_string()),
         imported_at: r.get(11)?,
         folder_id: r.get(12)?,
         taken_at: r.get(13)?,

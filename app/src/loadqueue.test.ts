@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { LoadQueue, lookAhead, tilePriority } from './loadqueue';
+import { FAR_PX, LoadQueue, lookAhead, ON_SCREEN, tilePriority } from './loadqueue';
 
 describe('thumbnail load queue', () => {
   it('starts only a few at a time, most urgent first', () => {
@@ -46,6 +46,56 @@ describe('thumbnail load queue', () => {
     vi.advanceTimersByTime(2);
     expect(got).toEqual(['stuck', 'next']);
     vi.useRealTimers();
+  });
+
+  it('a tile that goes away cancels its load', () => {
+    const q = new LoadQueue(2, 0);
+    const signals = new Map<string, AbortSignal>();
+    q.want('a', 0.1, (s) => signals.set('a', s));
+    q.want('b', 0.2, (s) => signals.set('b', s));
+    q.drop('a');
+    expect(signals.get('a')!.aborted).toBe(true);
+    expect(signals.get('b')!.aborted).toBe(false);
+    // Finished normally: dropping afterwards cancels nothing.
+    q.done('b');
+    q.drop('b');
+    expect(signals.get('b')!.aborted).toBe(false);
+  });
+
+  it('tiles on screen come first: a load far off screen makes room and is queued again', () => {
+    const q = new LoadQueue(2, 0);
+    const got: string[] = [];
+    const signals = new Map<string, AbortSignal>();
+    const grant = (k: string) => (s: AbortSignal) => {
+      got.push(k);
+      signals.set(k, s);
+    };
+    // Prefetching rows far below while nothing is on screen yet.
+    q.want('far1', ON_SCREEN + 3000, grant('far1'));
+    q.want('far2', ON_SCREEN + 100, grant('far2'));
+    expect(q.active).toBe(2);
+    // A tile on screen: the farthest one (only one far enough) gives its place.
+    q.want('seen', 0.001, grant('seen'));
+    expect(got).toEqual(['far1', 'far2', 'seen']);
+    expect(signals.get('far1')!.aborted).toBe(true);
+    expect(signals.get('far2')!.aborted).toBe(false);
+    expect(q.preempted).toBe(1);
+    expect(q.isRunning('seen')).toBe(true);
+    // Another tile on screen: far2 is near (within FAR_PX), so it waits.
+    q.want('seen2', 0.002, grant('seen2'));
+    expect(q.isRunning('seen2')).toBe(false);
+    // far1 comes back when places free up, after the tiles on screen.
+    q.done('seen');
+    expect(got.at(-1)).toBe('seen2');
+    q.done('far2');
+    expect(got.at(-1)).toBe('far1');
+    expect(signals.get('far1')!.aborted).toBe(false);
+    // A running tile scrolled onto the screen keeps its place: its new priority counts.
+    q.want('far1', 0.01, grant('far1'));
+    q.want('seen3', 0.003, grant('seen3'));
+    expect(q.isRunning('far1')).toBe(true);
+    expect(q.isRunning('seen3')).toBe(false);
+    expect(FAR_PX).toBeGreaterThan(0);
   });
 
   it('priorities: on screen, then ahead, then behind', () => {

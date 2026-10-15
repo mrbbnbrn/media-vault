@@ -6,6 +6,7 @@ import { loopJob } from './jobs';
 import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
 import { httpRanges, keyframeNear, readKeyframes } from './keyframes';
+import { canvasPicture, THUMB_JPEG_QUALITY, THUMB_WEBP_QUALITY } from './canvaspic';
 
 /** Something a player can show: from the vault or from a dropped folder. */
 export interface PlayItem extends Entry {
@@ -140,17 +141,10 @@ export function animationMs(bytes: Uint8Array): number {
 // and face-centred crops. Thumbnails made by older versions were 360.
 const THUMB_MAX = 640;
 
-function canvasToBytes(c: HTMLCanvasElement): Promise<number[]> {
-  return new Promise((resolve, reject) =>
-    c.toBlob(
-      (blob) => {
-        if (!blob) return reject(new Error('encode failed'));
-        blob.arrayBuffer().then((a) => resolve(Array.from(new Uint8Array(a))), reject);
-      },
-      'image/jpeg',
-      0.86,
-    ),
-  );
+// Thumbnails are lossy WebP (JPEG where WebP can't be made): canvaspic.ts.
+async function canvasToBytes(c: HTMLCanvasElement): Promise<number[]> {
+  const blob = await canvasPicture(c, THUMB_WEBP_QUALITY, THUMB_JPEG_QUALITY);
+  return Array.from(new Uint8Array(await blob.arrayBuffer()));
 }
 
 function draw(src: CanvasImageSource, w: number, h: number): HTMLCanvasElement {
@@ -335,6 +329,64 @@ async function sharpenSome(stopped: () => boolean): Promise<boolean> {
   return true;
 }
 
+// ---- making older JPEG thumbnails again as WebP (smaller), after the sharpening --------------
+// Where it got to is kept in the vault: { after, upto } = item ids still to look at.
+const WEBP_KEY = 'thumbWebp';
+let webpState: { after: number; upto: number } | null = null;
+
+const webpJob = loopJob('thumbWebp', {
+  label: 'Making older thumbnails smaller',
+  unit: '',
+  left: () => (webpState ? api.countToSharpen(webpState.after, webpState.upto) : Promise.resolve(0)),
+});
+
+async function webpSome(stopped: () => boolean): Promise<boolean> {
+  if (!webpState) {
+    const saved = await api.uiGet(WEBP_KEY).catch(() => null);
+    try {
+      webpState = saved ? JSON.parse(saved) : null;
+    } catch {
+      webpState = null;
+    }
+    if (!webpState) {
+      // Everything there now; thumbnails made from here on are WebP already.
+      webpState = { after: 0, upto: await api.newestItemId().catch(() => 0) };
+      await api.uiSet(WEBP_KEY, JSON.stringify(webpState)).catch(() => {});
+    }
+  }
+  const st = webpState;
+  if (st.after >= st.upto) {
+    webpJob.idle();
+    return false;
+  }
+  const found = await api.thumbsToWebp(st.after, st.upto, 4).catch(() => null);
+  if (!found) return false;
+  if (found.tasks.length) webpJob.batch();
+  // Only WebP ones in this stretch: a short rest before the next (it is background work).
+  else await new Promise((r) => setTimeout(r, 300));
+  for (const t of found.tasks) {
+    if (stopped()) return false;
+    try {
+      // Pictures the app reads itself are remade there (from the original, off the window).
+      if (await api.analyseThumb(t.id).catch(() => false)) {
+        listeners.forEach((l) => l(t.id));
+      } else {
+        const r = await makeThumb(t.id, t.kind);
+        if (stopped()) return false;
+        await api.saveThumb(t.id, r.bytes, r.w, r.h, r.ms, true);
+        listeners.forEach((l) => l(t.id));
+      }
+    } catch {
+      // Keep the old thumbnail.
+    }
+    webpJob.step();
+  }
+  st.after = Math.max(st.after, found.next);
+  if (st.after >= st.upto) webpJob.idle();
+  await api.uiSet(WEBP_KEY, JSON.stringify(st)).catch(() => {});
+  return true;
+}
+
 let running = false;
 let wake: (() => void) | null = null;
 const listeners = new Set<(id: number) => void>();
@@ -408,6 +460,8 @@ export function startThumbnailer(): () => void {
         job.idle();
         // Nothing new: quietly remake a few older, smaller thumbnails.
         if (await sharpenSome(() => stopped)) continue;
+        // Then, as quietly, older JPEG ones again as WebP.
+        if (await webpSome(() => stopped)) continue;
         await sleep(4000);
         continue;
       }
@@ -425,6 +479,7 @@ export function startThumbnailer(): () => void {
     stopped = true;
     running = false;
     sharpenState = null;
+    webpState = null;
     wake?.();
   };
 }

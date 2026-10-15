@@ -2,7 +2,7 @@
 //
 // Every video gets two small things, made once in the background and kept
 // encrypted with the thumbnails:
-//  - a frame strip: 48 little frames in one JPEG (flip-books, seek-bar
+//  - a frame strip: 48 little frames in one picture (WebP; older ones JPEG) (flip-books, seek-bar
 //    previews, smart search), and
 //  - a tiny clip: a few seconds of small silent video, made of short pieces
 //    spread through the video (tinyclip.ts in the window, or the video tool).
@@ -93,7 +93,7 @@ export function kickPreviews() {
   wake?.();
 }
 
-/** Make the frame strip of one video, in memory (JPEG bytes). */
+/** Make the frame strip of one video, in memory (WebP bytes, or JPEG where WebP can't be made). */
 export async function makePreviewStrip(id: number): Promise<Uint8Array> {
   const m = await makeVideoPreviews(mediaUrl(id), { strip: true, tiny: false });
   return m.strip!;

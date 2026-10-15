@@ -1937,7 +1937,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const folderPic = (f: FolderCard, size: number) => f.cover && f.person
     ? <RoundCover folder={f} size={size} bump={coverBump} className="side-round" />
     : f.cover
-    ? <img className="side-cover" src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} style={{ width: size, height: size }} />
+    ? <img className="side-cover" src={thumbUrl(f.cover, `c${coverBump}`, size <= 80)} alt="" draggable={false} style={{ width: size, height: size }} />
     : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
 
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
@@ -2032,7 +2032,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                     onClick={(e) => folderClick(e, f, tree, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
                     {parent && <span className="rail-shape" aria-hidden="true" />}
                     {f.cover && f.person ? <RoundCover folder={f} bump={coverBump} className="rail-round" />
-                      : f.cover ? <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
+                      : f.cover ? <img src={thumbUrl(f.cover, `c${coverBump}`, true)} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
                     {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
                   </button>
                 );

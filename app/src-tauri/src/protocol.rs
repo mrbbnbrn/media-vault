@@ -6,7 +6,10 @@
 //! videos can seek. Range answers for media line up with the encryption
 //! chunks, and the last few decrypted chunks of recently played files stay
 //! in memory (see [`ChunkCache`]), so a seek or the next request never
-//! decrypts the same chunk twice. `local://localhost/f/<hex path>` plays ordinary files the
+//! decrypts the same chunk twice. Thumbnails are JPEG or WebP, told apart by
+//! their first bytes; `?small=1` asks for the 256 px one, which comes from
+//! its folder's thumbnail page (thumbpages.rs: one decryption per page, not
+//! per tile). `local://localhost/f/<hex path>` plays ordinary files the
 //! user dropped onto a player (outside any vault), only from folders they
 //! dropped.
 
@@ -24,9 +27,21 @@ use vault_core::{ObjectId, ObjectKind};
 
 use crate::import::{ext_of, is_animated_webp, kind_by_ext};
 use crate::session::Session;
+use crate::thumbpages::{self, Size};
 
 /// Largest piece sent for an open-ended range request.
 const MAX_CHUNK: u64 = 8 * 1024 * 1024;
+
+/// Every answer from the vault says `Cache-Control: no-store`, thumbnails
+/// too. WebView2 runs with a normal (not InPrivate) profile, whose HTTP cache
+/// lives on disk in the app's data folder; anything it was allowed to cache
+/// ("max-age", "immutable") could be written there, decrypted. So nothing is
+/// cacheable, and the window keeps its own copies instead: thumbnails it
+/// fetched stay in memory as blob: URLs (thumbcache.ts, a few dozen MB,
+/// emptied when the vault locks), keyed by addresses that carry the
+/// thumbnail's object id (`thumb/<id>?v=<first 8 hex>`), so a remade
+/// thumbnail is a new address and the old copy is never shown.
+pub const NO_STORE: &str = "no-store";
 
 pub fn mime_for(ext: &str) -> &'static str {
     match ext {
@@ -102,8 +117,8 @@ fn respond<R: Read + Seek>(
         b.header(header::CONTENT_TYPE, mime)
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            // Never let the web engine keep a copy on disk.
-            .header(header::CACHE_CONTROL, "no-store")
+            // Never let the web engine keep a copy on disk (see NO_STORE).
+            .header(header::CACHE_CONTROL, NO_STORE)
     };
     match (range.is_some(), parse_range(range, len)) {
         (true, None) => base(Response::builder().status(StatusCode::RANGE_NOT_SATISFIABLE))
@@ -178,29 +193,30 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
             None => plain(StatusCode::NOT_FOUND, "Not found."),
         };
     }
-    type Row = (String, Option<String>, String, Option<String>, Option<String>);
+    type Row = (String, Option<String>, String, Option<String>, Option<String>, Option<i64>);
     let row: Option<Row> = s
         .db()
         .query_row(
-            "SELECT object_id, thumb_object_id, ext, preview_object_id, tiny_object_id FROM media WHERE id = ?",
+            "SELECT object_id, thumb_object_id, ext, preview_object_id, tiny_object_id, folder_id FROM media WHERE id = ?",
             [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
         )
         .ok();
-    let Some((obj, thumb, ext, preview, tiny)) = row else {
+    let Some((obj, thumb, ext, preview, tiny, folder)) = row else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
+    // An empty type: found from the first bytes below.
     let (kind, hex, mime) = match what {
         "media" => (ObjectKind::Media, obj, mime_for(&ext)),
         "thumb" => match thumb.filter(|t| !t.is_empty()) {
-            Some(t) => (ObjectKind::Thumbnail, t, "image/jpeg"),
+            Some(t) => (ObjectKind::Thumbnail, t, ""),
             None => return plain(StatusCode::NOT_FOUND, "No thumbnail yet."),
         },
+        // Frame strips: JPEG (older) or WebP.
         "preview" => match preview.filter(|t| !t.is_empty()) {
-            Some(t) => (ObjectKind::Thumbnail, t, "image/jpeg"),
+            Some(t) => (ObjectKind::Thumbnail, t, ""),
             None => return plain(StatusCode::NOT_FOUND, "No preview clip yet."),
         },
-        // The type is found from the first bytes below.
         "tiny" => match tiny.filter(|t| !t.is_empty()) {
             Some(t) => (ObjectKind::Thumbnail, t, ""),
             None => return plain(StatusCode::NOT_FOUND, "No tiny clip yet."),
@@ -210,6 +226,16 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
     let Ok(oid) = ObjectId::from_hex(&hex) else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
+    if what == "thumb" && wants_small(req.uri().query()) {
+        // The small one, from its folder's thumbnail page (thumbpages.rs);
+        // until that page is made, the stored (big) thumbnail.
+        if let Some(bytes) = thumbpages::get(s, &oid, Size::Small) {
+            let mime = crate::picture::image_mime(&bytes).unwrap_or("image/jpeg");
+            let len = bytes.len() as u64;
+            return respond(std::io::Cursor::new(bytes), len, mime, header_str(req, header::RANGE));
+        }
+        thumbpages::note_miss(s, folder, Size::Small);
+    }
     // Videos (and anything else asked for in ranges) go through the chunk cache.
     if kind == ObjectKind::Media
         && let Some(range) = header_str(req, header::RANGE)
@@ -227,9 +253,11 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
                 if r.seek(SeekFrom::Start(0)).is_err() {
                     return plain(StatusCode::INTERNAL_SERVER_ERROR, "This file is damaged.");
                 }
-                match tiny_mime(&head[..n]) {
+                // Pictures of an unexpected kind go as before (the web engine looks at the bytes itself).
+                let found = if what == "tiny" { tiny_mime(&head[..n]) } else { crate::picture::image_mime(&head[..n]).or(Some("image/jpeg")) };
+                match found {
                     Some(m) => m,
-                    None => return plain(StatusCode::INTERNAL_SERVER_ERROR, "This clip is damaged."),
+                    None => return plain(StatusCode::INTERNAL_SERVER_ERROR, "This picture is damaged."),
                 }
             } else {
                 mime
@@ -330,9 +358,16 @@ fn chunks() -> std::sync::MutexGuard<'static, ChunkCache> {
     CHUNKS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Forget every decrypted chunk (the vault locked).
+/// Forget every decrypted chunk and thumbnail page (the vault locked, or
+/// another one opened).
 pub fn forget_cache() {
     chunks().clear();
+    thumbpages::forget();
+}
+
+/// `thumb/<id>?…&small=1`: the small (256 px) thumbnail is wanted.
+pub fn wants_small(query: Option<&str>) -> bool {
+    query.is_some_and(|q| q.split('&').any(|kv| kv == "small=1"))
 }
 
 /// Which bytes to send for a range request on a file split into chunks of
@@ -370,7 +405,7 @@ fn serve_cached(s: &Session, oid: &ObjectId, mime: &str, range: &str) -> Respons
         b.header(header::CONTENT_TYPE, mime)
             .header(header::ACCEPT_RANGES, "bytes")
             .header(header::ACCESS_CONTROL_ALLOW_ORIGIN, "*")
-            .header(header::CACHE_CONTROL, "no-store")
+            .header(header::CACHE_CONTROL, NO_STORE)
     };
     // Playing on: it starts where the last answer ended, or right after a
     // chunk that was just sent.
@@ -772,6 +807,7 @@ mod tests {
 
     #[test]
     fn video_ranges_come_from_the_chunk_cache() {
+        let _one = crate::thumbpages::tests::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let t = tempfile::tempdir().unwrap();
         let (s, id, data) = vault_with_video(t.path(), 12 * (1 << 20) + 777);
         let len = data.len() as u64;
@@ -828,6 +864,7 @@ mod tests {
     #[test]
     #[ignore]
     fn seek_latency() {
+        let _one = crate::thumbpages::tests::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let t = tempfile::tempdir().unwrap();
         let mb = std::env::var("MV_BENCH_MB").ok().and_then(|v| v.parse().ok()).unwrap_or(400usize);
         let (s, id, data) = vault_with_video(t.path(), mb << 20);
@@ -870,6 +907,167 @@ mod tests {
         forget_cache();
         run("after  (chunk-aligned, cached)", &|r: &str| get_range(&s, id, r));
         println!("chunks decrypted after: {} for {} seeks", chunks().decrypted - d0, seeks.len());
+    }
+
+    fn get_thumb(s: &Session, id: i64, query: &str) -> Response<Vec<u8>> {
+        let req = Request::builder().uri(format!("vault://localhost/thumb/{id}{query}")).body(Vec::new()).unwrap();
+        serve_vault(Some(s), &req)
+    }
+
+    #[test]
+    fn thumbnails_come_from_pages_and_say_what_they_are() {
+        use crate::thumbpages::{self, Size};
+        let _one = crate::thumbpages::tests::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let (s, folder, ids) = crate::thumbpages::tests::vault_with_folder(t.path(), 40, 400);
+        forget_cache();
+        // No pages yet: each from its own object, typed from its bytes, never cached by the web engine.
+        let one = get_thumb(&s, ids[3], "?v=abcd1234");
+        assert_eq!(one.status(), StatusCode::OK);
+        assert_eq!(one.headers()[header::CONTENT_TYPE], "image/webp");
+        assert_eq!(one.headers()[header::CACHE_CONTROL], "no-store");
+        // An older JPEG thumbnail still works.
+        let p = crate::thumbpages::tests::picture(1, 300, 200);
+        let (jid, _) = s.vault().add_object(ObjectKind::Thumbnail, &crate::picture::encode_jpeg(&p, 86).unwrap()[..]).unwrap();
+        s.db().execute("UPDATE media SET thumb_object_id = ? WHERE id = ?", rusqlite::params![jid.to_hex(), ids[39]]).unwrap();
+        assert_eq!(get_thumb(&s, ids[39], "").headers()[header::CONTENT_TYPE], "image/jpeg");
+        // No small pages yet: a small request gets the big one, and the folder is noted.
+        let early = get_thumb(&s, ids[3], "?v=abcd1234&small=1");
+        assert_eq!(early.body(), one.body());
+        assert_eq!(thumbpages::stats().misses, 1);
+        // Pages made: small ones only when asked for; big ones stay as they are.
+        thumbpages::refresh_folder(&s, Some(folder), Size::Small, std::time::Duration::ZERO).unwrap();
+        let before = thumbpages::stats().hits;
+        let again = get_thumb(&s, ids[3], "?v=abcd1234");
+        assert_eq!(again.body(), one.body());
+        let small = get_thumb(&s, ids[3], "?v=abcd1234&small=1");
+        assert_eq!(small.headers()[header::CONTENT_TYPE], "image/webp");
+        assert!(small.body().len() < one.body().len() / 2);
+        assert_eq!(get_thumb(&s, ids[39], "?small=1").headers()[header::CONTENT_TYPE], "image/webp", "small copies of JPEG ones are WebP");
+        assert_eq!(thumbpages::stats().hits - before, 2);
+        // Locked: nothing is answered, and the pages are forgotten.
+        forget_cache();
+        assert_eq!(thumbpages::stats(), thumbpages::Stats::default());
+        assert_eq!(serve_vault(None, &Request::builder().uri(format!("vault://localhost/thumb/{}", ids[3])).body(Vec::new()).unwrap()).status(), StatusCode::FORBIDDEN);
+        assert!(wants_small(Some("v=1&small=1")) && !wants_small(Some("v=1")) && !wants_small(None) && !wants_small(Some("nosmall=1")));
+    }
+
+    /// Grid load time for a folder of 2,000 items through the protocol
+    /// handler: every thumbnail asked for (one at a time, and six at once as
+    /// the grid's queue does), before thumbnail pages (one decryption each)
+    /// and after (one per page), big and small. Run with
+    /// `cargo test --release -p media-vault-app grid_load -- --ignored --nocapture`
+    /// (MV_BENCH_ITEMS changes the count).
+    #[test]
+    #[ignore]
+    fn grid_load() {
+        use crate::thumbpages::{self, Size};
+        use std::time::{Duration, Instant};
+        let _one = crate::thumbpages::tests::TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let n: usize = std::env::var("MV_BENCH_ITEMS").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
+        let t = tempfile::tempdir().unwrap();
+        let t0 = Instant::now();
+        let (s, folder, ids) = crate::thumbpages::tests::vault_with_folder(t.path(), n, 640);
+        let bytes: usize = ids.iter().take(24).map(|id| get_thumb(&s, *id, "").body().len()).sum::<usize>() / 24.min(ids.len());
+        println!("{n} items, thumbnails about {:.1} KB each (made in {:.1} s)", bytes as f64 / 1024.0, t0.elapsed().as_secs_f64());
+        forget_cache();
+        let screen = 60.min(n);
+        let run = |name: &str, query: &str| {
+            // The first screen, then the whole folder (one at a time), then six at once.
+            let t0 = Instant::now();
+            let mut total = 0usize;
+            for id in &ids[..screen] {
+                let r = get_thumb(&s, *id, query);
+                assert_eq!(r.status(), StatusCode::OK);
+                total += r.body().len();
+            }
+            let first = t0.elapsed();
+            for id in &ids[screen..] {
+                total += get_thumb(&s, *id, query).body().len();
+            }
+            let all = t0.elapsed();
+            let next = std::sync::atomic::AtomicUsize::new(0);
+            let t1 = Instant::now();
+            std::thread::scope(|sc| {
+                for _ in 0..6 {
+                    sc.spawn(|| {
+                        loop {
+                            let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            if i >= ids.len() {
+                                break;
+                            }
+                            assert_eq!(get_thumb(&s, ids[i], query).status(), StatusCode::OK);
+                        }
+                    });
+                }
+            });
+            let par = t1.elapsed();
+            println!(
+                "{name:44} first screen ({screen}) {:6.1} ms | all {n}: {:7.1} ms ({:5.0} µs/tile), 6 at once {:7.1} ms | {:.1} MB sent",
+                first.as_secs_f64() * 1e3,
+                all.as_secs_f64() * 1e3,
+                all.as_secs_f64() * 1e6 / n as f64,
+                par.as_secs_f64() * 1e3,
+                total as f64 / 1e6
+            );
+        };
+        run("before: one object per tile", "?v=1");
+        // What making a small thumbnail costs, step by step.
+        let (mut td, mut tf, mut te) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+        let k = 40.min(ids.len());
+        for id in &ids[..k] {
+            let big = get_thumb(&s, *id, "").into_body();
+            let t0 = Instant::now();
+            let pic = crate::picture::decode_thumb(&big).unwrap();
+            td += t0.elapsed();
+            let t0 = Instant::now();
+            let small = crate::picture::fit(&pic, crate::picture::SMALL_MAX).unwrap();
+            tf += t0.elapsed();
+            let t0 = Instant::now();
+            let _ = crate::picture::encode_webp(&small, crate::picture::SMALL_WEBP_QUALITY).unwrap();
+            te += t0.elapsed();
+        }
+        let ms = |d: Duration| d.as_secs_f64() * 1e3 / k as f64;
+        println!("a small thumbnail: decode {:.1} ms, shrink {:.1} ms, encode {:.1} ms", ms(td), ms(tf), ms(te));
+        let tb = Instant::now();
+        let big = thumbpages::refresh_folder(&s, Some(folder), Size::Big, Duration::ZERO).unwrap();
+        let tb = tb.elapsed();
+        let ts = Instant::now();
+        let small = thumbpages::refresh_folder(&s, Some(folder), Size::Small, Duration::ZERO).unwrap();
+        let ts = ts.elapsed();
+        let (pages, page_bytes) = thumbpages::usage(&s.db());
+        println!(
+            "pages made: big {} in {:.0} ms, small {} in {:.0} ms; {pages} pages, {:.1} MB",
+            big.pages,
+            tb.as_secs_f64() * 1e3,
+            small.pages,
+            ts.as_secs_f64() * 1e3,
+            page_bytes as f64 / 1e6
+        );
+        forget_cache();
+        run("after: pages, big, cold (just unlocked)", "?v=1");
+        println!("{:?}", thumbpages::stats());
+        run("after: pages, big, warm (in memory)", "?v=1");
+        println!("{:?}", thumbpages::stats());
+        // Where the time goes: the page lookup alone, the library lookup alone.
+        let oids: Vec<ObjectId> = ids
+            .iter()
+            .map(|id| ObjectId::from_hex(&s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get::<_, String>(0)).unwrap()).unwrap())
+            .collect();
+        let t0 = Instant::now();
+        for o in &oids {
+            assert!(thumbpages::get(&s, o, Size::Big).is_some());
+        }
+        let t_get = t0.elapsed();
+        let t0 = Instant::now();
+        for id in &ids {
+            let _: Option<String> = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok();
+        }
+        println!("page lookups alone {:.1} ms, library lookups alone {:.1} ms", t_get.as_secs_f64() * 1e3, t0.elapsed().as_secs_f64() * 1e3);
+        forget_cache();
+        run("after: pages, small, cold", "?v=1&small=1");
+        run("after: pages, small, warm", "?v=1&small=1");
+        println!("{:?}", thumbpages::stats());
     }
 
     #[test]
