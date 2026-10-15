@@ -625,10 +625,11 @@ pub fn model_input(rgba: &[u8], w: usize, h: usize, sw: usize, sh: usize, mean: 
 }
 
 /// Distance (bigger = farther) → nearness (bigger = closer), which is what
-/// `finish` expects: 1 / distance, so things twice as far count half as near,
-/// like the Fast model's output. Odd values (not a number, infinite) become
-/// "unknown" and end up far away; zero or negative distances count as the
-/// nearest there is rather than dividing by zero.
+/// `finish` expects: minus the logarithm of the distance, so every doubling of
+/// distance is the same step back. (1 / distance let the nearest thing take
+/// almost the whole range: a car in front made the whole street one flat
+/// black.) Odd values (not a number, infinite) become "unknown" and end up
+/// far away; zero or negative distances count as the nearest there is.
 pub fn depth_to_nearness(raw: &mut [f32]) {
     let far = raw.iter().copied().filter(|v| v.is_finite() && *v > 0.0).fold(0.0f32, f32::max);
     if far <= 0.0 {
@@ -638,7 +639,7 @@ pub fn depth_to_nearness(raw: &mut [f32]) {
     // Nothing nearer than a thousandth of the farthest point: one stray pixel can't take over.
     let least = far * 1e-3;
     for v in raw.iter_mut() {
-        *v = if v.is_finite() { 1.0 / v.max(least) } else { f32::NAN };
+        *v = if v.is_finite() { -v.max(least).ln() } else { f32::NAN };
     }
 }
 
@@ -981,10 +982,12 @@ mod tests {
     fn distance_becomes_nearness_and_finishes_the_same_way() {
         let mut v = vec![1.0, 2.0, 4.0, f32::NAN, f32::INFINITY, 0.0, -3.0];
         depth_to_nearness(&mut v);
-        assert_eq!(&v[..3], &[1.0, 0.5, 0.25], "twice as far = half as near");
+        assert_eq!(v[0], 0.0);
+        assert!((v[0] - v[1] - std::f32::consts::LN_2).abs() < 1e-6 && (v[1] - v[2] - std::f32::consts::LN_2).abs() < 1e-6, "each doubling = the same step back");
         assert!(v[3].is_nan() && v[4].is_nan(), "odd values become unknown");
-        // Zero and below: the nearest allowed (1 / (4 × 0.001)), not infinite.
-        assert!((v[5] - 250.0).abs() < 1e-3 && (v[6] - 250.0).abs() < 1e-3, "{v:?}");
+        // Zero and below: the nearest allowed (−ln(4 × 0.001)), not infinite.
+        let nearest = -(4.0f32 * 1e-3).ln();
+        assert!((v[5] - nearest).abs() < 1e-4 && (v[6] - nearest).abs() < 1e-4, "{v:?}");
         // Nothing usable at all: everything unknown, and finish still gives a (flat) map.
         let mut z = vec![0.0, f32::NAN];
         depth_to_nearness(&mut z);
@@ -999,7 +1002,7 @@ mod tests {
         let d = finish(&dist, w, h);
         assert_eq!(d[32 * w + 32], 255, "the near square is nearest");
         assert_eq!(d[2 * w + 2], 0, "the background is far");
-        let near: Vec<f32> = (0..w * h).map(|i| if inside(i) { 1.0 } else { 0.1 }).collect();
+        let near: Vec<f32> = (0..w * h).map(|i| if inside(i) { 0.0 } else { -(10.0f32.ln()) }).collect();
         assert_eq!(d, finish(&near, w, h));
     }
 
