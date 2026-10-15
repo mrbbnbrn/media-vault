@@ -1,42 +1,123 @@
 // 3D photos: still pictures move with gentle depth parallax (in slideshows,
 // and over and over while a picture is simply open; View ▾ → 3D photos).
 //
-// The depth of a picture comes from the optional depth pack (Depth Anything
-// V2 Small, run natively: depth.rs). The window decodes the picture in memory,
-// scales it to the model's size and sends the pixels; the depth map comes back
-// and is kept here, in memory only, for the session (and dropped on lock).
-// The next pictures are worked out ahead, so the slideshow doesn't wait.
+// The depth of a picture comes from an optional depth pack (Fast, Balanced or
+// Best, chosen in Settings → 3D photos; run natively: depth.rs). The window
+// decodes the picture in memory, scales it to the size the chosen model wants
+// and sends the pixels; the depth map comes back and is kept here, in memory
+// only, for the session (dropped on lock, and when another model or detail is
+// chosen, so maps from different models never mix). The neighbouring pictures
+// are worked out ahead, so slideshows and browsing by hand don't wait.
 //
 // The camera path (this file) is pure maths, drawn by components/Depth3D.tsx:
 // every loop of the movement starts and ends exactly as the still picture,
 // so fades and "Line up faces" work as usual and loops join without a jump,
 // and it moves a few per cent in between.
 
-import { api, onLocked, type DepthInfo, type DepthMap } from './api';
+import { api, onLocked, type DepthDetail, type DepthInfo, type DepthMap, type ViewerSettings } from './api';
+import { viewerPrefs } from './prefs';
 
-/** The model's input size: pictures are sent at this size. */
+/** The Fast model's input size, and the size used until the chosen model has said its own. */
 export const DEPTH_SIDE = 518;
-/** Depth maps kept in memory (about 270 KB each). */
+/** Depth maps kept in memory (about 270 KB each at 518, 570 KB at 756). */
 const KEEP = 48;
+/** Pictures worked out ahead at most at once (so quick browsing never piles up work). */
+const AHEAD_MAX = 3;
 
 export const NO_DEPTH_PACK =
-  '3D photos need the depth pack: get MediaVault-depth-windows.zip from the Releases page and unzip it next to the app.';
+  '3D photos need a depth pack: get MediaVault-depth-windows.zip (Fast), MediaVault-depth-da3-base-windows.zip (Balanced) or MediaVault-depth-da3-mono-large-windows.zip (Best) from the Releases page and unzip it next to the app.';
 
-// ---- the pack ----------------------------------------------------------------------------
+/** The download each known model comes in (for "not installed" hints). */
+export const DEPTH_ZIPS: Record<string, string> = {
+  'v2-small': 'MediaVault-depth-windows.zip',
+  'da3-base': 'MediaVault-depth-da3-base-windows.zip',
+  'da3-mono-large': 'MediaVault-depth-da3-mono-large-windows.zip',
+};
+
+// ---- the pack and the chosen model ----------------------------------------------------------
+
+/** The chosen model ('' = the best installed) and detail, read safely from the settings. */
+export function depthChoice(p: Pick<ViewerSettings, 'depthModel' | 'depthDetail'>): { model: string; detail: DepthDetail } {
+  return { model: typeof p.depthModel === 'string' ? p.depthModel : '', detail: p.depthDetail === 'high' ? 'high' : 'standard' };
+}
+
+/** What the depth maps in memory were made with: the model actually used and the picture size sent. */
+export interface DepthSetup {
+  model: string;
+  side: number;
+  detail: DepthDetail;
+}
+
+/** A depth map belongs to one picture and one model at one size: a map from another model is never mixed in. */
+export function depthKey(src: string, s: DepthSetup): string {
+  return `${s.model}@${s.side}|${src}`;
+}
+
+/** The setup from what depth_info said (null when there's no usable model). */
+export function setupOf(i: DepthInfo | null): DepthSetup | null {
+  if (!i?.available) return null;
+  return { model: i.model ?? '', side: i.inputSide && i.inputSide > 0 ? i.inputSide : DEPTH_SIDE, detail: i.detail === 'high' ? 'high' : 'standard' };
+}
+
+let setup: DepthSetup | null = null;
+
+/** Use this setup from now on; another model or size forgets the maps made with the old one. */
+export function applyDepthSetup(next: DepthSetup | null) {
+  const same = !!next && !!setup && next.model === setup.model && next.side === setup.side;
+  if (same) return;
+  if (setup) forgetDepth();
+  setup = next;
+}
+
+/** The setup in use now (null until the pack has been asked about). */
+export function depthSetup(): DepthSetup | null {
+  return setup;
+}
 
 let info: Promise<DepthInfo | null> | null = null;
-/** Whether the depth pack is there (asked once per session; `again` asks anew). */
-export function depthPack(again = false): Promise<DepthInfo | null> {
-  if (!info || again) info = api.depthInfo().catch(() => null);
+let infoFor = '';
+/**
+ * Which model 3D photos will use and whether it's there. Asked once per
+ * choice of model and detail (`again` asks anew, e.g. after unzipping a pack).
+ */
+export function depthPack(again = false, choice?: { model: string; detail: DepthDetail }): Promise<DepthInfo | null> {
+  // Settings passes its own copy of the choice (the shared one follows once it's saved).
+  const c = choice ?? depthChoice(viewerPrefs());
+  const want = `${c.model}|${c.detail}`;
+  if (!info || again || want !== infoFor) {
+    infoFor = want;
+    const p: Promise<DepthInfo | null> = api.depthInfo(c.model, c.detail).catch(() => null).then((i) => {
+      // Only the latest answer counts (a slower, older one doesn't undo a newer choice).
+      if (info === p) applyDepthSetup(setupOf(i));
+      return i;
+    });
+    info = p;
+  }
   return info;
 }
 
 // ---- depth maps, worked out one at a time ------------------------------------------------------
 
+type Compute = (src: string, s: DepthSetup) => Promise<DepthMap | null>;
+
+interface Waiting {
+  src: string;
+  setup: DepthSetup;
+  urgent: boolean;
+  /** When asked (newest urgent first). */
+  seq: number;
+  resolve: ((m: DepthMap | null) => void)[];
+}
+
 const cache = new Map<string, DepthMap | null>();
-const waiting = new Map<string, { urgent: boolean; resolve: ((m: DepthMap | null) => void)[] }>();
+const waiting = new Map<string, Waiting>();
+/** The latest pictures to work out ahead, most wanted first. */
+let aheadKeys: string[] = [];
+let running: string | null = null;
 let busy = false;
 let generation = 0;
+let seq = 0;
+let compute: Compute = computeReal;
 
 function remember(key: string, m: DepthMap | null) {
   cache.delete(key);
@@ -44,18 +125,19 @@ function remember(key: string, m: DepthMap | null) {
   while (cache.size > KEEP) cache.delete(cache.keys().next().value as string);
 }
 
-/** Forget every depth map (the vault locked). */
+/** Forget every depth map (the vault locked, or another model or detail was chosen). */
 export function forgetDepth() {
   generation += 1;
   cache.clear();
   for (const w of waiting.values()) w.resolve.forEach((r) => r(null));
   waiting.clear();
+  aheadKeys = [];
 }
 void onLocked(() => forgetDepth()).catch(() => {});
 
 /** The depth map of this picture if it's known already (null = it has none; undefined = not yet). */
 export function knownDepth(src: string): DepthMap | null | undefined {
-  return cache.get(src);
+  return setup ? cache.get(depthKey(src, setup)) : undefined;
 }
 
 /**
@@ -63,24 +145,95 @@ export function knownDepth(src: string): DepthMap | null | undefined {
  * puts it ahead of the pictures worked out in advance.
  */
 export function depthOf(src: string, urgent = false): Promise<DepthMap | null> {
-  if (cache.has(src)) {
-    const m = cache.get(src)!;
-    remember(src, m);
+  const s = setup;
+  if (!s) return depthPack().then(() => (setup ? depthOf(src, urgent) : null));
+  const key = depthKey(src, s);
+  if (cache.has(key)) {
+    const m = cache.get(key)!;
+    remember(key, m);
     return Promise.resolve(m);
   }
   return new Promise((resolve) => {
-    const w = waiting.get(src);
+    const w = waiting.get(key);
     if (w) {
+      if (urgent && !w.urgent) w.seq = ++seq;
       w.urgent ||= urgent;
       w.resolve.push(resolve);
-    } else waiting.set(src, { urgent, resolve: [resolve] });
+    } else waiting.set(key, { src, setup: s, urgent, seq: ++seq, resolve: [resolve] });
     void pump();
   });
 }
 
-/** Work out the depth of the coming pictures, in the background. */
+/**
+ * The picture at `src` isn't needed any more (it was left before its depth
+ * came): if it hasn't started, it's dropped, unless it's one of the pictures
+ * still wanted ahead (then it just waits its turn there).
+ */
+export function depthLetGo(src: string) {
+  if (!setup) return;
+  const key = depthKey(src, setup);
+  const w = waiting.get(key);
+  if (!w) return;
+  if (key === running || aheadKeys.includes(key)) {
+    w.urgent = false;
+    return;
+  }
+  waiting.delete(key);
+  w.resolve.forEach((r) => r(null));
+}
+
+/**
+ * The pictures to work out ahead while browsing: the next two pictures and
+ * the previous one (videos and GIFs skipped; `next` and `prev` are the
+ * neighbours in viewing order, nearest first).
+ */
+export function pickAhead<T extends { kind: string; src: string }>(next: T[], prev: T[]): string[] {
+  const pics = (xs: T[]) => xs.filter((x) => x.kind === 'image').map((x) => x.src);
+  const out: string[] = [];
+  for (const s of [...pics(next).slice(0, 2), ...pics(prev).slice(0, 1)]) if (!out.includes(s)) out.push(s);
+  return out;
+}
+
+/**
+ * Work out the depth of these pictures in the background, most wanted first.
+ * Each call replaces the last one's list: pictures asked for earlier that
+ * haven't started yet are dropped, so flicking quickly through the viewer
+ * never builds up a queue.
+ */
 export function depthAhead(srcs: string[]) {
-  for (const s of srcs) if (!cache.has(s) && !waiting.has(s)) void depthOf(s);
+  const s = setup;
+  if (!s) return;
+  const keys = srcs.slice(0, AHEAD_MAX).map((src) => depthKey(src, s));
+  for (const k of aheadKeys) {
+    const w = waiting.get(k);
+    if (w && !keys.includes(k) && !w.urgent && k !== running) {
+      waiting.delete(k);
+      w.resolve.forEach((r) => r(null));
+    }
+  }
+  aheadKeys = keys;
+  for (const src of srcs.slice(0, AHEAD_MAX)) {
+    const k = depthKey(src, s);
+    if (!cache.has(k) && !waiting.has(k)) waiting.set(k, { src, setup: s, urgent: false, seq: ++seq, resolve: [] });
+  }
+  void pump();
+}
+
+/** The next one to work out: the newest urgent one, else the most wanted ahead, else the oldest. */
+function nextKey(): string {
+  let best: string | null = null;
+  let bestW: Waiting | null = null;
+  for (const [k, w] of waiting) {
+    if (w.urgent && (!bestW?.urgent || w.seq > bestW.seq)) {
+      best = k;
+      bestW = w;
+    }
+  }
+  if (best) return best;
+  const ahead = aheadKeys.find((k) => waiting.has(k));
+  if (ahead) return ahead;
+  for (const [k, w] of waiting) if (!bestW || w.seq < bestW.seq) [best, bestW] = [k, w];
+  return best as string;
 }
 
 async function pump() {
@@ -88,16 +241,19 @@ async function pump() {
   busy = true;
   try {
     while (waiting.size) {
-      // Urgent first, otherwise in the order asked.
-      const key = [...waiting.entries()].find(([, w]) => w.urgent)?.[0] ?? (waiting.keys().next().value as string);
+      const key = nextKey();
+      const job = waiting.get(key)!;
       const gen = generation;
+      running = key;
       let m: DepthMap | null = null;
       try {
-        m = await compute(key);
+        m = await compute(job.src, job.setup);
       } catch {
         m = null;
+      } finally {
+        running = null;
       }
-      if (gen !== generation) continue; // locked meanwhile: forgotten
+      if (gen !== generation) continue; // forgotten meanwhile (locked, or another model chosen)
       const w = waiting.get(key);
       waiting.delete(key);
       remember(key, m);
@@ -108,23 +264,58 @@ async function pump() {
   }
 }
 
-async function compute(src: string): Promise<DepthMap | null> {
+/** Tests only: work out depth maps some other way (null puts the real way back). */
+export function setDepthCompute(f: Compute | null) {
+  compute = f ?? computeReal;
+}
+
+async function computeReal(src: string, s: DepthSetup): Promise<DepthMap | null> {
+  const side = s.side;
   const r = await fetch(src);
   if (!r.ok) return null;
   const blob = await r.blob();
-  // Straight to the model's size (it is square; the map is stretched back over the picture).
-  const opts = { imageOrientation: 'from-image', resizeWidth: DEPTH_SIDE, resizeHeight: DEPTH_SIDE, resizeQuality: 'high' } as ImageBitmapOptions;
+  // Straight to the model's size (square; the map is stretched back over the picture).
+  const opts = { imageOrientation: 'from-image', resizeWidth: side, resizeHeight: side, resizeQuality: 'high' } as ImageBitmapOptions;
   const bmp = await createImageBitmap(blob, opts);
   try {
-    const c = new OffscreenCanvas(DEPTH_SIDE, DEPTH_SIDE);
+    const c = new OffscreenCanvas(side, side);
     const ctx = c.getContext('2d', { willReadFrequently: true });
     if (!ctx) return null;
     ctx.drawImage(bmp, 0, 0);
-    const px = ctx.getImageData(0, 0, DEPTH_SIDE, DEPTH_SIDE).data;
-    return await api.depthEstimate({ width: DEPTH_SIDE, height: DEPTH_SIDE }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
+    const px = ctx.getImageData(0, 0, side, side).data;
+    return await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
   } finally {
     bmp.close();
   }
+}
+
+// ---- speed tests (Settings → 3D photos; remembered for this session only) ----------------------
+
+export interface SpeedResult {
+  ms: number;
+  device: 'gpu' | 'cpu';
+  loadMs: number;
+}
+const speeds = new Map<string, SpeedResult>();
+
+/** The last speed test of a model at a detail, this session. */
+export function lastSpeed(id: string, detail: DepthDetail): SpeedResult | undefined {
+  return speeds.get(`${id}|${detail}`);
+}
+
+/** Run a speed test and remember the result for this session. */
+export async function testSpeed(id: string, detail: DepthDetail): Promise<SpeedResult> {
+  const r = await api.depthBenchmark(id, detail);
+  const res = { ms: r.ms, device: r.device, loadMs: r.loadMs };
+  speeds.set(`${id}|${detail}`, res);
+  return res;
+}
+
+/** "0.15 s per picture on the graphics card". */
+export function speedText(r: SpeedResult): string {
+  const s = r.ms / 1000;
+  const t = s < 1 ? s.toFixed(2) : s < 10 ? s.toFixed(1) : Math.round(s).toString();
+  return `${t} s per picture on the ${r.device === 'gpu' ? 'graphics card' : 'processor'}`;
 }
 
 // ---- the camera path -----------------------------------------------------------------------------

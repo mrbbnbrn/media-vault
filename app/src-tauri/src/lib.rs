@@ -2559,7 +2559,9 @@ pub fn run() {
             upscale::upscale_forget,
             // 3D photos (depth.rs)
             depth::depth_info,
+            depth::depth_models,
             depth::depth_estimate,
+            depth::depth_benchmark,
             depth::depth_forget,
         ])
         .build(tauri::generate_context!())

@@ -1,13 +1,15 @@
 // 3D photos settings, opened from the viewer's View ▾ menu: whether still
 // pictures move gently in depth on their own (in slideshows and while just
 // open), along which shape, how far and how fast, plus the depth strength
-// and the mouse reaction that the 3D button uses too.
+// and the mouse reaction that the 3D button uses too, and which depth model
+// (and how much detail) works out the depth.
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { ViewerSettings } from '../api';
 import { depthPack, MOTION_LABELS, MOTION_SHAPES, motionChoice, NO_DEPTH_PACK, shapeOutline, type MotionChoice } from '../depth';
 import { saveViewerPrefs } from '../prefs';
+import { DepthModelChoice } from './DepthModels';
 import { Modal } from './Dialogs';
 
 const CHOICES: MotionChoice[] = ['random', ...MOTION_SHAPES];
@@ -107,6 +109,10 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
           value={prefs.depthAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthAmount: v })} />
         <Slider id="dp-react" label="3D mouse reaction" title="With the 3D button on: how far you move the mouse for the picture to lean all the way (higher = less mouse movement needed)"
           min={0.3} max={3} step={0.1} value={prefs.depthReact ?? 1} onChange={(v) => saveViewerPrefs({ depthReact: v })} />
+
+        {/* Which model works out the depth (speed tests are in Settings → 3D photos). */}
+        <span style={{ alignSelf: 'start', paddingTop: 12 }}>Depth model</span>
+        <DepthModelChoice />
       </div>
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>

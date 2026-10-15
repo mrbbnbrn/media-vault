@@ -51,6 +51,10 @@ export interface ViewerSettings {
   depthShape?: 'random' | 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'spiral' | 'pendulum';
   /** The old slideshow setting "3D photos" has been carried over to depthAuto (done once). */
   depthAutoMigrated?: boolean;
+  /** 3D photos: which depth model ('v2-small' Fast, 'da3-base' Balanced, 'da3-mono-large' Best; '' = the best one installed). */
+  depthModel?: string;
+  /** 3D photos: 'high' sends bigger pictures to models that take any size (more detail, about twice as slow). */
+  depthDetail?: 'standard' | 'high';
   /** Discovery river: the current's speed (1 = normal), how many items flow (1 = as designed) and how many depth layers. */
   riverFlow?: number;
   riverDensity?: number;
@@ -79,6 +83,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1,
   depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthAutoMigrated: false,
+  depthModel: '', depthDetail: 'standard',
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
@@ -1049,9 +1054,14 @@ export const api = {
   /** The viewer closed: forget results, free the models' memory. */
   upscaleForget: () => call<void>('upscale_forget'),
   // 3D photos: depth maps for gentle parallax in slideshows (Rust: depth.rs; window side: depth.ts, components/Depth3D.tsx)
-  depthInfo: () => call<DepthInfo>('depth_info'),
-  /** Sends the picture's pixels (about 518 × 518); the depth map comes back. */
-  depthEstimate: (request: { width: number; height: number }, rgba: Uint8Array) => depthEstimate(request, rgba),
+  /** What 3D photos will use for this choice (model '' = the best installed). */
+  depthInfo: (model = '', detail: DepthDetail = 'standard') => call<DepthInfo>('depth_info', { model, detail }),
+  /** Every depth model, installed or not (Settings → 3D photos). */
+  depthModels: () => call<DepthModel[]>('depth_models'),
+  /** Settings → 3D photos → Test speed. */
+  depthBenchmark: (id: string, detail: DepthDetail) => call<DepthBenchmark>('depth_benchmark', { id, detail }),
+  /** Sends the picture's pixels (DepthInfo.inputSide square); the depth map comes back. */
+  depthEstimate: (request: DepthRequest, rgba: Uint8Array) => depthEstimate(request, rgba),
   /** The viewer closed: free the model's memory. */
   depthForget: () => call<void>('depth_forget'),
 
@@ -1452,10 +1462,16 @@ const mock = {
       case 'upscale_start':
         return mockUpscale(a.request as UpscaleRequest);
       case 'depth_info':
-        // Preview: add ?nodepth to the address to see the "pack not found" note.
-        return (typeof location !== 'undefined' && new URLSearchParams(location.search).has('nodepth')
-          ? { available: false, problem: "The depth pack isn't installed.", folder: 'C:\\MediaVault\\tools\\depth', device: null, deviceKnown: false, sharedRuntime: false }
-          : { available: true, problem: null, folder: 'C:\\MediaVault\\tools\\depth', device: 'gpu', deviceKnown: false, sharedRuntime: true }) satisfies DepthInfo;
+        return mockDepthInfo(String(a.model ?? ''), a.detail === 'high' ? 'high' : 'standard');
+      case 'depth_models':
+        return mockDepthModels();
+      case 'depth_benchmark': {
+        // Preview: a pretend speed test (Best is slowest, high detail about twice as slow).
+        await new Promise((r) => setTimeout(r, 900));
+        const base = a.id === 'da3-mono-large' ? 310 : a.id === 'da3-base' ? 120 : 45;
+        const dyn = a.id !== 'v2-small';
+        return { ms: base * (dyn && a.detail === 'high' ? 2.1 : 1), device: 'gpu', loadMs: 800, side: dyn && a.detail === 'high' ? 756 : 518 } satisfies DepthBenchmark;
+      }
       case 'depth_forget':
         return;
       case 'upscale_cancel':
@@ -1713,8 +1729,75 @@ export interface DepthInfo {
   folder: string | null;
   device: 'gpu' | 'cpu' | null;
   deviceKnown: boolean;
-  /** ONNX Runtime comes from the upscaler or faces pack. */
+  /** ONNX Runtime comes from another pack. */
   sharedRuntime: boolean;
+  /** The model in use: the chosen one, or the best installed when that isn't there. */
+  model?: string | null;
+  modelName?: string | null;
+  /** Pictures are sent at this size (square). */
+  inputSide?: number;
+  /** The detail actually used ('standard' for fixed-size models). */
+  detail?: DepthDetail;
+  /** The model takes any size (so "High detail" applies). */
+  dynamic?: boolean;
+}
+
+export type DepthDetail = 'standard' | 'high';
+
+/** One depth model (Settings → 3D photos → Depth model). */
+export interface DepthModel {
+  id: string;
+  name: string;
+  model: string;
+  /** Where the pack is, or where it goes. */
+  folder: string | null;
+  /** Its folder is there. */
+  installed: boolean;
+  /** Why it can't be used (null = ready). */
+  problem: string | null;
+  sizeBytes: number;
+  /** Takes any size, so "High detail" applies. */
+  dynamic: boolean;
+  /** The download it comes in. */
+  zip?: string | null;
+  standardSide?: number;
+  highSide?: number;
+  licence?: string | null;
+}
+
+/** A speed test: average ms per picture (warm-up not counted), where it ran, and how long loading took. */
+export interface DepthBenchmark {
+  ms: number;
+  device: 'gpu' | 'cpu';
+  loadMs: number;
+  side?: number;
+}
+
+export interface DepthRequest {
+  width: number;
+  height: number;
+  /** The chosen model ('' = the best installed) and detail. */
+  model?: string;
+  detail?: DepthDetail;
+}
+
+/** Preview: Fast and Balanced installed, Best not (add ?nodepth to see none installed). */
+function mockDepthModels(): DepthModel[] {
+  const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nodepth');
+  const root = 'C:\\MediaVault\\tools\\';
+  return [
+    { id: 'v2-small', name: 'Fast', model: 'Depth Anything V2 Small', folder: `${root}depth`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 99_000_000, dynamic: false, zip: 'MediaVault-depth-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
+    { id: 'da3-base', name: 'Balanced', model: 'Depth Anything 3 Base', folder: `${root}depth-da3-base`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-da3-base-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 420_000_000, dynamic: true, zip: 'MediaVault-depth-da3-base-windows.zip', standardSide: 518, highSide: 756, licence: 'Apache-2.0' },
+    { id: 'da3-mono-large', name: 'Best', model: 'Depth Anything 3 Mono Large', folder: `${root}depth-da3-mono-large`, installed: false, problem: 'Not installed: get MediaVault-depth-da3-mono-large-windows.zip from the Releases page and unzip it next to the app.', sizeBytes: 0, dynamic: true, zip: 'MediaVault-depth-da3-mono-large-windows.zip', standardSide: 518, highSide: 756, licence: null },
+  ];
+}
+
+function mockDepthInfo(model: string, detail: DepthDetail): DepthInfo {
+  const ready = mockDepthModels().filter((m) => m.installed && !m.problem);
+  const pick = ready.find((m) => m.id === model) ?? ['da3-mono-large', 'da3-base', 'v2-small'].map((id) => ready.find((m) => m.id === id)).find(Boolean);
+  if (!pick) return { available: false, problem: "The depth pack isn't installed.", folder: 'C:\\MediaVault\\tools\\depth', device: null, deviceKnown: false, sharedRuntime: false, model: null, modelName: null, inputSide: 518, detail: 'standard', dynamic: false };
+  const d = pick.dynamic ? detail : 'standard';
+  return { available: true, problem: null, folder: pick.folder, device: 'gpu', deviceKnown: false, sharedRuntime: false, model: pick.id, modelName: pick.name, inputSide: d === 'high' ? pick.highSide ?? 518 : pick.standardSide ?? 518, detail: d, dynamic: pick.dynamic };
 }
 
 /** A depth map: w × h bytes, 255 = nearest. It covers the whole picture (stretched to a square). */
@@ -1735,7 +1818,7 @@ export function parseDepth(buf: ArrayBuffer | Uint8Array): DepthMap {
   return { w, h, data: b.slice(8) };
 }
 
-async function depthEstimate(request: { width: number; height: number }, rgba: Uint8Array): Promise<DepthMap> {
+async function depthEstimate(request: DepthRequest, rgba: Uint8Array): Promise<DepthMap> {
   if (!inTauri) return mockDepth(request.width, request.height, rgba);
   try {
     return parseDepth(await invoke<ArrayBuffer>('depth_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));

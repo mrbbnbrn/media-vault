@@ -16,12 +16,13 @@
 // WebGL context is let go when the picture changes.
 
 import { useEffect, useRef, useState } from 'react';
-import { inTauri, type DepthInfo, type DepthMap } from '../api';
+import { inTauri, type DepthInfo, type DepthMap, type ViewerSettings } from '../api';
 import {
-  advancePhase, depthOf, depthPack, easeToward, framePose, loopOf, mouseLean, mousePose, NO_DEPTH_PACK, pickShape, pivotOf, progress, scalePose,
+  advancePhase, depthChoice, depthLetGo, depthOf, depthPack, easeToward, framePose, loopOf, mouseLean, mousePose, NO_DEPTH_PACK, pickShape, pivotOf, progress, scalePose,
   shapePose, slideLoops, slidePhase, type MotionChoice, type MotionLoop, type MotionShape,
 } from '../depth';
 import { drawnRect } from '../flip';
+import { DepthModelChoice } from './DepthModels';
 
 interface Props {
   src: string;
@@ -185,16 +186,17 @@ function dropScene(s: Scene) {
   gl.getExtension('WEBGL_lose_context')?.loseContext();
 }
 
-/** Settings → AI tools: whether the depth pack is there. */
-export function DepthSection() {
+/** Settings → 3D photos: whether a depth pack is there, the depth model and detail, and speed tests. */
+export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
   const [info, setInfo] = useState<DepthInfo | null>(null);
+  const { model, detail } = depthChoice(props.viewer);
   useEffect(() => {
     let alive = true;
-    depthPack(true).then((i) => alive && setInfo(i));
+    depthPack(true, { model, detail }).then((i) => alive && setInfo(i));
     return () => {
       alive = false;
     };
-  }, []);
+  }, [model, detail]);
   return (
     <section className="section">
       <h2>3D photos</h2>
@@ -206,13 +208,15 @@ export function DepthSection() {
       </p>
       {info && (info.available ? (
         <div className="info">
-          Depth pack found · runs on the {info.device === 'gpu' ? 'graphics card' : 'processor'}{info.deviceKnown ? '' : info.device === 'gpu' ? ' (when it can)' : ''}.
+          Using {info.modelName ?? 'the depth pack'} · runs on the {info.device === 'gpu' ? 'graphics card' : 'processor'}{info.deviceKnown ? '' : info.device === 'gpu' ? ' (when it can)' : ''}.
         </div>
       ) : (
         <div className="notice">
           Depth pack not found. {info.problem && info.problem !== "The depth pack isn't installed." ? `${info.problem} ` : ''}{NO_DEPTH_PACK}
         </div>
       ))}
+      <h3 style={{ margin: '14px 0 8px', fontSize: 14 }}>Depth model</h3>
+      <DepthModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
     </section>
   );
 }
@@ -400,8 +404,11 @@ export function Depth3D(props: Props) {
       setLive(true);
       give(true);
     })().catch(() => give(false));
+    const src = propsRef.current.src;
     return () => {
       alive = false;
+      // Left before its depth came (quick browsing): don't keep the model busy with it.
+      depthLetGo(src);
       cancelAnimationFrame(raf);
       kick.current = () => {};
       stopMouse();
