@@ -960,7 +960,7 @@ mod tests {
         c.execute_batch("DROP TABLE thumb_bundles; PRAGMA user_version = 12;").unwrap();
         migrate(&c).unwrap();
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert_eq!(v, 14);
+        assert_eq!(v, SCHEMA_VERSION);
         let n: i64 = c.query_row("SELECT COUNT(*) FROM thumb_bundles", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
         // Pages already there (or run again from 13) are kept.
