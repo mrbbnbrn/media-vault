@@ -61,6 +61,9 @@ const ui = new Map<string, string>();
 let nextFolder = 100;
 // Folder banners and notes (one sample banner on "Antalya 2023").
 const banners = new Map<number, { media: number; y: number }>([[5, { media: items.find((i) => i.folderId === 5 && i.kind === 'image')!.id, y: 0.42 }]]);
+// Chosen covers and their framing (Adjust cover…).
+const chosenCovers = new Map<number, number | null>();
+const coverFrames = new Map<number, NonNullable<FolderCard['coverPos']>>();
 const notes = new Map<number, string>([[5, 'Two weeks by the sea in August: boat trips, old town walks and far too much baklava.']]);
 
 const kidsOf = (id: number | null) => folders.filter((f) => f.parentId === id);
@@ -86,11 +89,12 @@ function cards(): FolderCard[] {
     const kids = kidsOf(parent).sort((a, b) => a.order - b.order || a.name.localeCompare(b.name));
     for (const f of kids) {
       const inside = items.filter((i) => i.folderId != null && below(f.id).includes(i.folderId));
-      const cover = (f.person ? items.filter((i) => isPerson(i, f.id)) : inside)[0]?.id ?? null;
+      const cover = chosenCovers.get(f.id) ?? (f.person ? items.filter((i) => isPerson(i, f.id)) : inside)[0]?.id ?? null;
+      const coverKind = items.find((i) => i.id === cover)?.kind ?? null;
       out.push({
         id: f.id, name: f.name, parentId: f.parentId, path, depth: path.length, items: inside.length,
         directItems: items.filter((i) => i.folderId === f.id).length, subfolders: kidsOf(f.id).length,
-        cover, coverKind: cover ? 'image' : null, tags: f.tags, pinned: f.pinned, color: null, emoji: null, person: f.person,
+        cover, coverKind, coverPos: coverFrames.get(f.id) ?? null, tags: f.tags, pinned: f.pinned, color: null, emoji: null, person: f.person,
         samples: inside.slice(1, 3).map((i) => i.id), note: notes.get(f.id) ?? null, createdAt: f.createdAt, bytes: inside.reduce((a, i) => a + i.size, 0),
       });
       walk(f.id, [...path, { id: f.id, name: f.name }]);
@@ -234,6 +238,22 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     case 'set_pinned': {
       const f = folders.find((x) => x.id === a.id);
       if (f) f.pinned = !!a.on;
+      return;
+    }
+    case 'set_cover': {
+      const id = a.folder as number;
+      if (chosenCovers.get(id) !== a.media) coverFrames.delete(id);
+      if (a.media == null) chosenCovers.delete(id);
+      else chosenCovers.set(id, a.media as number);
+      return;
+    }
+    case 'set_cover_frame': {
+      const id = a.folder as number;
+      const pos = a.pos as FolderCard['coverPos'];
+      if (pos) {
+        chosenCovers.set(id, a.media as number);
+        coverFrames.set(id, pos);
+      } else coverFrames.delete(id);
       return;
     }
     case 'set_favourite':

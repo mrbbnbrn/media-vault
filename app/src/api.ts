@@ -4,6 +4,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
+import type { CoverPos } from './coverframe';
 
 export interface LockSettings {
   idleMinutes: number;
@@ -462,6 +463,8 @@ export interface FolderCard {
   bytes: number;
   /** Person folders: the face in the cover picture [x, y, w, h] (parts of its size), for the round cover. */
   coverFace?: [number, number, number, number] | null;
+  /** The hand-set framing of the cover ("Adjust cover…", coverframe.ts); null = automatic. */
+  coverPos?: CoverPos | null;
 }
 
 /** A folder's banner: one item shown wide at the top of the folder (banner.rs). */
@@ -739,6 +742,8 @@ export const api = {
   setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
   setCover: (folder: number, media: number | null) => call<void>('set_cover', { folder, media }),
+  // cover framing: media = the cover it was made for (becomes the chosen cover); pos null = automatic again
+  setCoverFrame: (folder: number, media: number | null, pos: CoverPos | null) => call<void>('set_cover_frame', { folder, media, pos }),
   // folder banners (banner.rs): media null removes it; y = where to look, 0 top … 1 bottom
   folderBanner: (folder: number) => call<FolderBanner | null>('folder_banner', { folder }),
   setBanner: (folder: number, media: number | null, y?: number) => call<void>('set_banner', { folder, media, y: y ?? null }),

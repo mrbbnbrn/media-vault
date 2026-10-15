@@ -99,7 +99,19 @@ export function demoAnswer(cmd: string, a: Record<string, unknown>): unknown {
   const d = data();
   switch (cmd) {
     case 'library_folders':
-      return d.folders;
+      return [...d.folders];
+    // Covers and their framing (Adjust cover…), kept while the preview runs.
+    case 'set_cover':
+    case 'set_cover_frame': {
+      const i = d.folders.findIndex((x) => x.id === a.folder);
+      if (i < 0) return undefined;
+      const f = d.folders[i];
+      const media = (a.media as number | null) ?? f.cover;
+      d.folders[i] = cmd === 'set_cover'
+        ? { ...f, cover: media, coverPos: media === f.cover ? f.coverPos : null }
+        : { ...f, cover: media, coverPos: (a.pos as FolderCard['coverPos']) ?? null };
+      return null;
+    }
     case 'folder_view': {
       const f = a.folder as number | null;
       if (f == null) return { folder: null, subfolders: d.folders, items: d.items.filter((x) => x.folderId == null) };

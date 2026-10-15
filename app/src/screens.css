@@ -957,6 +957,31 @@ canvas.flip-in-ghost { display: block; }
 .fcover .pcard .pround.open { width: 100%; height: 100%; border-radius: 10px; box-shadow: none; }
 .fcover .pcard .pround .pround-cycle { left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; transition: none; animation: fadein 0.35s ease; }
 .fcover .pcard .pround .pround-cycle.still { animation: none; }
+/* ---- cover framing (begin) ----
+   A person's video or GIF cover plays exactly over its still (same size and
+   place, so it follows the face framing and the opening on hover). */
+.pround .pround-vid { position: absolute; display: block; overflow: hidden; pointer-events: none; }
+.fcover .pcard .pround .pround-vid { transition: width 0.3s ease, height 0.3s ease, left 0.3s ease, top 0.3s ease; }
+/* A cover framed by hand ("Adjust cover…"): the box hides what spills out and
+   the picture or video inside is placed by --cpos (the point kept in view)
+   and --czoom, exactly like the editor (coverframe.ts explains the maths). */
+.cframe { position: relative; display: block; overflow: hidden; pointer-events: none; }
+.fcover > .cframe { position: absolute; inset: 0; }
+.fstack > .cframe { position: absolute; border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1.1), box-shadow 0.32s ease; }
+span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; border-radius: 0; box-shadow: none; filter: none;
+  object-fit: cover; object-position: var(--cpos, 50% 50%); transform: scale(var(--czoom, 1)); transform-origin: var(--cpos, 50% 50%); transition: none; }
+/* The editor: the real card shape at a big size. */
+.cfe-wrap { display: flex; justify-content: center; padding: 8px 0; }
+.cfe-stage { position: relative; border-radius: 10px; overflow: hidden; background: #1d2026; cursor: grab; touch-action: none; user-select: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 12px 30px rgba(0, 0, 0, 0.55); }
+.cfe-stage:active { cursor: grabbing; }
+.cfe-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cfe-stage.round { border-radius: 50%; }
+.cfe-stage .cfe-rect { position: absolute; inset: 0; }
+.cfe-zoom { gap: 10px; align-items: center; }
+.cfe-zoom input[type="range"] { accent-color: var(--accent); }
+/* ---- cover framing (end) ---- */
 
 /* Long grids: a strip beside the scrollbar. Point at it for a preview of
    that spot, click or drag on it to jump there. */
@@ -986,7 +1011,7 @@ canvas.flip-in-ghost { display: block; }
 .alt-enlarge.closing { opacity: 0; }
 
 @media (prefers-reduced-motion: reduce) {
-  .fstack img, .fcover .pcard .pround, .fcover .pcard .pround img, .alt-enlarge { transition: none; }
+  .fstack img, .fcover .pcard .pround, .fcover .pcard .pround img, .fcover .pcard .pround .pround-vid, .fstack > .cframe, .alt-enlarge { transition: none; }
 }
 /* ---- Upscaler before/after line (components/UpscaleCompare.tsx) ------------------ */
 .cmp-line { position: absolute; left: 0; top: 0; width: 0; z-index: 2; pointer-events: none; will-change: transform; }

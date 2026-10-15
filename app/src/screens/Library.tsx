@@ -39,6 +39,8 @@ import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
 import { MediaGrid } from '../components/MediaGrid';
 import { CoverVideo } from '../components/VideoPreview';
+import { Framed } from '../components/FramedCover';
+import { CoverFrameEditor } from '../components/CoverFrameEditor';
 import { BannerPicker, FolderBannerView, useFolderBanner } from '../components/FolderBanner'; // folder banners
 import { setPreviewCover } from '../previewgate';
 import { RoundCover } from '../components/RoundCover';
@@ -112,6 +114,7 @@ type Dialog =
   | { t: 'weight'; ids: number[]; current: number }
   | { t: 'archivePassword'; paths: string[]; target: number | null; summary: DropSummary }
   | { t: 'cover'; folder: FolderCard }
+  | { t: 'coverFrame'; folder: number }
   | { t: 'banner'; folder: FolderCard }
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
@@ -756,6 +759,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       setError(errText(e));
     }
   };
+  /** A folder got a new cover: then the cover editor opens, to choose what part shows. */
+  const coverSet = (folderId: number, media: number) => act(async () => {
+    await api.setCover(folderId, media);
+    setDialog({ t: 'coverFrame', folder: folderId });
+  });
 
   const moveItems = async (ids: number[], target: number | null) => {
     const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
@@ -1167,6 +1175,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
+    ...(f.cover != null ? [{ label: 'Adjust cover…', hint: 'drag and zoom', onSelect: () => setDialog({ t: 'coverFrame', folder: f.id }) }] : []),
     { label: banner?.folder === f.id ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
     ...(banner?.folder === f.id ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
@@ -1730,7 +1739,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         ...(many ? [{ label: 'Duel these', onSelect: () => { startDuel(null, shown.filter((x) => sel.has(x.id))); } }] : []),
         { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids, folders: [], what: many ? `${ids.length} items` : `“${it.name}”` }) },
         { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { ids }, what: many ? `${ids.length} items` : `“${it.name}”` }) },
-        ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => act(() => api.setCover(home.id, it.id)) }] : []),
+        ...(home && !many ? [{ label: `Use as cover of “${home.name}”`, onSelect: () => coverSet(home.id, it.id) }] : []),
         { label: many ? `Delete ${ids.length} items` : 'Delete', hint: 'to the trash', danger: true, sepBefore: true, onSelect: () => trashItems(ids) },
       ],
     });
@@ -1760,12 +1769,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       const others = samples[f.id]?.filter((x) => x !== f.cover) ?? [];
       const cycling = hovered && others.length > 0 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
       const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
-      return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} bump={coverBump} open={hovered} cycle={cycling} before={before} /></span>;
+      return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} bump={coverBump} open={hovered} cycle={cycling} before={before}
+        play={preview === 'all' || (preview === 'hover' && hovered)} /></span>;
     }
     const playing = preview === 'all' || (preview === 'hover' && hovered);
     const animated = f.coverKind === 'video' || f.coverKind === 'gif';
     if (f.cover && playing && animated) {
       const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+      if (f.coverPos) return <Framed pos={f.coverPos}>{f.coverKind === 'video' ? <>{still}<CoverVideo id={f.cover} /></> : <img src={mediaUrl(f.cover)} alt="" draggable={false} />}</Framed>;
       if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
       return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
     }
@@ -1786,7 +1797,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       return (
         <span className={`fstack${edge}`}>
           {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
-          <img className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />
+          {f.coverPos
+            ? <Framed pos={f.coverPos} className="fstack-top"><img src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} /></Framed>
+            : <img className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />}
           {before != null && <img key={`b${before}`} className="fstack-top" src={thumbUrl(before)} alt="" draggable={false} />}
           {cycling != null && <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />}
         </span>
@@ -1797,6 +1810,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
     }
     if (!f.cover) return <FolderIcon size={40} />;
+    if (f.coverPos) return <Framed pos={f.coverPos}><img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /></Framed>;
     return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
   };
 
@@ -1912,7 +1926,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           ? () => setDialog({ t: 'export', request: { folder: fs[0].id }, what })
           : onMedia((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
     );
-    if (folder && itemsOnly && nI === 1) actions.push({ key: 'cover', label: 'Set as folder cover', onClick: () => act(() => api.setCover(folder.id, selIds[0])) });
+    if (folder && itemsOnly && nI === 1) actions.push({ key: 'cover', label: 'Set as folder cover', onClick: () => coverSet(folder.id, selIds[0]) });
     if (nF === 1 && !nI) {
       actions.push({ key: 'look', label: 'Colour and emoji…', onClick: () => setDialog({ t: 'look', folder: fs[0] }) });
     }
@@ -1973,6 +1987,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   /** A folder's little picture (its cover), or the folder icon. */
   const folderPic = (f: FolderCard, size: number) => f.cover && f.person
     ? <RoundCover folder={f} size={size} bump={coverBump} className="side-round" />
+    : f.cover && f.coverPos
+    ? <Framed pos={f.coverPos} className="side-cover" style={{ width: size, height: size }}><img src={thumbUrl(f.cover, `c${coverBump}`, size <= 80)} alt="" draggable={false} /></Framed>
     : f.cover
     ? <img className="side-cover" src={thumbUrl(f.cover, `c${coverBump}`, size <= 80)} alt="" draggable={false} style={{ width: size, height: size }} />
     : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
@@ -2069,6 +2085,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                     onClick={(e) => folderClick(e, f, tree, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
                     {parent && <span className="rail-shape" aria-hidden="true" />}
                     {f.cover && f.person ? <RoundCover folder={f} bump={coverBump} className="rail-round" />
+                      // (a framed cover borrows the blank tile's size and selection ring)
+                      : f.cover && f.coverPos ? <Framed pos={f.coverPos} className="rail-blank"><img src={thumbUrl(f.cover, `c${coverBump}`, true)} alt="" draggable={false} /></Framed>
                       : f.cover ? <img src={thumbUrl(f.cover, `c${coverBump}`, true)} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
                     {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
                   </button>
@@ -2521,11 +2539,25 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         }} />
       )}
       {dialog?.t === 'cover' && (
-        <CoverPicker folder={dialog.folder} onClose={() => setDialog(null)} onPicked={async (id) => {
+        <CoverPicker folder={dialog.folder} onClose={() => setDialog((d) => (d?.t === 'cover' ? null : d))} onPicked={async (id) => {
           await api.setCover(dialog.folder.id, id);
           await reload();
+          // A new picture: choose what part of it shows (the picker then closes, the editor stays).
+          if (id != null && id !== dialog.folder.cover) setDialog({ t: 'coverFrame', folder: dialog.folder.id });
         }} />
       )}
+      {dialog?.t === 'coverFrame' && (() => {
+        const f = folders.find((x) => x.id === dialog.folder);
+        if (!f || f.cover == null) return null;
+        return (
+          <CoverFrameEditor folder={f} onClose={() => setDialog(null)} onSave={async (pos) => {
+            const was = f.coverPos ?? null;
+            await api.setCoverFrame(f.id, f.cover, pos);
+            did(pos ? `Adjusted the cover of “${f.name}”` : `“${f.name}” cover framed automatically again`, () => api.setCoverFrame(f.id, f.cover, was));
+            await reload();
+          }} />
+        );
+      })()}
       {dialog?.t === 'shortcuts' && <ShortcutsDialog onClose={() => setDialog(null)} />}
       {dialog?.t === 'deleteMany' && (() => {
         const nItems = dialog.folders.reduce((a, f) => a + f.items, 0);
