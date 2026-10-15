@@ -1030,3 +1030,16 @@ canvas.flip-in-ghost { display: block; }
 /* 3D photos: the moving picture lies exactly over the still one (Depth3D.tsx). */
 .player .depth3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; opacity: 0; }
 .player .depth3d.live { opacity: 1; animation: fadein var(--fade-ms, 350ms) ease-out; }
+
+/* ---- Off-screen sections of long pages are skipped ----------------------------------------
+   The browser doesn't lay out or paint a section until it comes near the screen
+   (content-visibility: auto); "auto" in the size remembers its real size after the first
+   time it was drawn, so the scrollbar stays steady. Only for big sections in a plain column:
+   for the many small items of a grid or long list (folder cards, sidebar rows) it measured
+   worse — each card coming into view made the browser lay out the whole grid again, so
+   scrolling cost 3–4 times as much. The media grid only ever draws the tiles on screen. */
+.person { content-visibility: auto; contain-intrinsic-block-size: auto 320px; }
+.look-group { content-visibility: auto; contain-intrinsic-block-size: auto 220px; }
+.settings main > .section { content-visibility: auto; contain-intrinsic-block-size: auto 300px; }
+/* An open "⋯" menu inside one must be able to spill out over its neighbours. */
+.person:has(.menu), .look-group:has(.menu), .settings main > .section:has(.menu) { content-visibility: visible; }
