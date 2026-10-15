@@ -39,6 +39,7 @@ import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
 import { MediaGrid } from '../components/MediaGrid';
 import { CoverVideo } from '../components/VideoPreview';
+import { BannerPicker, FolderBannerView, useFolderBanner } from '../components/FolderBanner'; // folder banners
 import { setPreviewCover } from '../previewgate';
 import { RoundCover } from '../components/RoundCover';
 import { ShortcutsDialog, useHelpKey } from '../components/Shortcuts';
@@ -111,6 +112,7 @@ type Dialog =
   | { t: 'weight'; ids: number[]; current: number }
   | { t: 'archivePassword'; paths: string[]; target: number | null; summary: DropSummary }
   | { t: 'cover'; folder: FolderCard }
+  | { t: 'banner'; folder: FolderCard }
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | { t: 'shortcuts' }
@@ -334,6 +336,21 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [loading, setLoading] = useState(false);
   const [reports, setReports] = useState<ImportReport[]>([]);
   const [coverBump, setCoverBump] = useState(0);
+  // ---- folder banners (begin) ----
+  const [banner, reloadBanner] = useFolderBanner(view.kind === 'folder' ? folder : null);
+  // Choosing what the banner shows (the item being repositioned).
+  const [bannerEditOf, setBannerEditOf] = useState<number | null>(null);
+  const bannerEdit = banner != null && bannerEditOf === banner.media;
+  useEffect(() => setBannerEditOf(null), [view]);
+  const showBanner = view.kind === 'folder' && !!banner && !!folder && banner.folder === folder.id;
+  const removeBanner = (f: FolderCard) => {
+    const was = banner?.folder === f.id ? banner : null;
+    api.setBanner(f.id, null).then(() => {
+      if (was) did('Banner removed', () => api.setBanner(f.id, was.media, was.y).then(reloadBanner));
+      reloadBanner();
+    }, (err) => setError(errText(err)));
+  };
+  // ---- folder banners (end) ----
   const [ctx, setCtx] = useState<{ x: number; y: number; title: string; items: MenuItem[] } | null>(null);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
   const [storageJob, setStorageJob] = useState<StorageProgress | null>(null);
@@ -1153,6 +1170,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
+    { label: banner?.folder === f.id ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
+    ...(banner?.folder === f.id ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
@@ -2141,6 +2160,20 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
               </span>
             </div>
           )}
+          {showBanner && banner && folder && (
+            <FolderBannerView banner={banner} title={<><FolderMark f={folder} />{heading}</>} note={folder.note} preview={preview} scroller={scroller}
+              editing={bannerEdit} onReposition={() => setBannerEditOf(banner.media)} onChange={() => setDialog({ t: 'banner', folder })} onRemove={() => removeBanner(folder)}
+              onEditDone={(y) => {
+                setBannerEditOf(null);
+                if (y != null && Math.abs(y - banner.y) > 0.001) {
+                  const was = banner.y;
+                  api.setBanner(folder.id, banner.media, y).then(() => {
+                    pushUndo('Banner moved', () => api.setBanner(folder.id, banner.media, was).then(reloadBanner));
+                    reloadBanner();
+                  }, (err) => setError(errText(err)));
+                }
+              }} />
+          )}
           <div className="lib-head">
             <div role="group" aria-label="History" className="row" style={{ gap: 4 }}>
               <button type="button" className="btn btn-icon btn-sm ghost" aria-label="Back" title="Back (Alt+← or Backspace)" disabled={!history.canBack}
@@ -2160,8 +2193,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 ))}
               </span>
             )}
-            <h1>{folder && <FolderMark f={folder} />}{heading}</h1>
-            {folder?.note && <span className="folder-note" title={folder.note}><NoteIcon size={13} /> {folder.note}</span>}
+            {/* With a banner, the name and note are shown on it. */}
+            {!showBanner && <h1>{folder && <FolderMark f={folder} />}{heading}</h1>}
+            {!showBanner && folder?.note && <span className="folder-note" title={folder.note}><NoteIcon size={13} /> {folder.note}</span>}
             {folder?.person && view.kind === 'folder' && <PersonAlso folder={folder} onShowAll={() => setView({ kind: 'timeline', person: folder.id })} />}
             <span className="faint">
               {view.kind === 'folders' ? `${cards.length} folders`
@@ -2477,6 +2511,16 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onConfirm={async () => { await api.emptyTrash(); clearUndo(); await reload(); }}>
           Everything in the trash ({plural(trash?.totalItems ?? 0, 'item')}, {formatBytes(trash?.totalBytes ?? 0)}) is removed for good.
         </ConfirmDialog>
+      )}
+      {dialog?.t === 'banner' && (
+        <BannerPicker folder={dialog.folder} current={banner?.folder === dialog.folder.id ? banner.media : null} onClose={() => setDialog(null)} onPicked={async (id) => {
+          const f = dialog.folder;
+          const was = banner?.folder === f.id ? banner : null;
+          await api.setBanner(f.id, id, was?.media === id ? was.y : 0.5);
+          did(was ? 'Banner changed' : 'Banner set', () => api.setBanner(f.id, was?.media ?? null, was?.y).then(reloadBanner));
+          if (view.kind === 'folder' && view.id === f.id) setBannerEditOf(id); // then drag it to choose what shows
+          reloadBanner();
+        }} />
       )}
       {dialog?.t === 'cover' && (
         <CoverPicker folder={dialog.folder} onClose={() => setDialog(null)} onPicked={async (id) => {

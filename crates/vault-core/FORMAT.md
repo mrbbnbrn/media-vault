@@ -183,6 +183,8 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 - `face_graph(model, data)` (v13) — which faces look alike (each face's closest look-alikes
   and how alike), saved so it isn't worked out again at every unlock; the app checks it
   against the faces (by a checksum of each fingerprint) and rebuilds what doesn't match
+- `folders.banner_media_id`, `folders.banner_y` (v15) — a folder's banner: the item shown wide at the
+  top of the folder and where in it to look (0 = top, 1 = bottom); NULL = no banner.
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

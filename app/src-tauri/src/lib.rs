@@ -3,6 +3,7 @@
 
 mod access;
 mod activity;
+mod banner; // folder banners
 // The native analysis pass: decode each picture once for its thumbnail,
 // fingerprint, smart-search vector and faces (picture.rs, smartnative.rs).
 mod analyse;
@@ -724,6 +725,18 @@ async fn set_cover(
 ) -> Result<(), String> {
     edit_db(state.inner(), move |c| library::set_cover(c, folder, media)).await
 }
+
+// ---- folder banners (begin) ----
+#[tauri::command]
+async fn folder_banner(state: State<'_, Shared>, folder: i64) -> Result<Option<banner::Banner>, String> {
+    read_db(state.inner(), move |c| banner::get(c, folder)).await
+}
+
+#[tauri::command]
+async fn set_banner(state: State<'_, Shared>, folder: i64, media: Option<i64>, y: Option<f64>) -> Result<(), String> {
+    edit_db(state.inner(), move |c| banner::set(c, folder, media, y)).await
+}
+// ---- folder banners (end) ----
 
 #[tauri::command]
 async fn all_tags(state: State<'_, Shared>) -> Result<Vec<library::TagCount>, String> {
@@ -2261,6 +2274,8 @@ pub fn run() {
             set_favourite,
             set_weight,
             set_cover,
+            folder_banner,
+            set_banner,
             all_tags,
             item_tags,
             tag_items,

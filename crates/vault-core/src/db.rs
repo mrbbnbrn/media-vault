@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 14;
+pub const SCHEMA_VERSION: i64 = 15;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -508,7 +508,6 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
     }
-    // (v13 is another change that may be numbered before this one.)
     if v < 14 || !has_table(conn, "thumb_bundles")? {
         // v14: thumbnail pages — a folder's thumbnails packed into a few
         // objects (stored like thumbnails) so a grid decrypts one per page.
@@ -530,6 +529,33 @@ fn migrate(conn: &Connection) -> Result<()> {
             conn.pragma_update(None, "user_version", 14)?;
         }
     }
+    // ---- folder banners (begin) ----
+    if v < 15 || !has_column(conn, "folders", "banner_media_id")? || !has_column(conn, "folders", "banner_y")? {
+        // v15: a wide banner picture at the top of a folder (one of its items)
+        // and where in it to look (0 = top, 1 = bottom). NULL = no banner.
+        // Each column only if it isn't there yet, so this is safe to run again.
+        conn.execute_batch("BEGIN;")?;
+        let r = (|| -> Result<()> {
+            if !has_column(conn, "folders", "banner_media_id")? {
+                conn.execute_batch("ALTER TABLE folders ADD COLUMN banner_media_id INTEGER REFERENCES media(id) ON DELETE SET NULL;")?;
+            }
+            if !has_column(conn, "folders", "banner_y")? {
+                conn.execute_batch("ALTER TABLE folders ADD COLUMN banner_y REAL;")?;
+            }
+            if v < 15 {
+                conn.execute_batch("PRAGMA user_version = 15;")?;
+            }
+            Ok(())
+        })();
+        match r {
+            Ok(()) => conn.execute_batch("COMMIT;")?,
+            Err(e) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                return Err(e);
+            }
+        }
+    }
+    // ---- folder banners (end) ----
     Ok(())
 }
 
@@ -819,7 +845,6 @@ mod tests {
             c.query_row("SELECT preview_object_id, tiny_object_id FROM media", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((p.as_str(), t), ("strip", None));
         let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-        assert!(v >= 12);
         assert_eq!(v, SCHEMA_VERSION);
         // Running it again (or with the column already there) changes nothing.
         migrate(&c).unwrap();
@@ -948,5 +973,32 @@ mod tests {
         migrate(&c).unwrap();
         let n: i64 = c.query_row("SELECT COUNT(*) FROM thumb_bundles", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn v15_adds_folder_banners() {
+        let c = create_empty().unwrap();
+        // (A fresh library comes up through every step, so it got them just now.)
+        c.execute("INSERT INTO folders(name, created_at, note) VALUES ('Trips', 0, 'Summer')", []).unwrap();
+        c.execute_batch("ALTER TABLE folders DROP COLUMN banner_y; PRAGMA user_version = 12;").unwrap();
+        migrate(&c).unwrap();
+        let (b, y, n): (Option<i64>, Option<f64>, String) =
+            c.query_row("SELECT banner_media_id, banner_y, note FROM folders", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((b, y, n.as_str()), (None, None, "Summer"));
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        // Again, and with a column missing at the current version: fine.
+        c.execute_batch("ALTER TABLE folders DROP COLUMN banner_y;").unwrap();
+        migrate(&c).unwrap();
+        assert!(has_column(&c, "folders", "banner_y").unwrap());
+        c.execute_batch("PRAGMA user_version = 12;").unwrap();
+        migrate(&c).unwrap();
+        // Deleting the banner's item for good clears it.
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", [])
+            .unwrap();
+        c.execute("UPDATE folders SET banner_media_id = 1, banner_y = 0.4", []).unwrap();
+        c.execute("DELETE FROM media", []).unwrap();
+        let b: Option<i64> = c.query_row("SELECT banner_media_id FROM folders", [], |r| r.get(0)).unwrap();
+        assert_eq!(b, None);
     }
 }

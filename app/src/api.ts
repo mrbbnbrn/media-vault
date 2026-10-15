@@ -31,11 +31,13 @@ export interface ViewerSettings {
   alignFaces?: boolean;
   /** The picture grows out of its tile when opened and shrinks back into it when closed. */
   openCloseAnim?: boolean;
+  /** Slideshow: a small ring by the Slideshow button shows the time to the next item. */
+  slideRing?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
-  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true,
+  ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true,
 };
 
 export interface AppConfig {
@@ -447,6 +449,17 @@ export interface FolderCard {
   coverFace?: [number, number, number, number] | null;
 }
 
+/** A folder's banner: one item shown wide at the top of the folder (banner.rs). */
+export interface FolderBanner {
+  folder: number;
+  media: number;
+  kind: Kind;
+  /** Where to look, top to bottom (0..1). */
+  y: number;
+  width: number | null;
+  height: number | null;
+}
+
 export interface FolderView {
   folder: FolderCard | null;
   subfolders: FolderCard[];
@@ -697,6 +710,9 @@ export const api = {
   setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
   setCover: (folder: number, media: number | null) => call<void>('set_cover', { folder, media }),
+  // folder banners (banner.rs): media null removes it; y = where to look, 0 top … 1 bottom
+  folderBanner: (folder: number) => call<FolderBanner | null>('folder_banner', { folder }),
+  setBanner: (folder: number, media: number | null, y?: number) => call<void>('set_banner', { folder, media, y: y ?? null }),
   allTags: () => call<TagCount[]>('all_tags'),
   // ---- organising
   freeCopy: (ids: number[], folder: number | null) => call<number[]>('free_copy', { ids, folder }),

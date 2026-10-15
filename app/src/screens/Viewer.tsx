@@ -314,6 +314,15 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           <span className="row"><input id="ps-img" className="input small" type="number" min={1} value={s.imageSeconds}
             onChange={(e) => set({ imageSeconds: Math.max(1, num(e.target.value)) })} /> seconds</span>
 
+          {/* time to next slide (begin) */}
+          <span />
+          <span className="row">
+            <label className="check" title="A small ring around the Slideshow button runs down to the next item (with beat sync: the beats left)">
+              <input type="checkbox" checked={prefs.slideRing !== false} onChange={(e) => saveViewerPrefs({ slideRing: e.target.checked })} /> Show time to next slide
+            </label>
+          </span>
+          {/* time to next slide (end) */}
+
           <span>Pictures</span>
           <span className="row">
             <label className="check"><input type="checkbox" checked={s.kenBurns} onChange={(e) => set({ kenBurns: e.target.checked })} /> Slow pan and zoom</label>

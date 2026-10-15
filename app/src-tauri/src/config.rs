@@ -63,6 +63,8 @@ pub struct ViewerSettings {
     pub align_faces: bool,
     /// The picture grows out of its grid tile when opened and shrinks back when closed.
     pub open_close_anim: bool,
+    /// Slideshow: a small ring by the Slideshow button shows the time to the next item.
+    pub slide_ring: bool,
 }
 
 impl Default for ViewerSettings {
@@ -80,6 +82,7 @@ impl Default for ViewerSettings {
             face_boxes: false,
             align_faces: false,
             open_close_anim: true,
+            slide_ring: true,
         }
     }
 }
