@@ -2,7 +2,8 @@ import { useState } from 'react';
 import { api, pickFolder } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
-import { BackIcon, FolderIcon } from '../components/Icons';
+import { BackIcon, FolderIcon, WarnIcon } from '../components/Icons';
+import { canCreate, NO_PASSWORD_WARNING } from '../vaultpick';
 
 export function CreateVault({ nav }: { nav: Nav }) {
   const min = nav.app.minPasswordChars;
@@ -10,10 +11,11 @@ export function CreateVault({ nav }: { nav: Nav }) {
   const [parent, setParent] = useState<string | null>(null);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
+  const [noPassword, setNoPassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ready = name.trim().length > 0 && !!parent && passwordsOk(password, confirm, min);
+  const ready = canCreate({ name, parent, noPassword, passwordOk: passwordsOk(password, confirm, min) });
 
   async function choose() {
     const p = await pickFolder('Where should the new vault folder be created?');
@@ -26,7 +28,7 @@ export function CreateVault({ nav }: { nav: Nav }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.createVault(parent, name.trim(), password);
+      const r = await api.createVault(parent, name.trim(), noPassword ? null : password);
       setPassword('');
       setConfirm('');
       await nav.refresh();
@@ -50,7 +52,7 @@ export function CreateVault({ nav }: { nav: Nav }) {
           <div className="field" style={{ gap: 10 }}>
             <h1>Create a new vault</h1>
             <p className="lead">
-              Everything you put in it is encrypted on disk. You can keep several vaults, each with its own password.
+              Everything you put in it is encrypted on disk. You can keep several vaults, each with its own password (or none).
             </p>
           </div>
 
@@ -71,7 +73,23 @@ export function CreateVault({ nav }: { nav: Nav }) {
             <span className="faint" style={{ fontSize: 12 }}>A new folder with the vault’s name is created here. Any drive works, including external ones.</span>
           </div>
 
-          <PasswordPair password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} min={min} />
+          <div className="setting">
+            <div className="text">
+              <span className="title">No password</span>
+              <span className="desc">The vault opens straight away, without asking. You can set a password later in Settings.</span>
+            </div>
+            <button type="button" role="switch" aria-checked={noPassword} aria-label="No password" className="toggle"
+              onClick={() => setNoPassword(!noPassword)} disabled={busy} />
+          </div>
+
+          {noPassword ? (
+            <div className="notice" role="note">
+              <WarnIcon />
+              <span>{NO_PASSWORD_WARNING} Your files are still encrypted on disk, but the key to them is kept in the same folder.</span>
+            </div>
+          ) : (
+            <PasswordPair password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} min={min} />
+          )}
 
           <ErrorBox error={error} />
           <div className="row" style={{ justifyContent: 'flex-end' }}>

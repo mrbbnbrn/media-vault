@@ -5,6 +5,9 @@ pub enum Error {
     #[error("wrong password or recovery key")]
     WrongKey,
 
+    #[error("this vault has no password; it opens without one")]
+    NoPassword,
+
     #[error("invalid recovery phrase: {0}")]
     BadRecoveryPhrase(String),
 

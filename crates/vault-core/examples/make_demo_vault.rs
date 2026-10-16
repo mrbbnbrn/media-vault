@@ -1,10 +1,15 @@
 //! Developer helper: create a small demo vault for trying the export tool.
 //! cargo run --example make_demo_vault -- <folder> <password>
+//! (`--no-password` instead of a password makes a vault without one)
 use vault_core::{KdfParams, ObjectKind, Vault, db};
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
-    let (v, phrase) = Vault::create(a[1].as_ref(), &a[2], KdfParams::STANDARD).unwrap();
+    let (v, phrase) = if a[2] == "--no-password" {
+        Vault::create_without_password(a[1].as_ref(), KdfParams::STANDARD).unwrap()
+    } else {
+        Vault::create(a[1].as_ref(), &a[2], KdfParams::STANDARD).unwrap()
+    };
     let conn = db::create_empty().unwrap();
     conn.execute(
         "INSERT INTO folders(name, created_at) VALUES ('People', 0)",

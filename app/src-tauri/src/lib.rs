@@ -322,11 +322,15 @@ async fn create_vault(
     state: State<'_, Shared>,
     parent: String,
     name: String,
-    password: String,
+    // None = a vault without a password.
+    password: Option<String>,
 ) -> Result<Created, String> {
     let inner = state.inner().clone();
     blocking(move || {
-        let (s, words) = session::create(&parent, &name, &password, inner.kdf)?;
+        let (s, words) = match password {
+            Some(pw) => session::create(&parent, &name, &pw, inner.kdf)?,
+            None => session::create_without_password(&parent, &name, inner.kdf)?,
+        };
         Ok(Created {
             session: install_session(&inner, s),
             words,
@@ -349,6 +353,17 @@ async fn unlock(
     let inner = state.inner().clone();
     blocking(move || {
         let s = session::unlock(&path, &password).inspect_err(|_| note_failure(&path))?;
+        Ok(install_session(&inner, s))
+    })
+    .await
+}
+
+/// Open a vault that has no password (from the vault list, by hand).
+#[tauri::command]
+async fn open_vault(state: State<'_, Shared>, path: String) -> Result<SessionInfo, String> {
+    let inner = state.inner().clone();
+    blocking(move || {
+        let s = session::open_without_password(&path)?;
         Ok(install_session(&inner, s))
     })
     .await
@@ -411,12 +426,57 @@ async fn change_password(
     .await
 }
 
+/// Remove the password (asks for the current one first). Only vault.json
+/// changes: the vault then opens without asking, for anyone with the folder.
+#[tauri::command]
+async fn turn_password_off(state: State<'_, Shared>, current: String) -> Result<SessionInfo, String> {
+    let inner = state.inner().clone();
+    blocking(move || {
+        let root = with_session(&inner, |s| {
+            if !s.has_password() {
+                return Err("This vault already has no password.".into());
+            }
+            Ok(s.vault().root().to_path_buf())
+        })?;
+        session::verify_password(&root, &current)?;
+        with_session(&inner, |s| {
+            s.vault_mut().turn_password_off().map_err(session::friendly)?;
+            s.set_needs_new_password(false);
+            Ok(s.info())
+        })
+    })
+    .await
+}
+
+/// Give a vault without a password one (the unprotected key is removed).
+#[tauri::command]
+async fn set_password(state: State<'_, Shared>, password: String) -> Result<SessionInfo, String> {
+    let inner = state.inner().clone();
+    blocking(move || {
+        session::check_password(&password)?;
+        with_session(&inner, |s| {
+            if s.has_password() {
+                return Err("This vault already has a password. Use “Change password” instead.".into());
+            }
+            s.vault_mut().change_password(&password).map_err(session::friendly)?;
+            // Idle time counts from now, not from when the vault was opened.
+            *inner.activity.lock().unwrap() = Activity::new(Instant::now());
+            Ok(s.info())
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 async fn reset_recovery(state: State<'_, Shared>, current: String) -> Result<Vec<String>, String> {
     let inner = state.inner().clone();
     blocking(move || {
-        let root = with_session(&inner, |s| Ok(s.vault().root().to_path_buf()))?;
-        session::verify_password(&root, &current)?;
+        let (root, has_password) =
+            with_session(&inner, |s| Ok((s.vault().root().to_path_buf(), s.has_password())))?;
+        // A vault without a password has nothing to check (it opens for anyone).
+        if has_password {
+            session::verify_password(&root, &current)?;
+        }
         with_session(&inner, |s| {
             let phrase = s.vault_mut().reset_recovery().map_err(session::friendly)?;
             Ok(phrase.words().iter().map(|w| w.to_string()).collect())
@@ -2194,7 +2254,13 @@ fn start_watcher(app: AppHandle, inner: Shared) {
                     }
                 }
             }
+            // A vault without a password never locks by itself (opening it
+            // again asks nothing); closing it by hand and the panic key still work.
+            let auto_lock = open.has_password();
             drop(open);
+            if !auto_lock {
+                continue;
+            }
             let lock = inner.config.lock().unwrap().lock.clone();
             let reason = if lock.on_system_lock && slept {
                 Some(LockReason::Sleep)
@@ -2348,7 +2414,8 @@ pub fn run() {
                 let app = window.app_handle();
                 let inner = app.state::<Shared>().inner().clone();
                 let on_min = inner.config.lock().unwrap().lock.on_minimize;
-                if on_min && window.is_minimized().unwrap_or(false) {
+                let has_password = inner.session.lock().unwrap().as_ref().is_some_and(|s| s.has_password());
+                if on_min && has_password && window.is_minimized().unwrap_or(false) {
                     lock_now(app, &inner, LockReason::Minimized);
                 }
             }
@@ -2361,6 +2428,9 @@ pub fn run() {
             create_vault,
             unlock,
             unlock_with_recovery,
+            open_vault,
+            turn_password_off,
+            set_password,
             set_new_password,
             change_password,
             reset_recovery,
