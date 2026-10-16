@@ -130,7 +130,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
             <input type="checkbox" checked={!!prefs.depthMoving} onChange={(e) => saveViewerPrefs({ depthMoving: e.target.checked })} /> 3D for GIFs and videos
           </label>
           <span className="faint" style={{ fontSize: 12 }}>
-            GIFs and animated pictures: the depth of every frame is worked out when one opens (it plays flat until then), so each frame moves with its own depth.
+            Lets the gentle 3D motion, the 3D mouse and 3D to the beat work on GIFs and videos too (it turns none of them on by itself). GIFs: every frame's depth is worked out when one opens (flat until then); videos: worked out live while they play.
           </span>
         </span>
         <span />

@@ -830,9 +830,9 @@ export function Player(props: PlayerProps) {
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
   const isVideo3d = item?.kind === 'video';
   /** GIFs and videos move with their own switch; pictures with theirs. */
-  const depthFor = animated || isVideo3d ? depthMoving : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse : false;
+  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse : false;
   /** Moving on its own or with the mouse. */
-  const depthMotion = animated || isVideo3d ? depthMoving || depthByMouse : depthAuto || depthByMouse;
+  const depthMotion = depthAuto || depthByMouse;
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   const depth3d = depthFor && depthPackOk && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
   /** Each shown GIF frame, for the 3D layer. */
@@ -1480,16 +1480,15 @@ export function Player(props: PlayerProps) {
               {up.button}
               {(isPicture || isVideo3d) && !failed && !props.compact && (
                 <div className="depth-btns" role="group" aria-label="3D">
-                  {!(animated || isVideo3d) ? (
-                    <button type="button" className={`pbtn lg${depthAuto ? ' on' : ''}`} aria-pressed={depthAuto} aria-label="3D motion for pictures"
-                      title={depthAuto ? '3D motion for pictures is on (shape, amount and speed in View ▾ → 3D photo settings) · click to turn off' : '3D motion for pictures: still pictures move gently in depth'}
-                      onClick={() => toggleDepth({ depthAuto: !depthAuto }, !depthAuto, depthAuto ? '3D motion for pictures off' : '3D motion for pictures on')}>
-                      <OrbitIcon size={18} />
-                    </button>
-                  ) : (
+                  <button type="button" className={`pbtn lg${depthAuto ? ' on' : ''}`} aria-pressed={depthAuto} aria-label="Gentle 3D motion"
+                    title={depthAuto ? 'Gentle 3D motion is on (shape, amount and speed in View ▾ → 3D photo settings) · click to turn off' : 'Gentle 3D motion: pictures move gently in depth (GIFs and videos too when their 3D switch is on)'}
+                    onClick={() => toggleDepth({ depthAuto: !depthAuto }, !depthAuto, depthAuto ? 'Gentle 3D motion off' : 'Gentle 3D motion on')}>
+                    <OrbitIcon size={18} />
+                  </button>
+                  {(animated || isVideo3d) && (
                     <button type="button" className={`pbtn lg${depthMoving ? ' on' : ''}`} aria-pressed={depthMoving} aria-label="3D for GIFs and videos"
-                      title={depthMoving ? '3D for GIFs and videos is on (amount in View ▾ → 3D photo settings) · click to turn off' : '3D for GIFs and videos: GIFs get every frame\'s depth when they open; videos are worked out live while they play'}
-                      onClick={() => toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : '3D for GIFs and videos on · the depth of every frame is worked out first')}>
+                      title={depthMoving ? '3D for GIFs and videos is on: the gentle motion, the 3D mouse and 3D to the beat work on them too · click to turn off' : '3D for GIFs and videos: lets the gentle motion, the 3D mouse and 3D to the beat work on GIFs and videos too (turns nothing else on)'}
+                      onClick={() => toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it')}>
                       <Film3DIcon size={18} />
                     </button>
                   )}
