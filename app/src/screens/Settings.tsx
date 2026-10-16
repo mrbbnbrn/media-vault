@@ -551,6 +551,8 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
         </div>
         <button type="button" className="btn" disabled={!!job || !info?.reclaimableBytes} onClick={() => run('reclaim')}>Reclaim</button>
       </div>
+      <Toggle title="Reclaim space automatically" on={cfg.autoReclaim !== false} set={(v) => update({ ...cfg, autoReclaim: v })}
+        desc="A few seconds after something is deleted for good (from the trash, emptying it, or after 30 days), the pack files holding it are rewritten in the background, so nothing of the deleted files is left in the vault folder. Takes a moment with large packs." />
       <h2 style={{ marginTop: 18 }}>Thumbnails and preview clips</h2>
       <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
         Made by the app from your files and kept encrypted in the vault. Deleting them never touches your files.

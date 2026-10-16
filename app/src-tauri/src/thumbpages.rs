@@ -505,6 +505,55 @@ pub fn refresh_folder(s: &Session, folder: Option<i64>, size: Size, pause: Durat
     Ok(out)
 }
 
+/// Thumbnails that are going away for good (their item deleted, or a
+/// picture rotated): every page holding a copy of one is removed at once, so
+/// no copy is left behind, and its folder's pages are made again soon for
+/// the thumbnails still there. How many pages went.
+pub fn drop_pages_holding(s: &Session, thumbs: &[ObjectId]) -> usize {
+    if thumbs.is_empty() {
+        return 0;
+    }
+    let gone_thumbs: HashSet<&ObjectId> = thumbs.iter().collect();
+    let hit: Vec<(ObjectId, Option<i64>, Option<Size>)> = {
+        let db = s.db();
+        let Ok(mut st) = db.prepare("SELECT object_id, folder_id, size, members FROM thumb_bundles") else { return 0 };
+        st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, i64>(2)?, r.get::<_, Vec<u8>>(3)?)))
+            .map(|it| {
+                it.flatten()
+                    .filter(|(_, _, _, m)| m.chunks_exact(16).any(|x| gone_thumbs.contains(&ObjectId(x.try_into().unwrap()))))
+                    .filter_map(|(p, f, z, _)| Some((ObjectId::from_hex(&p).ok()?, f, Size::from_i64(z))))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    if hit.is_empty() {
+        return 0;
+    }
+    let pages: Vec<ObjectId> = hit.iter().map(|(p, _, _)| *p).collect();
+    let vault = vault_id(s);
+    forget_pages(&vault, &pages);
+    drop_pages(s, &pages);
+    s.mark_dirty();
+    // The rest of those folders: paged again by the background thread.
+    {
+        let mut g = lock();
+        let st = state(&mut g, &vault);
+        for (_, folder, size) in &hit {
+            if let Some(size) = size {
+                let key = (*folder, *size);
+                st.checked.remove(&key);
+                if !st.wanted.contains(&key) {
+                    st.wanted.push(key);
+                }
+            }
+        }
+    }
+    let (m, cv) = &WAKE;
+    *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
+    cv.notify_all();
+    pages.len()
+}
+
 /// Pages no longer in the library: out of memory too.
 fn forget_pages(vault: &str, pages: &[ObjectId]) {
     if pages.is_empty() {
@@ -736,6 +785,34 @@ pub(crate) mod tests {
         // "Delete thumbnails" takes the pages too.
         assert_eq!(delete_all(&s), 3);
         assert_eq!(usage(&s.db()), (0, 0));
+    }
+
+    #[test]
+    fn deleting_for_good_removes_every_page_holding_a_copy() {
+        let _one = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let (s, folder, ids) = vault_with_folder(t.path(), 150, 200);
+        forget();
+        refresh_folder(&s, Some(folder), Size::Big, Duration::ZERO).unwrap();
+        refresh_folder(&s, Some(folder), Size::Small, Duration::ZERO).unwrap();
+        assert_eq!(usage(&s.db()).0, 4);
+        let gone = thumb_of(&s, ids[3]);
+        let kept = thumb_of(&s, ids[140]);
+        // One item deleted for good (as delete_forever + remove_objects do).
+        crate::library::trash_items(&s.db(), &[ids[3]]).unwrap();
+        let o = crate::library::delete_forever(&s.db(), &[ids[3]]).unwrap();
+        crate::import::remove_objects(&s, &o);
+        // Only the two pages (one per size) that held it went; no copy is left.
+        assert_eq!(usage(&s.db()).0, 2);
+        assert!(get(&s, &gone, Size::Big).is_none() && get(&s, &gone, Size::Small).is_none());
+        assert!(get(&s, &kept, Size::Big).is_some(), "the other page stays");
+        // The folder's pages are made again for what is still there.
+        let re = refresh_folder(&s, Some(folder), Size::Big, Duration::ZERO).unwrap();
+        assert!(re.pages >= 1, "{re:?}");
+        assert!(get(&s, &thumb_of(&s, ids[4]), Size::Big).is_some());
+        assert!(get(&s, &gone, Size::Big).is_none());
+        assert_eq!(drop_pages_holding(&s, &[]), 0);
+        assert_eq!(drop_pages_holding(&s, &[ObjectId::random()]), 0);
     }
 
     #[test]

@@ -183,7 +183,7 @@ fn with_session<T>(
     f(&s)
 }
 
-fn install_session(inner: &Inner, s: Session) -> SessionInfo {
+fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     let mut info = s.info();
     info.login = Some(access::on_unlock(&s));
     *inner.activity.lock().unwrap() = Activity::new(Instant::now());
@@ -193,7 +193,7 @@ fn install_session(inner: &Inner, s: Session) -> SessionInfo {
     }
     // Nothing decrypted from another vault stays in memory.
     protocol::forget_cache();
-    start_background(s);
+    start_background(inner.clone(), s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
         let mut cfg = inner.config.lock().unwrap();
@@ -205,7 +205,7 @@ fn install_session(inner: &Inner, s: Session) -> SessionInfo {
 }
 
 /// Work that runs while a vault is open: empty old trash, find dates taken.
-fn start_background(s: Arc<Session>) {
+fn start_background(inner: Shared, s: Arc<Session>) {
     let s2 = s.clone();
     std::thread::spawn(move || {
         let orphans = library::purge_trash(&s2.db(), library::TRASH_DAYS);
@@ -215,6 +215,7 @@ fn start_background(s: Arc<Session>) {
             s2.mark_dirty();
             if s2.save().is_ok() {
                 import::remove_objects(&s2, &o);
+                reclaim_soon(inner, s2.clone());
             }
         }
         // Files kept for undoing rotations last time (the undo list is new now).
@@ -702,14 +703,41 @@ async fn delete_and_clean(
     f: impl FnOnce(&rusqlite::Connection) -> Result<library::Orphans, String> + Send + 'static,
 ) -> Result<usize, String> {
     let s = sess(inner)?;
-    blocking(move || {
+    let s2 = s.clone();
+    let n = blocking(move || {
         let orphans = f(&s.db())?;
         s.mark_dirty();
         s.save()?;
         import::remove_objects(&s, &orphans);
-        Ok(orphans.media.len())
+        Ok::<_, String>((orphans.media.len(), !orphans.media.is_empty() || !orphans.thumbs.is_empty()))
     })
-    .await
+    .await?;
+    if n.1 {
+        reclaim_soon(inner.clone(), s2);
+    }
+    Ok(n.0)
+}
+
+/// A reclaim is waiting to run (several deletions in a row share one).
+static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// With "Reclaim space automatically" on: a few seconds after deleting for
+/// good, the packs holding deleted files are rewritten in the background
+/// (never during an import), so nothing of them stays in the vault folder.
+fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
+    if !inner.config.lock().unwrap().auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(4));
+        let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
+        RECLAIM_PENDING.store(false, Ordering::SeqCst);
+        if !s.is_closed()
+            && let Err(err) = storage::reclaim_all_deleted(&s)
+        {
+            eprintln!("Reclaiming space after deleting didn't finish: {err}");
+        }
+    });
 }
 
 /// "Delete" puts things in the trash; they can be restored for 30 days.

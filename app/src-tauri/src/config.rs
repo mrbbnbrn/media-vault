@@ -260,6 +260,10 @@ pub struct AppConfig {
     pub last_vault: Option<String>,
     /// Settings → Faces → "Poor faces": when a face is too small, blurry or turned to be trusted.
     pub poor_faces: PoorFaceSettings,
+    /// After deleting for good (or the trash emptying itself), the space the
+    /// deleted files leave inside the pack files is reclaimed in the
+    /// background, so nothing of them is left in the vault folder.
+    pub auto_reclaim: bool,
 }
 
 // ---- poor faces settings (begin) ----
@@ -358,6 +362,7 @@ impl Default for AppConfig {
             vaults: Vec::new(),
             last_vault: None,
             poor_faces: PoorFaceSettings::default(),
+            auto_reclaim: true,
         }
     }
 }

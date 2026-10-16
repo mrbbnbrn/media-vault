@@ -303,9 +303,19 @@ pub struct ReclaimReport {
 
 /// Rewrite packs that are at least 20% unused space.
 pub fn reclaim(s: &Session) -> Result<ReclaimReport, String> {
+    reclaim_over(s, 0.2)
+}
+
+/// After deleting for good: every pack holding anything deleted is rewritten,
+/// so no deleted file's bytes stay in the vault folder.
+pub fn reclaim_all_deleted(s: &Session) -> Result<ReclaimReport, String> {
+    reclaim_over(s, 1e-9)
+}
+
+fn reclaim_over(s: &Session, min_waste: f64) -> Result<ReclaimReport, String> {
     s.save()?;
     check_all_present(s)?;
-    let plan = s.vault().compact(0.2).map_err(|e| e.to_string())?;
+    let plan = s.vault().compact(min_waste).map_err(|e| e.to_string())?;
     s.mark_dirty();
     // The new locations must be saved before the old packs are deleted.
     s.save()?;
@@ -391,6 +401,37 @@ mod tests {
             .unwrap();
         assert_eq!((person, fs, cs), (1, 0, 0), "person folders stay; items can be scanned again");
         assert!(delete_data(&s, "everything").is_err());
+    }
+
+    #[test]
+    fn a_small_deletion_is_reclaimed_completely_after_deleting_for_good() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for i in 0..20 {
+            std::fs::write(src.join(format!("{i:02}.jpg")), vec![i as u8; 100_000 + i]).unwrap();
+        }
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        assert_eq!(import::run(&s, &job, &AtomicBool::new(false), &mut |_| {}).imported, 20);
+        // One item of 20 (5%): below the 20% the Reclaim button waits for.
+        let items = library::query_items(&s.db(), &library::ItemFilter::default()).unwrap();
+        let one = items.iter().find(|i| i.name == "00.jpg").unwrap().id;
+        library::trash_items(&s.db(), &[one]).unwrap();
+        let o = library::delete_forever(&s.db(), &[one]).unwrap();
+        s.save().unwrap();
+        import::remove_objects(&s, &o);
+        assert!(info(&s).unwrap().reclaimable_bytes >= 100_000);
+        assert_eq!(reclaim(&s).unwrap().reclaimed_bytes, 0, "the button's rule leaves it");
+        let rep = reclaim_all_deleted(&s).unwrap();
+        assert!(rep.reclaimed_bytes >= 100_000, "{rep:?}");
+        assert_eq!(info(&s).unwrap().reclaimable_bytes, 0, "nothing of it left in the packs");
+        // The bytes of the deleted file are nowhere in the vault folder.
+        let path = s.info().path;
+        drop(s);
+        let s = session::unlock(&path, "long enough pw").unwrap();
+        assert_eq!(library::query_items(&s.db(), &library::ItemFilter::default()).unwrap().len(), 19);
+        assert_eq!(reclaim_all_deleted(&s).unwrap().reclaimed_bytes, 0, "nothing to do the second time");
     }
 
     #[test]

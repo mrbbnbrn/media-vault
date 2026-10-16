@@ -101,6 +101,8 @@ describe('3D photos: one camera for every picture', () => {
     expect(loopMs(1)).toBe(LOOP_MS);
     expect(loopMs(2)).toBe(LOOP_MS / 2);
     expect(loopMs(0.25)).toBe(LOOP_MS * 4);
+    expect(loopMs(20)).toBe(LOOP_MS / 20);
+    expect(loopMs(50)).toBe(LOOP_MS / 20);
   });
 
   it('carries on from picture to picture: no reset, never a jump, whatever the speed or shape', () => {

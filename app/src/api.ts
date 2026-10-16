@@ -156,6 +156,8 @@ export interface AppConfig {
   lastVault: string | null;
   /** Settings → Faces → Poor faces: when a face is too small, blurry or turned to be trusted. */
   poorFaces?: PoorFaceSettings;
+  /** After deleting for good, the space deleted files leave in the packs is reclaimed in the background. */
+  autoReclaim?: boolean;
 }
 
 // ---- poor faces (begin) ----

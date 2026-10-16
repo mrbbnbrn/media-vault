@@ -979,6 +979,9 @@ pub fn add_bytes(
 
 /// Remove encrypted files that the library no longer references.
 pub fn remove_objects(s: &Session, o: &library::Orphans) {
+    // Thumbnail pages holding a copy of one of these thumbnails go too.
+    let thumbs: Vec<ObjectId> = o.thumbs.iter().filter_map(|t| ObjectId::from_hex(t).ok()).collect();
+    crate::thumbpages::drop_pages_holding(s, &thumbs);
     let v = s.vault();
     for m in &o.media {
         if let Ok(id) = ObjectId::from_hex(m) {

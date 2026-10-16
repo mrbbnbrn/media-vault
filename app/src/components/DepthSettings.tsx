@@ -48,7 +48,7 @@ function Slider(props: { id: string; label: string; title?: string; min: number;
       <span className="row" style={{ gap: 8 }} title={props.title}>
         <input id={props.id} type="range" min={props.min} max={props.max} step={props.step} value={props.value}
           onChange={(e) => props.onChange(Number(e.target.value))} style={{ flex: 1 }} />
-        <span className="faint" style={{ minWidth: 40, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{Math.round(props.value * 100)}%</span>
+        <span className="faint" style={{ minWidth: 46, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>{Math.round(props.value * 100)}%</span>
       </span>
     </>
   );
@@ -120,7 +120,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         <Slider id="dp-motion" label="Motion amount" title="How far the pictures move" min={0.3} max={4} step={0.1}
           value={prefs.depthMotion ?? 1} onChange={(v) => saveViewerPrefs({ depthMotion: v })} />
         <Slider id="dp-speed" label="Motion speed" title="How fast the camera goes round (100% = once round in 9 seconds). It carries on from picture to picture."
-          min={0.25} max={4} step={0.05} value={prefs.depthSpeed ?? 1} onChange={(v) => saveViewerPrefs({ depthSpeed: v })} />
+          min={0.25} max={20} step={0.05} value={prefs.depthSpeed ?? 1} onChange={(v) => saveViewerPrefs({ depthSpeed: v })} />
         {/* For the automatic movement and the 3D button alike. */}
         <Slider id="dp-depth" label="3D depth" title="How strongly near things move against far ones" min={0.3} max={3} step={0.1}
           value={prefs.depthAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthAmount: v })} />

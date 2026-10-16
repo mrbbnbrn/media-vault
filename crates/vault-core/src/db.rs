@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 18;
+pub const SCHEMA_VERSION: i64 = 19;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -640,7 +640,37 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- saved depth maps and outlines (end) ----
+    // ---- nothing left behind (begin) ----
+    let faces_both = has_table(conn, "faces")? && has_table(conn, "face_not_same")?;
+    if v < 19 || (faces_both && !has_trigger(conn, "face_not_same_gone")?) {
+        // v19: "these two faces aren't the same person" goes with either face
+        // (a face's number can be used again by a new face, which must not
+        // inherit it). Pairs left by faces already gone are removed. Safe to
+        // run again.
+        if faces_both {
+            conn.execute_batch(NOT_SAME_SQL)?;
+            conn.execute_batch(
+                "DELETE FROM face_not_same WHERE a NOT IN (SELECT id FROM faces) OR b NOT IN (SELECT id FROM faces);",
+            )?;
+        }
+        if v < 19 {
+            conn.pragma_update(None, "user_version", 19)?;
+        }
+    }
+    // ---- nothing left behind (end) ----
     Ok(())
+}
+
+const NOT_SAME_SQL: &str = r#"
+CREATE INDEX IF NOT EXISTS face_not_same_b ON face_not_same(b);
+CREATE TRIGGER IF NOT EXISTS face_not_same_gone AFTER DELETE ON faces
+BEGIN
+    DELETE FROM face_not_same WHERE a = OLD.id OR b = OLD.id;
+END;
+"#;
+
+fn has_trigger(conn: &Connection, t: &str) -> Result<bool> {
+    Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
 }
 
 const DERIVED_SQL: &str = r#"
@@ -1192,5 +1222,28 @@ mod tests {
         // Deleting the item for good takes its rows.
         c.execute("DELETE FROM media", []).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn v19_not_the_same_person_goes_with_the_face() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", []).unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('p', 'image', 'b', 'jpg', 1, 'h', 0)", []).unwrap();
+        for m in [1, 1, 2] {
+            c.execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor) VALUES (?, 0, 0, 1, 1, 1, x'00')", [m]).unwrap();
+        }
+        // Back to v18 with a pair left behind by a face already gone (9).
+        c.execute_batch("DROP TRIGGER face_not_same_gone; PRAGMA user_version = 18;").unwrap();
+        c.execute_batch("INSERT INTO face_not_same VALUES (1, 3), (2, 3), (1, 9);").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let n = |c: &Connection| c.query_row("SELECT COUNT(*) FROM face_not_same", [], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!(n(&c), 2, "the pair with a missing face went");
+        // Deleting the second picture for good takes its face's pairs (through the cascade).
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        c.execute("DELETE FROM media WHERE id = 2", []).unwrap();
+        assert_eq!(n(&c), 0);
+        migrate(&c).unwrap();
     }
 }

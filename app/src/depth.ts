@@ -678,7 +678,7 @@ export function shapeOutline(shape: MotionChoice, w: number, h: number, n = 48):
 
 /** One time round (ms): faster speed, shorter. */
 export function loopMs(speed: number): number {
-  const k = Number.isFinite(speed) ? Math.min(8, Math.max(0.1, speed)) : 1;
+  const k = Number.isFinite(speed) ? Math.min(20, Math.max(0.1, speed)) : 1;
   return LOOP_MS / k;
 }
 
