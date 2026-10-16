@@ -53,7 +53,7 @@ import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, LiftIcon, LivingIcon, OrbitIcon,
+  BeatIcon, Film3DIcon, LiftIcon, OrbitIcon,
   DepthEdgesIcon, FixedLightIcon, Layered3DIcon, SubjectOnly3DIcon, SubjectPngIcon,
   SideChevronIcon, EditPictureIcon, Mp4Icon,
 } from './Icons';
@@ -951,9 +951,8 @@ export function Player(props: PlayerProps) {
   // The 3D button: the picture follows the mouse (slideshow or not); it takes over from the automatic movement.
   const depthByMouse = !!prefs.depthMouse && depthPackOk && !mini && !props.compact;
   const depthRunning = (depthAuto || depthByMouse) && depthPackOk && !mini;
-  // Subject effects (still pictures only): Lift-off and Living subject, from the subject pack.
+  // Subject effects (still pictures only): Lift-off and friends, from the subject pack.
   const depthLift = !!prefs.depthLift;
-  const depthLiving = !!prefs.depthLiving;
   // Picture layers (still pictures, with the outline): sharper depth edges, a light that stays put,
   // 3D only on the subject and layered 3D.
   const depthEdges3d = !!prefs.depthEdges3d;
@@ -961,7 +960,7 @@ export function Player(props: PlayerProps) {
   const depthSubjectOnly = !!prefs.depthSubjectOnly;
   const depthLayered = !!prefs.depthLayered;
   /** Something that uses the subject outline is on. */
-  const outlineWanted = depthLift || depthLiving || depthEdges3d || depthLight || depthSubjectOnly || depthLayered;
+  const outlineWanted = depthLift || depthEdges3d || depthLight || depthSubjectOnly || depthLayered;
   const [subjectPackOk, setSubjectPackOk] = useState(false);
   /** The subject model and size in use: the outline is worked out again when it changes. */
   const [subjectModelKey, setSubjectModelKey] = useState('');
@@ -977,8 +976,8 @@ export function Player(props: PlayerProps) {
       alive = false;
     };
   }, [outlineWanted, prefs.subjectModel]);
-  /** A subject effect shows on this item: a still picture (never a GIF or a video). Lift-off, Living and the light show on their own. */
-  const subjectOn = item?.kind === 'image' && (depthLift || depthLiving || depthLight) && subjectPackOk && !mini && !props.compact;
+  /** A subject effect shows on this item: a still picture (never a GIF or a video). Lift-off and the light show on their own. */
+  const subjectOn = item?.kind === 'image' && (depthLift || depthLight) && subjectPackOk && !mini && !props.compact;
   /** The picture layers apply to this item (still pictures with the subject pack). */
   const layersHere = item?.kind === 'image' && subjectPackOk && !mini && !props.compact;
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
@@ -1034,7 +1033,7 @@ export function Player(props: PlayerProps) {
     };
     return startIdlePrepare(list, { depth: idleDepth, subject: idleSubject });
   }, [idleOn, idleDepth, idleSubject, props.items]); // eslint-disable-line react-hooks/exhaustive-deps
-  /** Turns Lift-off or Living subject on or off (checks for the subject pack first). */
+  /** Turns Lift-off on or off (checks for the subject pack first). */
   const toggleSubject = async (patch: Partial<ViewerSettings>, on: boolean, text: string) => {
     if (on) {
       const info = await subjectPack(true);
@@ -1565,7 +1564,7 @@ export function Player(props: PlayerProps) {
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
-                subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0, living: depthLiving ? effectAmount(prefs.depthLivingAmount) : 0 } : undefined}
+                subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : undefined}
                 subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
                 layers={layersHere ? {
                   edges: depthEdges3d ? edgesStrength(prefs.depthEdgesStrength) : 0,
@@ -1806,11 +1805,6 @@ export function Player(props: PlayerProps) {
                         title={depthLift ? 'Lift-off is on: the subject comes forward a little (amount in View ▾ → 3D photo settings) · click to turn off' : 'Lift-off: the subject comes forward a little, with a soft shadow behind it (still pictures)'}
                         onClick={() => toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in View ▾ → 3D photo settings')}>
                         <LiftIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthLiving ? ' on' : ''}`} aria-pressed={depthLiving} aria-label="Living subject"
-                        title={depthLiving ? 'Living subject is on: the subject gently breathes and sways (amount in View ▾ → 3D photo settings) · click to turn off' : 'Living subject: the subject gently breathes and sways while the background stays still (still pictures)'}
-                        onClick={() => toggleSubject({ depthLiving: !depthLiving }, !depthLiving, depthLiving ? 'Living subject off' : 'Living subject on · amount in View ▾ → 3D photo settings')}>
-                        <LivingIcon size={18} />
                       </button>
                       {depthLift && inVault && (
                         <button type="button" className="pbtn" aria-label="Save subject as PNG" disabled={savingSubject}

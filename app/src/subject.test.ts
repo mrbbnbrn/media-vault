@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseSubject, type SubjectMask } from './api';
 import {
-  BREATH, LIFT_GROW, LIFT_MS, SWAY_DEG, effectAmount, fadeAt, fadeDone, fadeTo, flatDepth, livingPose, maskStats, moveSubjectPoint, newFade,
+  LIFT_GROW, LIFT_MS, effectAmount, fadeAt, fadeDone, fadeTo, flatDepth, maskStats, moveSubjectPoint, newFade,
   setSubjectCompute, setSubjectSetupForTests, subjectAhead, subjectChoice, subjectDepth, subjectFrame, subjectKey, subjectOf, subjectSetupOf, unmoveSubjectPoint,
 } from './subject';
 
@@ -75,19 +75,6 @@ describe('subject effects: where the subject is', () => {
 describe('subject effects: the movement', () => {
   const st = maskStats(rectMask(100, 100, { x0: 0.3, y0: 0.2, x1: 0.7, y1: 1 }))!;
 
-  it('Living starts at rest, stays small and never jerks', () => {
-    expect(livingPose(0, 1)).toEqual({ angle: 0, scale: 1 });
-    let prev = livingPose(0, 3);
-    for (let t = 16; t < 30000; t += 16) {
-      const p = livingPose(t, 3);
-      expect(Math.abs(p.angle)).toBeLessThanOrEqual(((SWAY_DEG * 3 * Math.PI) / 180) + 1e-12);
-      expect(p.scale).toBeGreaterThanOrEqual(1);
-      expect(p.scale).toBeLessThanOrEqual(1 + BREATH * 3 + 1e-12);
-      expect(Math.abs(p.angle - prev.angle)).toBeLessThan(0.0006);
-      expect(Math.abs(p.scale - prev.scale)).toBeLessThan(0.0003);
-      prev = p;
-    }
-  });
   it('eases Lift-off in and out without jumping', () => {
     const f = newFade(0);
     fadeTo(f, 1, 1000);
@@ -101,36 +88,24 @@ describe('subject effects: the movement', () => {
     expect(fadeAt(f, 1200 + LIFT_MS)).toBe(0);
   });
   it('Lift-off grows the subject by about 3.5% × amount with a shadow; off is the plain picture', () => {
-    const off = subjectFrame(st, 1.5, { level: 0, amount: 1 }, { level: 0, amount: 1, t: 0 });
+    const off = subjectFrame(st, 1.5, { level: 0, amount: 1 });
     expect(off.lift).toBe(1);
     expect(off.shadow).toBe(0);
     expect(off.grow).toBe(0);
     const p = { x: 0.31, y: 0.25 };
     expect(moveSubjectPoint(off, 1.5, p).x).toBeCloseTo(p.x, 12);
-    const on = subjectFrame(st, 1.5, { level: 1, amount: 2 }, { level: 0, amount: 1, t: 0 });
+    const on = subjectFrame(st, 1.5, { level: 1, amount: 2 });
     expect(on.lift).toBeCloseTo(1 + LIFT_GROW * 2, 12);
     expect(on.shadow).toBeCloseTo(0.35, 12);
     expect(on.shadowOffset.x).toBeGreaterThan(0);
     expect(on.shadowOffset.y).toBeGreaterThan(0);
   });
   it('the shader’s reverse move undoes the move', () => {
-    const f = subjectFrame(st, 1.5, { level: 0.7, amount: 2 }, { level: 1, amount: 3, t: 1700 });
+    const f = subjectFrame(st, 1.5, { level: 0.7, amount: 2 });
     for (const p of [{ x: 0.3, y: 0.2 }, { x: 0.7, y: 1 }, { x: 0.5, y: 0.5 }, { x: 0.1, y: 0.9 }]) {
       const q = unmoveSubjectPoint(f, 1.5, moveSubjectPoint(f, 1.5, p));
       expect(q.x).toBeCloseTo(p.x, 10);
       expect(q.y).toBeCloseTo(p.y, 10);
-    }
-  });
-  it('Living keeps the bottom middle still and the grown outline covers how far the subject moves', () => {
-    for (const t of [0, 800, 1500, 3000, 4500]) {
-      const f = subjectFrame(st, 1.2, { level: 0, amount: 1 }, { level: 1, amount: 3, t });
-      const b = moveSubjectPoint(f, 1.2, st.bottom);
-      expect(b.x).toBeCloseTo(st.bottom.x, 10);
-      expect(b.y).toBeCloseTo(st.bottom.y, 10);
-      for (const c of [{ x: st.box.x0, y: st.box.y0 }, { x: st.box.x1, y: st.box.y0 }]) {
-        const m = moveSubjectPoint(f, 1.2, c);
-        expect(Math.hypot((m.x - c.x) * 1.2, m.y - c.y)).toBeLessThanOrEqual(f.grow);
-      }
     }
   });
 });

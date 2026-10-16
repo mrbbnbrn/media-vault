@@ -167,7 +167,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         <Slider id="dp-beat" label="Beat strength" title="How strong each beat's push or bounce is" min={0.2} max={3} step={0.1}
           value={prefs.depthBeatAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthBeatAmount: v })} />
 
-        {/* Subject effects (still pictures only): Lift-off and Living subject. */}
+        {/* Subject effects (still pictures only): Lift-off. */}
         <span style={{ alignSelf: 'start', paddingTop: 12, fontWeight: 600 }}>Subject effects</span>
         <span className="faint" style={{ fontSize: 12, paddingTop: 12 }}>
           {subjectOk === false ? NO_SUBJECT_PACK
@@ -182,16 +182,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         </span>
         <Slider id="dp-lift" label="Lift-off amount" title="How far the subject comes forward (100% = about 3.5% bigger)" min={0.3} max={3} step={0.1}
           value={prefs.depthLiftAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthLiftAmount: v })} />
-        <span />
-        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
-          <label className="check">
-            <input type="checkbox" checked={!!prefs.depthLiving} onChange={(e) => saveViewerPrefs({ depthLiving: e.target.checked })} /> Living subject
-          </label>
-          <span className="faint" style={{ fontSize: 12 }}>The subject gently breathes and sways while the background stays still.</span>
-        </span>
-        <Slider id="dp-living" label="Living amount" title="How much the subject breathes and sways" min={0.3} max={3} step={0.1}
-          value={prefs.depthLivingAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthLivingAmount: v })} />
-        {/* Picture layers (still pictures with an outline). */}
+                {/* Picture layers (still pictures with an outline). */}
         <span style={{ alignSelf: 'start', paddingTop: 12, fontWeight: 600 }}>Picture layers</span>
         <span className="faint" style={{ fontSize: 12, paddingTop: 12 }}>
           {subjectOk === false ? NO_SUBJECT_PACK : 'For still pictures, using the subject outline. Each is also a button next to the 3D buttons.'}

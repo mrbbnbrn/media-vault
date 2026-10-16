@@ -73,9 +73,6 @@ export interface ViewerSettings {
   /** Lift-off: the subject comes forward a little with a soft shadow behind it, this strong (1 = as designed; 0.3–3). */
   depthLift?: boolean;
   depthLiftAmount?: number;
-  /** Living subject: the subject gently breathes and sways while the background stays still, this strong (1 = as designed; 0.3–3). */
-  depthLiving?: boolean;
-  depthLivingAmount?: number;
   /** Sharper depth edges (pictures with an outline): the depth follows the subject's outline, this strong (0.2–1). */
   depthEdges3d?: boolean;
   depthEdgesStrength?: number;
@@ -121,7 +118,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   depthMouse: false, depthAmount: 1, depthReact: 1,
   depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthVideoDelay: false, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
-  subjectModel: '', depthLift: false, depthLiftAmount: 1, depthLiving: false, depthLivingAmount: 1,
+  subjectModel: '', depthLift: false, depthLiftAmount: 1,
   depthEdges3d: false, depthEdgesStrength: 0.7, depthLight: false, depthLightAngle: 315, depthLightStrength: 1, depthSubjectOnly: false,
   depthLayered: false, inpaintModel: '', depthIdlePrepare: true,
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
@@ -1124,7 +1121,7 @@ export const api = {
   depthEstimate: (request: DepthRequest, rgba: Uint8Array) => depthEstimate(request, rgba),
   /** The viewer closed: free the model's memory. */
   depthForget: () => call<void>('depth_forget'),
-  // Subject effects (Lift-off, Living subject): a subject outline per picture (Rust: subject.rs; window side: subject.ts, components/Depth3D.tsx)
+  // Subject effects (Lift-off and friends): a subject outline per picture (Rust: subject.rs; window side: subject.ts, components/Depth3D.tsx)
   /** What the subject effects will use for this choice (model '' = the best installed). */
   subjectInfo: (model = '') => call<SubjectInfo>('subject_info', { model }),
   /** Every subject outline model, installed or not. */

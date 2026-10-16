@@ -108,9 +108,19 @@ pub struct ViewerSettings {
     /// 3D photos: the subject (from its outline) is lifted off the background, and how much (0.3–3).
     pub depth_lift: bool,
     pub depth_lift_amount: f64,
-    /// 3D photos: the subject moves on its own, gently ("living" pictures), and how much (0.3–3).
-    pub depth_living: bool,
-    pub depth_living_amount: f64,
+    /// Sharper depth edges (depth follows the subject outline) and how strongly (0.2–1).
+    pub depth_edges3d: bool,
+    pub depth_edges_strength: f64,
+    /// A light that stays put: on, direction (0–359°, clockwise from the top), strength (0.2–2).
+    pub depth_light: bool,
+    pub depth_light_angle: f64,
+    pub depth_light_strength: f64,
+    /// 3D only on the subject (the background stays still).
+    pub depth_subject_only: bool,
+    /// Layered 3D (the subject and a filled-in background as separate layers).
+    pub depth_layered: bool,
+    /// Work out depth maps and outlines of pictures while the computer is idle.
+    pub depth_idle_prepare: bool,
     /// Discovery river: the current's speed (0.1–8, 1 = normal).
     pub river_flow: f64,
     /// Discovery river: how many items flow (0.4–2.5, 1 = as designed).
@@ -182,8 +192,14 @@ impl Default for ViewerSettings {
             inpaint_model: String::new(),
             depth_lift: false,
             depth_lift_amount: 1.0,
-            depth_living: false,
-            depth_living_amount: 1.0,
+            depth_edges3d: false,
+            depth_edges_strength: 0.7,
+            depth_light: false,
+            depth_light_angle: 315.0,
+            depth_light_strength: 1.0,
+            depth_subject_only: false,
+            depth_layered: false,
+            depth_idle_prepare: true,
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
@@ -400,7 +416,9 @@ impl AppConfig {
             v.inpaint_model.clear();
         }
         v.depth_lift_amount = clamp(v.depth_lift_amount, 0.3, 3.0, 1.0);
-        v.depth_living_amount = clamp(v.depth_living_amount, 0.3, 3.0, 1.0);
+        v.depth_edges_strength = clamp(v.depth_edges_strength, 0.2, 1.0, 0.7);
+        v.depth_light_strength = clamp(v.depth_light_strength, 0.2, 2.0, 1.0);
+        v.depth_light_angle = if v.depth_light_angle.is_finite() { v.depth_light_angle.rem_euclid(360.0) } else { 315.0 };
         v.depth_edges = if v.depth_edges.is_finite() && v.depth_edges > 0.0 { v.depth_edges.clamp(0.25, 2.0) } else { 0.0 };
         // Only a small object is kept (anything else is dropped).
         if v.last_playback.as_ref().is_some_and(|p| !p.is_object() || p.to_string().len() > 20_000) {
@@ -618,21 +636,21 @@ mod tests {
     fn subject_settings_default_and_are_sanitised() {
         let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
         assert_eq!(v.subject_model, "");
-        assert_eq!((v.depth_lift, v.depth_lift_amount, v.depth_living, v.depth_living_amount), (false, 1.0, false, 1.0));
+        assert_eq!((v.depth_lift, v.depth_lift_amount), (false, 1.0));
         let v: ViewerSettings = serde_json::from_str(
-            r#"{"subjectModel":"birefnet","depthLift":true,"depthLiftAmount":2.5,"depthLiving":true,"depthLivingAmount":0.5}"#,
+            r#"{"subjectModel":"birefnet","depthLift":true,"depthLiftAmount":2.5}"#,
         )
         .unwrap();
-        assert_eq!((v.subject_model.as_str(), v.depth_lift, v.depth_lift_amount, v.depth_living, v.depth_living_amount), ("birefnet", true, 2.5, true, 0.5));
+        assert_eq!((v.subject_model.as_str(), v.depth_lift, v.depth_lift_amount), ("birefnet", true, 2.5));
         let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(back, v);
         let mut c = AppConfig { viewer: v, ..AppConfig::default() };
         assert_eq!(c.clone().sanitized().viewer.subject_model, "birefnet");
         c.viewer.subject_model = "C:\\evil".into();
         c.viewer.depth_lift_amount = 9.0;
-        c.viewer.depth_living_amount = f64::NAN;
+        c.viewer.depth_light_angle = -45.0;
         let c = c.sanitized();
-        assert_eq!((c.viewer.subject_model.as_str(), c.viewer.depth_lift_amount, c.viewer.depth_living_amount), ("", 3.0, 1.0));
+        assert_eq!((c.viewer.subject_model.as_str(), c.viewer.depth_lift_amount, c.viewer.depth_light_angle), ("", 3.0, 315.0));
         let mut c = AppConfig::default();
         c.viewer.depth_lift_amount = 0.0;
         assert_eq!(c.sanitized().viewer.depth_lift_amount, 0.3);

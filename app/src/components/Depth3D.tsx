@@ -12,7 +12,7 @@
 // stretch lands in the background, not on a face). The picture is enlarged
 // just enough that its own edges never show.
 //
-// Subject effects (still pictures only): with Lift-off or Living subject on,
+// Subject effects (still pictures only): with Lift-off on,
 // a third texture holds the subject's outline (subject.ts). The subject is
 // drawn again on top of the 3D picture, moved as one piece with the camera at
 // its own depth: lifted (a little bigger, with a soft shadow that falls only
@@ -70,7 +70,7 @@ interface Props {
   /** 3D to the beat: `pulse` goes up by one on every beat; a push closer or a little bounce, this strong (1 = as designed). */
   beat?: { pulse: number; kind: 'push' | 'bounce'; amount: number };
   /** Subject effects (still pictures only; ignored for GIFs and videos): each 0 = off, else its amount (1 = as designed). */
-  subject?: { lift: number; living: number };
+  subject?: { lift: number };
   /** The depth map is wanted (false: the camera stays still anyway, so a flat one is used without asking). */
   depth?: boolean;
   /** The subject model and size in use (the outline is worked out again when it changes). */
@@ -556,8 +556,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       <DepthModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
       <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Subject outline model</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
-        For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow) and <b>Living subject</b> (it gently
-        breathes and sways while the background stays still). Both are buttons next to the 3D buttons in the viewer, for
+        For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow). It is a button next to the 3D buttons in the viewer, for
         still pictures. The outline of each picture is worked out offline and kept in memory only.
       </p>
       <SubjectModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
@@ -583,7 +582,7 @@ export function Depth3D(props: Props) {
   propsRef.current = props;
   /** The subject outline of this picture (subject effects; null until it comes, or when there's no clear subject). */
   const maskRef = useRef<{ src: string; mask: DepthMap; stats: SubjectStats } | null>(null);
-  const subjOn = !props.frames && !props.video && ((!!props.subject && (props.subject.lift > 0 || props.subject.living > 0)) || layersOn(props.layers));
+  const subjOn = !props.frames && !props.video && ((!!props.subject && props.subject.lift > 0) || layersOn(props.layers));
   // 3D to the beat: when the last beat came.
   const beatAt = useRef(-Infinity);
   const pulse = props.beat?.pulse;
@@ -648,7 +647,7 @@ export function Depth3D(props: Props) {
       /** A subject effect is on (still pictures only). */
       const subjWanted = () => {
         const sj = propsRef.current.subject;
-        return stillPic && ((!!sj && (sj.lift > 0 || sj.living > 0)) || !!propsRef.current.layers?.light);
+        return stillPic && ((!!sj && sj.lift > 0) || !!propsRef.current.layers?.light);
       };
       const depthNow = vid
         ? videoFrameDepth(vid.el, depthCanvas!)
@@ -805,7 +804,7 @@ export function Depth3D(props: Props) {
           kick.current();
         });
       }
-      // Subject effects: the outline shown, the subject's own depth, how far each effect is on (eased) and the Living clock.
+      // Subject effects: the outline shown, the subject's own depth and how far each effect is on (eased).
       let shownMask: { src: string; mask: DepthMap; stats: SubjectStats } | null = null;
       let zSubj = pivot;
       // Picture layers: the background's depth by the subject, the depth map shown (sharper edges or not),
@@ -819,10 +818,7 @@ export function Depth3D(props: Props) {
       const srcNow = propsRef.current.src;
       const keepLift = lifted.src === srcNow && performance.now() - lifted.at < 600;
       const liftF = newFade(0);
-      const liveF = newFade(0);
       let liftAmt = 1;
-      let liveAmt = 1;
-      const liveStart = performance.now();
       const frame = () => {
         raf = 0;
         if (!alive) return;
@@ -927,29 +923,26 @@ export function Depth3D(props: Props) {
         gl.uniform1f(s.u.layer, layered ? 1 : 0);
         gl.uniform1f(s.u.bgStill, bgStill ? 1 : 0);
         gl.uniform1f(s.u.own, bgStill || layered ? 1 : 0);
-        // Subject effects (still pictures only): Lift-off and Living subject on top of the 3D picture.
+        // Subject effects (still pictures only): Lift-off on top of the 3D picture.
         let subjBusy = false;
         let lightOn = 0;
         if (stillPic) {
           const sj = p.subject;
           if (sj && sj.lift > 0) liftAmt = sj.lift;
-          if (sj && sj.living > 0) liveAmt = sj.living;
           fadeTo(liftF, mk && sj && sj.lift > 0 ? 1 : 0, t);
-          fadeTo(liveF, mk && sj && sj.living > 0 ? 1 : 0, t);
           if (lay?.light) lastLight = lay.light;
           fadeTo(lightF, mk && lay?.light ? 1 : 0, t);
           const lv = fadeAt(liftF, t);
-          const gv = fadeAt(liveF, t);
           lightOn = shownMask ? fadeAt(lightF, t) : 0;
           if (lv >= 1) {
             lifted.src = p.src;
             lifted.at = Infinity;
           }
-          // The subject layer is drawn for Lift-off and Living, and always over a still or filled-in background.
-          const on = !!shownMask && (lv > 0 || gv > 0 || bgStill || layered);
+          // The subject layer is drawn for Lift-off, and always over a still or filled-in background.
+          const on = !!shownMask && (lv > 0 || bgStill || layered);
           gl.uniform1f(s.u.subj, on ? 1 : 0);
           if (shownMask) {
-            const sf = subjectFrame(shownMask.stats, asp, { level: lv, amount: liftAmt }, { level: gv, amount: liveAmt, t: t - liveStart });
+            const sf = subjectFrame(shownMask.stats, asp, { level: lv, amount: liftAmt });
             // Over the still background the moved subject's old place is covered by a grown outline; over the plate nothing needs covering.
             const reach = bgStill && !layered ? (Math.hypot(f.shift.x * asp, f.shift.y) + Math.abs(f.dolly) * 0.5) * Math.abs(zSubj - zBg) * 1.3 + 0.003 : 0;
             gl.uniform1f(s.u.asp, asp);
@@ -974,8 +967,8 @@ export function Depth3D(props: Props) {
               gl.uniform1f(s.u.rim, lf.rimAmount);
             }
           }
-          // Living keeps moving; Lift-off and the light move while they ease in or out.
-          subjBusy = gv > 0 || !fadeDone(liftF, t) || !fadeDone(liveF, t) || !fadeDone(lightF, t);
+          // Lift-off and the light move while they ease in or out.
+          subjBusy = !fadeDone(liftF, t) || !fadeDone(lightF, t);
         } else gl.uniform1f(s.u.subj, 0);
         gl.uniform1f(s.u.light, lightOn);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -1055,7 +1048,7 @@ export function Depth3D(props: Props) {
   // Resumed, resized, refitted, made stronger or a subject effect switched: draw again.
   useEffect(() => {
     kick.current();
-  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift, props.subject?.living,
+  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift,
     props.layers?.edges, props.layers?.light?.angle, props.layers?.light?.strength, !!props.layers?.light, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered]);
   useEffect(() => {
     const el = hostRef.current;

@@ -1,6 +1,6 @@
 // Subject effects for still pictures (GIFs and videos never get them):
 // "Lift-off" brings the subject forward a little with a soft shadow behind
-// it, and "Living subject" lets it breathe and sway gently while the
+// it
 // background stays still. Both are drawn by components/Depth3D.tsx on top of
 // the 3D photo (and with it, when the 3D motion or the 3D mouse is on).
 //
@@ -27,7 +27,7 @@ const KEEP = 24;
 const AHEAD_MAX = 3;
 
 export const NO_SUBJECT_PACK =
-  'Lift-off and Living subject need a subject pack: get MediaVault-subject-birefnet-lite-windows.zip (Fast) or MediaVault-subject-birefnet-windows.zip (Best) from the Releases page and unzip it next to the app.';
+  'Lift-off and the other subject effects need a subject pack: get MediaVault-subject-birefnet-lite-windows.zip (Fast) or MediaVault-subject-birefnet-windows.zip (Best) from the Releases page and unzip it next to the app.';
 
 /** For the other outline buttons (sharper edges, the light, subject-only 3D, layered 3D, saving the subject). */
 export const NEED_OUTLINE = 'This needs a subject outline download: get MediaVault-subject-birefnet-lite-windows.zip (Fast) from the Releases page and unzip it next to the app.';
@@ -303,7 +303,7 @@ export async function testSubjectSpeed(id: string): Promise<SubjectSpeed> {
 /** Where the subject is in a picture (all 0–1 of the picture's width and height). */
 export interface SubjectStats {
   box: { x0: number; y0: number; x1: number; y1: number };
-  /** The bottom middle of the box: Living subject sways around it. */
+  /** The bottom middle of the box. */
   bottom: { x: number; y: number };
   /** The subject's middle (weighted by the outline): Lift-off grows from it. */
   centroid: { x: number; y: number };
@@ -384,12 +384,6 @@ export const LIFT_MS = 700;
 export const SHADOW_DARK = 0.35;
 export const SHADOW_OFFSET = { x: 0.009, y: 0.014 };
 export const SHADOW_BLUR = 0.022;
-/** Living subject at 100%: the sway (degrees, once each way in SWAY_MS) and the breathing (scale, once in BREATH_MS). */
-export const SWAY_DEG = 0.5;
-export const SWAY_MS = 6000;
-export const BREATH = 0.006;
-export const BREATH_MS = 4200;
-
 /** Ease out: quick at first, coming to rest softly. */
 export function easeOut(u: number): number {
   const t = Math.min(1, Math.max(0, u));
@@ -423,25 +417,12 @@ export function fadeDone(f: Fade, t: number, ms = LIFT_MS): boolean {
   return t - f.start >= ms;
 }
 
-/**
- * Living subject at time `t` (ms since it started): the sway (radians) and the
- * breathing scale. Both start at rest (no jump when it starts) and are slow
- * smooth waves: nothing jittery.
- */
-export function livingPose(t: number, amount: number): { angle: number; scale: number } {
-  const a = Number.isFinite(t) ? t : 0;
-  const k = Math.max(0, amount);
-  const angle = ((SWAY_DEG * Math.PI) / 180) * k * Math.sin((2 * Math.PI * a) / SWAY_MS);
-  const scale = 1 + BREATH * k * (0.5 - 0.5 * Math.cos((2 * Math.PI * a) / BREATH_MS));
-  return { angle, scale };
-}
-
 /** Everything the drawing needs for the subject layer (uv = 0–1 of the picture; `asp` = width / height). */
 export interface SubjectFrame {
   /** Lift-off grows the subject from here, by this much. */
   centre: { x: number; y: number };
   lift: number;
-  /** Living subject turns and breathes around here (where the bottom middle is after lifting). */
+  /** The subject's bottom middle after lifting (kept for the drawing; no turning any more). */
   pivot: { x: number; y: number };
   angle: number;
   breath: number;
@@ -453,35 +434,22 @@ export interface SubjectFrame {
   shadowBlur: number;
 }
 
-/**
- * The subject layer for this moment: `lift` and `living` are how far each
- * effect is on (0–1, eased) and their amounts; `t` the Living clock (ms).
- */
-export function subjectFrame(
-  st: SubjectStats, asp: number,
-  lift: { level: number; amount: number },
-  living: { level: number; amount: number; t: number },
-): SubjectFrame {
+/** The subject layer for this moment: `lift` is how far Lift-off is on (0–1, eased) and its amount. */
+export function subjectFrame(st: SubjectStats, asp: number, lift: { level: number; amount: number }): SubjectFrame {
   const a = asp > 0 && Number.isFinite(asp) ? asp : 1;
   const lv = Math.min(1, Math.max(0, lift.level));
-  const gv = Math.min(1, Math.max(0, living.level));
   const scale = 1 + LIFT_GROW * Math.max(0, lift.amount) * lv;
   const c = st.centroid;
   const pivot = { x: c.x + (st.bottom.x - c.x) * scale, y: c.y + (st.bottom.y - c.y) * scale };
-  const pose = livingPose(living.t, living.amount * gv);
-  // The furthest any part of the subject moves while living (at its fullest, so the grown outline stays the same size).
-  const corners = [[st.box.x0, st.box.y0], [st.box.x1, st.box.y0], [st.box.x0, st.box.y1], [st.box.x1, st.box.y1]];
-  const reach = Math.max(...corners.map(([x, y]) => Math.hypot((c.x + (x - c.x) * scale - pivot.x) * a, c.y + (y - c.y) * scale - pivot.y)));
-  const most = gv > 0 ? ((SWAY_DEG * Math.PI) / 180 + BREATH) * Math.max(0, living.amount) * reach : 0;
-  const on = lv > 0 || gv > 0;
+  const on = lv > 0;
   const k = Math.max(0, lift.amount);
   return {
     centre: { ...c },
     lift: scale,
     pivot,
-    angle: pose.angle,
-    breath: pose.scale,
-    grow: on ? most * 1.15 + 0.003 : 0,
+    angle: 0,
+    breath: 1,
+    grow: on ? 0.003 : 0,
     shadow: SHADOW_DARK * lv,
     shadowOffset: { x: (SHADOW_OFFSET.x * k) / a, y: SHADOW_OFFSET.y * k },
     shadowBlur: SHADOW_BLUR * Math.sqrt(Math.max(0.1, k)) + 0.006,

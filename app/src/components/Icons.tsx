@@ -415,15 +415,6 @@ export const LiftIcon = ({ size = 16 }: P) => (
     <path d="M19 6.5v3.5M17.5 8l1.5-1.5 1.5 1.5" strokeWidth={1.4} />
   </svg>
 );
-/** Living subject: a figure with small motion arcs on each side. */
-export const LivingIcon = ({ size = 16 }: P) => (
-  <svg {...base(size)}>
-    <circle cx="12" cy="7" r="2.6" />
-    <path d="M7 19.5a5 5 0 0 1 10 0" />
-    <path d="M4.6 8.5a7 7 0 0 0 0 7M19.4 8.5a7 7 0 0 1 0 7" strokeWidth={1.5} />
-    <path d="M2 10.5a4.5 4.5 0 0 0 0 3M22 10.5a4.5 4.5 0 0 1 0 3" strokeWidth={1.3} opacity={0.6} />
-  </svg>
-);
 /** Sharper depth edges: a figure whose outline is drawn crisp against hatched depth. */
 export const DepthEdgesIcon = ({ size = 16 }: P) => (
   <svg {...base(size)}>
