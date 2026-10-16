@@ -35,7 +35,7 @@ describe('3D photos: motion shapes', () => {
       const two = scalePose(half, 2);
       expect(Math.hypot(two.x, two.y)).toBeCloseTo(2 * Math.hypot(half.x, half.y), 12);
     }
-  });
+  }, 30000); // ~200,000 checks: slow on a busy machine
 
   it('never stops, except Zoom in and out, which rests at the still picture', () => {
     for (const c of CHOICES) {

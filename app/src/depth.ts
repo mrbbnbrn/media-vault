@@ -16,6 +16,7 @@
 
 import { api, onLocked, type DepthDetail, type DepthInfo, type DepthMap, type ViewerSettings } from './api';
 import { viewerPrefs } from './prefs';
+import { savedId, savedOr } from './derived';
 
 /** The Fast model's input size, and the size used until the chosen model has said its own. */
 export const DEPTH_SIDE = 518;
@@ -30,6 +31,7 @@ export const NO_DEPTH_PACK =
 /** The download each known model comes in (for "not installed" hints). */
 export const DEPTH_ZIPS: Record<string, string> = {
   'v2-small': 'MediaVault-depth-windows.zip',
+  'v2-small-fp16': 'MediaVault-depth-v2-small-fp16-windows.zip',
   'da3-mono-large': 'MediaVault-depth-da3-mono-large-windows.zip',
 };
 
@@ -61,7 +63,12 @@ export function edgesSetting(v: unknown): number | undefined {
 
 /** A depth map belongs to one picture and one model at one size and softening: a map from another is never mixed in. */
 export function depthKey(src: string, s: DepthSetup): string {
-  return `${s.model}@${s.side}~${s.soft ?? 1}|${src}`;
+  return `${depthTag(s)}|${src}`;
+}
+
+/** The model, size and softening a depth map was made with (what a saved map is saved under). */
+export function depthTag(s: DepthSetup): string {
+  return `${s.model}@${s.side}~${s.soft ?? 1}`;
 }
 
 /** The setup from what depth_info said (null when there's no usable model); `edges` = the Edges setting. */
@@ -199,14 +206,14 @@ export function depthLetGo(src: string) {
 }
 
 /**
- * The pictures to work out ahead while browsing: the next two pictures and
- * the previous one (videos and GIFs skipped; `next` and `prev` are the
+ * The pictures to work out ahead while browsing: the next `count` pictures
+ * (2 unless a quick slideshow wants more: layers.ts aheadCount) and the previous one (videos and GIFs skipped; `next` and `prev` are the
  * neighbours in viewing order, nearest first).
  */
-export function pickAhead<T extends { kind: string; src: string }>(next: T[], prev: T[]): string[] {
+export function pickAhead<T extends { kind: string; src: string }>(next: T[], prev: T[], count = 2): string[] {
   const pics = (xs: T[]) => xs.filter((x) => x.kind === 'image').map((x) => x.src);
   const out: string[] = [];
-  for (const s of [...pics(next).slice(0, 2), ...pics(prev).slice(0, 1)]) if (!out.includes(s)) out.push(s);
+  for (const s of [...pics(next).slice(0, Math.max(0, count)), ...pics(prev).slice(0, 1)]) if (!out.includes(s)) out.push(s);
   return out;
 }
 
@@ -216,10 +223,10 @@ export function pickAhead<T extends { kind: string; src: string }>(next: T[], pr
  * haven't started yet are dropped, so flicking quickly through the viewer
  * never builds up a queue.
  */
-export function depthAhead(srcs: string[]) {
+export function depthAhead(srcs: string[], max = AHEAD_MAX) {
   const s = setup;
   if (!s) return;
-  const keys = srcs.slice(0, AHEAD_MAX).map((src) => depthKey(src, s));
+  const keys = srcs.slice(0, max).map((src) => depthKey(src, s));
   for (const k of aheadKeys) {
     const w = waiting.get(k);
     if (w && !keys.includes(k) && !w.urgent && k !== running) {
@@ -228,7 +235,7 @@ export function depthAhead(srcs: string[]) {
     }
   }
   aheadKeys = keys;
-  for (const src of srcs.slice(0, AHEAD_MAX)) {
+  for (const src of srcs.slice(0, max)) {
     const k = depthKey(src, s);
     if (!cache.has(k) && !waiting.has(k)) waiting.set(k, { src, setup: s, urgent: false, seq: ++seq, resolve: [] });
   }
@@ -263,7 +270,8 @@ async function pump() {
       running = key;
       let m: DepthMap | null = null;
       try {
-        m = await compute(job.src, job.setup);
+        // A still picture in the vault: its saved depth map if there is one (and a new one is saved).
+        m = savedId(job.src) == null ? await compute(job.src, job.setup) : await savedOr('depth', depthTag(job.setup), job.src, () => compute(job.src, job.setup));
       } catch {
         m = null;
       } finally {

@@ -17,6 +17,7 @@
 
 import { api, onLocked, type DepthMap, type SubjectInfo, type SubjectMask, type ViewerSettings } from './api';
 import { viewerPrefs } from './prefs';
+import { savedId, savedOr } from './derived';
 
 /** The size used until the chosen model has said its own. */
 export const SUBJECT_SIDE = 1024;
@@ -27,6 +28,9 @@ const AHEAD_MAX = 3;
 
 export const NO_SUBJECT_PACK =
   'Lift-off and Living subject need a subject pack: get MediaVault-subject-birefnet-lite-windows.zip (Fast) or MediaVault-subject-birefnet-windows.zip (Best) from the Releases page and unzip it next to the app.';
+
+/** For the other outline buttons (sharper edges, the light, subject-only 3D, layered 3D, saving the subject). */
+export const NEED_OUTLINE = 'This needs a subject outline download: get MediaVault-subject-birefnet-lite-windows.zip (Fast) from the Releases page and unzip it next to the app.';
 
 /** The download each known model comes in (for "not installed" hints). */
 export const SUBJECT_ZIPS: Record<string, string> = {
@@ -54,7 +58,12 @@ export interface SubjectSetup {
 
 /** An outline belongs to one picture and one model at one size. */
 export function subjectKey(src: string, s: SubjectSetup): string {
-  return `${s.model}@${s.side}|${src}`;
+  return `${subjectTag(s)}|${src}`;
+}
+
+/** The model and size an outline was made with (what a saved outline is saved under). */
+export function subjectTag(s: SubjectSetup): string {
+  return `${s.model}@${s.side}`;
 }
 
 /** The setup from what subject_info said (null when there's no usable model). */
@@ -176,10 +185,10 @@ export function subjectLetGo(src: string) {
  * first (the next two pictures and the previous one: depth.ts pickAhead).
  * Each call replaces the last one's list.
  */
-export function subjectAhead(srcs: string[]) {
+export function subjectAhead(srcs: string[], max = AHEAD_MAX) {
   const s = setup;
   if (!s) return;
-  const keys = srcs.slice(0, AHEAD_MAX).map((src) => subjectKey(src, s));
+  const keys = srcs.slice(0, max).map((src) => subjectKey(src, s));
   for (const k of aheadKeys) {
     const w = waiting.get(k);
     if (w && !keys.includes(k) && !w.urgent && k !== running) {
@@ -188,7 +197,7 @@ export function subjectAhead(srcs: string[]) {
     }
   }
   aheadKeys = keys;
-  for (const src of srcs.slice(0, AHEAD_MAX)) {
+  for (const src of srcs.slice(0, max)) {
     const k = subjectKey(src, s);
     if (!cache.has(k) && !waiting.has(k)) waiting.set(k, { src, setup: s, urgent: false, seq: ++seq, resolve: [] });
   }
@@ -222,7 +231,7 @@ async function pump() {
       running = key;
       let m: SubjectMask | null = null;
       try {
-        m = await compute(job.src, job.setup);
+        m = savedId(job.src) == null ? await compute(job.src, job.setup) : await savedOr('outline', subjectTag(job.setup), job.src, () => compute(job.src, job.setup));
       } catch {
         m = null;
       } finally {
