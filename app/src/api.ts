@@ -29,6 +29,8 @@ export interface ViewerSettings {
   ambient: boolean;
   /** Boxes around found faces in the viewer (also switched from the library). */
   faceBoxes: boolean;
+  /** The slideshow / timing settings last used in the viewer (restored next time; normalised when read). */
+  lastPlayback?: Record<string, unknown> | null;
   /** Slideshow "Line up faces": the main face stays at the same place and size. */
   alignFaces?: boolean;
   /** The picture grows out of its tile when opened and shrinks back into it when closed. */
@@ -51,6 +53,13 @@ export interface ViewerSettings {
   depthShape?: 'random' | 'circle' | 'infinity' | 'side' | 'updown' | 'diagonal' | 'zoom' | 'drift' | 'spiral' | 'pendulum';
   /** 3D photos: how much the depth map's edges are softened (0.25 sharp – 2 soft; absent = automatic: Best 0.5, Fast 1). */
   depthEdges?: number; // 0 = automatic
+  /** 3D for moving pictures (GIFs, animated WebP/PNG; videos too): its own switch and amount (1 = as designed). */
+  depthMoving?: boolean;
+  depthMovingAmount?: number;
+  /** 3D to the beat: with music playing, a push closer or a little bounce on each beat, this strong (1 = as designed). */
+  depthBeat?: boolean;
+  depthBeatKind?: 'push' | 'bounce';
+  depthBeatAmount?: number;
   /** The old slideshow setting "3D photos" has been carried over to depthAuto (done once). */
   depthAutoMigrated?: boolean;
   /** 3D photos: which depth model ('v2-small' Fast, 'da3-mono-large' Best; '' = the best one installed; the retired 'da3-base' falls back to the best installed). */
@@ -84,7 +93,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1,
-  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthAutoMigrated: false,
+  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,

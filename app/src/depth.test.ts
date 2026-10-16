@@ -259,3 +259,24 @@ describe('3D with the mouse', () => {
     expect(easeToward(0, 1, 1000)).toBeGreaterThan(0.99);
   });
 });
+
+describe('3D for moving pictures', () => {
+  it('gives every frame a map, sharing them when there are very many frames', async () => {
+    const { frameStep, frameDepth, smoothFrames, FRAMES_MAX, animationType } = await import('./depth');
+    expect(frameStep(10)).toBe(1);
+    expect(frameStep(FRAMES_MAX)).toBe(1);
+    expect(frameStep(FRAMES_MAX + 1)).toBe(2);
+    const m = (v: number) => ({ w: 1, h: 1, data: new Uint8Array([v]) });
+    const f = { maps: [m(1), m(2), m(3)], step: 2, count: 6 };
+    expect(frameDepth(f, 0)?.data[0]).toBe(1);
+    expect(frameDepth(f, 3)?.data[0]).toBe(2);
+    expect(frameDepth(f, 99)?.data[0]).toBe(3);
+    expect(frameDepth({ maps: [], step: 1, count: 0 }, 0)).toBeNull();
+    // Smoothing blends neighbours (going round), so a lone jump is softened.
+    const sm = smoothFrames([m(0), m(200), m(0), m(0)]);
+    expect([...sm.map((x) => x.data[0])]).toEqual([50, 100, 50, 0]);
+    expect(animationType(new Uint8Array([0x47, 0x49, 0x46]))).toBe('image/gif');
+    expect(animationType(new Uint8Array([0x89, 0x50, 0x4e, 0x47]))).toBe('image/png');
+    expect(animationType(new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45]))).toBe('image/webp');
+  });
+});

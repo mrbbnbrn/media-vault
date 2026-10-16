@@ -83,6 +83,15 @@ pub struct ViewerSettings {
     pub depth_shape: String,
     /// 3D photos: how much depth-map edges are softened (0.25 sharp – 2 soft; 0 = automatic: Best 0.5, Fast 1).
     pub depth_edges: f64,
+    /// The viewer's slideshow / timing settings last used (the window checks them when it reads them back).
+    pub last_playback: Option<serde_json::Value>,
+    /// 3D for moving pictures (GIFs, animated WebP/PNG, videos): its own switch and amount (0.2–3).
+    pub depth_moving: bool,
+    pub depth_moving_amount: f64,
+    /// 3D to the beat: on, "push" or "bounce", strength (0.2–3).
+    pub depth_beat: bool,
+    pub depth_beat_kind: String,
+    pub depth_beat_amount: f64,
     /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
     pub depth_auto_migrated: bool,
     /// 3D photos: which depth model ("v2-small", "da3-mono-large"; "" = the best one installed; the retired "da3-base" falls back to it).
@@ -144,6 +153,12 @@ impl Default for ViewerSettings {
             depth_speed: 1.0,
             depth_shape: "random".into(),
             depth_edges: 0.0,
+            last_playback: None,
+            depth_moving: false,
+            depth_moving_amount: 0.6,
+            depth_beat: false,
+            depth_beat_kind: "push".into(),
+            depth_beat_amount: 1.0,
             depth_auto_migrated: false,
             depth_model: String::new(),
             depth_detail: "standard".into(),
@@ -354,6 +369,15 @@ impl AppConfig {
             v.depth_model.clear();
         }
         v.depth_edges = if v.depth_edges.is_finite() && v.depth_edges > 0.0 { v.depth_edges.clamp(0.25, 2.0) } else { 0.0 };
+        // Only a small object is kept (anything else is dropped).
+        if v.last_playback.as_ref().is_some_and(|p| !p.is_object() || p.to_string().len() > 20_000) {
+            v.last_playback = None;
+        }
+        v.depth_moving_amount = clamp(v.depth_moving_amount, 0.2, 3.0, 0.6);
+        v.depth_beat_amount = clamp(v.depth_beat_amount, 0.2, 3.0, 1.0);
+        if v.depth_beat_kind != "bounce" {
+            v.depth_beat_kind = "push".into();
+        }
         if v.depth_detail != "high" {
             v.depth_detail = "standard".into();
         }

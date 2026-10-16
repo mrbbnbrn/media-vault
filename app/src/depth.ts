@@ -141,6 +141,9 @@ function remember(key: string, m: DepthMap | null) {
 /** Forget every depth map (the vault locked, or another model or detail was chosen). */
 export function forgetDepth() {
   generation += 1;
+  frameGen += 1;
+  frameCache.clear();
+  frameJobs.clear();
   cache.clear();
   for (const w of waiting.values()) w.resolve.forEach((r) => r(null));
   waiting.clear();
@@ -300,6 +303,159 @@ async function computeReal(src: string, s: DepthSetup): Promise<DepthMap | null>
   } finally {
     bmp.close();
   }
+}
+
+// ---- moving pictures: GIFs, animated WebP/PNG (one depth map per frame) ------------------------
+
+/** At most this many frames get their own depth map; longer animations share maps between neighbours. */
+export const FRAMES_MAX = 240;
+/** Animations whose depth is kept in memory (about 270 KB a frame). */
+const FRAMES_KEEP = 3;
+
+/** Every frame's depth (index = frame, or frame / step when there are more than FRAMES_MAX). */
+export interface FrameDepths {
+  maps: DepthMap[];
+  /** Frames per map (1 = every frame has its own). */
+  step: number;
+  count: number;
+}
+
+/** The map for frame `i`. */
+export function frameDepth(f: FrameDepths, i: number): DepthMap | null {
+  if (!f.maps.length) return null;
+  return f.maps[Math.min(f.maps.length - 1, Math.max(0, Math.floor(i / f.step)))];
+}
+
+/** How many frames share one map so that no more than FRAMES_MAX are worked out. */
+export function frameStep(count: number): number {
+  return Math.max(1, Math.ceil(count / FRAMES_MAX));
+}
+
+/**
+ * Smooths depth over time: each map is blended with its neighbours (1-2-1,
+ * going round, as animations loop), so depth doesn't shimmer from frame to
+ * frame. Maps of a different size are left alone.
+ */
+export function smoothFrames(maps: DepthMap[]): DepthMap[] {
+  const n = maps.length;
+  if (n < 3) return maps;
+  return maps.map((m, i) => {
+    const a = maps[(i + n - 1) % n];
+    const b = maps[(i + 1) % n];
+    if (a.w !== m.w || a.h !== m.h || b.w !== m.w || b.h !== m.h) return m;
+    const out = new Uint8Array(m.data.length);
+    for (let k = 0; k < out.length; k++) out[k] = (a.data[k] + 2 * m.data[k] + b.data[k] + 2) >> 2;
+    return { w: m.w, h: m.h, data: out };
+  });
+}
+
+/** The type ImageDecoder needs, from the file's first bytes. */
+export function animationType(b: Uint8Array): string {
+  if (b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return 'image/gif';
+  if (b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png';
+  if (b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45) return 'image/webp';
+  return 'image/gif';
+}
+
+const frameCache = new Map<string, FrameDepths>();
+const frameJobs = new Map<string, { cancelled: boolean; promise: Promise<FrameDepths | null> }>();
+let frameGen = 0;
+
+interface FrameDecoder {
+  tracks: { ready: Promise<void>; selectedTrack?: { frameCount: number } | null };
+  completed: Promise<void>;
+  decode: (o: { frameIndex: number }) => Promise<{ image: VideoFrame }>;
+  close: () => void;
+}
+
+/**
+ * The depth of every frame of the animation at `src` (null if it can't be
+ * had). `onProgress` hears how far it is (0–1). Worked out once per
+ * animation and model, kept in memory for the session (a few at most).
+ */
+export function depthOfFrames(src: string, onProgress?: (done: number) => void): Promise<FrameDepths | null> {
+  const s = setup;
+  if (!s) return depthPack().then(() => (setup ? depthOfFrames(src, onProgress) : null));
+  const key = depthKey(src, s);
+  const known = frameCache.get(key);
+  if (known) return Promise.resolve(known);
+  const job = frameJobs.get(key);
+  if (job) {
+    job.cancelled = false;
+    return job.promise;
+  }
+  const gen = frameGen;
+  const me = { cancelled: false, promise: Promise.resolve<FrameDepths | null>(null) };
+  me.promise = (async () => {
+    const Dec = (globalThis as unknown as { ImageDecoder?: new (o: { data: Uint8Array; type: string }) => FrameDecoder }).ImageDecoder;
+    if (!Dec) return null;
+    const r = await fetch(src);
+    if (!r.ok) return null;
+    const bytes = new Uint8Array(await r.arrayBuffer());
+    const dec = new Dec({ data: bytes, type: animationType(bytes) });
+    try {
+      await dec.tracks.ready;
+      await dec.completed.catch(() => {});
+      const count = Math.max(1, dec.tracks.selectedTrack?.frameCount ?? 1);
+      const step = frameStep(count);
+      const side = s.side;
+      const c = new OffscreenCanvas(side, side);
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      const maps: DepthMap[] = [];
+      for (let i = 0; i < count; i += step) {
+        if (me.cancelled || gen !== frameGen) return null;
+        const f = await dec.decode({ frameIndex: i });
+        try {
+          ctx.clearRect(0, 0, side, side);
+          ctx.drawImage(f.image, 0, 0, side, side);
+        } finally {
+          f.image.close();
+        }
+        const px = ctx.getImageData(0, 0, side, side).data;
+        const m = await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail, soft: s.soft ?? 1 }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
+        maps.push(m);
+        onProgress?.(Math.min(1, (i + step) / count));
+      }
+      if (me.cancelled || gen !== frameGen) return null;
+      const done: FrameDepths = { maps: smoothFrames(maps), step, count };
+      frameCache.delete(key);
+      frameCache.set(key, done);
+      while (frameCache.size > FRAMES_KEEP) frameCache.delete(frameCache.keys().next().value as string);
+      return done;
+    } catch {
+      return null;
+    } finally {
+      dec.close();
+      if (frameJobs.get(key) === me) frameJobs.delete(key);
+    }
+  })();
+  frameJobs.set(key, me);
+  return me.promise;
+}
+
+/** Frames of a moving picture, handed on as they're shown. */
+export interface FrameFeed {
+  listen: (cb: (image: TexImageSource, index: number) => void) => () => void;
+}
+
+/** A feed for the viewer to pass each shown frame into. */
+export function frameFeed(): FrameFeed & { emit: (image: TexImageSource, index: number) => void } {
+  const subs = new Set<(image: TexImageSource, index: number) => void>();
+  return {
+    listen: (cb) => {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    emit: (image, index) => subs.forEach((cb) => cb(image, index)),
+  };
+}
+
+/** The animation at `src` was left: stop working out its frames. */
+export function depthFramesLetGo(src: string) {
+  if (!setup) return;
+  const job = frameJobs.get(depthKey(src, setup));
+  if (job) job.cancelled = true;
 }
 
 // ---- speed tests (Settings → 3D photos; remembered for this session only) ----------------------

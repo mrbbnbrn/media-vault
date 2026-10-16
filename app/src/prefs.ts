@@ -8,7 +8,14 @@ import { api, DEFAULT_VIEWER, type AppConfig, type ViewerSettings } from './api'
 let config: AppConfig | null = null;
 const subs = new Set<() => void>();
 
+let faceInit = false;
 export function setPrefsConfig(c: AppConfig) {
+  // The face-box switch starts as it was left last time.
+  if (!faceInit) {
+    faceInit = true;
+    faceBoxesNow = !!c.viewer?.faceBoxes;
+    faceTick += 1;
+  }
   config = c;
   subs.forEach((f) => f());
 }
@@ -18,7 +25,7 @@ function subscribe(f: () => void) {
   return () => subs.delete(f);
 }
 
-/** Face boxes are for this run of the app only: off every time it starts, never saved. */
+/** Face boxes: remembered like every other viewer setting (read once when the settings first arrive). */
 let faceBoxesNow = false;
 let faceTick = 0;
 
@@ -60,7 +67,7 @@ export function unmuteVolume(volume: number): number {
 
 export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
   if (!config) return;
-  const next = { ...config, viewer: { ...viewerPrefs(), faceBoxes: false, ...patch } };
+  const next = { ...config, viewer: { ...viewerPrefs(), ...patch } };
   setPrefsConfig(next); // feels instant; the saved copy follows
   try {
     setPrefsConfig(await api.saveConfig(next));
@@ -69,7 +76,7 @@ export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
   }
 }
 
-/** Face boxes in the grid and the viewer (the library's switch sets the same choice). Kept for this run of the app only. */
+/** Face boxes in the grid and the viewer (the library's switch sets the same choice). Remembered. */
 export function useFaceBoxes(): boolean {
   return useViewerPrefs().faceBoxes;
 }
@@ -78,4 +85,5 @@ export function setFaceBoxes(on: boolean) {
   faceBoxesNow = on;
   faceTick += 1;
   subs.forEach((f) => f());
+  void saveViewerPrefs({ faceBoxes: on });
 }

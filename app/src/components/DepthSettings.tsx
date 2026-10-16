@@ -123,6 +123,37 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
 
         <EdgesSlider prefs={prefs} />
 
+        {/* Moving pictures: their own switch and amount. */}
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthMoving} onChange={(e) => saveViewerPrefs({ depthMoving: e.target.checked })} /> 3D for GIFs and videos
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>
+            GIFs and animated pictures: the depth of every frame is worked out when one opens (it plays flat until then), so each frame moves with its own depth.
+          </span>
+        </span>
+        <Slider id="dp-moving" label="GIF / video 3D depth" title="How strongly GIFs and videos move in depth (separate from pictures)" min={0.2} max={3} step={0.1}
+          value={prefs.depthMovingAmount ?? 0.6} onChange={(v) => saveViewerPrefs({ depthMovingAmount: v })} />
+
+        {/* 3D to the beat. */}
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthBeat} onChange={(e) => saveViewerPrefs({ depthBeat: e.target.checked })} /> 3D to the beat
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>With music playing on the computer, the 3D picture pulses on each beat (works with the motion and with the mouse).</span>
+        </span>
+        <span>Each beat</span>
+        <div role="radiogroup" aria-label="Each beat" className="seg">
+          {(['push', 'bounce'] as const).map((k) => (
+            <button key={k} type="button" role="radio" aria-checked={(prefs.depthBeatKind ?? 'push') === k} className={(prefs.depthBeatKind ?? 'push') === k ? 'on' : ''}
+              onClick={() => saveViewerPrefs({ depthBeatKind: k })}>{k === 'push' ? 'Small push in' : 'Little bounce'}</button>
+          ))}
+        </div>
+        <Slider id="dp-beat" label="Beat strength" title="How strong each beat's push or bounce is" min={0.2} max={3} step={0.1}
+          value={prefs.depthBeatAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthBeatAmount: v })} />
+
         {/* Which model works out the depth (speed tests are in Settings → 3D photos). */}
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Depth model</span>
         <DepthModelChoice />

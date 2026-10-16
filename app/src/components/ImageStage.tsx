@@ -62,6 +62,8 @@ interface Props {
   className?: string;
   onInfo?: (i: ImageInfo) => void;
   onFrame?: (index: number, count: number) => void;
+  /** GIFs: each shown frame itself, at once (3D for moving pictures draws it too). Only valid during the call. */
+  onFrameImage?: (image: VideoFrameLike, index: number) => void;
   onError?: () => void;
   ref?: Ref<ImageStageHandle>;
 }
@@ -72,7 +74,7 @@ type DecoderLike = {
   decode: (o: { frameIndex: number }) => Promise<{ image: VideoFrameLike }>;
   close: () => void;
 };
-type VideoFrameLike = CanvasImageSource & { duration: number | null; displayWidth: number; displayHeight: number; close: () => void };
+export type VideoFrameLike = CanvasImageSource & { duration: number | null; displayWidth: number; displayHeight: number; close: () => void };
 
 const hasDecoder = typeof window !== 'undefined' && 'ImageDecoder' in window;
 
@@ -279,6 +281,7 @@ export function ImageStage(props: Props) {
         natural.current = { w: first.image.displayWidth, h: first.image.displayHeight };
         props.onInfo?.({ width: natural.current.w, height: natural.current.h, frames: st.count, loopMs });
         props.onFrame?.(0, st.count);
+        props.onFrameImage?.(first.image, 0);
         draw();
         schedule(first.image.duration);
       } else {
@@ -333,6 +336,7 @@ export function ImageStage(props: Props) {
     frame.current = r.image;
     st.index = i;
     propsRef.current.onFrame?.(i, st.count);
+    propsRef.current.onFrameImage?.(r.image, i);
     draw();
     return r.image;
   };

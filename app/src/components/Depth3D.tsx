@@ -18,8 +18,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { inTauri, type DepthInfo, type DepthMap, type ViewerSettings } from '../api';
 import {
-  cameraAt, depthChoice, depthLetGo, depthOf, depthPack, easeToward, framePose, mouseLean, mousePose, NO_DEPTH_PACK, pivotOf, scalePose,
-  sharedCamera, type MotionChoice,
+  cameraAt, depthChoice, depthFramesLetGo, depthLetGo, depthOf, depthOfFrames, depthPack, DOLLY, easeToward, frameDepth, framePose, mouseLean, mousePose,
+  NO_DEPTH_PACK, pivotOf, scalePose, sharedCamera, SHIFT, type FrameDepths, type FrameFeed, type MotionChoice, type Pose,
 } from '../depth';
 import { drawnRect } from '../flip';
 import { DepthModelChoice } from './DepthModels';
@@ -45,6 +45,23 @@ interface Props {
   motion?: { shape: MotionChoice; amount: number; speed: number };
   /** Not in a slideshow (kept for callers; the movement is the same either way). */
   endless?: boolean;
+  /** A moving picture (GIF, animated WebP/PNG): each frame as it's shown, drawn with that frame's own depth. */
+  frames?: FrameFeed;
+  /** 3D to the beat: `pulse` goes up by one on every beat; a push closer or a little bounce, this strong (1 = as designed). */
+  beat?: { pulse: number; kind: 'push' | 'bounce'; amount: number };
+}
+
+/** How far a beat pulse is (0–1) `dt` ms after the beat: a quick rise, a softer fall. */
+export function beatEnvelope(dt: number): number {
+  if (!(dt >= 0) || dt > BEAT_MS) return 0;
+  return Math.min(1, 1.6 * (1 - Math.exp(-dt / 35)) * Math.exp(-dt / 170));
+}
+const BEAT_MS = 700;
+
+/** A pose with the beat's push or bounce added. */
+export function withBeat(p: Pose, kind: 'push' | 'bounce', amount: number, e: number): Pose {
+  if (!e || !amount) return p;
+  return kind === 'push' ? { ...p, dolly: p.dolly + DOLLY * 0.6 * amount * e } : { ...p, y: p.y - SHIFT * 0.7 * amount * e };
 }
 
 /** With the 3D button: where the mouse points (want) and where the camera is (lean), kept from picture to picture. */
@@ -170,7 +187,13 @@ function giveBack(t: { canvas: HTMLCanvasElement; scene: Scene; own: boolean }) 
 }
 
 /** This picture and its depth map into the surface's textures. */
-function upload(s: Scene, picture: ImageBitmap, map: DepthMap) {
+function upload(s: Scene, picture: TexImageSource, map: DepthMap) {
+  uploadPicture(s, picture);
+  uploadDepth(s, map);
+}
+
+/** A (new) picture or frame into the picture texture. */
+function uploadPicture(s: Scene, picture: TexImageSource) {
   const { gl } = s;
   gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
@@ -178,6 +201,11 @@ function upload(s: Scene, picture: ImageBitmap, map: DepthMap) {
   gl.bindTexture(gl.TEXTURE_2D, s.img);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, picture);
+}
+
+/** A depth map into the depth texture. */
+function uploadDepth(s: Scene, map: DepthMap) {
+  const { gl } = s;
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, s.depth);
   gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -304,6 +332,14 @@ export function Depth3D(props: Props) {
   const kick = useRef<() => void>(() => {});
   const propsRef = useRef(props);
   propsRef.current = props;
+  // 3D to the beat: when the last beat came.
+  const beatAt = useRef(-Infinity);
+  const pulse = props.beat?.pulse;
+  useEffect(() => {
+    if (pulse == null || pulse === 0) return;
+    beatAt.current = performance.now();
+    kick.current();
+  }, [pulse]);
   // Paused: the shared camera waits (it never jumps on afterwards).
   const clock = useRef({ halted: props.halted });
   useEffect(() => {
@@ -325,6 +361,8 @@ export function Depth3D(props: Props) {
     let picture: ImageBitmap | null = null;
     let stopMouse = () => {};
     let stopLost = () => {};
+    let stopFrames = () => {};
+    const moving = !!propsRef.current.frames;
     const give = (ok: boolean) => alive && propsRef.current.onLive?.(ok);
     (async () => {
       const host = hostRef.current;
@@ -340,8 +378,16 @@ export function Depth3D(props: Props) {
       const dpr = window.devicePixelRatio || 1;
       const box = drawnRect(W, H, nw, nh, propsRef.current.fit);
       const k = Math.min(1, (box.width * dpr) / nw, 4096 / Math.max(nw, nh));
+      // A moving picture: every frame's depth first (the first frame's picture comes with the file).
+      let frames: FrameDepths | null = null;
+      const depthNow = moving
+        ? depthOfFrames(propsRef.current.src).then((f) => {
+          frames = f;
+          return f ? frameDepth(f, 0) : null;
+        })
+        : depthOf(propsRef.current.src, true);
       const [map, bmp] = await Promise.all([
-        depthOf(propsRef.current.src, true),
+        depthNow,
         fetch(propsRef.current.src)
           .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
           .then((b) => createImageBitmap(b, { imageOrientation: 'from-image', resizeWidth: Math.max(1, Math.round(nw * k)), resizeHeight: Math.max(1, Math.round(nh * k)), resizeQuality: 'high' } as ImageBitmapOptions))
@@ -368,6 +414,26 @@ export function Depth3D(props: Props) {
       const s = scene;
       const { lean, want } = mouseCam;
       let lastT = performance.now();
+      // Moving pictures: each frame as it's shown, with its own depth.
+      const feed = propsRef.current.frames;
+      if (feed && frames) {
+        const fd: FrameDepths = frames;
+        let shownMap = map;
+        stopFrames = feed.listen((image, index) => {
+          if (!alive || s.gl.isContextLost()) return;
+          try {
+            uploadPicture(s, image);
+            const m = frameDepth(fd, index);
+            if (m && m !== shownMap) {
+              uploadDepth(s, m);
+              shownMap = m;
+            }
+          } catch {
+            return; // a frame already gone: the next one comes soon
+          }
+          kick.current();
+        });
+      }
       const frame = () => {
         raf = 0;
         if (!alive) return;
@@ -392,8 +458,12 @@ export function Depth3D(props: Props) {
         }
         lastT = t;
         const halted = clock.current.halted;
-        const pose = byMouse ? mousePose(lean, amount)
+        const base = byMouse ? mousePose(lean, amount)
           : scalePose(cameraAt(sharedCamera, p.motion?.shape ?? ('random' as MotionChoice), p.motion?.speed ?? 1, now(), !halted), amount * Math.max(0, p.motion?.amount ?? 1));
+        // 3D to the beat: a push closer or a little bounce on each beat.
+        const b = p.beat;
+        const env = b ? beatEnvelope(t - beatAt.current) : 0;
+        const pose = b ? withBeat(base, b.kind, b.amount * Math.max(0.3, amount), env) : base;
         // Held within what can be shown without the picture's edges.
         const f = framePose(pose, d.width, d.height, pivot);
         const { gl } = s;
@@ -411,9 +481,8 @@ export function Depth3D(props: Props) {
         gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
-        const moving = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) > 0.0005
-          : !halted;
-        if (moving) raf = requestAnimationFrame(frame);
+        const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
+        if (!still || env > 0) raf = requestAnimationFrame(frame);
       };
       frame();
       kick.current = () => {
@@ -452,7 +521,9 @@ export function Depth3D(props: Props) {
     return () => {
       alive = false;
       // Left before its depth came (quick browsing): don't keep the model busy with it.
-      depthLetGo(src);
+      if (moving) depthFramesLetGo(src);
+      else depthLetGo(src);
+      stopFrames();
       cancelAnimationFrame(raf);
       kick.current = () => {};
       stopMouse();

@@ -17,7 +17,14 @@ import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } 
 import { saveViewerPrefs, useViewerPrefs, viewerPrefs, withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
 
-let lastSettings: PlaybackSettings = DEFAULT_PLAYBACK;
+/** The timing settings last used: this run's, else the ones saved last time (every change is saved). */
+let lastSettings: PlaybackSettings | null = null;
+function lastPlayback(): PlaybackSettings {
+  if (lastSettings) return lastSettings;
+  const saved = viewerPrefs().lastPlayback;
+  return saved && typeof saved === 'object' ? normalize(saved as Partial<PlaybackSettings>) : DEFAULT_PLAYBACK;
+}
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
 
 /** A big title over a dark backdrop before the first item (e.g. a memory). */
 export interface TitleCard {
@@ -89,8 +96,9 @@ export function Viewer(props: {
   });
   const [settings, setSettings] = useState<PlaybackSettings>(() => {
     // Follow the library's sort order, unless a random order was chosen before.
-    const random = ['shuffle', 'random', 'weighted'].includes(lastSettings.order);
-    const base = withSound(lastSettings);
+    const last = lastPlayback();
+    const random = ['shuffle', 'random', 'weighted'].includes(last.order);
+    const base = withSound(last);
     return props.order && !random ? { ...base, order: props.order } : base;
   });
   const [presets, setPresets] = useState<Named<PlaybackSettings>[]>([]);
@@ -104,11 +112,18 @@ export function Viewer(props: {
       setPresets(list);
       // 3D photos used to be a slideshow setting: if it was on anywhere, turn the new View ▾ setting on (once).
       const old = list.map((p) => p.settings);
-      if (depthToCarryOver(viewerPrefs(), [lastSettings, ...old])) saveViewerPrefs({ depthAuto: true, depthAutoMigrated: true });
+      if (depthToCarryOver(viewerPrefs(), [lastPlayback(), ...old])) saveViewerPrefs({ depthAuto: true, depthAutoMigrated: true });
     }).catch(() => {});
   }, [vault]);
   useEffect(() => {
     lastSettings = settings;
+    // Remembered for next time (once the changes settle; sound has its own setting).
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = setTimeout(() => {
+      saveTimer = null;
+      const { muted: _m, volume: _v, ...keep } = settings;
+      void saveViewerPrefs({ lastPlayback: keep });
+    }, 500);
   }, [settings]);
   useEffect(() => () => void setCleanFullscreen(false), []);
 

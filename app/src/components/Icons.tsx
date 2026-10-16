@@ -354,3 +354,28 @@ export const SortIcon = ({ size = 16 }: P) => (
     <path d="M17 5v14M14 16l3 3 3-3" />
   </svg>
 );
+/** 3D motion for pictures: a picture with an orbit around it. */
+export const OrbitIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="8" y="8" width="8" height="8" rx="1.5" />
+    <ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-20 12 12)" strokeWidth={1.5} />
+    <circle cx="20.2" cy="8.6" r="1.2" fill="currentColor" stroke="none" />
+  </svg>
+);
+/** 3D for GIFs and videos: a film strip with depth. */
+export const Film3DIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="6" width="13" height="12" rx="1.5" />
+    <path d="M3 10h13M3 14h13" strokeWidth={1.3} />
+    <path d="M16 9l5-2v10l-5-2" />
+  </svg>
+);
+/** 3D to the beat: a note with pulses. */
+export const BeatIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M9 17V5l9-2v12" />
+    <circle cx="6.5" cy="17.5" r="2.5" />
+    <circle cx="15.5" cy="15.5" r="2.5" />
+    <path d="M20.5 7.5a3 3 0 0 1 0 4" strokeWidth={1.5} />
+  </svg>
+);
