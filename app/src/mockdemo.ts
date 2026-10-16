@@ -178,6 +178,9 @@ function slotData(folder: number | null): SlotData {
 /** Answer a command from the sample library, or NOT_DEMO to fall through. */
 export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
   switch (cmd) {
+    // ?demo&tool: pretend the video tool is installed (to look at its dialogs).
+    case 'video_tool_info':
+      return /[?&]tool\b/.test(location.search) ? { available: true, version: 'demo' } : NOT_DEMO;
     case 'library_folders':
       return cards();
     case 'folder_view': {

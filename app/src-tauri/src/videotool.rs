@@ -571,6 +571,16 @@ fn save_result(
     Ok(id)
 }
 
+/// Save something made from item `from` in the window (an edited copy of a
+/// picture) next to it, with its date taken and tags. Returns the new item and
+/// whether an identical item already there was used instead (nothing to undo then).
+pub fn save_copy(s: &Session, from: i64, name: &str, bytes: &[u8], size: Option<(u32, u32)>) -> Result<(i64, bool), String> {
+    let row = load_row(s, from)?;
+    let before: i64 = s.db().query_row("SELECT IFNULL(MAX(id), 0) FROM media", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+    let id = save_result(s, row.folder, name, bytes, Some(row.id), size, None)?;
+    Ok((id, id <= before))
+}
+
 // ---- progress -------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -1147,6 +1157,152 @@ pub fn rotate_video(s: &Arc<Session>, tool_path: &Path, item: i64, quarter: u8) 
     crate::rotate::replace(s, item, &out, quarter, true)
 }
 
+// ---- cutting a part of a video out as an MP4 (with its sound) ----------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutRequest {
+    pub item: i64,
+    /// Seconds into the video.
+    pub start: f64,
+    pub end: f64,
+    /// true = re-encoded, starting and ending on the exact frame; false = copied
+    /// as it is (no quality loss; the start moves back to the keyframe before).
+    pub exact: bool,
+    /// The new item's name (".mp4" is added when missing).
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CutDone {
+    pub id: Option<i64>,
+    pub name: String,
+    /// An identical item was already in the folder: that one is used (nothing new to undo).
+    pub reused: bool,
+    pub cancelled: bool,
+    pub error: Option<String>,
+}
+
+/// How the part is made: `Copy` keeps every frame and the sound as they are
+/// (`audio_aac` re-encodes only the sound, for sound MP4 can't hold).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CutWay {
+    Exact,
+    Copy { audio_aac: bool },
+}
+
+/// ffmpeg arguments for the part `start`–`start + len` of the video at `url`,
+/// as a fragmented MP4 on stdout (an MP4 written to a pipe can't go back to put
+/// its index at the front, so it is written in self-contained pieces that start
+/// playing straight away). Seeking before `-i`: jumps straight there; when
+/// re-encoding, ffmpeg still starts on the exact frame; when copying it starts
+/// at the keyframe before. A video without sound simply gets none ("0:a:0?").
+fn cut_args(tool: &Tool, url: &str, start: f64, len: f64, way: CutWay, size: (Option<i64>, Option<i64>)) -> Vec<String> {
+    let mut a: Vec<String> = vec!["-ss".into(), format!("{start:.3}"), "-t".into(), format!("{len:.3}"), "-i".into(), url.into()];
+    let push = |a: &mut Vec<String>, v: &[&str]| a.extend(v.iter().map(|x| x.to_string()));
+    push(&mut a, &["-map", "0:v:0", "-map", "0:a:0?", "-sn", "-dn", "-map_chapters", "-1"]);
+    match way {
+        CutWay::Exact => {
+            push(&mut a, &["-vf", &format!("{},format=yuv420p", even_scale())]);
+            a.extend(h264_args(tool, 18, bitrate_for(size.0, size.1, 30.0, 0.2)));
+            // No B-frames: a stream can't carry the edit list that would hide their delay, so
+            // the picture would start a few frames after the sound.
+            push(&mut a, &["-bf", "0", "-c:a", "aac", "-b:a", "192k"]);
+        }
+        CutWay::Copy { audio_aac } => {
+            push(&mut a, &["-c:v", "copy"]);
+            if audio_aac {
+                push(&mut a, &["-c:a", "aac", "-b:a", "192k"]);
+            } else {
+                push(&mut a, &["-c:a", "copy"]);
+            }
+            push(&mut a, &["-avoid_negative_ts", "make_zero"]);
+        }
+    }
+    // Copied frames keep their reordering delay: written as negative offsets, so picture and sound start together.
+    let flags = if way == CutWay::Exact { FRAG_MP4.to_string() } else { format!("{FRAG_MP4}+negative_cts_offsets") };
+    push(&mut a, &["-movflags", &flags, "-f", "mp4", "pipe:1"]);
+    a
+}
+
+/// The checked part: (start, length) in seconds, inside the video when its length is known.
+fn cut_range(start: f64, end: f64, duration_ms: Option<i64>) -> Result<(f64, f64), String> {
+    if !start.is_finite() || !end.is_finite() {
+        return Err("The start and end must be times in the video.".into());
+    }
+    let dur = duration_ms.filter(|d| *d > 0).map(|d| d as f64 / 1000.0);
+    let s = start.max(0.0);
+    let e = match dur {
+        Some(d) => end.min(d),
+        None => end,
+    };
+    if e - s < 0.1 {
+        return Err("The end must be after the start.".into());
+    }
+    Ok((s, e - s))
+}
+
+/// "x" → "x.mp4"; "x.mp4" stays; never empty.
+fn cut_name(name: &str) -> String {
+    let n: String = name.trim().chars().filter(|c| !c.is_control() && !matches!(c, '/' | '\\')).collect();
+    let n = if n.is_empty() { "Clip".to_string() } else { n };
+    if n.to_ascii_lowercase().ends_with(".mp4") { n } else { format!("{n}.mp4") }
+}
+
+/// Save the part `start`–`end` of a video as a new MP4 item (with its sound)
+/// in the same folder as the video. Through memory, like converting; the
+/// original is never changed.
+pub fn run_cut(s: &Arc<Session>, tool_path: &Path, req: &CutRequest, cancel: &AtomicBool, progress: &mut dyn FnMut(&ToolProgress)) -> CutDone {
+    let mut done = CutDone { name: cut_name(&req.name), ..Default::default() };
+    let res = (|| -> Result<(i64, bool), String> {
+        let tool = Tool::probe(tool_path)?;
+        let row = load_row(s, req.item)?;
+        if row.kind != "video" {
+            return Err("Only videos can be cut.".into());
+        }
+        let (start, len) = cut_range(req.start, req.end, row.duration_ms)?;
+        let server = Server::start().map_err(|e| format!("The video tool couldn't be prepared ({e})."))?;
+        let url = serve_row(&server, s, &row, 0)?;
+        let stop = || cancel.load(Ordering::SeqCst) || s.is_closed();
+        let mut on_time = |t: f64| {
+            progress(&ToolProgress { task: "cut", done: 0, total: 1, name: row.name.clone(), fraction: (t / len).clamp(0.0, 1.0) });
+        };
+        let size = (row.width, row.height);
+        let out = if req.exact {
+            run(&tool, &cut_args(&tool, &url, start, len, CutWay::Exact, size), None, &stop, &mut on_time)?
+        } else {
+            match run(&tool, &cut_args(&tool, &url, start, len, CutWay::Copy { audio_aac: false }, size), None, &stop, &mut on_time) {
+                Ok(o) => o,
+                Err(e) if e == STOPPED => return Err(e),
+                // Sound an MP4 can't hold (e.g. Vorbis from a WebM): only the sound is made again.
+                Err(_) => run(&tool, &cut_args(&tool, &url, start, len, CutWay::Copy { audio_aac: true }, size), None, &stop, &mut on_time)
+                    .map_err(|e| if e == STOPPED { e } else { format!("“Fast” doesn't work for this video's format ({e}). Try “Exact”.") })?,
+            }
+        };
+        drop(server);
+        let dims = match (row.width, row.height) {
+            (Some(w), Some(h)) if w > 0 && h > 0 && !req.exact => Some((w as u32, h as u32)),
+            (Some(w), Some(h)) if w > 0 && h > 0 => Some((even(w as f64), even(h as f64))),
+            _ => None,
+        };
+        let before: i64 = s.db().query_row("SELECT IFNULL(MAX(id), 0) FROM media", [], |r| r.get(0)).map_err(|e| e.to_string())?;
+        let id = save_result(s, row.folder, &done.name, &out, Some(row.id), dims, Some((len * 1000.0).round() as i64))?;
+        s.save()?;
+        Ok((id, id <= before))
+    })();
+    match res {
+        Ok((id, reused)) => {
+            done.id = Some(id);
+            done.reused = reused;
+            progress(&ToolProgress { task: "cut", done: 1, total: 1, name: done.name.clone(), fraction: 1.0 });
+        }
+        Err(e) if e == STOPPED => done.cancelled = true,
+        Err(e) => done.error = Some(e),
+    }
+    done
+}
+
 // ---- tiny preview clips -----------------------------------------------------------------
 
 /// Long side of a tiny preview clip, in pixels.
@@ -1323,6 +1479,163 @@ mod tests {
 
         let webm = import::add_bytes(&s, None, "x.webm", &make(&ff, &["-f", "lavfi", "-i", "testsrc=size=32x32:rate=5:duration=1", "-c:v", "libvpx", "-f", "webm", "pipe:1"])).unwrap();
         assert!(rotate_video(&s, &ff, webm, 1).unwrap_err().contains("MP4"));
+    }
+
+    fn fake_tool(encoders: &[&str]) -> Tool {
+        Tool { path: PathBuf::from("ffmpeg"), version: "7.1".into(), encoders: encoders.iter().map(|e| e.to_string()).collect(), new_options: true }
+    }
+
+    #[test]
+    fn cut_arguments() {
+        let tool = fake_tool(&["libx264", "aac"]);
+        let has = |a: &[String], pair: [&str; 2]| a.windows(2).any(|w| w == pair);
+        // Exact: seek before -i (fast and still frame-exact when re-encoding), H.264 CRF 18, AAC.
+        let a = cut_args(&tool, "http://x/0.mp4", 12.5, 3.25, CutWay::Exact, (Some(1920), Some(1080)));
+        assert_eq!(&a[..6], &["-ss", "12.500", "-t", "3.250", "-i", "http://x/0.mp4"]);
+        assert!(has(&a, ["-c:v", "libx264"]) && has(&a, ["-crf", "18"]) && has(&a, ["-c:a", "aac"]) && has(&a, ["-bf", "0"]));
+        assert!(has(&a, ["-map", "0:a:0?"]), "videos without sound work too");
+        assert!(has(&a, ["-movflags", FRAG_MP4]) && a.ends_with(&["-f".into(), "mp4".into(), "pipe:1".into()]));
+        assert!(!a.iter().any(|x| x == "copy"));
+        // Fast: everything copied, timestamps start at zero.
+        let f = cut_args(&tool, "u", 1.0, 2.0, CutWay::Copy { audio_aac: false }, (None, None));
+        assert_eq!(&f[..6], &["-ss", "1.000", "-t", "2.000", "-i", "u"]);
+        assert!(has(&f, ["-c:v", "copy"]) && has(&f, ["-c:a", "copy"]) && has(&f, ["-avoid_negative_ts", "make_zero"]));
+        assert!(f.iter().any(|x| x.ends_with("+negative_cts_offsets")));
+        assert!(!f.iter().any(|x| x == "-vf" || x == "libx264"));
+        let g = cut_args(&tool, "u", 1.0, 2.0, CutWay::Copy { audio_aac: true }, (None, None));
+        assert!(has(&g, ["-c:v", "copy"]) && has(&g, ["-c:a", "aac"]));
+        // Without libx264: another H.264 encoder with a bitrate.
+        let o = cut_args(&fake_tool(&["libopenh264"]), "u", 0.0, 1.0, CutWay::Exact, (Some(640), Some(360)));
+        assert!(has(&o, ["-c:v", "libopenh264"]));
+
+        assert_eq!(cut_range(2.0, 5.0, Some(10_000)), Ok((2.0, 3.0)));
+        assert_eq!(cut_range(-1.0, 5.0, None), Ok((0.0, 5.0)));
+        assert_eq!(cut_range(8.0, 99.0, Some(10_000)), Ok((8.0, 2.0)), "the end stops at the video's end");
+        assert!(cut_range(5.0, 5.05, None).is_err());
+        assert!(cut_range(f64::NAN, 5.0, None).is_err());
+        assert_eq!(cut_name("holiday – clip 0m12s"), "holiday – clip 0m12s.mp4");
+        assert_eq!(cut_name("a.MP4"), "a.MP4");
+        assert_eq!(cut_name(" / "), "Clip.mp4");
+    }
+
+    #[test]
+    fn cuts_a_part_of_a_video_through_memory() {
+        let Some(ff) = test_tool() else {
+            eprintln!("ffmpeg not found: skipped");
+            return;
+        };
+        let tool = Tool::probe(&ff).unwrap();
+        if !tool.has("libx264") {
+            eprintln!("no libx264: skipped");
+            return;
+        }
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(&t);
+        let folder = library::create_folder(&s.db(), None, "Clips").unwrap();
+        // 6 s at 25 fps with a keyframe every 2 s, with sound; and one without sound.
+        let path = t.path().join("src.mp4");
+        make(&ff, &[
+            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25:duration=6", "-f", "lavfi", "-i", "sine=duration=6",
+            "-c:v", "libx264", "-g", "50", "-keyint_min", "50", "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", "-y", path.to_str().unwrap(),
+        ]);
+        let video = std::fs::read(&path).unwrap();
+        let vid = import::add_bytes(&s, Some(folder), "src.mp4", &video).unwrap();
+        s.db().execute("UPDATE media SET width = 160, height = 90, duration_ms = 6000 WHERE id = ?", [vid]).unwrap();
+        library::tag_items(&s.db(), &[vid], &["fun".into()]).unwrap();
+        let silent = import::add_bytes(&s, Some(folder), "silent.mp4", &make(&ff, &[
+            "-f", "lavfi", "-i", "testsrc=size=160x90:rate=25:duration=4", "-c:v", "libx264", "-g", "50", "-pix_fmt", "yuv420p", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1",
+        ])).unwrap();
+
+        // (Seconds of video frames, the first frame's time, whether it has sound.)
+        let info = |data: &[u8]| -> (f64, f64, bool) {
+            let p = t.path().join("probe.mp4");
+            std::fs::write(&p, data).unwrap();
+            // Every frame as it is stored (no frames added or dropped to keep a steady rate).
+            let o = Command::new(&ff)
+                .args(["-hide_banner", "-nostdin", "-loglevel", "error", "-i", p.to_str().unwrap(), "-map", "0:v:0", "-fps_mode", "passthrough", "-f", "framemd5", "-"])
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let text = String::from_utf8_lossy(&o.stdout).into_owned();
+            let tb = text
+                .lines()
+                .find_map(|l| l.strip_prefix("#tb 0: "))
+                .and_then(|r| r.trim().split_once('/'))
+                .map(|(a, b)| a.parse::<f64>().unwrap() / b.parse::<f64>().unwrap())
+                .unwrap();
+            let rows: Vec<&str> = text.lines().filter(|l| !l.starts_with('#')).collect();
+            let first = rows[0].split(',').nth(2).unwrap().trim().parse::<f64>().unwrap() * tb;
+            let desc = Command::new(&ff).args(["-hide_banner", "-nostdin", "-i", p.to_str().unwrap()]).stdin(Stdio::null()).output().unwrap();
+            (rows.len() as f64 / 25.0, first, String::from_utf8_lossy(&desc.stderr).contains("Audio:"))
+        };
+        let cut = |item: i64, start: f64, end: f64, exact: bool| {
+            let mut seen = 0.0f64;
+            let d = run_cut(&s, &ff, &CutRequest { item, start, end, exact, name: format!("cut {start} {exact}") }, &AtomicBool::new(false), &mut |p| seen = seen.max(p.fraction));
+            assert!(d.error.is_none() && !d.cancelled, "{d:?}");
+            assert_eq!(seen, 1.0);
+            d
+        };
+
+        // Exact: 2.5 s – 4.0 s, exactly 1.5 s, with sound, next to the original, with its tags.
+        let d = cut(vid, 2.5, 4.0, true);
+        assert!(!d.reused);
+        let (name, kind, data) = object(&s, d.id.unwrap());
+        assert_eq!((name.as_str(), kind.as_str()), ("cut 2.5 true.mp4", "video"));
+        assert_eq!(&data[4..8], b"ftyp");
+        assert!(decodes(&ff, &data));
+        let (secs, first, audio) = info(&data);
+        assert!((secs - 1.5).abs() < 0.07, "{secs}"); // within a frame or so
+        assert!(first.abs() < 0.001, "the picture starts with the sound ({first})");
+        assert!(audio, "the sound comes along");
+        let (f, dur): (Option<i64>, i64) = s.db().query_row("SELECT folder_id, duration_ms FROM media WHERE id = ?", [d.id.unwrap()], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((f, dur), (Some(folder), 1500));
+        assert_eq!(library::item_tags(&s.db(), d.id.unwrap()).unwrap().own, vec!["fun".to_string()]);
+
+        // Fast: copied, so it starts at the keyframe at 2.0 s (0.5 s earlier) and ends at 4.0 s.
+        let d = cut(vid, 2.5, 4.0, false);
+        let (_, _, fast) = object(&s, d.id.unwrap());
+        assert!(decodes(&ff, &fast));
+        let (secs, first, audio) = info(&fast);
+        assert!((1.95..=2.1).contains(&secs), "{secs}");
+        assert!(first.abs() < 0.001, "the picture starts with the sound ({first})");
+        assert!(audio);
+
+        // No sound: still works, and has none.
+        for exact in [true, false] {
+            let d = cut(silent, 0.5, 2.5, exact);
+            let (_, _, data) = object(&s, d.id.unwrap());
+            assert!(decodes(&ff, &data));
+            assert!(!info(&data).2);
+        }
+
+        // Bad requests and stopping.
+        let bad = run_cut(&s, &ff, &CutRequest { item: vid, start: 3.0, end: 3.0, exact: true, name: "x".into() }, &AtomicBool::new(false), &mut |_| {});
+        assert!(bad.error.is_some());
+        let stopped = run_cut(&s, &ff, &CutRequest { item: vid, start: 0.0, end: 6.0, exact: true, name: "x".into() }, &AtomicBool::new(true), &mut |_| {});
+        assert!(stopped.cancelled, "{stopped:?}");
+        // The original is untouched.
+        assert_eq!(object(&s, vid).2, video);
+    }
+
+    #[test]
+    fn saves_an_edited_copy_next_to_the_original() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(&t);
+        let folder = library::create_folder(&s.db(), None, "Trip").unwrap();
+        let png = b"\x89PNG\r\n\x1a\n0000IHDRfake".to_vec();
+        let orig = import::add_bytes(&s, Some(folder), "a.png", &png).unwrap();
+        library::tag_items(&s.db(), &[orig], &["sea".into()]).unwrap();
+        let mut edited = png.clone();
+        edited.extend_from_slice(b"edited");
+        let (id, reused) = save_copy(&s, orig, "a (edited).png", &edited, Some((30, 20))).unwrap();
+        assert!(!reused && id != orig);
+        let (f, w, h): (Option<i64>, i64, i64) = s.db().query_row("SELECT folder_id, width, height FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!((f, w, h), (Some(folder), 30, 20));
+        assert_eq!(library::item_tags(&s.db(), id).unwrap().own, vec!["sea".to_string()]);
+        assert_eq!(object(&s, orig).2, png, "the original is unchanged");
+        // Saving the very same picture again uses the one already there.
+        assert_eq!(save_copy(&s, orig, "again.png", &edited, None).unwrap(), (id, true));
+        assert!(save_copy(&s, 999_999, "x.png", &edited, None).is_err());
     }
 
     /// ffmpeg for tests: MV_FFMPEG, or the one on PATH. None = skip.

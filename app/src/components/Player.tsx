@@ -6,7 +6,10 @@
 // dismiss), right-drag = move the zoomed picture, 0 = reset zoom.
 // Videos: ←/→ jump (Shift = bigger jump), Ctrl+←/→ one frame, Ctrl+Space /
 // Shift+Space next / previous item, A/B/X loop, K bookmark, S save frame.
-// R / Shift+R rotate right / left (only how it shows, until "Save rotation").
+// R / Shift+R rotate right / left (still pictures: in the picture editor, E;
+// GIFs and videos: only how it shows, until "Save rotation"). Dragging sideways
+// beside the picture (or in the wide strips at the far left and right) goes to
+// the previous / next item; a click in those strips too (swipe.ts).
 
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
@@ -46,11 +49,16 @@ import {
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
   BeatIcon, Film3DIcon, LiftIcon, LivingIcon, OrbitIcon,
+  SideChevronIcon, EditPictureIcon, Mp4Icon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
 import { useUpscale } from './Upscale';
-import { BookmarksPanel, GifMakerDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
+import { BookmarksPanel, GifMakerDialog, Mp4CutDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
+import { ImageEditor } from './ImageEditor';
+import { useItemTransition } from './ItemTransition';
+import { pickEffect, transitionMs, type Effect } from '../transitions';
+import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
@@ -142,6 +150,13 @@ export function Player(props: PlayerProps) {
   const [bmOpen, setBmOpen] = useState(false);
   const [bmFocus, setBmFocus] = useState<number | null>(null);
   const [gifMaker, setGifMaker] = useState(false);
+  const [mp4Cut, setMp4Cut] = useState(false);
+  /** The picture editor is open (started turned this many quarter turns). */
+  const [editing, setEditing] = useState<{ quarter: Quarter } | null>(null);
+  /** The edge zone under the mouse (its arrow shows). */
+  const [edgeHover, setEdgeHover] = useState<Side | null>(null);
+  /** The item that has been drawn (the next transition waits for it). */
+  const [shownKey, setShownKey] = useState<string | null>(null);
   const [bestFrames, setBestFrames] = useState(false);
   const [help, setHelp] = useState(false);
   const [flash, setFlash] = useState<string | null>(null);
@@ -245,7 +260,9 @@ export function Player(props: PlayerProps) {
   const travel = useRef<'next' | 'prev'>('next');
   const beatMark = useRef<() => void>(() => {});
   const alignSnap = useRef<() => void>(() => {});
-  const go = useCallback((dir: 'next' | 'prev', auto = false) => {
+  /** Starts the transition to the next item (set further down, where its settings are known). */
+  const txStart = useRef<(dir: 'next' | 'prev', how?: { effect: Effect; fromPx: number }) => void>(() => {});
+  const go = useCallback((dir: 'next' | 'prev', auto = false, how?: { effect: Effect; fromPx: number }) => {
     const p = listRef.current;
     if (!p) return;
     const before = p.current()?.key;
@@ -257,7 +274,10 @@ export function Player(props: PlayerProps) {
       return;
     }
     beatMark.current();
-    if (n.key !== before) alignSnap.current();
+    if (n.key !== before) {
+      alignSnap.current();
+      txStart.current(dir, how);
+    }
     setFailed(false);
     if (n.key === before) {
       setTick((t) => t + 1);
@@ -360,10 +380,9 @@ export function Player(props: PlayerProps) {
     return () => clearTimeout(t);
   }, [item?.key, shownNow, preloads]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // How long a fade takes: the setting, but with beat sync never longer than
+  // How long a transition takes ("Transition speed"), but with beat sync never longer than
   // about a third of the time between changes, so it keeps up with fast music.
-  const fadeMs = s.transition !== 'fade' ? 0
-    : beatDriving && beat.bpm ? Math.max(60, Math.min(s.fadeMs, (60000 / beat.bpm) * s.beatEvery * 0.35)) : s.fadeMs;
+  const fadeMs = s.transition === 'none' ? 0 : transitionMs(s.fadeMs, beatDriving ? beat.bpm : null, s.beatEvery);
 
   // "Line up faces": the main face stays at the same place and size from picture to picture.
   const align = useFaceAlign({
@@ -476,7 +495,8 @@ export function Player(props: PlayerProps) {
   }); // eslint-disable-line react-hooks/exhaustive-deps
 
   const onStagePointerDown = (e: React.PointerEvent) => {
-    if (!item || isDoc || failed || mini) return;
+    // (An item that couldn't be shown can still be swiped away.)
+    if (!item || isDoc || mini || (failed && !swipeOn)) return;
     const st = stageSize();
     const x0 = e.clientX - st.left;
     const y0 = e.clientY - st.top;
@@ -505,26 +525,63 @@ export function Player(props: PlayerProps) {
       return;
     }
     if (e.button !== 0) return;
-    let dragged = false;
+    // ---- swiping (begin): sideways beside the picture, or in the wide strips at the far left / right ----
+    const zone = swipeOn ? edgeZoneAt(x0, st.w) : null;
+    const pic = drawn ? onPicture(x0, y0, clipBox(drawn, st.w, st.h)) : false;
+    const swipeHere = swipeOn && !rect && (!pic || (zone != null && !depthByMouse));
+    const layer = txRef.current;
+    const t0 = performance.now();
+    let follow = 0;
+    // ---- swiping (end) ----
+    let mode: 'click' | 'rect' | 'swipe' = 'click';
     const move = (ev: PointerEvent) => {
       const x1 = ev.clientX - st.left;
       const y1 = ev.clientY - st.top;
-      if (!dragged && Math.hypot(x1 - x0, y1 - y0) < 6) return;
-      dragged = true;
-      setDrawing({ x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) });
+      if (mode === 'click') {
+        const dist = Math.hypot(x1 - x0, y1 - y0);
+        if (swipeHere && isSideways(x1 - x0, y1 - y0)) {
+          mode = 'swipe';
+          tx.stop();
+        } else if (dist >= (swipeHere ? DRAG_START : 6)) mode = 'rect';
+        else return;
+      }
+      if (mode === 'swipe') {
+        // The item follows the mouse a bit.
+        const dx = x1 - x0;
+        follow = followPx(dx, canGo(dx < 0 ? 'next' : 'prev'));
+        if (layer) layer.style.transform = `translateX(${follow}px)`;
+        return;
+      }
+      if (!failed) setDrawing({ x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) });
     };
     const up = (ev: PointerEvent) => {
       target.removeEventListener('pointermove', move);
       target.removeEventListener('pointerup', up);
+      target.removeEventListener('pointercancel', up);
       const x1 = ev.clientX - st.left;
       const y1 = ev.clientY - st.top;
       setDrawing(null);
-      if (dragged) {
+      if (mode === 'swipe') {
+        const end = ev.type === 'pointercancel' ? 'back' : swipeEnd(x1 - x0, y1 - y0, performance.now() - t0, st.w);
+        if (layer) layer.style.transform = '';
+        if (end !== 'back' && canGo(end)) go(end, false, { effect: 'slide', fromPx: follow });
+        else if (layer && follow && typeof layer.animate === 'function') {
+          // A short drag: it springs back.
+          layer.animate([{ transform: `translateX(${follow}px)` }, { transform: 'translateX(0)' }], { duration: 180, easing: 'ease-out' });
+        }
+        return;
+      }
+      if (mode === 'rect') {
+        if (failed) return;
         const r = { x: Math.min(x0, x1), y: Math.min(y0, y1), w: Math.abs(x1 - x0), h: Math.abs(y1 - y0) };
         if (r.w > 12 && r.h > 12) setRect(r);
         return;
       }
       // A plain click.
+      if (swipeHere && zone) {
+        go(zone);
+        return;
+      }
       if (rect) {
         const inside = x1 >= rect.x && x1 <= rect.x + rect.w && y1 >= rect.y && y1 <= rect.y + rect.h;
         if (inside) zoomToRect(rect);
@@ -535,6 +592,20 @@ export function Player(props: PlayerProps) {
     };
     target.addEventListener('pointermove', move);
     target.addEventListener('pointerup', up);
+    target.addEventListener('pointercancel', up);
+  };
+  /** The faint arrow in an edge zone while the mouse is over it. */
+  const onStageHover = (e: React.PointerEvent) => {
+    if (e.buttons) return;
+    let z: Side | null = null;
+    if (swipeOn && !rect && !(e.target as HTMLElement).closest('.face-layer button, .face-layer [role=dialog]')) {
+      const st = stageSize();
+      const x = e.clientX - st.left;
+      const y = e.clientY - st.top;
+      z = edgeZoneAt(x, st.w);
+      if (z && depthByMouse && drawn && onPicture(x, y, clipBox(drawn, st.w, st.h))) z = null;
+    }
+    if (z !== edgeHover) setEdgeHover(z);
   };
 
   // Video element follows play/pause, speed and volume.
@@ -691,8 +762,9 @@ export function Player(props: PlayerProps) {
   };
 
   // The video element is memoised; its handlers always reach this render's state.
-  const vh = useRef({ meta: onVideoMeta, time: onVideoTime, end: onVideoEnd });
-  vh.current = { meta: onVideoMeta, time: onVideoTime, end: onVideoEnd };
+  const onVideoShown = () => item && setShownKey(item.key);
+  const vh = useRef({ meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: onVideoShown });
+  vh.current = { meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: onVideoShown };
 
   // ---- where the picture is drawn (face boxes, the grow / shrink animation) ------------------
 
@@ -707,6 +779,52 @@ export function Player(props: PlayerProps) {
   const natural = isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : isVideo ? vidSize : null;
   // Turned, the fit uses the turned shape.
   const drawn: Box | null = natural && stageWH.w > 0 && !failed ? turnedRect(stageWH.w, stageWH.h, natural.w, natural.h, s.fit, rot, zoom) : null;
+
+  // ---- transitions between items (transitions.ts, ItemTransition.tsx) ---------------------------
+  const txRef = useRef<HTMLDivElement>(null);
+  /** A stage-sized copy of what is on screen now (the picture's canvas, or the video's frame). */
+  const snapshot = (): HTMLCanvasElement | null => {
+    const st = stageRef.current;
+    if (!st || !st.clientWidth || !st.clientHeight || isDoc) return null;
+    const dpr = window.devicePixelRatio || 1;
+    const c = document.createElement('canvas');
+    c.width = Math.round(st.clientWidth * dpr);
+    c.height = Math.round(st.clientHeight * dpr);
+    const ctx = c.getContext('2d');
+    if (!ctx) return null;
+    const sr = st.getBoundingClientRect();
+    let any = false;
+    for (const cv of kbRef.current?.querySelectorAll<HTMLCanvasElement>('canvas.media-canvas') ?? []) {
+      if (!cv.width || !cv.height || cv.style.visibility === 'hidden' || cv.closest('.upscaled-layer.hide')) continue;
+      const r = cv.getBoundingClientRect();
+      ctx.drawImage(cv, (r.left - sr.left) * dpr, (r.top - sr.top) * dpr, r.width * dpr, r.height * dpr);
+      any = true;
+    }
+    const v = videoRef.current;
+    if (!any && v && v.readyState >= 2 && drawn && rot === 0) {
+      ctx.drawImage(v, drawn.left * dpr, drawn.top * dpr, drawn.width * dpr, drawn.height * dpr);
+      any = true;
+    }
+    return any ? c : null;
+  };
+  const tx = useItemTransition({ layer: txRef, snapshot, itemKey: item?.key, ready: !item || failed || isDoc || shownKey === item.key });
+  const lastEffect = useRef<Effect | null>(null);
+  txStart.current = (dir, how) => {
+    if (mini) return;
+    // "Line up faces" crossfades by itself.
+    if (!how && prefs.alignFaces && slideshow) return;
+    const effect = how?.effect ?? pickEffect(s.transition, lastEffect.current);
+    if (!effect) return;
+    // A swipe always slides on, quickly (even with the transition set to None).
+    const ms = how ? Math.min(420, Math.max(220, fadeMs)) : fadeMs;
+    if (tx.start(effect, dir === 'next' ? 1 : -1, ms, how?.fromPx ?? 0) && !how) lastEffect.current = effect;
+  };
+  // ---- swiping between items (swipe.ts) ----
+  const swipeOn = prefs.swipeNav !== false && !mini && !props.compact && !props.bare && !zoomed && !isDoc && !!item && !editing;
+  const canGo = (dir: Side) => {
+    const i = listRef.current?.index() ?? -1;
+    return props.items.length > 1 && (s.repeat !== 'off' || i < 0 || (dir === 'next' ? i < props.items.length - 1 : i > 0));
+  };
 
   // ---- faces ------------------------------------------------------------------------------------
 
@@ -1004,10 +1122,10 @@ export function Player(props: PlayerProps) {
   };
   /** A new address for the same item, so the window reads its new file. */
   const freshSrc = (src: string) => `${src.split('?')[0]}?r=${Date.now()}`;
-  const saveTurn = async () => {
-    if (!item || item.itemId == null || !rot || rotSaving) return;
+  /** Keeps the item turned `r` (default: as it shows now) in its own file; Ctrl+Z undoes it. */
+  const saveTurn = async (r: Quarter = rot) => {
+    if (!item || item.itemId == null || !r || rotSaving) return;
     const it = item;
-    const r = rot;
     const how = saveWay(it.kind, it.name);
     if (how.way === 'no') return setFlash(how.why);
     setRotSaving(true);
@@ -1038,6 +1156,15 @@ export function Player(props: PlayerProps) {
       setRotSaving(false);
     }
   };
+  // ---- the picture editor (ImageEditor.tsx): still pictures in the vault ----
+  const canEdit = inVault && item?.kind === 'image' && !failed && !mini && !props.compact && !props.bare;
+  const openEditor = (quarter: Quarter = 0) => {
+    if (!canEdit) return;
+    setPaused(true);
+    setMenu(null);
+    setEditing({ quarter });
+  };
+
   /** Ctrl+Z in the viewer undoes a rotation saved here (other undo waits for the library). */
   const undoTurn = async () => {
     lastTurn.current = null;
@@ -1105,7 +1232,7 @@ export function Player(props: PlayerProps) {
       if (tgt instanceof HTMLInputElement && tgt.type === 'range' && tgt.closest('.player') && !tgt.closest('[role=dialog], .modal, .popover')) {
         if (!['Tab'].includes(e.key)) tgt.blur();
       } else if (tgt.closest('input, textarea, select, [role=dialog]')) return;
-      if (menu) return; // the right-click menu handles its own keys
+      if (menu || editing) return; // the right-click menu and the picture editor handle their own keys
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
       if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
@@ -1115,9 +1242,16 @@ export function Player(props: PlayerProps) {
         }
         return;
       }
-      if (k === 'r' && !e.ctrlKey && !e.altKey && !e.metaKey && canTurn) {
-        rotate(e.shiftKey ? -1 : 1);
+      if (k === 'r' && !e.ctrlKey && !e.altKey && !e.metaKey && (canEdit || canTurn)) {
+        // Still pictures turn in the picture editor (saved as a copy, or to the original).
+        if (canEdit) openEditor(e.shiftKey ? 3 : 1);
+        else rotate(e.shiftKey ? -1 : 1);
         poke();
+        return;
+      }
+      if (k === 'e' && !e.ctrlKey && !e.altKey && !e.metaKey && canEdit) {
+        e.preventDefault();
+        openEditor();
         return;
       }
       if (k === ' ') {
@@ -1194,7 +1328,7 @@ export function Player(props: PlayerProps) {
           style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined, ...turnedStyle(rot, stageWH.w, stageWH.h) }}
           src={item.src} autoPlay={!halted} crossOrigin="anonymous"
           playsInline preload="auto" onLoadedMetadata={() => vh.current.meta()} onTimeUpdate={() => vh.current.time()} onEnded={() => vh.current.end()}
-          onError={() => setFailed(true)} />
+          onLoadedData={() => vh.current.shown()} onError={() => setFailed(true)} />
       );
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
@@ -1300,6 +1434,10 @@ export function Player(props: PlayerProps) {
         <button type="button" className="pbtn" aria-label="Make a GIF" title="Make a GIF from part of this video" onClick={() => { setPaused(true); setGifMaker(true); }}><GifIcon /></button>
       )}
       {inVault && isVideo && (
+        <button type="button" className="pbtn" aria-label="Save part as MP4" title="Save part of this video (the A–B loop) as an MP4 with its sound"
+          onClick={() => { setPaused(true); setMp4Cut(true); }}><Mp4Icon /></button>
+      )}
+      {inVault && isVideo && (
         <button type="button" className="pbtn" aria-label="Find the best frames" title="Find the best frames: the sharpest, best-lit moments, to save as pictures"
           onClick={() => { setPaused(true); setBestFrames(true); }}><BestFramesIcon /></button>
       )}
@@ -1311,7 +1449,8 @@ export function Player(props: PlayerProps) {
       style={{ ['--fade-ms' as string]: `${fadeMs}ms` }}
       onMouseMove={poke} onMouseDown={poke}>
       {ambient && item?.thumb && <div key={item.key} className="ambient-glow" style={{ backgroundImage: `url("${item.thumb}")` }} aria-hidden="true" />}
-      <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}`} onPointerDown={onStagePointerDown}
+      <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}${tx.film ? ' tx-film' : ''}${edgeHover ? ' at-edge' : ''}`} onPointerDown={onStagePointerDown}
+        onPointerMove={onStageHover} onPointerLeave={() => edgeHover && setEdgeHover(null)}
         onContextMenu={(e) => {
           e.preventDefault();
           if (panMoved.current) {
@@ -1320,13 +1459,15 @@ export function Player(props: PlayerProps) {
           }
           if (canTurn && !props.compact) setMenu({ x: e.clientX, y: e.clientY });
         }}>
+        {tx.below}
         {isDoc ? media : (
+          <div ref={txRef} className="tx-layer">
           <div ref={kbRef} className="kb-layer">
             {isPicture && item && !failed ? (
               <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom} rot={rot}
                 size={item.width && item.height ? { w: item.width, h: item.height } : null}
                 prefs={prefs} paused={halted} className={anim}
-                onInfo={setImgInfo} onFrame={(i, n) => setGifFrame({ index: i, count: n })}
+                onInfo={(i) => { setImgInfo(i); setShownKey(item.key); }} onFrame={(i, n) => setGifFrame({ index: i, count: n })}
                 onFrameImage={depth3d && animated ? (img, i) => gifFeed.emit(img as unknown as TexImageSource, i) : undefined} onError={() => setFailed(true)} />
             ) : (
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
@@ -1358,8 +1499,15 @@ export function Player(props: PlayerProps) {
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />
             )}
           </div>
+          </div>
         )}
+        {tx.above}
         {align.ghost}
+        {swipeOn && edgeHover && (
+          <div className={`edge-arrow ${edgeHover}${canGo(edgeHover) ? '' : ' end'}`} aria-hidden="true">
+            <span><SideChevronIcon size={28} dir={edgeHover === 'prev' ? 'left' : 'right'} /></span>
+          </div>
+        )}
         {!item && <div className="media-failed">Nothing to play here.</div>}
         {drawing && <div className="zoom-rect drawing" style={{ left: drawing.x, top: drawing.y, width: drawing.w, height: drawing.h }} />}
         {rect && !drawing && (
@@ -1384,8 +1532,14 @@ export function Player(props: PlayerProps) {
       )}
       {menu && (
         <ContextMenu x={menu.x} y={menu.y} title={item?.name} onClose={() => setMenu(null)} items={[
-          { label: 'Rotate right', hint: 'R', onSelect: () => { setMenu(null); rotate(1); } },
-          { label: 'Rotate left', hint: 'Shift+R', onSelect: () => { setMenu(null); rotate(-1); } },
+          ...(canEdit ? [
+            { label: 'Edit…', hint: 'E · crop, straighten, colour', onSelect: () => openEditor() },
+            { label: 'Rotate right…', hint: 'R', onSelect: () => openEditor(1) },
+            { label: 'Rotate left…', hint: 'Shift+R', onSelect: () => openEditor(3) },
+          ] : [
+            { label: 'Rotate right', hint: 'R', onSelect: () => { setMenu(null); rotate(1); } },
+            { label: 'Rotate left', hint: 'Shift+R', onSelect: () => { setMenu(null); rotate(-1); } },
+          ]),
           ...(rot && inVault ? [{ label: rotSaving ? 'Saving the rotation…' : 'Save rotation', hint: 'keeps it turned', onSelect: () => { setMenu(null); saveTurn(); } }] : []),
           ...(rot ? [{ label: 'Back the right way round', onSelect: () => { setMenu(null); rotate(-rot); } }] : []),
           ...(isVideo && inVault ? [{ label: 'Find the best frames…', hint: 'save as pictures', sepBefore: true, onSelect: () => { setMenu(null); setPaused(true); setBestFrames(true); } }] : []),
@@ -1509,12 +1663,16 @@ export function Player(props: PlayerProps) {
             {speedButton}
             {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
-              {canTurn && (
+              {canEdit && (
+                <button type="button" className="pbtn lg" aria-label="Edit (E)" title="Edit: crop, straighten, rotate, flip, light and colour — saved as a copy (E)"
+                  onClick={() => openEditor()}><EditPictureIcon size={18} /></button>
+              )}
+              {canTurn && !canEdit && (
                 <div className="rotate-ctl" role="group" aria-label="Rotate">
                   <button type="button" className="pbtn lg" aria-label="Rotate left" title="Rotate left (Shift+R)" onClick={() => rotate(-1)}><RotateIcon size={18} dir="left" /></button>
                   <button type="button" className="pbtn lg" aria-label="Rotate right" title="Rotate right (R)" onClick={() => rotate(1)}><RotateIcon size={18} /></button>
                   {rot !== 0 && inVault && (
-                    <button type="button" className="btn btn-sm btn-primary rot-save" disabled={rotSaving} onClick={saveTurn} title={saveTip}>
+                    <button type="button" className="btn btn-sm btn-primary rot-save" disabled={rotSaving} onClick={() => saveTurn()} title={saveTip}>
                       {rotSaving ? 'Saving…' : 'Save rotation'}
                     </button>
                   )}
@@ -1591,7 +1749,22 @@ export function Player(props: PlayerProps) {
       {gifMaker && item && isVideo && (
         <GifMakerDialog name={item.name} src={item.src} folder={item.folderId} at={time.at} dur={time.dur} loop={loop}
           videoWidth={videoRef.current?.videoWidth ?? 480} onClose={() => setGifMaker(false)}
-          onSaved={(n) => { kickThumbnails(); setFlash(`Saved “${n}” in this folder`); }} />
+          onSaved={(n) => { kickThumbnails(); noteItemsChanged(); lastTurn.current = peekUndo(); setFlash(`Saved “${n}” in this folder · Ctrl+Z undoes it`); }} />
+      )}
+      {mp4Cut && item && isVideo && item.itemId != null && (
+        <Mp4CutDialog itemId={item.itemId} name={item.name} at={time.at} dur={time.dur} loop={loop} onClose={() => setMp4Cut(false)}
+          onSaved={(n, reused) => {
+            kickThumbnails();
+            noteItemsChanged();
+            setFlash(reused ? `“${n}” was already in this folder` : `Saved “${n}” in this folder · Ctrl+Z undoes it`);
+            // Ctrl+Z right here in the viewer takes it away again (like a saved rotation).
+            if (!reused) lastTurn.current = peekUndo();
+          }} />
+      )}
+      {editing && item && canEdit && (
+        <ImageEditor key={item.key} item={item} startQuarter={editing.quarter} onClose={() => setEditing(null)}
+          onMessage={setFlash} onSaved={() => { lastTurn.current = peekUndo(); }}
+          onSaveRotation={(q) => { void saveTurn(q); }} />
       )}
       {bestFrames && item && isVideo && (
         // Saved frames can be undone with Ctrl+Z right here, like a saved rotation.

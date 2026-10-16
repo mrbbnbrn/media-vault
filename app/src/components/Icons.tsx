@@ -266,6 +266,32 @@ export const GifIcon = ({ size = 16 }: P) => (
     <path d="M10 10H8v4h2v-2M13 10v4M16 14v-4h2M16 12h1.5" strokeWidth={1.6} />
   </svg>
 );
+/** A film frame with scissors marks: save part of a video as an MP4. */
+export const Mp4Icon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="3" y="5" width="18" height="14" rx="2" />
+    <path d="M7 15v-6l2 3 2-3v6M14 15v-6h1.8a1.6 1.6 0 0 1 0 3.2H14" strokeWidth={1.5} />
+  </svg>
+);
+/** A pencil over a picture: the picture editor. */
+export const EditPictureIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M4 7a2 2 0 0 1 2-2h7M4 7v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5" />
+    <path d="M4 17l4-4 3 3 2-2" />
+    <path d="M17.5 3.5l3 3L14 13h-3v-3z" />
+  </svg>
+);
+export const SideChevronIcon = ({ size = 16, dir = 'right' }: P & { dir?: 'left' | 'right' }) => (
+  <svg {...base(size)}>
+    <path d={dir === 'left' ? 'M15 5l-7 7 7 7' : 'M9 5l7 7-7 7'} />
+  </svg>
+);
+export const FlipIcon = ({ size = 16, dir = 'h' }: P & { dir?: 'h' | 'v' }) => (
+  <svg {...base(size)} style={dir === 'v' ? { transform: 'rotate(90deg)' } : undefined}>
+    <path d="M12 3v18" strokeDasharray="2 2" />
+    <path d="M9 7L4 17h5zM15 7l5 10h-5z" />
+  </svg>
+);
 export const RestoreIcon = ({ size = 14 }: P) => (
   <svg {...base(size)}>
     <path d="M3 12a9 9 0 1 0 3-6.7" />

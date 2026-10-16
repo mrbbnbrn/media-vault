@@ -1104,3 +1104,72 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .shape-pick button:hover { border-color: var(--line-2); color: var(--text); }
 .shape-pick button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
 .depth-btns { display: inline-flex; gap: 2px; align-items: center; }
+
+/* ---- transitions between items (transitions.ts, ItemTransition.tsx) ---- */
+.player .tx-layer { position: absolute; inset: 0; backface-visibility: hidden; }
+.player .tx-ghost { position: absolute; inset: 0; pointer-events: none; backface-visibility: hidden; }
+.player .tx-ghost canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Film strip: a strip with its holes runs behind the two pictures while they move along. */
+.player .stage.tx-film::before { content: ''; position: absolute; left: 0; right: 0; top: 7%; bottom: 7%; pointer-events: none; background:
+  repeating-linear-gradient(90deg, #d9d6cf 0 14px, transparent 14px 34px) top 10px left 0 / 100% 12px no-repeat,
+  repeating-linear-gradient(90deg, #d9d6cf 0 14px, transparent 14px 34px) bottom 10px left 0 / 100% 12px no-repeat,
+  #16171a; opacity: 0.9; border-radius: 4px; }
+
+/* ---- swiping: the wide strips at the far left and right (swipe.ts) ---- */
+.player .stage.at-edge { cursor: pointer; }
+.player .edge-arrow { position: absolute; top: 0; bottom: 0; width: max(80px, 12%); display: flex; align-items: center; pointer-events: none; z-index: 2; animation: fadein 0.15s ease-out; }
+.player .edge-arrow.prev { left: 0; justify-content: flex-start; padding-left: 18px; background: linear-gradient(90deg, rgba(0, 0, 0, 0.28), transparent); }
+.player .edge-arrow.next { right: 0; justify-content: flex-end; padding-right: 18px; background: linear-gradient(270deg, rgba(0, 0, 0, 0.28), transparent); }
+.player .edge-arrow span { display: flex; align-items: center; justify-content: center; width: 46px; height: 46px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); color: rgba(255, 255, 255, 0.7); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+.player .edge-arrow.end span { opacity: 0.3; }
+
+/* ---- the picture editor (ImageEditor.tsx) ---- */
+.player .img-editor { position: absolute; inset: 0; z-index: 30; display: flex; background: #0b0c0e; color: var(--text); cursor: default; }
+.img-editor .ie-area { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden;
+  background: repeating-conic-gradient(#121316 0 25%, #0e0f11 0 50%) 0 0 / 24px 24px; }
+.img-editor .ie-pic { position: relative; flex: none; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6); touch-action: none; }
+.img-editor .ie-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.img-editor .ie-shade { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.58); }
+.img-editor .ie-pic canvas { display: block; }
+.img-editor .ie-crop { position: absolute; outline: 1px solid rgba(255, 255, 255, 0.85); cursor: move; touch-action: none; }
+.img-editor .ie-third { position: absolute; background: rgba(255, 255, 255, 0.28); pointer-events: none; }
+.img-editor .ie-third.v1, .img-editor .ie-third.v2 { top: 0; bottom: 0; width: 1px; }
+.img-editor .ie-third.v1 { left: 33.333%; }
+.img-editor .ie-third.v2 { left: 66.666%; }
+.img-editor .ie-third.h1, .img-editor .ie-third.h2 { left: 0; right: 0; height: 1px; }
+.img-editor .ie-third.h1 { top: 33.333%; }
+.img-editor .ie-third.h2 { top: 66.666%; }
+.img-editor .ie-handle { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 3px; background: var(--accent); border: 2px solid #0b0c0e; touch-action: none; }
+.img-editor .ie-handle.nw { left: 0; top: 0; cursor: nwse-resize; }
+.img-editor .ie-handle.n { left: 50%; top: 0; cursor: ns-resize; }
+.img-editor .ie-handle.ne { left: 100%; top: 0; cursor: nesw-resize; }
+.img-editor .ie-handle.e { left: 100%; top: 50%; cursor: ew-resize; }
+.img-editor .ie-handle.se { left: 100%; top: 100%; cursor: nwse-resize; }
+.img-editor .ie-handle.s { left: 50%; top: 100%; cursor: ns-resize; }
+.img-editor .ie-handle.sw { left: 0; top: 100%; cursor: nesw-resize; }
+.img-editor .ie-handle.w { left: 0; top: 50%; cursor: ew-resize; }
+.img-editor .ie-busy { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.75); font-size: 13px; }
+.img-editor .ie-panel { width: 320px; flex: none; display: flex; flex-direction: column; gap: 14px; padding: 16px 16px 14px; overflow-y: auto; background: var(--panel, #131417); border-left: 1px solid var(--line, #23262c); }
+.img-editor .ie-title { margin: 0; font-size: 17px; }
+.img-editor .ie-note { margin: -6px 0 0; font-size: 12.5px; }
+.img-editor section { display: flex; flex-direction: column; gap: 8px; }
+.img-editor h3 { margin: 0; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); }
+.img-editor .ie-seg { flex-wrap: wrap; }
+.img-editor .ie-seg button { min-width: 0; padding: 0 9px; }
+.img-editor .ie-small { font-size: 12px; }
+.img-editor .ie-val { font-size: 12px; min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+.img-editor .ie-tools { flex-wrap: wrap; gap: 6px; }
+.img-editor .ie-slider { display: grid; grid-template-columns: 84px 1fr 36px; align-items: center; gap: 8px; font-size: 13px; }
+.img-editor input[type='range'] { width: 100%; accent-color: var(--accent); }
+.img-editor .ie-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line, #23262c); }
+.img-editor .ie-wide { width: 100%; justify-content: center; }
+
+/* ---- Save part as MP4: the two ways (VideoTools.tsx) ---- */
+.cut-ways { display: flex; flex-direction: column; gap: 8px; }
+.cut-way { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 1px solid #23262c; background: #15171b; cursor: pointer; }
+.cut-way.on { border-color: var(--accent); background: var(--accent-soft); }
+.cut-way input { margin-top: 3px; accent-color: var(--accent); }
+.cut-way > span { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.cut-way .faint { font-size: 12.5px; line-height: 1.4; }
+.seg.tx-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.tx-pick button { padding: 0 6px; }

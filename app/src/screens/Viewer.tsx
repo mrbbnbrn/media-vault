@@ -14,6 +14,7 @@ import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, v
 import type { PlayItem } from '../media';
 import type { Order } from '../playlist';
 import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } from '../presets';
+import { TRANSITIONS } from '../transitions';
 import { saveViewerPrefs, useViewerPrefs, viewerPrefs, withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
 
@@ -407,13 +408,14 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           </div>
 
           <span>Transition</span>
-          <div role="group" className="seg">
-            <button type="button" className={s.transition === 'none' ? 'on' : ''} onClick={() => set({ transition: 'none' })}>None</button>
-            <button type="button" className={s.transition === 'fade' ? 'on' : ''} onClick={() => set({ transition: 'fade' })}>Fade</button>
+          <div role="group" className="seg tx-pick" aria-label="Transition">
+            {TRANSITIONS.map((t) => (
+              <button key={t.id} type="button" className={s.transition === t.id ? 'on' : ''} title={t.hint} onClick={() => set({ transition: t.id })}>{t.label}</button>
+            ))}
           </div>
-          {s.transition === 'fade' && (
+          {s.transition !== 'none' && (
             <>
-              <label htmlFor="ps-fade">Fade speed</label>
+              <label htmlFor="ps-fade">Transition speed</label>
               <span className="row" style={{ gap: 10 }}>
                 <input id="ps-fade" type="range" min={50} max={2000} step={50} value={s.fadeMs} style={{ flex: 1 }}
                   onChange={(e) => set({ fadeMs: Number(e.target.value) })} />
