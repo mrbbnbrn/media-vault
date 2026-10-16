@@ -511,7 +511,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
         Still pictures can move gently in depth, as if the camera drifted a little: in slideshows, and over and over
         while a picture is open. Turn it on in the viewer under <b>View ▾ → 3D photos</b>, where you can also pick the
         motion's shape, amount and speed, or click the <b>3D</b> button to make the picture follow your mouse.
-        The depth of each picture is worked out offline and kept in memory only.
+        The depth of each picture is worked out offline and saved in the vault (encrypted), so it is only worked out once.
       </p>
       {info && (info.available ? (
         <div className="info">
@@ -527,7 +527,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Subject outline model</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
         For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow). It is a button next to the 3D buttons in the viewer, for
-        still pictures. The outline of each picture is worked out offline and kept in memory only.
+        still pictures. The outline of each picture is worked out offline and saved in the vault (encrypted), so it is only worked out once.
       </p>
       <SubjectModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
       <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Background fill (Layered 3D)</h3>

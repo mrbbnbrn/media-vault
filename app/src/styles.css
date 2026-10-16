@@ -129,6 +129,19 @@ select.input { min-height: 42px; font-size: 14px; width: auto; }
 .settings nav button { min-height: 40px; padding: 0 12px; border-radius: 8px; border: none; background: transparent; color: var(--text-2); font-size: 14px; text-align: left; cursor: pointer; }
 .settings nav button.active { background: var(--accent-soft); color: var(--accent-text); }
 .settings main { flex: 999 1 560px; min-width: 0; padding: 32px 40px 60px; display: flex; flex-direction: column; gap: 28px; max-width: 860px; overflow: auto; }
+/* The top bar and the section list stay put: only the settings themselves scroll. */
+.settings { overflow: hidden; }
+.settings nav, .settings main { max-height: 100%; overflow: auto; }
+/* The settings column reaches the window's right edge (so the wheel scrolls it from anywhere there); its contents keep their width. */
+@media (min-width: 780px) {
+  .settings main { max-width: none; }
+  .settings main > * { max-width: 780px; }
+}
+/* Narrow window: the list sits above the settings and the two scroll together. */
+@media (max-width: 779px) {
+  .settings { overflow: auto; }
+  .settings nav, .settings main { max-height: none; overflow: visible; }
+}
 .section { display: flex; flex-direction: column; gap: 14px; }
 .divider { height: 1px; background: var(--line); }
 .swatches { display: flex; flex-wrap: wrap; gap: 12px; }
