@@ -1295,6 +1295,7 @@ export function Player(props: PlayerProps) {
             {depth3d && item && depthNatural && (
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={depthNatural} fit={s.fit}
                 amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
+                mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 video={isVideo3d ? { ref: videoRef, delayMs: prefs.depthVideoDelay ? 100 : 0 } : undefined}
                 frames={animated ? gifFeed : undefined}
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
