@@ -35,7 +35,9 @@ fn check_kind(kind: &str) -> Result<(), String> {
 
 /// A model id as the packs use them: a short name of a-z, 0-9 and "-".
 fn check_model(model: &str) -> Result<(), String> {
-    if model.len() <= 40 && model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+    // As the window names them: model, size and softness, e.g. `da3-mono-large@518~0.5`.
+    let ok = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '@' | '~' | '.');
+    if !model.is_empty() && model.len() <= 64 && model.chars().all(ok) {
         Ok(())
     } else {
         Err("That isn't a model name.".into())
@@ -157,6 +159,17 @@ pub fn clear(s: &Session, kind: Option<&str>) -> Result<u64, String> {
     Ok(ids.len() as u64)
 }
 
+/// The items that have a usable saved map of this kind for this model.
+pub fn have(conn: &Connection, kind: &str, model: &str) -> Result<Vec<i64>, String> {
+    check_kind(kind)?;
+    check_model(model)?;
+    let mut st = conn
+        .prepare("SELECT d.media_id FROM derived d JOIN media m ON m.id = d.media_id WHERE d.kind = ?1 AND d.model = ?2 AND d.source = m.object_id")
+        .map_err(e)?;
+    let ids = st.query_map(params![kind, model], |r| r.get(0)).map_err(e)?.collect::<rusqlite::Result<_>>().map_err(e)?;
+    Ok(ids)
+}
+
 /// How many maps are saved and the space they take.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -223,6 +236,13 @@ pub async fn derived_clear(state: State<'_, crate::Shared>, kind: Option<String>
 pub async fn derived_stats(state: State<'_, crate::Shared>) -> Result<DerivedStats, String> {
     let s = crate::sess(&state)?;
     tauri::async_runtime::spawn_blocking(move || stats(&s.db())).await.map_err(|x| x.to_string())?
+}
+
+/// Which items already have a saved map of this kind for this model (so background work can skip them).
+#[tauri::command]
+pub async fn derived_have(state: State<'_, crate::Shared>, kind: String, model: String) -> Result<Vec<i64>, String> {
+    let s = crate::sess(&state)?;
+    tauri::async_runtime::spawn_blocking(move || have(&s.db(), &kind, &model)).await.map_err(|x| x.to_string())?
 }
 
 #[cfg(test)]
@@ -323,6 +343,26 @@ mod tests {
         assert!(put(&s, pic, "depth", "v2-small", &map(5000, 1, 0)).is_err(), "silly size");
         assert_eq!(thumbs(&s), 0, "nothing refused was stored");
         assert_eq!(stats(&s.db()).unwrap(), DerivedStats::default());
+    }
+
+    #[test]
+    fn the_names_the_window_uses_are_accepted_and_have_lists_them() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let a = item(&s, "image");
+        let b = item(&s, "image");
+        // depth.ts depthTag and subject.ts subjectTag.
+        put(&s, a, "depth", "da3-mono-large@518~0.5", &map(2, 2, 1)).unwrap();
+        put(&s, b, "depth", "v2-small-fp16@518~1", &map(2, 2, 1)).unwrap();
+        put(&s, a, "outline", "birefnet-lite@1024", &map(2, 2, 255)).unwrap();
+        assert!(get(&s, a, "depth", "da3-mono-large@518~0.5").unwrap().is_some());
+        assert_eq!(have(&s.db(), "depth", "da3-mono-large@518~0.5").unwrap(), vec![a]);
+        assert_eq!(have(&s.db(), "outline", "birefnet-lite@1024").unwrap(), vec![a]);
+        assert!(have(&s.db(), "depth", "v2-small@518~1").unwrap().is_empty());
+        for bad in ["", "a/b", "a\\b", "A", "x y", &"a".repeat(65)] {
+            assert!(put(&s, a, "depth", bad, &map(2, 2, 1)).is_err(), "{bad:?}");
+        }
+        assert_eq!(stats(&s.db()).unwrap().depth_count, 2);
     }
 
     #[test]

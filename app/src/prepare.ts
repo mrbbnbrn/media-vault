@@ -4,14 +4,17 @@
 // - while idle: with a 3D or subject effect on and no keyboard or mouse for
 //   IDLE_MS, the pictures being viewed are worked out (and saved) one at a
 //   time, stopping as soon as there's input;
-// - "Work them all out again" (Settings → Faces & smart search): the saved
-//   ones are cleared and every picture in the vault is worked out again in
-//   the background, for the models in use, with progress and a Stop button.
+// - in the background, on request: the pictures missing a saved map (whole
+//   vault, Settings → Faces & smart search), every picture again (saved ones
+//   cleared first), or the pictures of one folder or person folder (its
+//   right-click menu). One job at a time, the rest wait their turn; progress
+//   shows in Settings and in the background-jobs ring, with Stop.
 //
 // Both go through the same one-at-a-time queues as the viewer (depth.ts,
 // subject.ts), behind whatever the viewer needs right now.
 
-import { api, mediaUrl } from './api';
+import { api, mediaUrl, type Item, type ItemFilter } from './api';
+import { beginJob, endJob, updateJob } from './jobs';
 import { notePictures } from './derived';
 import { depthOf, depthPack, depthSetup, depthTag, forgetDepth, knownDepth } from './depth';
 import { forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectTag } from './subject';
@@ -80,19 +83,33 @@ export function startIdlePrepare(list: () => string[], want: { depth: boolean; s
   };
 }
 
-// ---- working them all out again ----------------------------------------------------------------
+// ---- in the background, on request -------------------------------------------------------------
 
 export interface RebuildState {
   running: boolean;
   done: number;
   total: number;
+  /** What's being worked on ("the whole vault", "“Anna”"; null = nothing running). */
+  what: string | null;
+  /** Jobs waiting their turn. */
+  waiting: number;
   /** What it's doing or how it ended, in a few words (null = nothing to say). */
   note: string | null;
 }
 
-let state: RebuildState = { running: false, done: 0, total: 0, note: null };
+/** One request: which pictures, and whether saved ones are cleared and worked out again. */
+export interface PrepareRequest {
+  what: string;
+  filters: ItemFilter[];
+  /** Clear every saved map first and work everything out again. */
+  again?: boolean;
+}
+
+let state: RebuildState = { running: false, done: 0, total: 0, what: null, waiting: 0, note: null };
 let stopAsked = false;
+const queue: PrepareRequest[] = [];
 const subs = new Set<() => void>();
+const JOB = 'prepare-3d';
 
 function set(p: Partial<RebuildState>) {
   state = { ...state, ...p };
@@ -108,47 +125,107 @@ export function onRebuild(cb: () => void): () => void {
   return () => subs.delete(cb);
 }
 
+/** Stops the job running now (after the picture being worked on) and drops the ones waiting. */
 export function stopRebuild() {
+  queue.length = 0;
   if (state.running) {
     stopAsked = true;
-    set({ note: 'Stopping after this picture…' });
+    set({ waiting: 0, note: 'Stopping after this picture…' });
   }
 }
 
-/** Clears the saved depth maps and outlines, then works out depth and outline for every picture in the vault. */
-export async function rebuildAll(): Promise<void> {
-  if (state.running) return;
+/** The whole vault: only the pictures missing a saved map, or (again) everything after clearing. */
+export function prepareVault(again: boolean): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what: 'the whole vault', filters: [{ kinds: ['image'] }], again });
+}
+
+/** One folder (and its subfolders); a person folder also gets the pictures their face was recognised in. */
+export function prepareFolder(f: { id: number; name: string; person: boolean }): 'started' | 'queued' | 'already' {
+  const filters: ItemFilter[] = [{ folder: f.id, recursive: true, kinds: ['image'] }];
+  if (f.person) filters.push({ people: [f.id], kinds: ['image'] });
+  return prepareInBackground({ what: `“${f.name}”`, filters });
+}
+
+/** Adds a request (started at once when nothing runs). */
+export function prepareInBackground(r: PrepareRequest): 'started' | 'queued' | 'already' {
+  if (state.what === r.what && state.running && !stopAsked && !r.again) return 'already';
+  if (queue.some((q) => q.what === r.what && !!q.again === !!r.again)) return 'already';
+  queue.push(r);
+  if (state.running) {
+    set({ waiting: queue.length });
+    return 'queued';
+  }
+  void drain();
+  return 'started';
+}
+
+async function drain() {
+  while (queue.length) {
+    const r = queue.shift()!;
+    await runOne(r);
+  }
+}
+
+async function picturesOf(filters: ItemFilter[]): Promise<{ kind: string; src: string; itemId: number }[]> {
+  const seen = new Map<number, Item>();
+  for (const f of filters) for (const i of await api.queryItems(f)) if (!seen.has(i.id)) seen.set(i.id, i);
+  return [...seen.values()].filter((i) => i.kind === 'image' && i.deletedAt == null).map((i) => ({ kind: 'image', src: mediaUrl(i.id), itemId: i.id }));
+}
+
+async function runOne(r: PrepareRequest): Promise<void> {
   stopAsked = false;
-  set({ running: true, done: 0, total: 0, note: 'Clearing the saved ones…' });
-  let finished = false;
+  set({ running: true, done: 0, total: 0, what: r.what, waiting: queue.length, note: r.again ? 'Clearing the saved ones…' : 'Finding the pictures…' });
+  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.what, long: true, unit: 'pictures', cancel: stopRebuild, cancelLabel: 'Stop' });
+  let ok = true;
   try {
-    const [d, s] = await Promise.all([depthPack(true), subjectPack(true)]);
-    const useD = !!d?.available;
-    const useS = !!s?.available;
-    await api.derivedClear();
-    // The copies in memory would otherwise be used without being saved again.
-    forgetDepth();
-    forgetSubjects();
-    if (!useD && !useS) {
-      set({ note: 'Cleared. No depth or outline model is installed, so nothing was worked out.' });
+    const [di, si] = await Promise.all([depthPack(true), subjectPack(true)]);
+    const d = di?.available ? depthSetup() : null;
+    const s = si?.available ? subjectSetup() : null;
+    if (r.again) {
+      await api.derivedClear();
+      // The copies in memory would otherwise be used without being saved again.
+      forgetDepth();
+      forgetSubjects();
+    }
+    if (!d && !s) {
+      set({ note: r.again ? 'Cleared. No depth or outline model is installed, so nothing was worked out.' : 'No depth or outline model is installed, so there is nothing to work out.' });
+      ok = false;
       return;
     }
-    const items = await api.queryItems({ kinds: ['image'] });
-    const pics = items.filter((i) => i.kind === 'image' && i.deletedAt == null).map((i) => ({ kind: 'image', src: mediaUrl(i.id), itemId: i.id }));
+    const pics = await picturesOf(r.filters);
     notePictures(pics);
-    set({ total: pics.length, note: null });
-    for (let i = 0; i < pics.length; i++) {
+    // Pictures that already have both maps saved for the models in use are skipped.
+    const [hasD, hasS] = await Promise.all([
+      d ? api.derivedHave('depth', depthTag(d)).then((l) => new Set(l)) : Promise.resolve(null),
+      s ? api.derivedHave('outline', subjectTag(s)).then((l) => new Set(l)) : Promise.resolve(null),
+    ]);
+    const todo = pics.filter((p) => (d && !hasD?.has(p.itemId)) || (s && !hasS?.has(p.itemId)));
+    const already = pics.length - todo.length;
+    set({ total: todo.length, note: already ? `${already.toLocaleString()} already saved.` : null });
+    updateJob(JOB, { total: todo.length });
+    for (let i = 0; i < todo.length; i++) {
       if (stopAsked) break;
-      if (useD) await depthOf(pics[i].src);
+      const p = todo[i];
+      if (d && !hasD?.has(p.itemId)) await depthOf(p.src);
       if (stopAsked) break;
-      if (useS) await subjectOf(pics[i].src);
+      if (s && !hasS?.has(p.itemId)) await subjectOf(p.src);
       set({ done: i + 1 });
+      updateJob(JOB, { done: i + 1 });
     }
-    finished = !stopAsked;
-    set({ note: finished ? `Done: ${pics.length.toLocaleString()} ${pics.length === 1 ? 'picture' : 'pictures'} worked out.` : `Stopped after ${state.done.toLocaleString()} of ${pics.length.toLocaleString()}.` });
+    const n = state.done;
+    if (stopAsked) {
+      ok = false;
+      set({ note: `Stopped after ${n.toLocaleString()} of ${todo.length.toLocaleString()} (${r.what}).` });
+    } else if (!todo.length) {
+      set({ note: pics.length ? `Nothing to do: every picture in ${r.what} is already saved.` : `No pictures in ${r.what}.` });
+    } else {
+      set({ note: `Done (${r.what}): ${n.toLocaleString()} ${n === 1 ? 'picture' : 'pictures'} worked out${already ? `, ${already.toLocaleString()} were already saved` : ''}.` });
+    }
   } catch (e) {
-    set({ note: `Couldn't finish: ${e instanceof Error ? e.message : String(e)}` });
+    ok = false;
+    set({ note: `Couldn't finish (${r.what}): ${e instanceof Error ? e.message : String(e)}` });
   } finally {
-    set({ running: false });
+    endJob(JOB, { failed: !ok, summary: `${state.done.toLocaleString()} pictures prepared for 3D` });
+    set({ running: false, what: null, waiting: queue.length });
   }
 }

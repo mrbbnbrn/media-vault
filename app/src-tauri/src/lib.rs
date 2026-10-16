@@ -2703,6 +2703,7 @@ pub fn run() {
             derived::derived_put,
             derived::derived_clear,
             derived::derived_stats,
+            derived::derived_have,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

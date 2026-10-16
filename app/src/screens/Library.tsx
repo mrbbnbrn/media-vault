@@ -39,6 +39,7 @@ import { ActivityRing } from '../components/ActivityRing';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
+import { prepareFolder } from '../prepare';
 import { MediaGrid } from '../components/MediaGrid';
 import { CoverVideo } from '../components/VideoPreview';
 import { Framed } from '../components/FramedCover';
@@ -1195,6 +1196,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
     ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
+    { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => {
+      const r = prepareFolder({ id: f.id, name: f.name, person: f.person });
+      setNote({ text: r === 'already' ? `Already preparing “${f.name}”.` : r === 'queued' ? `“${f.name}” will be prepared for 3D after the job running now.` : `Preparing the pictures in “${f.name}” for 3D in the background (depth maps and outlines). See the ring at the bottom of the sidebar.`, at: 0 });
+    } },
     { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
     { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
     { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },

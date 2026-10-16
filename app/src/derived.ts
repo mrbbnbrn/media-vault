@@ -44,7 +44,7 @@ export async function loadSaved(kind: DerivedKind, model: string, id: number): P
 
 /** Saves a map just worked out (in the background; a failure only means it's worked out again next time). */
 export function putSaved(kind: DerivedKind, model: string, id: number, m: DepthMap) {
-  void api.derivedPut(id, kind, model, mapBytes(m)).then(() => subs.forEach((f) => f())).catch(() => {});
+  void api.derivedPut(id, kind, model, mapBytes(m)).then(() => subs.forEach((f) => f())).catch((e) => console.warn(`Couldn't save the ${kind} map:`, e));
 }
 
 /**

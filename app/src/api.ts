@@ -1145,6 +1145,8 @@ export const api = {
   /** Forgets the saved ones (of one kind, or all); how many were removed. */
   derivedClear: (kind?: DerivedKind) => call<number>('derived_clear', kind ? { kind } : {}),
   derivedStats: () => call<DerivedStats>('derived_stats'),
+  /** Items that already have a saved map of this kind for this model. */
+  derivedHave: (kind: DerivedKind, model: string) => call<number[]>('derived_have', { kind, model }),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
