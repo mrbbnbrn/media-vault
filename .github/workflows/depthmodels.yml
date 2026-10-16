@@ -4,7 +4,8 @@ name: depth models
 # Large, Apache-2.0; "Balanced" = DA3 Base was retired: no sky detection) as its own download,
 # MediaVault-depth-<id>-windows.zip, each unzipping to MediaVault\tools\depth-<id>\
 # with model.onnx, depth.json (what the app reads), ONNX Runtime + DirectML,
-# and the licences. The "Fast" model stays the depth pack (depthpack.yml).
+# and the licences. The "Fast" model stays the depth pack (depthpack.yml);
+# "Fast (half precision)" is built by depthhalf.yml (same tag).
 #
 # The model is converted here from the original PyTorch weights (Hugging Face)
 # and checked against PyTorch before it is packed (.github/scripts/da3_export.py).

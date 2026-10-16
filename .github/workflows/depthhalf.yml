@@ -1,0 +1,161 @@
+name: depth model half precision
+
+# Builds the optional "Fast (half precision)" 3D-photo depth model as its own
+# download, MediaVault-depth-v2-small-fp16-windows.zip, unzipping to
+# MediaVault\tools\depth-v2-small-fp16\ with model.onnx, depth.json (what the
+# app reads, with "gpuOnly": true), ONNX Runtime + DirectML, and the licences.
+#
+# It is the very ONNX file the Fast pack ships (depthpack.yml: Depth Anything
+# V2 Small, Apache-2.0, exported by Depth-Anything-ONNX v2.0.0; same URL and
+# SHA-256) converted to float16 with the input and output kept float32
+# (onnxconverter-common, keep_io_types), then checked against the fp32 model
+# on ONNX Runtime 1.24 (the version the app ships): depth-map correlation >= 0.995
+# on every test picture, else the job fails (.github/scripts/fp16_convert.py).
+#
+# Graphics card only: half precision is quicker there (DirectML) and slow or
+# stalling on the processor, so the app uses it only when it is chosen and the
+# graphics card works, and falls back to Fast otherwise.
+# Published with the other depth models (tag depth-models-<today>).
+# Run by hand (Actions → depth model half precision → Run workflow); never on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (default depth-models-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with depthpack.yml, depthmodels.yml, subjectmodels.yml, inpaintmodels.yml, upscaler.yml and facepack.yml.
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  # The Fast model, exactly as depthpack.yml takes it.
+  DEPTH_URL: https://github.com/fabio-sim/Depth-Anything-ONNX/releases/download/v2.0.0/depth_anything_v2_vits.onnx
+  DEPTH_SHA256: d2b11a11c1d4a12b47608fa65a17ee9a4c605b55ee1730c8e3b526304f2562be
+  DA2_LICENSE_URL: https://raw.githubusercontent.com/DepthAnything/Depth-Anything-V2/a561b849ebae10a6f5ef49e26c83cbbcd36c71bf/LICENSE
+  ONNX_LICENSE_URL: https://raw.githubusercontent.com/fabio-sim/Depth-Anything-ONNX/9abf814d22ac06f50fa96c9c632c30430be8a828/LICENSE
+  ID: v2-small-fp16
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: The Fast model (checked) and its licences
+        run: |
+          set -euo pipefail
+          mkdir -p w pack
+          curl -fsSL --retry 4 -o w/depth_anything_v2_vits.onnx "$DEPTH_URL"
+          echo "$DEPTH_SHA256  w/depth_anything_v2_vits.onnx" | sha256sum -c
+          curl -fsSL --retry 4 -o w/depth-anything-v2-LICENSE.txt "$DA2_LICENSE_URL"
+          curl -fsSL --retry 4 -o w/depth-anything-onnx-LICENSE.txt "$ONNX_LICENSE_URL"
+          grep -q "Apache License" w/depth-anything-v2-LICENSE.txt
+          grep -q "Apache License" w/depth-anything-onnx-LICENSE.txt
+          python -m pip install --upgrade pip
+          pip install numpy pillow scikit-image "onnx==1.23.2" "onnxconverter-common==1.16.0" "onnxruntime==$ORT_DML_VERSION"
+
+      - name: Convert to half precision and check against the fp32 model
+        run: |
+          set -euo pipefail
+          python -c "import onnxruntime as o, os; v=os.environ['ORT_DML_VERSION']; assert o.__version__.startswith(v.rsplit('.',1)[0]), o.__version__"
+          python .github/scripts/fp16_convert.py w/depth_anything_v2_vits.onnx pack/model.onnx
+          ls -la pack
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+
+      - name: Manifest, licences, readme, checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("pack")
+          manifest = {
+              "id": "v2-small-fp16", "name": "Fast (half precision)", "model": "Depth Anything V2 Small (half precision)",
+              "file": "model.onnx", "output": "nearness", "standardSide": 518,
+              "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "licence": "Apache-2.0", "gpuOnly": True,
+          }
+          (p / "depth.json").write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          WORST=$(python -c "import json;print(round(json.load(open('pack/model.json'))['worstCorrelation'],5))")
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — 3D PHOTOS DEPTH MODEL \"Fast (half precision)\": LICENCES"
+            echo "======================================================================"
+            echo
+            echo "model.onnx   Depth Anything V2 Small (ViT-S), by the Depth Anything team"
+            echo "    (https://github.com/DepthAnything/Depth-Anything-V2), Apache-2.0 licence (only the Small model is;"
+            echo "    Base, Large and Giant are not, and are not included). Exported to ONNX by the Depth-Anything-ONNX project"
+            echo "    (https://github.com/fabio-sim/Depth-Anything-ONNX, Apache-2.0): $DEPTH_URL (SHA-256 $DEPTH_SHA256),"
+            echo "    converted here to float16 (input and output kept float32) and checked against that fp32 model"
+            echo "    (worst depth correlation $WORST; details in CONVERSION.json). Changes: the conversion to float16."
+            echo "onnxruntime.dll   ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence)."
+            echo "DirectML.dll      DirectML $DIRECTML_VERSION (Microsoft); redistributed under its licence below."
+            echo
+            for f in w/depth-anything-v2-LICENSE.txt w/depth-anything-onnx-LICENSE.txt "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          printf '%s\r\n' \
+            "Media Vault 3D photos depth model: Fast (half precision)" \
+            "" \
+            "Unzip next to the app: this adds MediaVault\\tools\\depth-v2-small-fp16." \
+            "Then choose it in View > 3D photo settings > Depth model (or Settings > 3D photos)." \
+            "" \
+            "The Fast model in half precision: quicker on a graphics card (DirectML), for graphics cards only." \
+            "Without a graphics card that works, Fast is used instead (keep the Fast pack installed too)." \
+            "Everything runs offline. Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="depth-models-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "Depth Anything V2 Small fp16 (from Depth-Anything-ONNX v2.0.0 $DEPTH_SHA256, keep_io_types)" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > pack/VERSION.txt
+          mv pack/model.json pack/CONVERSION.json
+          (cd pack && sha256sum model.onnx *.dll depth.json > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "z/MediaVault/tools/depth-$ID"
+          cp pack/* "z/MediaVault/tools/depth-$ID/"
+          zip_name="MediaVault-depth-$ID-windows.zip"
+          (cd z && zip -qr -6 "../$zip_name" MediaVault)
+          ls -la "$zip_name"
+          notes="Optional 3D-photo depth models. Unzip next to the app, then choose the model in View ▾ → 3D photo settings or Settings → 3D photos. Fast = the depth pack; Fast (half precision) = depth-v2-small-fp16 (graphics card only); Best = depth-da3-mono-large."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$zip_name" --prerelease --title "3D photo depth models $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi

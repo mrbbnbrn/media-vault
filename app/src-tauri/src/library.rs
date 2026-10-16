@@ -855,7 +855,8 @@ pub struct Orphans {
 pub fn unused_only(conn: &Connection, o: Orphans) -> R<Orphans> {
     let used = |id: &str| -> R<bool> {
         conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM media WHERE object_id = ?1 OR thumb_object_id = ?1 OR preview_object_id = ?1 OR tiny_object_id = ?1)",
+            "SELECT EXISTS(SELECT 1 FROM media WHERE object_id = ?1 OR thumb_object_id = ?1 OR preview_object_id = ?1 OR tiny_object_id = ?1) \
+             OR EXISTS(SELECT 1 FROM derived WHERE object_id = ?1)",
             [id],
             |r| r.get::<_, bool>(0),
         )
@@ -899,6 +900,13 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
         for x in [t, p, tiny].into_iter().flatten().filter(|x| !x.is_empty()) {
             o.thumbs.push(x);
         }
+    }
+    // So do saved depth maps and outlines (their rows go with the item).
+    let mut st = conn
+        .prepare(&format!("SELECT object_id FROM derived WHERE media_id IN (SELECT id FROM media WHERE {where_sql})"))
+        .map_err(e)?;
+    for row in st.query_map(params_from_iter(args.iter().cloned()), |r| r.get::<_, String>(0)).map_err(e)? {
+        o.thumbs.push(row.map_err(e)?);
     }
     Ok(o)
 }

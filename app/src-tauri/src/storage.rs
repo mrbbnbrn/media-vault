@@ -257,7 +257,8 @@ fn check_all_present(s: &Session) -> Result<(), String> {
                 "SELECT 1, object_id FROM media UNION ALL \
                  SELECT 2, thumb_object_id FROM media WHERE thumb_object_id IS NOT NULL AND thumb_object_id <> '' UNION ALL \
                  SELECT 2, preview_object_id FROM media WHERE preview_object_id IS NOT NULL AND preview_object_id <> '' UNION ALL \
-                 SELECT 2, tiny_object_id FROM media WHERE tiny_object_id IS NOT NULL AND tiny_object_id <> ''",
+                 SELECT 2, tiny_object_id FROM media WHERE tiny_object_id IS NOT NULL AND tiny_object_id <> '' UNION ALL \
+                 SELECT 2, object_id FROM derived",
             )
             .map_err(|e| e.to_string())?;
         st.query_map([], |r| {

@@ -1,0 +1,223 @@
+name: inpaint models
+
+# Builds the optional "background fill" (inpainting) models as their own
+# downloads, MediaVault-inpaint-<id>-windows.zip, each unzipping to
+# MediaVault\tools\inpaint-<id>\ with model.onnx, inpaint.json (what the app
+# reads), ONNX Runtime + DirectML, and the licences:
+#   migan = "MI-GAN" (MI-GAN 512 Places2, Picsart AI Research, MIT: code and weights),
+#   lama  = "LaMa"   (big-lama, Samsung AI Center Moscow, Apache-2.0).
+#
+# Both are fp32 with a fixed 512 x 512 input (image 1x3x512x512 RGB 0-1, mask
+# 1x1x512x512 with 1 = fill; result 1x3x512x512 RGB 0-1), exported here from the
+# official PyTorch code (MI-GAN and LaMa repositories at pinned commits) with
+# the published weights (Hugging Face, pinned revisions, SHA-256 checked), and
+# checked before packing (.github/scripts/inpaint_export.py):
+#  - MI-GAN: the PyTorch model must reproduce the authors' own ONNX pipeline,
+#    and the exported model, on ONNX Runtime 1.24 (the version the app ships),
+#    must match PyTorch (PSNR >= 40 dB over the filled area on every picture);
+#  - LaMa: its FFTs are written as matrix products (plain MatMul, nothing
+#    DirectML lacks), checked against torch.fft, and the exported model on ONNX
+#    Runtime 1.24 must match the original PyTorch model (PSNR >= 40 dB).
+# Only plain operators are allowed in the model (no DFT, NonZero, ScatterND,
+# loops or open sizes), so it runs on the processor and with DirectML.
+# The licences must be MIT (MI-GAN: its repository and weights) and Apache-2.0
+# (LaMa: its repository and the weights' model card), else the job fails.
+# Run by hand (Actions → inpaint models → Run workflow); never on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Which model
+        type: choice
+        options: [migan, lama]
+        required: true
+      tag:
+        description: Release tag (default inpaint-models-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with depthmodels.yml, depthpack.yml, subjectmodels.yml, upscaler.yml and facepack.yml.
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  # The reference code, at fixed commits.
+  MIGAN_REPO: https://github.com/Picsart-AI-Research/MI-GAN
+  MIGAN_COMMIT: 2b793c5ece43f4253e32d4afc257120a5deed6f5
+  LAMA_REPO: https://github.com/advimman/lama
+  LAMA_COMMIT: 786f5936b27fb3dacd2b1ad799e4de968ea697e7
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Which model
+        run: |
+          set -euo pipefail
+          case "${{ github.event.inputs.model }}" in
+            migan) echo "NAME=MI-GAN" >> "$GITHUB_ENV"; echo "TITLE=MI-GAN 512 (Places2)" >> "$GITHUB_ENV"; echo "LICENCE=MIT" >> "$GITHUB_ENV" ;;
+            lama)  echo "NAME=LaMa" >> "$GITHUB_ENV"; echo "TITLE=big-lama" >> "$GITHUB_ENV"; echo "LICENCE=Apache-2.0" >> "$GITHUB_ENV" ;;
+            *) echo "unknown model"; exit 1 ;;
+          esac
+          echo "ID=${{ github.event.inputs.model }}" >> "$GITHUB_ENV"
+
+      - name: Reference code, its licences, and the tools
+        run: |
+          set -euo pipefail
+          fetch() { # repo commit dir
+            git init -q "$3" && git -C "$3" remote add origin "$1"
+            git -C "$3" fetch -q --depth 1 origin "$2" && git -C "$3" checkout -q FETCH_HEAD
+            git -C "$3" log -1 --format="$3: %H %cd"
+          }
+          # MI-GAN's code and example pictures are used for both models (the test pictures and masks).
+          fetch "$MIGAN_REPO" "$MIGAN_COMMIT" MI-GAN
+          grep -q "MIT License" MI-GAN/LICENSE
+          grep -q "MIT License" MI-GAN/LICENSE-WEIGHTS
+          if [ "$ID" = lama ]; then
+            fetch "$LAMA_REPO" "$LAMA_COMMIT" lama
+            grep -q "Apache License" lama/LICENSE
+            grep -q "Version 2.0" lama/LICENSE
+          fi
+          python -m pip install --upgrade pip
+          # The versions the export was tried with; the check runs on the ONNX Runtime the app ships.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 torchvision==0.21.0
+          pip install numpy pillow pyyaml "onnx==1.23.2" "onnxruntime==$ORT_DML_VERSION"
+
+      - name: Export and check against the reference
+        run: |
+          set -euo pipefail
+          MIGAN_SRC=MI-GAN LAMA_SRC=lama INPAINT_CACHE=dl INPAINT_ORT="${ORT_DML_VERSION%.*}" INPAINT_SAMPLES=samples \
+            python .github/scripts/inpaint_export.py "$ID" pack
+          ls -la pack
+          # The weights' own licence: MI-GAN's weight licence file is MIT, LaMa's model card says apache-2.0.
+          python - <<'PY'
+          import os, pathlib, re
+          p = pathlib.Path("pack")
+          card = (p / "weights-README.md").read_text(errors="ignore")
+          m = re.search(r"^license:\s*([\w.\-]+)", card, re.I | re.M)
+          lic = (m.group(1) if m else "").lower()
+          want = {"migan": "mit", "lama": "apache-2.0"}[os.environ["ID"]]
+          print("weights licence:", lic or "(not stated)")
+          if lic != want:
+              raise SystemExit(f"the weights' licence is {lic or 'not stated'}, not {want}")
+          if os.environ["ID"] == "migan" and "MIT License" not in (p / "weights-LICENSE").read_text(errors="ignore"):
+              raise SystemExit("the MI-GAN weights' LICENSE isn't MIT")
+          PY
+
+      - name: Keep the filled test pictures (to look at)
+        uses: actions/upload-artifact@v4
+        with:
+          name: inpaint-${{ github.event.inputs.model }}-samples
+          path: samples
+          retention-days: 14
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+
+      - name: Manifest, licences, readme, checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("pack")
+          made = json.loads((p / "export.json").read_text())
+          manifest = {"id": os.environ["ID"], "name": os.environ["NAME"], "model": os.environ["TITLE"], "file": "model.onnx",
+                      "side": made["side"], "licence": os.environ["LICENCE"]}
+          (p / "inpaint.json").write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          read -r HF HF_REV WORST < <(python -c "import json;d=json.load(open('pack/export.json'));print(d['repo'],d['revision'],round(d['worstPsnr'],1))")
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — BACKGROUND FILL MODEL \"$NAME\": LICENCES"
+            echo "====================================================="
+            echo
+            if [ "$ID" = migan ]; then
+              echo "model.onnx   MI-GAN 512 (Places2) by Picsart AI Research ($MIGAN_REPO, commit $MIGAN_COMMIT), MIT licence"
+              echo "    (code: LICENSE; weights: LICENSE-WEIGHTS, both below). Weights as published by the authors in"
+              echo "    https://huggingface.co/$HF (revision $HF_REV, MIT), exported to ONNX here from the official PyTorch"
+              echo "    code (fp32, 512 x 512) and checked against PyTorch and the authors' own ONNX pipeline"
+              echo "    (worst PSNR $WORST dB; details in CONVERSION.json)."
+            else
+              echo "model.onnx   big-lama (LaMa: Resolution-robust Large Mask Inpainting with Fourier Convolutions, by Roman"
+              echo "    Suvorov et al., Samsung AI Center Moscow; $LAMA_REPO, commit $LAMA_COMMIT), Apache-2.0 licence (below)."
+              echo "    Weights from https://huggingface.co/$HF (revision $HF_REV, Apache-2.0, the download the official"
+              echo "    README links), exported to ONNX here from the official PyTorch code (fp32, 512 x 512; the Fourier"
+              echo "    units' FFTs written as matrix products, the same maths) and checked against the original PyTorch"
+              echo "    model (worst PSNR $WORST dB; details in CONVERSION.json). Changes from the original: the FFT"
+              echo "    rewrite and the export to ONNX."
+            fi
+            echo "onnxruntime.dll   ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence)."
+            echo "DirectML.dll      DirectML $DIRECTML_VERSION (Microsoft); redistributed under its licence below."
+            echo
+            files=()
+            if [ "$ID" = migan ]; then files+=(MI-GAN/LICENSE MI-GAN/LICENSE-WEIGHTS); else files+=(lama/LICENSE); fi
+            files+=("$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')")
+            for f in "${files[@]}"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $f ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          rm -f pack/weights-*
+          printf '%s\r\n' \
+            "Media Vault background fill model: $NAME ($TITLE)" \
+            "" \
+            "Unzip next to the app: this adds MediaVault\\tools\\inpaint-$ID." \
+            "Then choose it in View > 3D photo settings > Background fill (in the viewer)." \
+            "It paints in what is likely behind a subject that moves in a 3D photo." \
+            "" \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="inpaint-models-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          src="$MIGAN_REPO@$MIGAN_COMMIT"; [ "$ID" = lama ] && src="$LAMA_REPO@$LAMA_COMMIT"
+          printf '%s\n' "$tag" "$TITLE ($HF@$HF_REV, code $src)" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > pack/VERSION.txt
+          cp pack/export.json pack/CONVERSION.json && rm pack/export.json
+          (cd pack && sha256sum model.onnx *.dll inpaint.json > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "z/MediaVault/tools/inpaint-$ID"
+          cp pack/* "z/MediaVault/tools/inpaint-$ID/"
+          zip_name="MediaVault-inpaint-$ID-windows.zip"
+          (cd z && zip -qr -6 "../$zip_name" MediaVault)
+          ls -la "$zip_name"
+          notes="Optional background fill models for 3D photos (MI-GAN: MIT, small and fast; LaMa: Apache-2.0, better on large areas). Unzip next to the app, then choose it in View ▾ → 3D photo settings → Background fill. MI-GAN = inpaint-migan; LaMa = inpaint-lama."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$zip_name" --prerelease --title "Background fill models $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi

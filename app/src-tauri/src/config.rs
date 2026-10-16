@@ -102,6 +102,9 @@ pub struct ViewerSettings {
     pub depth_detail: String,
     /// Subject outlines: which model ("birefnet-lite", "birefnet"; "" = the best one installed).
     pub subject_model: String,
+    /// 3D photos: what fills in behind a subject that moves ("migan", "lama"; "" = Simple: no model,
+    /// the window's own fill).
+    pub inpaint_model: String,
     /// 3D photos: the subject (from its outline) is lifted off the background, and how much (0.3–3).
     pub depth_lift: bool,
     pub depth_lift_amount: f64,
@@ -174,6 +177,7 @@ impl Default for ViewerSettings {
             depth_model: String::new(),
             depth_detail: "standard".into(),
             subject_model: String::new(),
+            inpaint_model: String::new(),
             depth_lift: false,
             depth_lift_amount: 1.0,
             depth_living: false,
@@ -387,6 +391,10 @@ impl AppConfig {
         let id_ok = v.subject_model.len() <= 40 && v.subject_model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
         if !id_ok {
             v.subject_model.clear();
+        }
+        let id_ok = v.inpaint_model.len() <= 40 && v.inpaint_model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !id_ok {
+            v.inpaint_model.clear();
         }
         v.depth_lift_amount = clamp(v.depth_lift_amount, 0.3, 3.0, 1.0);
         v.depth_living_amount = clamp(v.depth_living_amount, 0.3, 3.0, 1.0);
@@ -625,6 +633,22 @@ mod tests {
         let mut c = AppConfig::default();
         c.viewer.depth_lift_amount = 0.0;
         assert_eq!(c.sanitized().viewer.depth_lift_amount, 0.3);
+    }
+
+    #[test]
+    fn inpaint_model_setting_defaults_and_is_sanitised() {
+        let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
+        assert_eq!(v.inpaint_model, "", "Simple (no model) by default");
+        let v: ViewerSettings = serde_json::from_str(r#"{"inpaintModel":"lama"}"#).unwrap();
+        assert_eq!(v.inpaint_model, "lama");
+        let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
+        let mut c = AppConfig { viewer: v, ..AppConfig::default() };
+        assert_eq!(c.clone().sanitized().viewer.inpaint_model, "lama");
+        for bad in ["..\\evil", "MI-GAN", "a b", &"x".repeat(41)] {
+            c.viewer.inpaint_model = bad.into();
+            assert_eq!(c.clone().sanitized().viewer.inpaint_model, "", "{bad}");
+        }
     }
 
     #[test]

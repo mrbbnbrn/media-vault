@@ -10,12 +10,17 @@
 //!
 //! Both are run by ONNX Runtime on the graphics card (DirectML) or the
 //! processor; ONNX Runtime comes from the pack itself or any other pack
-//! (subject, depth, upscaler, faces). Only one model is kept in memory at a
-//! time and it is freed after a while without use.
+//! (subject, depth, upscaler, faces).
+//!
+//! One model of this kind is kept loaded (another one of the same kind frees
+//! it first), in this module's own slot (modelslot.rs): it stays loaded
+//! alongside the depth, subject outline and background fill models, with its
+//! own idle timer, and loading one of those never frees this one.
 //!
 //! The window decodes the picture in memory, scales it to the model's square
 //! size and sends the pixels here; the mask goes straight back and is kept in
-//! the window's memory only. Nothing is written anywhere.
+//! the window's memory, or saved by the window inside the vault, encrypted
+//! (derived.rs). Nothing is written anywhere else.
 //!
 //! While developing: MV_SUBJECT names a single pack folder, MV_SUBJECT_DIR a
 //! folder holding several pack folders.
@@ -28,6 +33,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::modelslot::ModelSlot;
 use crate::{depth, faceid, upscale};
 
 /// Each pack describes itself in this file.
@@ -409,8 +415,8 @@ struct Loaded {
     gpu: bool,
 }
 
-static MODEL: Mutex<Option<Loaded>> = Mutex::new(None);
-static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
+/// This module's own slot: kept loaded alongside the other kinds of model (modelslot.rs).
+static MODEL: ModelSlot<Loaded> = ModelSlot::new(IDLE_UNLOAD);
 /// Graphics card (true) or processor, per model, once it has run.
 static LAST_DEVICE: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 /// Models whose runtime or file couldn't start at all (shown in Settings), per model.
@@ -452,28 +458,15 @@ fn load(pack: &Pack, gpu: bool) -> Result<Loaded, String> {
     Ok(Loaded { session, key: m.id.clone(), side, output: m.output, mean: m.mean, std: m.std, gpu })
 }
 
-/// Free the model after a while without use.
-fn reaper() {
-    std::thread::spawn(|| loop {
-        std::thread::sleep(Duration::from_secs(15));
-        let idle = LAST_USE.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
-        if idle {
-            if let Ok(mut m) = MODEL.try_lock() {
-                *m = None;
-            } else {
-                continue;
-            }
-            *LAST_USE.lock().unwrap() = None;
-            return;
-        }
-    });
-}
-
 /// Free the model now (the vault locked or the viewer closed).
 pub fn unload() {
-    if let Ok(mut m) = MODEL.try_lock() {
-        *m = None;
-    }
+    MODEL.unload();
+}
+
+/// A model of this kind is loaded now.
+#[cfg(test)]
+pub fn loaded() -> bool {
+    MODEL.is_loaded()
 }
 
 /// Run `f` with this model (on the graphics card when possible; a failure
@@ -482,14 +475,7 @@ pub fn unload() {
 fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
     let try_gpu = cfg!(windows) && pack.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
     let key = pack.manifest.id.clone();
-    let mut guard = MODEL.lock().unwrap();
-    {
-        let mut last = LAST_USE.lock().unwrap();
-        if last.is_none() {
-            reaper();
-        }
-        *last = Some(Instant::now());
-    }
+    let mut guard = MODEL.lock();
     if guard.as_ref().is_some_and(|l| l.key != key) {
         *guard = None; // a different model: free the old one first (they're big)
     }

@@ -225,6 +225,14 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   from the five face points). NULL = not measured yet and counts as fine. Whether a face is
   poor is not stored: the app decides it from its settings each time, so changing them never
   changes these rows. The upgrade fills `px` from `media.height`; the rest is measured later.
+- `derived(media_id, kind, model, object_id, source, bytes, made_at)` (v18) — *derived data*:
+  depth maps (`kind` 'depth') and subject outlines ('outline') saved for still pictures so they
+  needn't be made again, one per item, kind and model id (e.g. 'v2-small', 'birefnet'). Each is an
+  object of kind 2 holding exactly what the app's estimate gave: width (u32 little-endian),
+  height (u32 little-endian), then one byte per pixel (depth: 255 = nearest; outline: 255 =
+  subject). `source` = the item's `object_id` when it was made (after a rotation the item has a
+  new file and the old map is ignored). Rows go when their item is deleted for good, and their
+  objects with the item's other files; all can be deleted at any time.
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

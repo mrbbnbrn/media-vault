@@ -9,15 +9,25 @@
 //!    own `tools/depth-<id>` folder with a `depth.json` describing it. They
 //!    take pictures of any size (multiples of their patch size), so they
 //!    have a "high detail" size as well as the standard one.
+//!  - "Fast (half precision)": the same Depth Anything V2 Small in float16
+//!    (`tools/depth-v2-small-fp16`, its depth.json says `"gpuOnly": true`).
+//!    Half precision is only quicker (and only safe: the processor stalled on
+//!    it before) on the graphics card, so it is used only when chosen and the
+//!    graphics card works; otherwise Fast is used instead.
 //!
 //! All of them are run by ONNX Runtime on the graphics card (DirectML) or the
-//! processor, exactly like the upscaler and face recognition. Only one model
-//! is kept in memory at a time.
+//! processor, exactly like the upscaler and face recognition.
+//!
+//! One model of this kind is kept loaded (another one of the same kind frees
+//! it first), in this module's own slot (modelslot.rs): it stays loaded
+//! alongside the depth, subject outline and background fill models, with its
+//! own idle timer, and loading one of those never frees this one.
 //!
 //! The window decodes the picture in memory, scales it down to the model's
 //! size and sends the pixels here; the depth map goes straight back (a few
-//! hundred kilobytes) and is kept in the window's memory only. Nothing is
-//! written anywhere.
+//! hundred kilobytes) and is kept in the window's memory, or saved by the
+//! window inside the vault, encrypted (derived.rs). Nothing is written
+//! anywhere else.
 //!
 //! While developing: MV_DEPTH names a single pack folder, MV_DEPTH_DIR a
 //! folder holding several pack folders. Without any pack pictures show as usual.
@@ -30,6 +40,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
+use crate::modelslot::ModelSlot;
 use crate::{faceid, upscale, upscale_img};
 
 /// The Fast model's file (its pack has no manifest).
@@ -81,6 +92,10 @@ pub struct Manifest {
     pub std: [f32; 3],
     #[serde(default)]
     pub licence: Option<String>,
+    /// Only for the graphics card (half precision): never run on the processor;
+    /// when the graphics card can't be used, Fast is used instead.
+    #[serde(default)]
+    pub gpu_only: bool,
 }
 
 fn imagenet_mean() -> [f32; 3] {
@@ -105,6 +120,7 @@ impl Manifest {
             mean: IMAGENET_MEAN,
             std: IMAGENET_STD,
             licence: Some("Apache-2.0".into()),
+            gpu_only: false,
         }
     }
 
@@ -163,17 +179,24 @@ impl Manifest {
 /// The models the app knows about, so the ones not installed can be offered
 /// too: (id, name, model, download).
 pub const FAST: &str = "v2-small";
+/// Fast in half precision, for the graphics card only.
+pub const FAST16: &str = "v2-small-fp16";
 pub const BEST: &str = "da3-mono-large";
 /// Models no longer offered: "Balanced" (Depth Anything 3 Base, build 42) had no sky
 /// detection, so skies and back walls came out half-near — flatter than Fast. A
 /// pack left installed is ignored (its folder can be deleted).
 pub const RETIRED: [&str; 1] = ["da3-base"];
-const KNOWN: [(&str, &str, &str, &str); 2] = [
+const KNOWN: [(&str, &str, &str, &str); 3] = [
     (FAST, "Fast", "Depth Anything V2 Small", "MediaVault-depth-windows.zip"),
+    (FAST16, "Fast (half precision)", "Depth Anything V2 Small (half precision)", "MediaVault-depth-v2-small-fp16-windows.zip"),
     (BEST, "Best", "Depth Anything 3 Mono Large", "MediaVault-depth-da3-mono-large-windows.zip"),
 ];
 /// When nothing is chosen (or the choice isn't installed): the best one there is.
+/// (Fast (half precision) is never picked on its own: only when chosen.)
 const PREFERENCE: [&str; 2] = [BEST, FAST];
+/// When a graphics-card-only model is chosen but can't be used: Fast first.
+const GPU_FALLBACK: [&str; 2] = [FAST, BEST];
+const NO_GPU: &str = "Needs a graphics card that works with DirectML; Fast is used instead.";
 
 /// An installed (or half-installed) pack.
 #[derive(Debug, Clone)]
@@ -185,11 +208,13 @@ pub struct Pack {
     /// Where its ONNX Runtime comes from.
     pub runtime: Option<PathBuf>,
     pub size_bytes: u64,
+    /// The graphics card can be tried (Windows, and DirectML is there).
+    pub gpu: bool,
 }
 
 impl Pack {
     fn usable(&self) -> bool {
-        self.problem.is_none()
+        self.problem.is_none() && (!self.manifest.gpu_only || self.gpu)
     }
 }
 
@@ -224,7 +249,7 @@ fn read_pack(dir: &Path) -> Option<Pack> {
         return None;
     };
     let problem = problem.or_else(|| (!dir.join(&manifest.file).is_file()).then(|| "The depth pack is incomplete (the model is missing).".to_string()));
-    Some(Pack { manifest, dir: dir.to_path_buf(), problem, runtime: None, size_bytes })
+    Some(Pack { manifest, dir: dir.to_path_buf(), problem, runtime: None, size_bytes, gpu: false })
 }
 
 /// Every pack in `base` (folders `depth` and `depth-*`, or any folder with `any_name`),
@@ -265,6 +290,7 @@ pub fn scan(base: Option<&Path>, any_name: bool, single: Option<&Path>, others: 
         if p.problem.is_none() && p.runtime.is_none() {
             p.problem = Some("The depth pack is incomplete (onnxruntime is missing).".into());
         }
+        p.gpu = cfg!(windows) && p.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
     }
     packs
 }
@@ -288,7 +314,9 @@ pub fn packs() -> Vec<Pack> {
     scan(base.as_deref(), any, single.as_deref(), &others)
 }
 
-/// The pack to use: the chosen one if it's ready, else the best one that is.
+/// The pack to use: the chosen one if it's ready, else the best one that is
+/// (Fast first when the choice was a graphics-card-only model that can't run
+/// here). A graphics-card-only model is never picked unless chosen.
 pub fn choose<'a>(packs: &'a [Pack], wanted: &str) -> Option<&'a Pack> {
     let ready = |id: &str| packs.iter().find(|p| p.manifest.id == id && p.usable());
     if !wanted.is_empty()
@@ -296,7 +324,9 @@ pub fn choose<'a>(packs: &'a [Pack], wanted: &str) -> Option<&'a Pack> {
     {
         return Some(p);
     }
-    PREFERENCE.iter().find_map(|id| ready(id)).or_else(|| packs.iter().find(|p| p.usable()))
+    let gpu_choice = packs.iter().any(|p| p.manifest.id == wanted && p.manifest.gpu_only) || wanted == FAST16;
+    let order: &[&str] = if gpu_choice { &GPU_FALLBACK } else { &PREFERENCE };
+    order.iter().find_map(|id| ready(id)).or_else(|| packs.iter().find(|p| p.usable() && !p.manifest.gpu_only))
 }
 
 /// "standard" or "high" (anything else is standard).
@@ -380,13 +410,16 @@ pub struct ModelEntry {
     pub standard_side: usize,
     pub high_side: usize,
     pub licence: Option<String>,
+    /// Graphics card only (half precision): Fast is used instead when it can't run.
+    pub gpu_only: bool,
 }
 
 fn friendly(e: &str) -> String {
     e.replace("The upscaler", "3D photos").replace("the upscaler", "3D photos")
 }
 
-/// The known models (installed or not) and any other packs found, in the order Fast, Best, others.
+/// The known models (installed or not) and any other packs found, in the order
+/// Fast, Fast (half precision), Best, others.
 pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
     let broken = BROKEN.lock().unwrap().clone();
     let entry = |p: &Pack, zip: Option<&str>| ModelEntry {
@@ -395,13 +428,18 @@ pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
         model: p.manifest.model.clone(),
         folder: Some(p.dir.display().to_string()),
         installed: true,
-        problem: p.problem.clone().or_else(|| broken.get(&p.manifest.id).cloned()),
+        problem: p
+            .problem
+            .clone()
+            .or_else(|| broken.get(&p.manifest.id).cloned())
+            .or_else(|| (p.manifest.gpu_only && !p.gpu).then(|| NO_GPU.to_string())),
         size_bytes: p.size_bytes,
         dynamic: p.manifest.dynamic(),
         zip: zip.map(String::from),
         standard_side: input_side(&p.manifest, Detail::Standard),
         high_side: input_side(&p.manifest, Detail::High),
         licence: p.manifest.licence.clone(),
+        gpu_only: p.manifest.gpu_only,
     };
     let mut out: Vec<ModelEntry> = KNOWN
         .iter()
@@ -419,7 +457,8 @@ pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
                 zip: Some(zip.into()),
                 standard_side: DEFAULT_SIDE,
                 high_side: DEFAULT_SIDE,
-                licence: None,
+                licence: Some("Apache-2.0".into()),
+                gpu_only: id == FAST16,
             },
         })
         .collect();
@@ -456,7 +495,7 @@ pub fn info(wanted: &str, detail: Detail) -> DepthInfo {
         // Say what's wrong with the pack that's there, if there is one.
         let p = all.iter().find(|p| p.manifest.id == wanted).or_else(|| all.first());
         return match p {
-            Some(p) => missing(p.problem.as_deref().or(broken.get(&p.manifest.id).map(String::as_str)).unwrap_or("The depth pack isn't installed."), Some(p.dir.display().to_string())),
+            Some(p) => missing(&why_not(p, &broken), Some(p.dir.display().to_string())),
             None => missing("The depth pack isn't installed.", fallback_folder),
         };
     };
@@ -493,8 +532,8 @@ struct Loaded {
     gpu: bool,
 }
 
-static MODEL: Mutex<Option<Loaded>> = Mutex::new(None);
-static LAST_USE: Mutex<Option<Instant>> = Mutex::new(None);
+/// This module's own slot: kept loaded alongside the other kinds of model (modelslot.rs).
+static MODEL: ModelSlot<Loaded> = ModelSlot::new(IDLE_UNLOAD);
 /// Graphics card (true) or processor, per model, once it has run.
 static LAST_DEVICE: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 /// Models whose runtime or file couldn't start at all (shown in Settings), per model.
@@ -522,28 +561,15 @@ fn load(pack: &Pack, side: usize, gpu: bool) -> Result<Loaded, String> {
     Ok(Loaded { session, key: (m.id.clone(), side.0), side, output: m.output, mean: m.mean, std: m.std, gpu })
 }
 
-/// Free the model after a while without use.
-fn reaper() {
-    std::thread::spawn(|| loop {
-        std::thread::sleep(Duration::from_secs(15));
-        let idle = LAST_USE.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
-        if idle {
-            if let Ok(mut m) = MODEL.try_lock() {
-                *m = None;
-            } else {
-                continue;
-            }
-            *LAST_USE.lock().unwrap() = None;
-            return;
-        }
-    });
-}
-
 /// Free the model now (the vault locked or the viewer closed).
 pub fn unload() {
-    if let Ok(mut m) = MODEL.try_lock() {
-        *m = None;
-    }
+    MODEL.unload();
+}
+
+/// A model of this kind is loaded now.
+#[cfg(test)]
+pub fn loaded() -> bool {
+    MODEL.is_loaded()
 }
 
 /// The key a pack and detail are loaded under (fixed-size models ignore the detail).
@@ -554,19 +580,23 @@ fn key_of(pack: &Pack, detail: Detail) -> (String, usize) {
 /// Run `f` with this model at this detail (on the graphics card when possible;
 /// a failure there is tried once more on the processor). Only one model is
 /// kept: another model or detail frees the one loaded first. `loaded_ms` is
-/// set to how long loading took (0 when it was loaded already).
+/// set to how long loading took (0 when it was loaded already). A
+/// graphics-card-only model never goes to the processor: when the graphics
+/// card fails it is marked as not usable here (so Fast is chosen instead).
 fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
-    let try_gpu = cfg!(windows) && pack.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
+    let try_gpu = pack.gpu;
+    let gpu_only = pack.manifest.gpu_only;
+    let no_gpu = |e: &str| {
+        let why = format!("{NO_GPU} ({e})");
+        BROKEN.lock().unwrap().insert(pack.manifest.id.clone(), why.clone());
+        why
+    };
+    if gpu_only && !try_gpu {
+        return Err(no_gpu("no graphics card here"));
+    }
     let key = key_of(pack, detail);
     let side = key.1;
-    let mut guard = MODEL.lock().unwrap();
-    {
-        let mut last = LAST_USE.lock().unwrap();
-        if last.is_none() {
-            reaper();
-        }
-        *last = Some(Instant::now());
-    }
+    let mut guard = MODEL.lock();
     if guard.as_ref().is_some_and(|l| l.key != key) {
         *guard = None; // a different model or size: free the old one first (they're big)
     }
@@ -577,6 +607,7 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
             let start = Instant::now();
             let loaded = match load(pack, side, first) {
                 Ok(l) => Ok(l),
+                Err(e) if gpu_only => return Err(no_gpu(&e)),
                 Err(_) if first => load(pack, side, false),
                 Err(e) => Err(e),
             };
@@ -598,6 +629,10 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
             Ok(v) => {
                 LAST_DEVICE.lock().unwrap().insert(pack.manifest.id.clone(), gpu);
                 return Ok(v);
+            }
+            Err(e) if gpu_only => {
+                *guard = None;
+                return Err(no_gpu(&e));
             }
             Err(_) if gpu && attempt == 0 => {
                 *guard = None; // next round: the processor
@@ -772,9 +807,18 @@ fn pack_for(wanted: &str) -> Result<Pack, String> {
     let all = packs();
     let broken = BROKEN.lock().unwrap().clone();
     let ready: Vec<Pack> = all.iter().filter(|p| !broken.contains_key(&p.manifest.id)).cloned().collect();
-    choose(&ready, wanted).cloned().ok_or_else(|| {
-        all.iter().find(|p| p.manifest.id == wanted).and_then(|p| p.problem.clone().or_else(|| broken.get(&p.manifest.id).cloned())).unwrap_or_else(|| "The depth pack isn't installed.".into())
-    })
+    choose(&ready, wanted)
+        .cloned()
+        .ok_or_else(|| all.iter().find(|p| p.manifest.id == wanted).map(|p| why_not(p, &broken)).unwrap_or_else(|| "The depth pack isn't installed.".into()))
+}
+
+/// Why this pack can't be used, in one sentence.
+fn why_not(p: &Pack, broken: &BTreeMap<String, String>) -> String {
+    p.problem
+        .clone()
+        .or_else(|| broken.get(&p.manifest.id).cloned())
+        .or_else(|| (p.manifest.gpu_only && !p.gpu).then(|| NO_GPU.to_string()))
+        .unwrap_or_else(|| "The depth pack isn't installed.".into())
 }
 
 /// The depth of an RGBA picture, with the chosen model ("" = best installed) and detail.
@@ -784,7 +828,14 @@ pub fn estimate(rgba: &[u8], w: usize, h: usize, wanted: &str, detail: Detail, s
     }
     let pack = pack_for(wanted)?;
     let mut load_ms = 0.0;
-    with_model(&pack, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft))
+    match with_model(&pack, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft)) {
+        // The graphics card couldn't run the half-precision model: Fast (or the best there is) instead.
+        Err(e) if pack.manifest.gpu_only => match pack_for(wanted) {
+            Ok(next) if next.manifest.id != pack.manifest.id => with_model(&next, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft)),
+            _ => Err(e),
+        },
+        r => r,
+    }
 }
 
 /// The result of a speed test.
@@ -1184,16 +1235,67 @@ mod tests {
         let packs = scan(Some(base), false, None, &[]);
         let list = catalogue(&packs, Some(base));
         let ids: Vec<&str> = list.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, [FAST, BEST, BAL, "extra"]);
+        assert_eq!(ids, [FAST, FAST16, BEST, BAL, "extra"]);
         let fast = &list[0];
         assert!(!fast.installed && !fast.dynamic && fast.zip.as_deref() == Some("MediaVault-depth-windows.zip"));
         assert!(fast.problem.as_deref().unwrap().contains("MediaVault-depth-windows.zip"));
         assert!(fast.folder.as_deref().unwrap().ends_with("depth"));
-        let bal = &list[2];
+        let half = &list[1];
+        assert!(!half.installed && half.gpu_only && half.zip.as_deref() == Some("MediaVault-depth-v2-small-fp16-windows.zip"));
+        assert_eq!((half.name.as_str(), half.standard_side), ("Fast (half precision)", 518));
+        assert!(half.folder.as_deref().unwrap().ends_with("depth-v2-small-fp16"));
+        let bal = &list[3];
         assert!(bal.installed && bal.problem.is_none() && bal.dynamic && bal.size_bytes > 0);
         assert_eq!((bal.standard_side, bal.high_side), (518, 756));
-        assert!(!list[1].installed && list[1].folder.as_deref().unwrap().ends_with("depth-da3-mono-large"));
-        assert!(!list[1].dynamic && list[1].high_side == DEFAULT_SIDE, "the published Best is fixed-size");
+        assert!(!list[2].installed && list[2].folder.as_deref().unwrap().ends_with("depth-da3-mono-large"));
+        assert!(!list[2].dynamic && list[2].high_side == DEFAULT_SIDE, "the published Best is fixed-size");
+        assert!(!list[0].gpu_only && !list[2].gpu_only);
+        let j = serde_json::to_value(half).unwrap();
+        assert_eq!(j.get("gpuOnly"), Some(&serde_json::Value::Bool(true)));
+    }
+
+    /// The half-precision pack's depth.json (as depthmodels.yml writes it).
+    const HALF: &str = r#"{"id":"v2-small-fp16","name":"Fast (half precision)","model":"Depth Anything V2 Small (half precision)","file":"model.onnx","output":"nearness","standardSide":518,"licence":"Apache-2.0","gpuOnly":true}"#;
+
+    #[test]
+    fn half_precision_is_for_the_graphics_card_only() {
+        let m = Manifest::parse(HALF.as_bytes()).unwrap();
+        assert!(m.gpu_only && !m.dynamic());
+        assert_eq!(input_side(&m, Detail::High), 518);
+        assert!(!Manifest::parse(DA3.as_bytes()).unwrap().gpu_only, "absent = any device");
+        assert!(!Manifest::fast().gpu_only);
+
+        let t = tempfile::tempdir().unwrap();
+        let base = t.path();
+        let rt = runtime_file();
+        make_pack(base, "depth", None, &[MODEL_FILE, rt]);
+        make_pack(base, "depth-v2-small-fp16", Some(HALF), &["model.onnx"]);
+        let mut packs = scan(Some(base), false, None, &[]);
+        let half = |p: &mut Vec<Pack>| p.iter_mut().find(|p| p.manifest.id == FAST16).unwrap().gpu = true;
+        let pick = |p: &[Pack], w: &str| choose(p, w).map(|p| p.manifest.id.clone());
+        // No graphics card (as on this test machine): choosing it gives Fast; Automatic is Fast.
+        assert!(!packs.iter().any(|p| p.gpu), "only Windows with DirectML.dll tries the graphics card");
+        assert_eq!(pick(&packs, FAST16).as_deref(), Some(FAST));
+        assert_eq!(pick(&packs, "").as_deref(), Some(FAST));
+        // With a graphics card: used when chosen, but Automatic still never picks it.
+        half(&mut packs);
+        assert_eq!(pick(&packs, FAST16).as_deref(), Some(FAST16));
+        assert_eq!(pick(&packs, "").as_deref(), Some(FAST));
+        assert_eq!(pick(&packs, BEST).as_deref(), Some(FAST), "Best not installed: the next best, not the half one");
+        // Even when it's the only pack there: only when chosen.
+        let only: Vec<Pack> = packs.iter().filter(|p| p.manifest.id == FAST16).cloned().collect();
+        assert_eq!(pick(&only, FAST16).as_deref(), Some(FAST16));
+        assert_eq!(pick(&only, ""), None);
+        // Chosen but unusable, with Best installed too: Fast comes first (Automatic still prefers Best).
+        make_pack(base, "depth-da3-mono-large", Some(&manifest_for(BEST, "Best")), &["model.onnx"]);
+        let packs = scan(Some(base), false, None, &[]);
+        assert_eq!(pick(&packs, FAST16).as_deref(), Some(FAST));
+        assert_eq!(pick(&packs, "").as_deref(), Some(BEST));
+        // Settings says why it isn't used.
+        let list = catalogue(&packs, Some(base));
+        let e = list.iter().find(|e| e.id == FAST16).unwrap();
+        assert!(e.installed && e.gpu_only && e.problem.as_deref().unwrap().contains("graphics card"), "{:?}", e.problem);
+        assert!(why_not(packs.iter().find(|p| p.manifest.id == FAST16).unwrap(), &BTreeMap::new()).contains("graphics card"));
     }
 
     #[test]

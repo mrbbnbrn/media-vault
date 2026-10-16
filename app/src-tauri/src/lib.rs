@@ -31,6 +31,12 @@ mod config;
 mod depth;
 // "Subject outlines": a mask of the picture's subject (the optional BiRefNet packs).
 mod subject;
+// "Background fill": paints in behind a moving subject (the optional MI-GAN / LaMa packs).
+mod inpaint;
+// One loaded model per kind (depth, subject, fill), each in its own slot, freed when idle.
+mod modelslot;
+// Saved depth maps and outlines of still pictures, encrypted in the vault (schema v18).
+mod derived;
 // Duel mode: pick the better of two; Elo ratings set the slideshow weights.
 mod duel;
 mod engine;
@@ -137,6 +143,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     protocol::forget_cache();
     depth::unload();
     subject::unload();
+    inpaint::unload();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         // Again, now that it is closed: whatever a request still running put back.
@@ -2643,6 +2650,17 @@ pub fn run() {
             subject::subject_estimate,
             subject::subject_benchmark,
             subject::subject_forget,
+            // Background fill (inpaint.rs)
+            inpaint::inpaint_info,
+            inpaint::inpaint_models,
+            inpaint::inpaint_estimate,
+            inpaint::inpaint_benchmark,
+            inpaint::inpaint_forget,
+            // Saved depth maps and outlines (derived.rs)
+            derived::derived_get,
+            derived::derived_put,
+            derived::derived_clear,
+            derived::derived_stats,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

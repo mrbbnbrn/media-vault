@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 17;
+pub const SCHEMA_VERSION: i64 = 18;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -624,8 +624,39 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- poor faces (end) ----
+    // ---- saved depth maps and outlines (begin) ----
+    if v < 18 || !has_table(conn, "derived")? {
+        // v18: depth maps and subject outlines made for still pictures, kept so
+        // they needn't be made again: one encrypted object (stored like a
+        // thumbnail) per item, kind ('depth' or 'outline') and model. `source`
+        // is the item's object_id when it was made (a rotated picture gets a
+        // new file, so its old maps no longer count). Derived data: can all be
+        // deleted at any time. Rows go with their item (and its objects are
+        // removed with the item's other files). Only added if it isn't there
+        // yet, so this step is safe to run again.
+        conn.execute_batch(DERIVED_SQL)?;
+        if v < 18 {
+            conn.pragma_update(None, "user_version", 18)?;
+        }
+    }
+    // ---- saved depth maps and outlines (end) ----
     Ok(())
 }
+
+const DERIVED_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS derived (
+    media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('depth', 'outline')),
+    model      TEXT NOT NULL,
+    object_id  TEXT NOT NULL,      -- kind 2 object: width u32 LE, height u32 LE, one byte per pixel
+    source     TEXT NOT NULL,      -- media.object_id it was made from
+    bytes      INTEGER NOT NULL,
+    made_at    INTEGER NOT NULL,   -- ms
+    PRIMARY KEY (media_id, kind, model)
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS derived_kind ON derived(kind);
+CREATE INDEX IF NOT EXISTS derived_object ON derived(object_id);
+"#;
 
 fn table_exists(conn: &Connection, t: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
@@ -1128,4 +1159,38 @@ mod tests {
         }
     }
     // ---- poor faces tests (end) ----
+
+    #[test]
+    fn v18_adds_saved_depth_maps_that_go_with_their_item() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", []).unwrap();
+        // Back to how a v17 library looked, then upgrade.
+        c.execute_batch("DROP TABLE derived; PRAGMA user_version = 17;").unwrap();
+        assert!(!has_table(&c, "derived").unwrap());
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        let put = |kind: &str, model: &str, obj: &str| {
+            c.execute(
+                "INSERT INTO derived(media_id, kind, model, object_id, source, bytes, made_at) VALUES (1, ?1, ?2, ?3, 'o', 10, 0)",
+                rusqlite::params![kind, model, obj],
+            )
+        };
+        put("depth", "v2-small", "d1").unwrap();
+        put("outline", "birefnet", "o1").unwrap();
+        put("depth", "da3-mono-large", "d2").unwrap();
+        assert!(put("depth", "v2-small", "d3").is_err(), "one per item, kind and model");
+        assert!(put("height", "x", "d4").is_err(), "only depth and outline");
+        // Rows survive running it again (from 17, or as it is) and saving.
+        for back in ["PRAGMA user_version = 17;", ""] {
+            c.execute_batch(back).unwrap();
+            migrate(&c).unwrap();
+            assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        }
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        // Deleting the item for good takes its rows.
+        c.execute("DELETE FROM media", []).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
 }
