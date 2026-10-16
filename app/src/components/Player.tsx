@@ -35,6 +35,7 @@ import { preloadPictures, viewerOpened, warmVideos } from '../picturecache';
 import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
 import { depthAhead, depthPack, depthSetup, frameFeed, motionChoice, NO_DEPTH_PACK, pickAhead } from '../depth';
+import { effectAmount, NO_SUBJECT_PACK, subjectAhead, subjectPack } from '../subject';
 import { lazyPart } from '../lazypart';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
@@ -44,7 +45,7 @@ import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, OrbitIcon,
+  BeatIcon, Film3DIcon, LiftIcon, LivingIcon, OrbitIcon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
@@ -826,15 +827,36 @@ export function Player(props: PlayerProps) {
   // The 3D button: the picture follows the mouse (slideshow or not); it takes over from the automatic movement.
   const depthByMouse = !!prefs.depthMouse && depthPackOk && !mini && !props.compact;
   const depthRunning = (depthAuto || depthByMouse) && depthPackOk && !mini;
+  // Subject effects (still pictures only): Lift-off and Living subject, from the subject pack.
+  const depthLift = !!prefs.depthLift;
+  const depthLiving = !!prefs.depthLiving;
+  const [subjectPackOk, setSubjectPackOk] = useState(false);
+  /** The subject model and size in use: the outline is worked out again when it changes. */
+  const [subjectModelKey, setSubjectModelKey] = useState('');
+  useEffect(() => {
+    if (!depthLift && !depthLiving) return;
+    let alive = true;
+    subjectPack().then((i) => {
+      if (!alive) return;
+      setSubjectPackOk(!!i?.available);
+      setSubjectModelKey(i?.available ? `${i.model ?? ''}@${i.inputSide ?? ''}` : '');
+    });
+    return () => {
+      alive = false;
+    };
+  }, [depthLift, depthLiving, prefs.subjectModel]);
+  /** A subject effect shows on this item: a still picture (never a GIF or a video). */
+  const subjectOn = item?.kind === 'image' && (depthLift || depthLiving) && subjectPackOk && !mini && !props.compact;
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
   const isVideo3d = item?.kind === 'video';
-  /** GIFs and videos move with their own switch; pictures with theirs. */
-  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse : false;
-  /** Moving on its own or with the mouse. */
+  /** GIFs and videos move with their own switch; pictures with theirs (or with a subject effect on). */
+  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn : false;
+  /** Moving on its own or with the mouse (a subject effect alone keeps the camera still). */
   const depthMotion = depthAuto || depthByMouse;
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
-  const depth3d = depthFor && depthPackOk && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
+  // (Pictures with a subject effect on show without the depth pack too: a flat depth map is used.)
+  const depth3d = depthFor && (depthPackOk || subjectOn) && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
   /** Each shown GIF frame, for the 3D layer. */
   const gifFeed = useMemo(() => frameFeed(), []);
   // Live video 3D with the delay on: the sound is delayed by the same amount as the picture.
@@ -853,6 +875,24 @@ export function Player(props: PlayerProps) {
     // list, so flicking quickly never piles up work.
     if (depthRunning && depthPackOk) depthAhead(pickAhead(listRef.current?.peek(4) ?? [], listRef.current?.peekBack(2) ?? []));
   }, [item?.key, depthRunning, depthPackOk, depthModelKey]);
+  useEffect(() => {
+    // The same for the subject outlines while Lift-off or Living subject is on (pictures only).
+    if ((depthLift || depthLiving) && subjectPackOk && !mini) subjectAhead(pickAhead(listRef.current?.peek(4) ?? [], listRef.current?.peekBack(2) ?? []));
+  }, [item?.key, depthLift, depthLiving, subjectPackOk, subjectModelKey, mini]);
+  /** Turns Lift-off or Living subject on or off (checks for the subject pack first). */
+  const toggleSubject = async (patch: Partial<ViewerSettings>, on: boolean, text: string) => {
+    if (on) {
+      const info = await subjectPack(true);
+      if (!info?.available) {
+        setFlash(NO_SUBJECT_PACK);
+        return;
+      }
+      setSubjectPackOk(true);
+      setSubjectModelKey(`${info.model ?? ''}@${info.inputSide ?? ''}`);
+    }
+    saveViewerPrefs(patch);
+    setFlash(text);
+  };
   /** Turns one of the 3D switches on or off (checks for the depth pack first). */
   const toggleDepth = async (patch: Partial<ViewerSettings>, on: boolean, text: string) => {
     if (on) {
@@ -1293,7 +1333,9 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
-              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={depthNatural} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
+                subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0, living: depthLiving ? effectAmount(prefs.depthLivingAmount) : 0 } : undefined}
+                subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
                 amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
                 mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 video={isVideo3d ? { ref: videoRef, delayMs: prefs.depthVideoDelay ? 100 : 0 } : undefined}
@@ -1503,6 +1545,20 @@ export function Player(props: PlayerProps) {
                     onClick={() => toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)')}>
                     <BeatIcon size={18} />
                   </button>
+                  {item?.kind === 'image' && (
+                    <>
+                      <button type="button" className={`pbtn lg${depthLift ? ' on' : ''}`} aria-pressed={depthLift} aria-label="Lift-off"
+                        title={depthLift ? 'Lift-off is on: the subject comes forward a little (amount in View ▾ → 3D photo settings) · click to turn off' : 'Lift-off: the subject comes forward a little, with a soft shadow behind it (still pictures)'}
+                        onClick={() => toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in View ▾ → 3D photo settings')}>
+                        <LiftIcon size={18} />
+                      </button>
+                      <button type="button" className={`pbtn lg${depthLiving ? ' on' : ''}`} aria-pressed={depthLiving} aria-label="Living subject"
+                        title={depthLiving ? 'Living subject is on: the subject gently breathes and sways (amount in View ▾ → 3D photo settings) · click to turn off' : 'Living subject: the subject gently breathes and sways while the background stays still (still pictures)'}
+                        onClick={() => toggleSubject({ depthLiving: !depthLiving }, !depthLiving, depthLiving ? 'Living subject off' : 'Living subject on · amount in View ▾ → 3D photo settings')}>
+                        <LivingIcon size={18} />
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
               {faceCapable && (

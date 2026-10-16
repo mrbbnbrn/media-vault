@@ -12,8 +12,16 @@
 // stretch lands in the background, not on a face). The picture is enlarged
 // just enough that its own edges never show.
 //
-// Everything stays in memory (one texture, one small depth texture), and the
-// WebGL context is let go when the picture changes.
+// Subject effects (still pictures only): with Lift-off or Living subject on,
+// a third texture holds the subject's outline (subject.ts). The subject is
+// drawn again on top of the 3D picture, moved as one piece with the camera at
+// its own depth: lifted (a little bigger, with a soft shadow that falls only
+// on the background) and/or breathing and swaying around its bottom middle.
+// The outline it is drawn with is grown a little, so the subject's old edge
+// never shows from behind it. Without a depth map these work on a flat one.
+//
+// Everything stays in memory (one texture, one small depth texture, one
+// outline), and the WebGL context is let go when the picture changes.
 
 import { useEffect, useRef, useState } from 'react';
 import { inTauri, type DepthInfo, type DepthMap, type ViewerSettings } from '../api';
@@ -23,7 +31,12 @@ import {
   type FrameDepths, type FrameFeed, type MotionChoice, type Pose,
 } from '../depth';
 import { drawnRect } from '../flip';
+import {
+  fadeAt, fadeDone, fadeTo, flatDepth, maskStats, newFade, subjectDepth, subjectFrame, subjectLetGo, subjectOf,
+  type SubjectStats,
+} from '../subject';
 import { DepthModelChoice } from './DepthModels';
+import { SubjectModelChoice } from './SubjectModels';
 
 interface Props {
   src: string;
@@ -52,6 +65,12 @@ interface Props {
   video?: { ref: { current: HTMLVideoElement | null }; delayMs: number };
   /** 3D to the beat: `pulse` goes up by one on every beat; a push closer or a little bounce, this strong (1 = as designed). */
   beat?: { pulse: number; kind: 'push' | 'bounce'; amount: number };
+  /** Subject effects (still pictures only; ignored for GIFs and videos): each 0 = off, else its amount (1 = as designed). */
+  subject?: { lift: number; living: number };
+  /** The depth map is wanted (false: the camera stays still anyway, so a flat one is used without asking). */
+  depth?: boolean;
+  /** The subject model and size in use (the outline is worked out again when it changes). */
+  subjectModel?: string;
 }
 
 /** How far a beat pulse is (0–1) `dt` ms after the beat: a quick rise, a softer fall. */
@@ -66,6 +85,9 @@ export function withBeat(p: Pose, kind: 'push' | 'bounce', amount: number, e: nu
   if (!e || !amount) return p;
   return kind === 'push' ? { ...p, dolly: p.dolly + DOLLY * 0.6 * amount * e } : { ...p, y: p.y - SHIFT * 0.7 * amount * e };
 }
+
+/** Lift-off was last fully up on this picture (and when it was let go): opened again at once (e.g. a 3D switch changed), it stays up. */
+const lifted = { src: '', at: -Infinity };
 
 /** With the 3D button: where the mouse points (want) and where the camera is (lean), kept from picture to picture. */
 const mouseCam = { lean: { x: 0, y: 0 }, want: { x: 0, y: 0 } };
@@ -91,7 +113,44 @@ uniform float uPivot;
 uniform vec2 uFocus;
 uniform vec2 uPx;
 uniform float uSharp;
+// Subject effects: the outline, whether the subject layer is drawn, the picture's shape (width / height),
+// the lift (centre, scale), the living sway and breathing (pivot, cos/sin, scale), the grown outline,
+// the shadow (darkness, offset, softness) and the subject's own depth.
+uniform sampler2D uMask;
+uniform float uSubj;
+uniform float uAsp;
+uniform vec2 uCen;
+uniform float uLift;
+uniform vec2 uBot;
+uniform vec2 uRot;
+uniform float uBreath;
+uniform float uGrow;
+uniform float uShadow;
+uniform vec2 uShOff;
+uniform float uShBlur;
+uniform float uZSubj;
 const int N = ${STEPS};
+vec3 pic(vec2 h) {
+  vec3 c = texture2D(uImg, h).rgb;
+  if (uSharp > 0.0) {
+    // The same light sharpening as the plain picture (0 -a 0 / -a 1+4a -a / 0 -a 0), one screen pixel apart.
+    vec2 d = uPx / uScale;
+    vec3 n = texture2D(uImg, h + vec2(d.x, 0.0)).rgb + texture2D(uImg, h - vec2(d.x, 0.0)).rgb
+      + texture2D(uImg, h + vec2(0.0, d.y)).rgb + texture2D(uImg, h - vec2(0.0, d.y)).rgb;
+    c = clamp(c * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
+  }
+  return c;
+}
+// Where the moved subject at q came from (the reverse of the lift, then of the sway and breathing).
+vec2 unmove(vec2 q) {
+  vec2 a = vec2((q.x - uBot.x) * uAsp, q.y - uBot.y);
+  a = vec2(uRot.x * a.x + uRot.y * a.y, -uRot.y * a.x + uRot.x * a.y) / uBreath;
+  vec2 l = uBot + vec2(a.x / uAsp, a.y);
+  return uCen + (l - uCen) / uLift;
+}
+float mask(vec2 s) {
+  return texture2D(uMask, clamp(s, 0.0, 1.0)).r;
+}
 void main() {
   vec2 p = 0.5 + (vUv - 0.5) / uScale;
   vec2 k = uShift + (p - uFocus) * uDolly;
@@ -116,15 +175,37 @@ void main() {
     prevZ = z;
   }
   vec2 h = clamp(hit, 0.0, 1.0);
-  vec4 c = texture2D(uImg, h);
-  if (uSharp > 0.0) {
-    // The same light sharpening as the plain picture (0 -a 0 / -a 1+4a -a / 0 -a 0), one screen pixel apart.
-    vec2 d = uPx / uScale;
-    vec3 n = texture2D(uImg, h + vec2(d.x, 0.0)).rgb + texture2D(uImg, h - vec2(d.x, 0.0)).rgb
-      + texture2D(uImg, h + vec2(0.0, d.y)).rgb + texture2D(uImg, h - vec2(0.0, d.y)).rgb;
-    c.rgb = clamp(c.rgb * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
+  vec3 c = pic(h);
+  if (uSubj > 0.0) {
+    // The subject moves as one piece with the camera at its own depth, then is lifted and/or lives.
+    vec2 ps = p - k * (uZSubj - uPivot);
+    vec2 s = unmove(ps);
+    float m = mask(s);
+    // Drawn with a slightly grown outline (the most of the outline nearby), so its old edge never peeks out.
+    float g = m;
+    if (uGrow > 0.0) {
+      for (int i = 0; i < 12; i++) {
+        float an = float(i) * 0.5235988;
+        vec2 dir = vec2(cos(an) / uAsp, sin(an)) * uGrow;
+        g = max(g, max(mask(s + dir), mask(s + dir * 0.5)));
+      }
+    }
+    vec3 sc = pic(clamp(s, 0.0, 1.0));
+    vec3 o = mix(c, sc, g);
+    if (uShadow > 0.0) {
+      // A soft shadow down and to the right of the lifted subject, on the background only.
+      vec2 s2 = unmove(ps - uShOff);
+      float sh = mask(s2) * 0.16;
+      for (int i = 0; i < 12; i++) {
+        float an = float(i) * 0.5235988;
+        vec2 dir = vec2(cos(an) / uAsp, sin(an)) * uShBlur;
+        sh += mask(s2 + dir) * 0.04 + mask(s2 + dir * 0.5) * 0.03;
+      }
+      o *= 1.0 - uShadow * min(1.0, sh) * (1.0 - m);
+    }
+    c = o;
   }
-  gl_FragColor = vec4(c.rgb, 1.0);
+  gl_FragColor = vec4(c, 1.0);
 }`;
 
 type Gl = WebGLRenderingContext;
@@ -135,7 +216,9 @@ interface Scene {
   buf: WebGLBuffer;
   img: WebGLTexture;
   depth: WebGLTexture;
-  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp', WebGLUniformLocation | null>;
+  mask: WebGLTexture;
+  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'mask' | 'subj' | 'asp' | 'cen' | 'lift' | 'bot' | 'rot'
+    | 'breath' | 'grow' | 'shadow' | 'shOff' | 'shBlur' | 'zSubj', WebGLUniformLocation | null>;
 }
 
 /**
@@ -206,6 +289,15 @@ function uploadPicture(s: Scene, picture: TexImageSource) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, picture);
 }
 
+/** A subject outline into the outline texture. */
+function uploadMask(s: Scene, map: DepthMap) {
+  const { gl } = s;
+  gl.activeTexture(gl.TEXTURE2);
+  gl.bindTexture(gl.TEXTURE_2D, s.mask);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.w, map.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
+}
+
 /** A depth map into the depth texture. */
 function uploadDepth(s: Scene, map: DepthMap) {
   const { gl } = s;
@@ -265,6 +357,9 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.activeTexture(gl.TEXTURE1);
   const depth = texture(gl);
   if (!depth) return null;
+  gl.activeTexture(gl.TEXTURE2);
+  const mask = texture(gl);
+  if (!mask) return null;
   const u = {
     shift: gl.getUniformLocation(prog, 'uShift'),
     dolly: gl.getUniformLocation(prog, 'uDolly'),
@@ -275,17 +370,35 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     depth: gl.getUniformLocation(prog, 'uDepth'),
     px: gl.getUniformLocation(prog, 'uPx'),
     sharp: gl.getUniformLocation(prog, 'uSharp'),
+    mask: gl.getUniformLocation(prog, 'uMask'),
+    subj: gl.getUniformLocation(prog, 'uSubj'),
+    asp: gl.getUniformLocation(prog, 'uAsp'),
+    cen: gl.getUniformLocation(prog, 'uCen'),
+    lift: gl.getUniformLocation(prog, 'uLift'),
+    bot: gl.getUniformLocation(prog, 'uBot'),
+    rot: gl.getUniformLocation(prog, 'uRot'),
+    breath: gl.getUniformLocation(prog, 'uBreath'),
+    grow: gl.getUniformLocation(prog, 'uGrow'),
+    shadow: gl.getUniformLocation(prog, 'uShadow'),
+    shOff: gl.getUniformLocation(prog, 'uShOff'),
+    shBlur: gl.getUniformLocation(prog, 'uShBlur'),
+    zSubj: gl.getUniformLocation(prog, 'uZSubj'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
+  gl.uniform1i(u.mask, 2);
+  gl.uniform1f(u.subj, 0);
   gl.clearColor(0, 0, 0, 0);
-  return { gl, prog, buf, img, depth, u };
+  const s: Scene = { gl, prog, buf, img, depth, mask, u };
+  uploadMask(s, { w: 1, h: 1, data: new Uint8Array([0]) });
+  return s;
 }
 
 function dropScene(s: Scene) {
   const { gl } = s;
   gl.deleteTexture(s.img);
   gl.deleteTexture(s.depth);
+  gl.deleteTexture(s.mask);
   gl.deleteBuffer(s.buf);
   gl.deleteProgram(s.prog);
   gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -322,6 +435,13 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       ))}
       <h3 style={{ margin: '14px 0 8px', fontSize: 14 }}>Depth model</h3>
       <DepthModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
+      <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Subject outline model</h3>
+      <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
+        For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow) and <b>Living subject</b> (it gently
+        breathes and sways while the background stays still). Both are buttons next to the 3D buttons in the viewer, for
+        still pictures. The outline of each picture is worked out offline and kept in memory only.
+      </p>
+      <SubjectModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
     </section>
   );
 }
@@ -335,6 +455,9 @@ export function Depth3D(props: Props) {
   const kick = useRef<() => void>(() => {});
   const propsRef = useRef(props);
   propsRef.current = props;
+  /** The subject outline of this picture (subject effects; null until it comes, or when there's no clear subject). */
+  const maskRef = useRef<{ src: string; mask: DepthMap; stats: SubjectStats } | null>(null);
+  const subjOn = !props.frames && !props.video && !!props.subject && (props.subject.lift > 0 || props.subject.living > 0);
   // 3D to the beat: when the last beat came.
   const beatAt = useRef(-Infinity);
   const pulse = props.beat?.pulse;
@@ -395,6 +518,12 @@ export function Depth3D(props: Props) {
           setTimeout(done, 4000);
         });
       }
+      const stillPic = !moving && !vid;
+      /** A subject effect is on (still pictures only). */
+      const subjWanted = () => {
+        const sj = propsRef.current.subject;
+        return stillPic && !!sj && (sj.lift > 0 || sj.living > 0);
+      };
       const depthNow = vid
         ? videoFrameDepth(vid.el, depthCanvas!)
         : moving
@@ -402,8 +531,8 @@ export function Depth3D(props: Props) {
             frames = f;
             return f ? frameDepth(f, 0) : null;
           })
-          : depthOf(propsRef.current.src, true);
-      const [map, bmp] = await Promise.all([
+          : propsRef.current.depth === false && subjWanted() ? Promise.resolve(flatDepth()) : depthOf(propsRef.current.src, true);
+      const [got, bmp] = await Promise.all([
         depthNow,
         vid ? Promise.resolve(null) : fetch(propsRef.current.src)
           .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
@@ -412,6 +541,8 @@ export function Depth3D(props: Props) {
       ]);
       picture = bmp;
       if (!alive) return;
+      // No depth map but a subject effect is on: a flat one, so the effects still work.
+      const map = got ?? (subjWanted() ? flatDepth() : null);
       if (!map || (!bmp && !vid)) return give(false);
       const byMouse = !!propsRef.current.mouse;
       scene = surface.scene;
@@ -545,6 +676,16 @@ export function Depth3D(props: Props) {
           kick.current();
         });
       }
+      // Subject effects: the outline shown, the subject's own depth, how far each effect is on (eased) and the Living clock.
+      let shownMask: { src: string; mask: DepthMap; stats: SubjectStats } | null = null;
+      let zSubj = pivot;
+      const srcNow = propsRef.current.src;
+      const keepLift = lifted.src === srcNow && performance.now() - lifted.at < 600;
+      const liftF = newFade(0);
+      const liveF = newFade(0);
+      let liftAmt = 1;
+      let liveAmt = 1;
+      const liveStart = performance.now();
       const frame = () => {
         raf = 0;
         if (!alive) return;
@@ -591,10 +732,51 @@ export function Depth3D(props: Props) {
         gl.uniform2f(s.u.focus, 0.5, 0.5);
         gl.uniform2f(s.u.px, 1 / Math.max(1, vw), 1 / Math.max(1, vh));
         gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
+        // Subject effects (still pictures only): Lift-off and Living subject on top of the 3D picture.
+        let subjBusy = false;
+        if (stillPic) {
+          const mk = maskRef.current && maskRef.current.src === p.src ? maskRef.current : null;
+          if (mk && mk !== shownMask) {
+            uploadMask(s, mk.mask);
+            shownMask = mk;
+            zSubj = subjectDepth(map, mk.mask) ?? pivot;
+            if (keepLift && (p.subject?.lift ?? 0) > 0) Object.assign(liftF, newFade(1));
+          }
+          const sj = p.subject;
+          if (sj && sj.lift > 0) liftAmt = sj.lift;
+          if (sj && sj.living > 0) liveAmt = sj.living;
+          fadeTo(liftF, mk && sj && sj.lift > 0 ? 1 : 0, t);
+          fadeTo(liveF, mk && sj && sj.living > 0 ? 1 : 0, t);
+          const lv = fadeAt(liftF, t);
+          const gv = fadeAt(liveF, t);
+          if (lv >= 1) {
+            lifted.src = p.src;
+            lifted.at = Infinity;
+          }
+          const on = !!shownMask && (lv > 0 || gv > 0);
+          gl.uniform1f(s.u.subj, on ? 1 : 0);
+          if (on && shownMask) {
+            const asp = d.width / Math.max(1, d.height);
+            const sf = subjectFrame(shownMask.stats, asp, { level: lv, amount: liftAmt }, { level: gv, amount: liveAmt, t: t - liveStart });
+            gl.uniform1f(s.u.asp, asp);
+            gl.uniform2f(s.u.cen, sf.centre.x, sf.centre.y);
+            gl.uniform1f(s.u.lift, sf.lift);
+            gl.uniform2f(s.u.bot, sf.pivot.x, sf.pivot.y);
+            gl.uniform2f(s.u.rot, Math.cos(sf.angle), Math.sin(sf.angle));
+            gl.uniform1f(s.u.breath, sf.breath);
+            gl.uniform1f(s.u.grow, sf.grow);
+            gl.uniform1f(s.u.shadow, sf.shadow);
+            gl.uniform2f(s.u.shOff, sf.shadowOffset.x, sf.shadowOffset.y);
+            gl.uniform1f(s.u.shBlur, sf.shadowBlur);
+            gl.uniform1f(s.u.zSubj, zSubj);
+          }
+          // Living keeps moving; Lift-off moves while it eases in or out.
+          subjBusy = gv > 0 || !fadeDone(liftF, t) || !fadeDone(liveF, t);
+        }
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
         const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
-        if (!still || env > 0) raf = requestAnimationFrame(frame);
+        if (!still || env > 0 || subjBusy) raf = requestAnimationFrame(frame);
       };
       frame();
       kick.current = () => {
@@ -632,6 +814,7 @@ export function Depth3D(props: Props) {
     const src = propsRef.current.src;
     return () => {
       alive = false;
+      if (lifted.src === src && lifted.at === Infinity) lifted.at = performance.now();
       // Left before its depth came (quick browsing): don't keep the model busy with it.
       if (moving) depthFramesLetGo(src);
       else if (!vid) depthLetGo(src);
@@ -647,10 +830,27 @@ export function Depth3D(props: Props) {
     };
   }, [props.src, nw, nh, !!props.mouse, !!props.video, props.video?.delayMs]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Resumed, resized, refitted or made stronger: draw again.
+  // Subject effects: this picture's outline, worked out first (the neighbours' ones are worked out ahead by the viewer).
+  useEffect(() => {
+    if (!subjOn) return;
+    let alive = true;
+    const src = props.src;
+    void subjectOf(src, true).then((m) => {
+      if (!alive) return;
+      const stats = maskStats(m);
+      maskRef.current = m && stats ? { src, mask: m, stats } : null;
+      kick.current();
+    });
+    return () => {
+      alive = false;
+      subjectLetGo(src);
+    };
+  }, [props.src, subjOn, props.subjectModel]);
+
+  // Resumed, resized, refitted, made stronger or a subject effect switched: draw again.
   useEffect(() => {
     kick.current();
-  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape]);
+  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift, props.subject?.living]);
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;

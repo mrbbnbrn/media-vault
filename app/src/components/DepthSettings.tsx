@@ -10,6 +10,8 @@ import type { ViewerSettings } from '../api';
 import { autoSoft, depthPack, depthSetup, edgesSetting, MOTION_LABELS, MOTION_SHAPES, motionChoice, NO_DEPTH_PACK, shapeOutline, type MotionChoice } from '../depth';
 import { saveViewerPrefs } from '../prefs';
 import { DepthModelChoice } from './DepthModels';
+import { SubjectModelChoice } from './SubjectModels';
+import { NO_SUBJECT_PACK, subjectPack } from '../subject';
 import { Modal } from './Dialogs';
 
 const CHOICES: MotionChoice[] = ['random', ...MOTION_SHAPES];
@@ -75,9 +77,11 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
   const shape = motionChoice(prefs.depthShape);
   // Whether the depth pack is there (asked anew each time the window opens).
   const [packOk, setPackOk] = useState<boolean | null>(null);
+  const [subjectOk, setSubjectOk] = useState<boolean | null>(null);
   useEffect(() => {
     let alive = true;
     depthPack(true).then((i) => alive && setPackOk(i ? i.available : null));
+    subjectPack(true).then((i) => alive && setSubjectOk(i ? i.available : null));
     return () => {
       alive = false;
     };
@@ -160,6 +164,33 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         </div>
         <Slider id="dp-beat" label="Beat strength" title="How strong each beat's push or bounce is" min={0.2} max={3} step={0.1}
           value={prefs.depthBeatAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthBeatAmount: v })} />
+
+        {/* Subject effects (still pictures only): Lift-off and Living subject. */}
+        <span style={{ alignSelf: 'start', paddingTop: 12, fontWeight: 600 }}>Subject effects</span>
+        <span className="faint" style={{ fontSize: 12, paddingTop: 12 }}>
+          {subjectOk === false ? NO_SUBJECT_PACK
+            : 'For still pictures (not GIFs or videos). The subject is found offline; both work with or without the 3D motion and the 3D mouse.'}
+        </span>
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthLift} onChange={(e) => saveViewerPrefs({ depthLift: e.target.checked })} /> Lift-off
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>The subject comes forward a little, with a soft shadow behind it. The background stays as it is.</span>
+        </span>
+        <Slider id="dp-lift" label="Lift-off amount" title="How far the subject comes forward (100% = about 3.5% bigger)" min={0.3} max={3} step={0.1}
+          value={prefs.depthLiftAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthLiftAmount: v })} />
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthLiving} onChange={(e) => saveViewerPrefs({ depthLiving: e.target.checked })} /> Living subject
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>The subject gently breathes and sways while the background stays still.</span>
+        </span>
+        <Slider id="dp-living" label="Living amount" title="How much the subject breathes and sways" min={0.3} max={3} step={0.1}
+          value={prefs.depthLivingAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthLivingAmount: v })} />
+        <span style={{ alignSelf: 'start', paddingTop: 12 }}>Subject model</span>
+        <SubjectModelChoice />
 
         {/* Which model works out the depth (speed tests are in Settings → 3D photos). */}
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Depth model</span>

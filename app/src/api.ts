@@ -68,6 +68,14 @@ export interface ViewerSettings {
   depthModel?: string;
   /** 3D photos: 'high' sends bigger pictures to models that take any size (more detail, about twice as slow). */
   depthDetail?: 'standard' | 'high';
+  /** Subject effects (pictures only): which subject outline model ('birefnet-lite' Fast, 'birefnet' Best; '' = the best one installed). */
+  subjectModel?: string;
+  /** Lift-off: the subject comes forward a little with a soft shadow behind it, this strong (1 = as designed; 0.3–3). */
+  depthLift?: boolean;
+  depthLiftAmount?: number;
+  /** Living subject: the subject gently breathes and sways while the background stays still, this strong (1 = as designed; 0.3–3). */
+  depthLiving?: boolean;
+  depthLivingAmount?: number;
   /** Discovery river: the current's speed (1 = normal), how many items flow (1 = as designed) and how many depth layers. */
   riverFlow?: number;
   riverDensity?: number;
@@ -97,6 +105,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   depthMouse: false, depthAmount: 1, depthReact: 1,
   depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthVideoDelay: false, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
+  subjectModel: '', depthLift: false, depthLiftAmount: 1, depthLiving: false, depthLivingAmount: 1,
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
@@ -1091,6 +1100,17 @@ export const api = {
   depthEstimate: (request: DepthRequest, rgba: Uint8Array) => depthEstimate(request, rgba),
   /** The viewer closed: free the model's memory. */
   depthForget: () => call<void>('depth_forget'),
+  // Subject effects (Lift-off, Living subject): a subject outline per picture (Rust: subject.rs; window side: subject.ts, components/Depth3D.tsx)
+  /** What the subject effects will use for this choice (model '' = the best installed). */
+  subjectInfo: (model = '') => call<SubjectInfo>('subject_info', { model }),
+  /** Every subject outline model, installed or not. */
+  subjectModels: () => call<SubjectModel[]>('subject_models'),
+  /** Test speed for one subject outline model. */
+  subjectBenchmark: (id: string) => call<SubjectBenchmark>('subject_benchmark', { id }),
+  /** Sends the picture's pixels (SubjectInfo.inputSide square); the subject outline comes back (255 = subject). */
+  subjectEstimate: (request: SubjectRequest, rgba: Uint8Array) => subjectEstimate(request, rgba),
+  /** Free the subject model's memory. */
+  subjectForget: () => call<void>('subject_forget'),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
@@ -1517,6 +1537,17 @@ const mock = {
       }
       case 'depth_forget':
         return;
+      case 'subject_info':
+        return mockSubjectInfo(String(a.model ?? ''));
+      case 'subject_models':
+        return mockSubjectModels();
+      case 'subject_benchmark': {
+        // Preview: a pretend speed test (Best is slower).
+        await new Promise((r) => setTimeout(r, 900));
+        return { ms: a.id === 'birefnet' ? 420 : 140, device: 'gpu', loadMs: 900, side: 1024 } satisfies SubjectBenchmark;
+      }
+      case 'subject_forget':
+        return;
       case 'upscale_cancel':
         mockJob += 1;
         return;
@@ -1884,6 +1915,108 @@ async function mockDepth(w: number, h: number, rgba: Uint8Array): Promise<DepthM
       const dy = y / h - 0.55;
       const blob = Math.max(0, 1 - Math.hypot(dx * 1.6, dy * 1.2) * 2.2);
       data[y * w + x] = Math.round(255 * Math.min(1, 0.15 + 0.45 * (y / h) + 0.5 * blob));
+    }
+  return { w, h, data };
+}
+
+// ---- subject effects (subject outlines) -------------------------------------------------
+
+export interface SubjectInfo {
+  available: boolean;
+  /** Why not, in one sentence. */
+  problem: string | null;
+  folder: string | null;
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+  /** The model in use: the chosen one, or the best installed when that isn't there. */
+  model?: string | null;
+  modelName?: string | null;
+  /** Pictures are sent at this size (square). */
+  inputSide?: number;
+}
+
+/** One subject outline model ('birefnet-lite' Fast, 'birefnet' Best). */
+export interface SubjectModel {
+  id: string;
+  name: string;
+  model: string;
+  folder: string | null;
+  installed: boolean;
+  problem: string | null;
+  sizeBytes: number;
+  zip?: string | null;
+  inputSide?: number;
+  licence?: string | null;
+}
+
+export interface SubjectBenchmark {
+  ms: number;
+  device: 'gpu' | 'cpu';
+  loadMs: number;
+  side?: number;
+}
+
+export interface SubjectRequest {
+  width: number;
+  height: number;
+  /** The chosen model ('' = the best installed). */
+  model?: string;
+}
+
+/** A subject outline: w × h bytes, 255 = the subject. It covers the whole picture (stretched to a square). */
+export type SubjectMask = DepthMap;
+
+/** What subject_estimate sends back: width, height (u32 little-endian), then the mask bytes. */
+export function parseSubject(buf: ArrayBuffer | Uint8Array): SubjectMask {
+  try {
+    return parseDepth(buf);
+  } catch {
+    throw new Error('The subject outline came back in an unexpected shape.');
+  }
+}
+
+async function subjectEstimate(request: SubjectRequest, rgba: Uint8Array): Promise<SubjectMask> {
+  if (!inTauri) return mockSubject(request.width, request.height, rgba);
+  try {
+    return parseSubject(await invoke<ArrayBuffer>('subject_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+/** Preview: Fast and Best installed (add ?nosubject to see none installed). */
+function mockSubjectModels(): SubjectModel[] {
+  const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('nosubject');
+  const root = 'C:\\MediaVault\\tools\\';
+  return [
+    { id: 'birefnet-lite', name: 'Fast', model: 'BiRefNet Lite', folder: `${root}subject-birefnet-lite`, installed: !none, problem: none ? 'Not installed: get MediaVault-subject-birefnet-lite-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 180_000_000, zip: 'MediaVault-subject-birefnet-lite-windows.zip', inputSide: 1024, licence: 'MIT' },
+    { id: 'birefnet', name: 'Best', model: 'BiRefNet', folder: `${root}subject-birefnet`, installed: !none, problem: none ? 'Not installed: get MediaVault-subject-birefnet-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 900_000_000, zip: 'MediaVault-subject-birefnet-windows.zip', inputSide: 1024, licence: 'MIT' },
+  ];
+}
+
+function mockSubjectInfo(model: string): SubjectInfo {
+  const ready = mockSubjectModels().filter((m) => m.installed && !m.problem);
+  const pick = ready.find((m) => m.id === model) ?? ['birefnet', 'birefnet-lite'].map((id) => ready.find((m) => m.id === id)).find(Boolean);
+  if (!pick) return { available: false, problem: "The subject pack isn't installed.", folder: 'C:\\MediaVault\\tools\\subject-birefnet', device: null, deviceKnown: false, model: null, modelName: null, inputSide: 1024 };
+  return { available: true, problem: null, folder: pick.folder, device: 'gpu', deviceKnown: false, model: pick.id, modelName: pick.name, inputSide: pick.inputSide ?? 1024 };
+}
+
+/** Preview: a pretend subject outline (a soft-edged rounded shape in the middle). Tests can supply real ones via `__mvSubjectMock`. */
+async function mockSubject(w: number, h: number, rgba: Uint8Array): Promise<SubjectMask> {
+  const hook = (globalThis as { __mvSubjectMock?: (w: number, h: number, rgba: Uint8Array) => Promise<SubjectMask | null> }).__mvSubjectMock;
+  const real = hook ? await hook(w, h, rgba) : null;
+  if (real) return real;
+  await new Promise((r) => setTimeout(r, 150));
+  const data = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++) {
+      // A head-and-shoulders shape: a body ellipse with a smaller head on top.
+      const u = x / w - 0.5;
+      const v = y / h;
+      const body = Math.hypot(u / 0.26, (v - 0.82) / 0.32);
+      const head = Math.hypot(u / 0.13, (v - 0.38) / 0.16);
+      const d = Math.min(body, head);
+      data[y * w + x] = Math.round(255 * Math.min(1, Math.max(0, (1 - d) * 25)));
     }
   return { w, h, data };
 }

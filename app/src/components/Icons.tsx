@@ -379,3 +379,22 @@ export const BeatIcon = ({ size = 16 }: P) => (
     <path d="M20.5 7.5a3 3 0 0 1 0 4" strokeWidth={1.5} />
   </svg>
 );
+/** Lift-off: a figure rising off a card, its shadow left behind on the card. */
+export const LiftIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 17.5l3-3.5h15l-3 3.5z" strokeWidth={1.5} />
+    <ellipse cx="12.5" cy="15.8" rx="3.6" ry="0.9" fill="currentColor" stroke="none" opacity={0.45} />
+    <circle cx="11.5" cy="4.6" r="2" />
+    <path d="M7.8 12.2a3.7 3.7 0 0 1 7.4 0" />
+    <path d="M19 6.5v3.5M17.5 8l1.5-1.5 1.5 1.5" strokeWidth={1.4} />
+  </svg>
+);
+/** Living subject: a figure with small motion arcs on each side. */
+export const LivingIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="7" r="2.6" />
+    <path d="M7 19.5a5 5 0 0 1 10 0" />
+    <path d="M4.6 8.5a7 7 0 0 0 0 7M19.4 8.5a7 7 0 0 1 0 7" strokeWidth={1.5} />
+    <path d="M2 10.5a4.5 4.5 0 0 0 0 3M22 10.5a4.5 4.5 0 0 1 0 3" strokeWidth={1.3} opacity={0.6} />
+  </svg>
+);
