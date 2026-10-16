@@ -242,6 +242,53 @@ pub fn remove(s: &Session, items: &[i64], which: &[(String, String)]) -> Result<
     Ok(gone.len() as u64)
 }
 
+/// Pictures sorted by what the face scan found (for "only pictures with
+/// faces" and "only pictures without faces"). A hidden face still counts as
+/// a face; a poor face (Settings → Faces) doesn't count as a good one.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FaceSplit {
+    /// At least one face that isn't poor (or is hidden).
+    pub with_faces: Vec<i64>,
+    /// Scanned, and no face at all.
+    pub no_faces: Vec<i64>,
+    /// Scanned, and only poor faces.
+    pub only_poor: Vec<i64>,
+    /// Not scanned for faces (yet), or the scan failed: never counted as faceless.
+    pub unscanned: Vec<i64>,
+}
+
+pub fn face_split(conn: &Connection, items: &[i64]) -> Result<FaceSplit, String> {
+    let mut out = FaceSplit::default();
+    let good = format!("(f.hidden <> 0 OR NOT {})", crate::poorfaces::poor_sql("f"));
+    for part in items.chunks(CHUNK) {
+        let sql = format!(
+            "SELECT m.id, m.faces_state, \
+             (SELECT COUNT(*) FROM faces f WHERE f.media_id = m.id), \
+             (SELECT COUNT(*) FROM faces f WHERE f.media_id = m.id AND {good}) \
+             FROM media m WHERE m.id IN ({})",
+            in_list(part.len())
+        );
+        let mut st = conn.prepare(&sql).map_err(e)?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(part.iter()), |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
+            .map_err(e)?;
+        for row in rows {
+            let (id, state, all, ok) = row.map_err(e)?;
+            if ok > 0 {
+                out.with_faces.push(id);
+            } else if state != 1 {
+                out.unscanned.push(id);
+            } else if all == 0 {
+                out.no_faces.push(id);
+            } else {
+                out.only_poor.push(id);
+            }
+        }
+    }
+    Ok(out)
+}
+
 /// The items that have a usable saved map of this kind for this model.
 pub fn have(conn: &Connection, kind: &str, model: &str) -> Result<Vec<i64>, String> {
     check_kind(kind)?;
@@ -319,6 +366,13 @@ pub async fn derived_clear(state: State<'_, crate::Shared>, kind: Option<String>
 pub async fn derived_stats(state: State<'_, crate::Shared>) -> Result<DerivedStats, String> {
     let s = crate::sess(&state)?;
     tauri::async_runtime::spawn_blocking(move || stats(&s.db())).await.map_err(|x| x.to_string())?
+}
+
+/// These pictures sorted by what the face scan found.
+#[tauri::command]
+pub async fn faces_split(state: State<'_, crate::Shared>, items: Vec<i64>) -> Result<FaceSplit, String> {
+    let s = crate::sess(&state)?;
+    tauri::async_runtime::spawn_blocking(move || face_split(&s.db(), &items)).await.map_err(|x| x.to_string())?
 }
 
 /// What is saved for these items, by kind and model ("Delete 3D data…").
@@ -507,6 +561,32 @@ mod tests {
         drop(s);
         let s = crate::session::unlock(&path, "long enough pw").unwrap();
         assert_eq!(summary(&s.db(), &[a, b, c]).unwrap().iter().map(|x| x.count).sum::<u64>(), 3 + 1 + 2);
+    }
+
+    #[test]
+    fn pictures_are_sorted_by_the_faces_found() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        crate::poorfaces::set_test_rule(Some(crate::poorfaces::PoorRule { min_px: 40.0, min_sharp: 0.0, max_turn: 90.0 }));
+        let ids: Vec<i64> = (0..6).map(|_| item(&s, "image")).collect();
+        let db = s.db();
+        db.execute("UPDATE media SET faces_state = 1 WHERE id <> ?", [ids[5]]).unwrap();
+        let face = |m: i64, px: f64, hidden: i64| {
+            db.execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor, px, hidden) VALUES (?1, 0, 0, 1, 1, 1, x'00', ?2, ?3)", params![m, px, hidden]).unwrap();
+        };
+        face(ids[0], 200.0, 0); // a good face
+        face(ids[1], 10.0, 0); // only a poor (tiny) face
+        // ids[2]: scanned, nothing found
+        face(ids[3], 10.0, 1); // a hidden face counts, even a poor one
+        face(ids[4], 10.0, 0);
+        face(ids[4], 300.0, 0); // poor and good: has faces
+        // ids[5]: never scanned (even with a face row it isn't "faceless")
+        let sp = face_split(&db, &ids).unwrap();
+        assert_eq!(sp.with_faces, vec![ids[0], ids[3], ids[4]]);
+        assert_eq!(sp.only_poor, vec![ids[1]]);
+        assert_eq!(sp.no_faces, vec![ids[2]]);
+        assert_eq!(sp.unscanned, vec![ids[5]]);
+        crate::poorfaces::set_test_rule(None);
     }
 
     #[test]

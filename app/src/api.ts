@@ -1149,6 +1149,8 @@ export const api = {
   derivedStats: () => call<DerivedStats>('derived_stats'),
   /** Items that already have a saved map of this kind for this model. */
   derivedHave: (kind: DerivedKind, model: string) => call<number[]>('derived_have', { kind, model }),
+  /** These pictures sorted by what the face scan found. */
+  facesSplit: (items: number[]) => call<FaceSplit>('faces_split', { items }),
   /** What is saved for these items, per kind and model. */
   derivedSummary: (items: number[]) => call<DerivedGroup[]>('derived_summary', { items }),
   /** Remove these items' maps of these kinds and models; how many went. */
@@ -1649,6 +1651,15 @@ const mock = {
           if (kind === a.kind && model === a.model) out.push(Number(item));
         }
         return out;
+      }
+      case 'faces_split': {
+        // Demo: every third picture has faces, every third has none, a few only poor ones, the rest unscanned.
+        const sp: FaceSplit = { withFaces: [], noFaces: [], onlyPoor: [], unscanned: [] };
+        for (const id of (a.items as number[]) ?? []) {
+          const r = id % 6;
+          (r < 2 ? sp.withFaces : r < 4 ? sp.noFaces : r === 4 ? sp.onlyPoor : sp.unscanned).push(id);
+        }
+        return sp;
       }
       case 'derived_summary': {
         const want = new Set((a.items as number[]) ?? []);
@@ -2311,6 +2322,15 @@ export interface DerivedGroup {
   model: string;
   count: number;
   bytes: number;
+}
+
+/** Pictures sorted by what the face scan found (a hidden face counts; a poor face isn't a good one). */
+export interface FaceSplit {
+  withFaces: number[];
+  noFaces: number[];
+  onlyPoor: number[];
+  /** Not scanned for faces yet (never counted as faceless). */
+  unscanned: number[];
 }
 
 export interface DerivedStats {

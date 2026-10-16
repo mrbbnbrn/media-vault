@@ -106,6 +106,8 @@ export interface PrepareRequest {
   filters: ItemFilter[];
   /** Pictures picked one by one (besides what `filters` finds). */
   ids?: number[];
+  /** Only pictures where the face scan found a face (not only poor ones); unscanned ones are left out. */
+  onlyFaces?: boolean;
   /** Clear every saved map first and work everything out again. */
   again?: boolean;
 }
@@ -140,23 +142,23 @@ export function stopRebuild() {
 }
 
 /** The whole vault: only the pictures missing a saved map, or (again) everything after clearing. */
-export function prepareVault(again: boolean): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what: 'the whole vault', filters: [{ kinds: ['image'] }], again });
+export function prepareVault(again: boolean, onlyFaces = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what: 'the whole vault', filters: [{ kinds: ['image'] }], again, onlyFaces });
 }
 
 /** One folder (and its subfolders); a person folder also gets the pictures their face was recognised in. */
-export function prepareFolder(f: { id: number; name: string; person: boolean }): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what: `“${f.name}”`, filters: folderFilters([f], true) });
+export function prepareFolder(f: { id: number; name: string; person: boolean }, onlyFaces = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what: `“${f.name}”`, filters: folderFilters([f], true), onlyFaces });
 }
 
 /** Several folders (and their subfolders; person folders also get the pictures their face was recognised in). */
-export function prepareFolders(fs: { id: number; name: string; person: boolean }[], what: string): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what, filters: folderFilters(fs, true) });
+export function prepareFolders(fs: { id: number; name: string; person: boolean }[], what: string, onlyFaces = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: folderFilters(fs, true), onlyFaces });
 }
 
 /** Pictures picked one by one (the selection). */
-export function prepareItems(ids: number[], what: string): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what, filters: [], ids });
+export function prepareItems(ids: number[], what: string, onlyFaces = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: [], ids, onlyFaces });
 }
 
 /** The filters that find the pictures of these folders; `people`: a person folder also gets its recognised pictures elsewhere. */
@@ -169,8 +171,8 @@ export function folderFilters(fs: { id: number; person: boolean }[], people: boo
 
 /** Adds a request (started at once when nothing runs). */
 export function prepareInBackground(r: PrepareRequest): 'started' | 'queued' | 'already' {
-  if (state.what === r.what && state.running && !stopAsked && !r.again) return 'already';
-  if (queue.some((q) => q.what === r.what && !!q.again === !!r.again)) return 'already';
+  if (state.what === r.what && state.running && !stopAsked && !r.again && !!running?.onlyFaces === !!r.onlyFaces) return 'already';
+  if (queue.some((q) => q.what === r.what && !!q.again === !!r.again && !!q.onlyFaces === !!r.onlyFaces)) return 'already';
   queue.push(r);
   if (state.running) {
     set({ waiting: queue.length });
@@ -221,10 +223,14 @@ async function allPasses(): Promise<Pass[]> {
   return out;
 }
 
+/** The request being worked on. */
+let running: PrepareRequest | null = null;
+
 async function runOne(r: PrepareRequest): Promise<void> {
   stopAsked = false;
+  running = r;
   set({ running: true, done: 0, total: 0, what: r.what, waiting: queue.length, note: r.again ? 'Clearing the saved ones…' : 'Finding the pictures…' });
-  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.what, long: true, unit: 'maps', cancel: stopRebuild, cancelLabel: 'Stop' });
+  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.onlyFaces ? `${r.what}, pictures with faces` : r.what, long: true, unit: 'maps', cancel: stopRebuild, cancelLabel: 'Stop' });
   let ok = true;
   try {
     if (r.again) {
@@ -239,7 +245,14 @@ async function runOne(r: PrepareRequest): Promise<void> {
       ok = false;
       return;
     }
-    const pics = await picturesOf(r.filters, r.ids);
+    let pics = await picturesOf(r.filters, r.ids);
+    let skipped = 0;
+    if (r.onlyFaces && pics.length) {
+      const sp = await api.facesSplit(pics.map((p) => p.itemId));
+      const keep = new Set(sp.withFaces);
+      skipped = pics.length - keep.size;
+      pics = pics.filter((p) => keep.has(p.itemId));
+    }
     notePictures(pics);
     // For each model, the pictures that don't have its map saved yet.
     const work = await Promise.all(passes.map(async (p) => {
@@ -248,7 +261,8 @@ async function runOne(r: PrepareRequest): Promise<void> {
     }));
     const total = work.reduce((n, w) => n + w.todo.length, 0);
     const already = pics.length * passes.length - total;
-    set({ total, note: `${passes.length} ${passes.length === 1 ? 'model' : 'models'}, ${pics.length.toLocaleString()} ${pics.length === 1 ? 'picture' : 'pictures'}${already ? `, ${already.toLocaleString()} maps already saved` : ''}.` });
+    const left = skipped ? ` (${skipped.toLocaleString()} without faces, or not scanned for faces yet, left out)` : '';
+    set({ total, note: `${passes.length} ${passes.length === 1 ? 'model' : 'models'}, ${pics.length.toLocaleString()} ${pics.length === 1 ? 'picture' : 'pictures'}${r.onlyFaces ? ' with faces' : ''}${left}${already ? `, ${already.toLocaleString()} maps already saved` : ''}.` });
     updateJob(JOB, { total });
     let done = 0;
     for (const { p, todo } of work) {
@@ -276,6 +290,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
     set({ note: `Couldn't finish (${r.what}): ${e instanceof Error ? e.message : String(e)}` });
   } finally {
     endJob(JOB, { failed: !ok, summary: `${state.done.toLocaleString()} maps prepared for 3D` });
+    running = null;
     set({ running: false, what: null, waiting: queue.length });
   }
 }

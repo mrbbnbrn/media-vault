@@ -7,6 +7,7 @@ import { useEffect, useState, useSyncExternalStore } from 'react';
 import { api, type DerivedStats, type ViewerSettings } from '../api';
 import { onSavedChange } from '../derived';
 import { onRebuild, prepareVault, rebuildState, stopRebuild } from '../prepare';
+import { Delete3DData } from './Delete3DData';
 import { ConfirmDialog } from './Dialogs';
 
 function mb(b: number): string {
@@ -17,6 +18,7 @@ function mb(b: number): string {
 export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
   const [stats, setStats] = useState<DerivedStats | null>(null);
   const [ask, setAsk] = useState<'clear' | 'again' | null>(null);
+  const [del, setDel] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const job = useSyncExternalStore(onRebuild, rebuildState);
   const load = () => void api.derivedStats().then(setStats).catch(() => setStats(null));
@@ -59,7 +61,10 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
         <button type="button" className="btn btn-sm" disabled={job.running || !stats || bytes === 0} onClick={() => setAsk('clear')}>Clear them</button>
         <button type="button" className="btn btn-sm" title="Only the pictures that don't have a saved depth map or outline yet"
           onClick={() => { setNote(null); if (prepareVault(false) === 'already') setNote('Already working on that.'); }}>Work out the missing ones</button>
+        <button type="button" className="btn btn-sm" title="Only the pictures the face scan found a face in (not only poor faces); pictures not scanned yet are left out"
+          onClick={() => { setNote(null); if (prepareVault(false, true) === 'already') setNote('Already working on that.'); }}>Work out the missing ones, pictures with faces only</button>
         <button type="button" className="btn btn-sm" disabled={job.running} onClick={() => setAsk('again')}>Work them all out again</button>
+        <button type="button" className="btn btn-sm" disabled={!stats || bytes === 0} title="Choose which models, and which pictures (for example only those without faces, like screenshots)" onClick={() => setDel(true)}>Delete 3D data…</button>
       </div>
       {(job.running || job.note) && (
         <div className="row" style={{ gap: 10, marginTop: 8, alignItems: 'center' }} role="status">
@@ -76,6 +81,10 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
         <input type="checkbox" checked={props.viewer.depthIdlePrepare !== false} onChange={(e) => props.setViewer({ depthIdlePrepare: e.target.checked })} />
         Prepare while idle: with a 3D or subject effect on, work out the pictures in the open folder after 20 seconds without using the mouse or keyboard
       </label>
+      {del && (
+        <Delete3DData what="the whole vault" folders={[]} ids={[]} filters={[{ kinds: ['image'] }]} onClose={() => setDel(false)}
+          onDone={(text) => { setNote(text); load(); }} />
+      )}
       {ask === 'clear' && (
         <ConfirmDialog title="Clear the saved depth maps and outlines?" confirm="Clear them" danger onClose={() => setAsk(null)}
           onConfirm={() => { setAsk(null); void clear(); }}>

@@ -1177,8 +1177,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     }
   };
   /** What "Prepare 3D data" says it did. */
-  const prepNote = (r: 'started' | 'queued' | 'already', what: string) =>
-    setNote({ text: r === 'already' ? `Already preparing ${what}.` : r === 'queued' ? `${what} will be prepared for 3D after the job running now.` : `Preparing the pictures in ${what} for 3D in the background (depth maps and outlines). See the ring at the bottom of the sidebar.`, at: 0 });
+  const prepNote = (r: 'started' | 'queued' | 'already', what: string, faces = false) => {
+    const pics = faces ? `the pictures with faces in ${what}` : `the pictures in ${what}`;
+    setNote({ text: r === 'already' ? `Already preparing ${pics}.` : r === 'queued' ? `${pics[0].toUpperCase()}${pics.slice(1)} will be prepared for 3D after the job running now.` : `Preparing ${pics} for 3D in the background (depth maps and outlines${faces ? '; pictures not scanned for faces yet are left out' : ''}). See the ring at the bottom of the sidebar.`, at: 0 });
+  };
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
@@ -1202,6 +1204,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
     { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
+    { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
     { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
     { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
     { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
@@ -1682,6 +1685,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         { label: `Merge into one…`, hint: 'asks first', onSelect: () => setDialog({ t: 'merge', folders: fs }) },
         { label: `Rename ${plural(selFolders.size, 'folder')}…`, hint: 'F2', onSelect: askRename },
         { label: 'Prepare 3D data', hint: 'pictures, in the background', sepBefore: true, onSelect: () => prepNote(prepareFolders(fs.map((x) => ({ id: x.id, name: x.name, person: x.person })), plural(fs.length, 'folder')), plural(fs.length, 'folder')) },
+        { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareFolders(fs.map((x) => ({ id: x.id, name: x.name, person: x.person })), plural(fs.length, 'folder'), true), plural(fs.length, 'folder'), true) },
         { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: plural(fs.length, 'folder'), folders: fs.map((x) => ({ id: x.id, name: x.name, person: x.person })), ids: [] }) },
         { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: fs.map((x) => x.id), what: plural(fs.length, 'folder') }) },
         { label: `Delete ${plural(fs.length, 'folder')}…`, danger: true, sepBefore: true, onSelect: askDeleteMany },
@@ -1762,6 +1766,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         { label: 'Convert to…', onSelect: () => setDialog({ t: 'convert', items: shown.filter((x) => sel.has(x.id)) }) },
         ...(picIds.length ? [
           { label: 'Prepare 3D data', hint: 'in the background', onSelect: () => prepNote(prepareItems(picIds, picWhat), picWhat) },
+          { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareItems(picIds, picWhat, true), picWhat, true) },
           { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: picWhat, folders: [], ids: picIds }) },
         ] : []),
         ...(pictures(shown.filter((x) => sel.has(x.id))).length >= 2 ? [{ label: 'Create GIF or video…', onSelect: () => setDialog({ t: 'animation', items: pictures(shown.filter((x) => sel.has(x.id))) }) }] : []),
