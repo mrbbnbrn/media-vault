@@ -76,10 +76,6 @@ export interface ViewerSettings {
   /** Sharper depth edges (pictures with an outline): the depth follows the subject's outline, this strong (0.2–1). */
   depthEdges3d?: boolean;
   depthEdgesStrength?: number;
-  /** A light that stays put (pictures with an outline): where it comes from (degrees clockwise from the top, 0–359) and how strong (0.2–2). */
-  depthLight?: boolean;
-  depthLightAngle?: number;
-  depthLightStrength?: number;
   /** 3D only on the subject: the background stays still, only the subject moves in 3D. */
   depthSubjectOnly?: boolean;
   /** Layered 3D: a filled-in background behind the subject; how it's filled ('' = Simple, 'migan' MI-GAN, 'lama' LaMa). */
@@ -119,7 +115,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthVideoDelay: false, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   subjectModel: '', depthLift: false, depthLiftAmount: 1,
-  depthEdges3d: false, depthEdgesStrength: 0.7, depthLight: false, depthLightAngle: 315, depthLightStrength: 1, depthSubjectOnly: false,
+  depthEdges3d: false, depthEdgesStrength: 0.7, depthSubjectOnly: false,
   depthLayered: false, inpaintModel: '', depthIdlePrepare: true,
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,

@@ -39,7 +39,7 @@ import { useFaceAlign } from './FaceAlign';
 // 3D photos (begin)
 import { depthAhead, depthPack, depthSetup, frameFeed, motionChoice, NO_DEPTH_PACK, pickAhead } from '../depth';
 import { effectAmount, NEED_OUTLINE, NO_SUBJECT_PACK, subjectAhead, subjectOf, subjectPack } from '../subject';
-import { aheadCount, edgesStrength, lightAngle, lightStrength } from '../layers';
+import { aheadCount, edgesStrength } from '../layers';
 import { notePictures } from '../derived';
 import { startIdlePrepare } from '../prepare';
 import { inpaintChoice, inpaintPack, noFillText } from '../inpaint';
@@ -54,7 +54,7 @@ import {
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
   BeatIcon, Film3DIcon, LiftIcon, OrbitIcon,
-  DepthEdgesIcon, FixedLightIcon, Layered3DIcon, SubjectOnly3DIcon, SubjectPngIcon,
+  DepthEdgesIcon, Layered3DIcon, SubjectOnly3DIcon, SubjectPngIcon,
   SideChevronIcon, EditPictureIcon, Mp4Icon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
@@ -956,11 +956,10 @@ export function Player(props: PlayerProps) {
   // Picture layers (still pictures, with the outline): sharper depth edges, a light that stays put,
   // 3D only on the subject and layered 3D.
   const depthEdges3d = !!prefs.depthEdges3d;
-  const depthLight = !!prefs.depthLight;
   const depthSubjectOnly = !!prefs.depthSubjectOnly;
   const depthLayered = !!prefs.depthLayered;
   /** Something that uses the subject outline is on. */
-  const outlineWanted = depthLift || depthEdges3d || depthLight || depthSubjectOnly || depthLayered;
+  const outlineWanted = depthLift || depthEdges3d || depthSubjectOnly || depthLayered;
   const [subjectPackOk, setSubjectPackOk] = useState(false);
   /** The subject model and size in use: the outline is worked out again when it changes. */
   const [subjectModelKey, setSubjectModelKey] = useState('');
@@ -977,7 +976,7 @@ export function Player(props: PlayerProps) {
     };
   }, [outlineWanted, prefs.subjectModel]);
   /** A subject effect shows on this item: a still picture (never a GIF or a video). Lift-off and the light show on their own. */
-  const subjectOn = item?.kind === 'image' && (depthLift || depthLight) && subjectPackOk && !mini && !props.compact;
+  const subjectOn = item?.kind === 'image' && depthLift && subjectPackOk && !mini && !props.compact;
   /** The picture layers apply to this item (still pictures with the subject pack). */
   const layersHere = item?.kind === 'image' && subjectPackOk && !mini && !props.compact;
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
@@ -1568,7 +1567,6 @@ export function Player(props: PlayerProps) {
                 subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
                 layers={layersHere ? {
                   edges: depthEdges3d ? edgesStrength(prefs.depthEdgesStrength) : 0,
-                  light: depthLight ? { angle: lightAngle(prefs.depthLightAngle), strength: lightStrength(prefs.depthLightStrength) } : null,
                   subjectOnly: depthSubjectOnly,
                   layered: depthLayered ? { model: inpaintChoice(prefs) } : null,
                 } : undefined}
@@ -1817,11 +1815,6 @@ export function Player(props: PlayerProps) {
                         title={depthEdges3d ? 'Sharper depth edges are on: the depth follows the subject\'s outline (strength in View ▾ → 3D photo settings) · click to turn off' : 'Sharper depth edges: the depth follows the subject\'s outline, so it doesn\'t smear at the edges (works with every 3D mode)'}
                         onClick={() => toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true })}>
                         <DepthEdgesIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthLight ? ' on' : ''}`} aria-pressed={depthLight} aria-label="A light that stays put"
-                        title={depthLight ? 'A light that stays put is on (direction and strength in View ▾ → 3D photo settings) · click to turn off' : 'A light that stays put: a soft shadow of the subject and a rim of light that shift as the camera moves'}
-                        onClick={() => toggleLayer({ depthLight: !depthLight }, !depthLight, depthLight ? 'Light off' : 'A light that stays put · direction in View ▾ → 3D photo settings')}>
-                        <FixedLightIcon size={18} />
                       </button>
                       <button type="button" className={`pbtn lg${depthSubjectOnly ? ' on' : ''}`} aria-pressed={depthSubjectOnly} aria-label="3D only on the subject"
                         title={depthSubjectOnly ? '3D only on the subject is on: the background stays still · click to turn off' : '3D only on the subject: the background stays completely still, only the subject moves in 3D'}

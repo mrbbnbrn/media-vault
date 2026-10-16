@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest';
 import type { DepthMap } from './api';
 import { mapBytes, parseDepth } from './api';
 import {
-  AHEAD_CAP, aheadCount, bgDepthNear, boxBlur, distanceTo, edgesStrength, fillDepth, fillRgba, holeMask, lightAngle, lightDir, lightFrame, lightStrength,
-  lightWords, pushPull, refineEdges, resample,
+  AHEAD_CAP, aheadCount, bgDepthNear, boxBlur, distanceTo, edgesStrength, fillDepth, fillRgba, holeMask,
+  pushPull, refineEdges, resample,
 } from './layers';
 import { pickAhead } from './depth';
 
@@ -157,46 +157,6 @@ describe('sharper depth edges', () => {
     expect(z).not.toBeNull();
     expect(z! * 255).toBeLessThan(110);
     expect(bgDepthNear(d, { w: W, h: W, data: new Uint8Array(W * W) })).toBeNull();
-  });
-});
-
-describe('a light that stays put', () => {
-  it('comes from where the angle says (clockwise from the top)', () => {
-    expect(lightDir(0).x).toBeCloseTo(0);
-    expect(lightDir(0).y).toBeCloseTo(-1);
-    expect(lightDir(90).x).toBeCloseTo(1);
-    expect(lightDir(315).x).toBeLessThan(0);
-    expect(lightDir(315).y).toBeLessThan(0);
-    expect(lightWords(315)).toBe('From the top left');
-    expect(lightWords(180)).toBe('From the bottom');
-    expect(lightAngle(-45)).toBe(315);
-    expect(lightAngle(undefined)).toBe(315);
-    expect(lightStrength(9)).toBe(2);
-  });
-  it('the shadow falls away from the light, further when the subject stands out more', () => {
-    const near = lightFrame(0, 1, { x: 0, y: 0 }, 1, 0.5, 0.5);
-    const far = lightFrame(0, 1, { x: 0, y: 0 }, 1, 0.8, 0.3);
-    // Light from the top: a shadow point sees the subject above it (offset towards the light).
-    expect(near.offset.y).toBeLessThan(0);
-    expect(Math.abs(near.offset.x)).toBeLessThan(1e-9);
-    expect(far.offset.y).toBeLessThan(near.offset.y);
-    // Wide pictures: the same distance in pixels both ways.
-    const wide = lightFrame(90, 1, { x: 0, y: 0 }, 2, 0.5, 0.5);
-    expect(wide.offset.x).toBeCloseTo(near.offset.y * -0.5);
-  });
-  it('the rim slides round the edge the other way from the camera, as if the light stayed put', () => {
-    const still = lightFrame(0, 1, { x: 0, y: 0 }, 1, 0.7, 0.4);
-    const right = lightFrame(0, 1, { x: 0.02, y: 0 }, 1, 0.7, 0.4);
-    const left = lightFrame(0, 1, { x: -0.02, y: 0 }, 1, 0.7, 0.4);
-    expect(still.rim.x).toBeCloseTo(0);
-    expect(right.rim.x).toBeLessThan(0);
-    expect(left.rim.x).toBeGreaterThan(0);
-    expect(Math.hypot(right.rim.x, right.rim.y)).toBeCloseTo(Math.hypot(still.rim.x, still.rim.y));
-    // The shadow is fixed to the room: it doesn't change with the camera (the drawing moves it with the background).
-    expect(right.offset).toEqual(still.offset);
-  });
-  it('is stronger or weaker with the setting', () => {
-    expect(lightFrame(0, 2, { x: 0, y: 0 }, 1, 0.5, 0.5).shadow).toBeGreaterThan(lightFrame(0, 0.5, { x: 0, y: 0 }, 1, 0.5, 0.5).shadow);
   });
 });
 

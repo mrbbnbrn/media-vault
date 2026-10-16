@@ -424,16 +424,6 @@ export const DepthEdgesIcon = ({ size = 16 }: P) => (
     <path d="M7.2 20v-3.2a4.8 4.8 0 0 1 9.6 0V20" strokeWidth={2.2} />
   </svg>
 );
-/** A light that stays put: a small sun at the top left, a figure and its shadow falling away. */
-export const FixedLightIcon = ({ size = 16 }: P) => (
-  <svg {...base(size)}>
-    <circle cx="5.5" cy="5.5" r="2" />
-    <path d="M5.5 1.5v1M1.5 5.5h1M2.7 2.7l.7.7M8.3 2.7l-.7.7M2.7 8.3l.7-.7" strokeWidth={1.3} />
-    <circle cx="13" cy="9" r="2.2" />
-    <path d="M9.5 19v-2.5a3.5 3.5 0 0 1 7 0V19" />
-    <path d="M16.5 19l4.5 1.5" strokeWidth={2.4} opacity={0.45} />
-  </svg>
-);
 /** 3D only on the subject: a figure with depth arrows, in a still frame. */
 export const SubjectOnly3DIcon = ({ size = 16 }: P) => (
   <svg {...base(size)}>

@@ -35,7 +35,7 @@ import {
   fadeAt, fadeDone, fadeTo, flatDepth, maskStats, newFade, subjectDepth, subjectFrame, subjectLetGo, subjectOf,
   type SubjectStats,
 } from '../subject';
-import { bgDepthNear, lightFrame } from '../layers';
+import { bgDepthNear } from '../layers';
 import { peekRefined, plateFor, refinedDepth } from '../plate';
 import { DepthModelChoice } from './DepthModels';
 import { InpaintModelChoice } from './InpaintModels';
@@ -84,7 +84,6 @@ interface Props {
 
 export interface PictureLayers {
   edges: number;
-  light: { angle: number; strength: number } | null;
   subjectOnly: boolean;
   /** '' = Simple fill, else the fill model. */
   layered: { model: string } | null;
@@ -92,7 +91,7 @@ export interface PictureLayers {
 
 /** Any picture layer needs the outline. */
 function layersOn(l: PictureLayers | undefined): boolean {
-  return !!l && (l.edges > 0 || !!l.light || l.subjectOnly || !!l.layered);
+  return !!l && (l.edges > 0 || l.subjectOnly || !!l.layered);
 }
 
 /** How far a beat pulse is (0–1) `dt` ms after the beat: a quick rise, a softer fall. */
@@ -159,12 +158,6 @@ uniform float uBgStill;
 uniform float uOwn;
 uniform sampler2D uPlate;
 uniform float uLayer;
-uniform float uLight;
-uniform float uLShadow;
-uniform vec2 uLOff;
-uniform float uLBlur;
-uniform vec2 uLRim;
-uniform float uRim;
 uniform float uZBg;
 const int N = ${STEPS};
 vec3 sharpen(vec3 c, vec3 n) {
@@ -215,14 +208,6 @@ float softMask(vec2 s, float r) {
   }
   return min(1.0, sh);
 }
-// A soft rim light on the subject's edge facing the light.
-vec3 rimLit(vec3 c, vec2 s) {
-  float m = mask(s);
-  if (m <= 0.0) return c;
-  float o = (mask(s + uLRim) + mask(s + uLRim * 0.5) + mask(s + uLRim * 1.7)) / 3.0;
-  float e = m * clamp(1.0 - o, 0.0, 1.0);
-  return c + (vec3(1.0, 0.97, 0.9) - c) * e * uRim * uLight;
-}
 void main() {
   vec2 p = 0.5 + (vUv - 0.5) / uScale;
   vec2 k = uShift + (p - uFocus) * uDolly;
@@ -250,26 +235,19 @@ void main() {
   }
   vec2 h = clamp(hit, 0.0, 1.0);
   vec3 c = uLayer > 0.0 ? platePic(h) : pic(h);
-  if (uLight > 0.0) {
-    // The subject's shadow, fixed to the background (it moves with the background's own depth, not the subject's).
-    float mh = uLayer > 0.0 ? 0.0 : mask(h);
-    vec2 pb = p - kb * (uZBg - uPivot);
-    float sh = softMask(unmove(pb + uLOff), uLBlur);
-    c *= 1.0 - uLight * uLShadow * sh * (1.0 - mh);
-    if (uSubj <= 0.0) c = rimLit(c, h);
-  }
   if (uSubj > 0.0) {
     // The subject moves as one piece with the camera at its own depth (or, with uOwn, with the depth
     // of each of its parts), then is lifted and/or lives.
-    float zs = uZSubj;
+    // Lifted means a little closer: the whole subject comes forward in depth by as much as it grows.
+    float lz = (uLift - 1.0) * 2.5;
+    float zs = uZSubj + lz;
     vec2 ps = p - k * (zs - uPivot);
     vec2 s = unmove(ps);
-    if (uOwn > 0.0) {
-      for (int i = 0; i < 3; i++) {
-        zs = mix(uZSubj, texture2D(uDepth, clamp(s, 0.0, 1.0)).r, mask(s));
-        ps = p - k * (zs - uPivot);
-        s = unmove(ps);
-      }
+    // Every part of the subject moves with its own depth (it stays a 3D shape, not a flat sticker).
+    for (int i = 0; i < 3; i++) {
+      zs = mix(uZSubj, texture2D(uDepth, clamp(s, 0.0, 1.0)).r, mask(s)) + lz;
+      ps = p - k * (zs - uPivot);
+      s = unmove(ps);
     }
     float m = mask(s);
     // Drawn with a slightly grown outline (the most of the outline nearby), so its old edge never peeks out.
@@ -282,7 +260,6 @@ void main() {
       }
     }
     vec3 sc = pic(clamp(s, 0.0, 1.0));
-    if (uLight > 0.0) sc = rimLit(sc, s);
     vec3 o = mix(c, sc, g);
     if (uShadow > 0.0) {
       // A soft shadow down and to the right of the lifted subject, on the background only.
@@ -306,7 +283,7 @@ interface Scene {
   plate: WebGLTexture;
   u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'mask' | 'subj' | 'asp' | 'cen' | 'lift' | 'bot' | 'rot'
     | 'breath' | 'grow' | 'shadow' | 'shOff' | 'shBlur' | 'zSubj'
-    | 'bgStill' | 'own' | 'plate' | 'layer' | 'light' | 'lShadow' | 'lOff' | 'lBlur' | 'lRim' | 'rim' | 'zBg', WebGLUniformLocation | null>;
+    | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg', WebGLUniformLocation | null>;
 }
 
 /**
@@ -488,12 +465,6 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     own: gl.getUniformLocation(prog, 'uOwn'),
     plate: gl.getUniformLocation(prog, 'uPlate'),
     layer: gl.getUniformLocation(prog, 'uLayer'),
-    light: gl.getUniformLocation(prog, 'uLight'),
-    lShadow: gl.getUniformLocation(prog, 'uLShadow'),
-    lOff: gl.getUniformLocation(prog, 'uLOff'),
-    lBlur: gl.getUniformLocation(prog, 'uLBlur'),
-    lRim: gl.getUniformLocation(prog, 'uLRim'),
-    rim: gl.getUniformLocation(prog, 'uRim'),
     zBg: gl.getUniformLocation(prog, 'uZBg'),
   };
   gl.uniform1i(u.img, 0);
@@ -502,7 +473,6 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.uniform1i(u.plate, 3);
   gl.uniform1f(u.subj, 0);
   gl.uniform1f(u.layer, 0);
-  gl.uniform1f(u.light, 0);
   gl.uniform1f(u.bgStill, 0);
   gl.uniform1f(u.own, 0);
   gl.clearColor(0, 0, 0, 0);
@@ -647,7 +617,7 @@ export function Depth3D(props: Props) {
       /** A subject effect is on (still pictures only). */
       const subjWanted = () => {
         const sj = propsRef.current.subject;
-        return stillPic && ((!!sj && sj.lift > 0) || !!propsRef.current.layers?.light);
+        return stillPic && (!!sj && sj.lift > 0);
       };
       const depthNow = vid
         ? videoFrameDepth(vid.el, depthCanvas!)
@@ -813,8 +783,6 @@ export function Depth3D(props: Props) {
       let shownDepth: DepthMap = map;
       let refining = '';
       let plate: { key: string; ready: boolean } | null = null;
-      const lightF = newFade(0);
-      let lastLight = { angle: 315, strength: 1 };
       const srcNow = propsRef.current.src;
       const keepLift = lifted.src === srcNow && performance.now() - lifted.at < 600;
       const liftF = newFade(0);
@@ -925,15 +893,11 @@ export function Depth3D(props: Props) {
         gl.uniform1f(s.u.own, bgStill || layered ? 1 : 0);
         // Subject effects (still pictures only): Lift-off on top of the 3D picture.
         let subjBusy = false;
-        let lightOn = 0;
         if (stillPic) {
           const sj = p.subject;
           if (sj && sj.lift > 0) liftAmt = sj.lift;
           fadeTo(liftF, mk && sj && sj.lift > 0 ? 1 : 0, t);
-          if (lay?.light) lastLight = lay.light;
-          fadeTo(lightF, mk && lay?.light ? 1 : 0, t);
           const lv = fadeAt(liftF, t);
-          lightOn = shownMask ? fadeAt(lightF, t) : 0;
           if (lv >= 1) {
             lifted.src = p.src;
             lifted.at = Infinity;
@@ -957,20 +921,10 @@ export function Depth3D(props: Props) {
             gl.uniform1f(s.u.shBlur, sf.shadowBlur);
             gl.uniform1f(s.u.zSubj, zSubj);
             gl.uniform1f(s.u.zBg, zBg);
-            // A light that stays put: the shadow fixed to the background, the rim turning as the camera moves.
-            if (lightOn > 0) {
-              const lf = lightFrame(lastLight.angle, lastLight.strength, f.shift, asp, zSubj, zBg);
-              gl.uniform1f(s.u.lShadow, lf.shadow);
-              gl.uniform2f(s.u.lOff, lf.offset.x, lf.offset.y);
-              gl.uniform1f(s.u.lBlur, lf.blur);
-              gl.uniform2f(s.u.lRim, lf.rim.x, lf.rim.y);
-              gl.uniform1f(s.u.rim, lf.rimAmount);
-            }
           }
-          // Lift-off and the light move while they ease in or out.
-          subjBusy = !fadeDone(liftF, t) || !fadeDone(lightF, t);
+          // Lift-off moves while it eases in or out.
+          subjBusy = !fadeDone(liftF, t);
         } else gl.uniform1f(s.u.subj, 0);
-        gl.uniform1f(s.u.light, lightOn);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
         const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
@@ -1049,7 +1003,7 @@ export function Depth3D(props: Props) {
   useEffect(() => {
     kick.current();
   }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift,
-    props.layers?.edges, props.layers?.light?.angle, props.layers?.light?.strength, !!props.layers?.light, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered]);
+    props.layers?.edges, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered]);
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
