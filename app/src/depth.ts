@@ -451,6 +451,64 @@ export function frameFeed(): FrameFeed & { emit: (image: TexImageSource, index: 
   };
 }
 
+// ---- videos: depth worked out live while they play --------------------------------------------
+
+/** Fewest milliseconds between two live depth maps (at most ~12 a second). */
+export const VIDEO_DEPTH_MS = 80;
+
+/**
+ * The depth of what a video shows right now (null if it can't be had):
+ * the frame is scaled to the model's size here and sent like a picture.
+ * Uses the depth model in use for pictures (switching models back and
+ * forth would reload them each time).
+ */
+export async function videoFrameDepth(video: HTMLVideoElement, canvas: OffscreenCanvas): Promise<DepthMap | null> {
+  const s = setup ?? (await depthPack().then(() => setup));
+  if (!s || video.readyState < 2) return null;
+  const side = s.side;
+  if (canvas.width !== side || canvas.height !== side) {
+    canvas.width = side;
+    canvas.height = side;
+  }
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  if (!ctx) return null;
+  ctx.drawImage(video, 0, 0, side, side);
+  const px = ctx.getImageData(0, 0, side, side).data;
+  return api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail, soft: s.soft ?? 1 }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
+}
+
+/** How different two depth maps are (0–255, average): a big jump means a new scene (or a seek). */
+export function depthChange(a: DepthMap, b: DepthMap): number {
+  if (a.w !== b.w || a.h !== b.h || !a.data.length) return 255;
+  let sum = 0;
+  const step = Math.max(1, Math.floor(a.data.length / 4096));
+  let n = 0;
+  for (let i = 0; i < a.data.length; i += step) {
+    sum += Math.abs(a.data[i] - b.data[i]);
+    n++;
+  }
+  return sum / n;
+}
+
+/**
+ * Live depth smoothed over time: the new map blended into the last one
+ * (`keep` of the old), so depth doesn't shimmer; a new scene starts fresh.
+ */
+export function blendDepth(prev: DepthMap | null, next: DepthMap, keep = 0.5): DepthMap {
+  if (!prev || prev.w !== next.w || prev.h !== next.h || depthChange(prev, next) > 40) return next;
+  const out = new Uint8Array(next.data.length);
+  const k = Math.min(0.95, Math.max(0, keep));
+  for (let i = 0; i < out.length; i++) out[i] = Math.round(prev.data[i] * k + next.data[i] * (1 - k));
+  return { w: next.w, h: next.h, data: out };
+}
+
+/** Of live depth maps (oldest first, each with the video time it was taken at), the one for video time `t`. */
+export function depthForTime<T extends { at: number }>(list: T[], t: number): T | null {
+  let best: T | null = null;
+  for (const d of list) if (d.at <= t + 0.02) best = d;
+  return best ?? list[0] ?? null;
+}
+
 /** The animation at `src` was left: stop working out its frames. */
 export function depthFramesLetGo(src: string) {
   if (!setup) return;

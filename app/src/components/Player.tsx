@@ -44,7 +44,7 @@ import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, OrbitIcon,
+  BeatIcon, Film3DIcon, FrameOutIcon, OrbitIcon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
@@ -807,8 +807,9 @@ export function Player(props: PlayerProps) {
   const [depthPackOk, setDepthPackOk] = useState(false);
   // (Asked again when another depth model or detail is chosen: maps from the old one are forgotten.)
   const depthMoving = !!prefs.depthMoving;
+  const depthFrame = !!prefs.depthFrame;
   useEffect(() => {
-    if (!depthAuto && !prefs.depthMouse && !depthMoving) return;
+    if (!depthAuto && !prefs.depthMouse && !depthMoving && !depthFrame) return;
     let alive = true;
     depthPack().then((i) => {
       if (!alive) return;
@@ -818,7 +819,7 @@ export function Player(props: PlayerProps) {
     return () => {
       alive = false;
     };
-  }, [depthAuto, depthMoving, prefs.depthMouse, prefs.depthModel, prefs.depthDetail, prefs.depthEdges]);
+  }, [depthAuto, depthMoving, depthFrame, prefs.depthMouse, prefs.depthModel, prefs.depthDetail, prefs.depthEdges]);
   /** The model and size in use: the picture starts again with the new model's depth when it changes. */
   const [depthModelKey, setDepthModelKey] = useState('');
   // Just viewing (no slideshow), the movement goes on for as long as the picture is open; only
@@ -828,10 +829,23 @@ export function Player(props: PlayerProps) {
   const depthRunning = (depthAuto || depthByMouse) && depthPackOk && !mini;
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
-  const depthFor = animated ? depthMoving : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse : false;
-  const depth3d = depthFor && depthPackOk && !mini && !zoomed && !failed && rot === 0 && !up.src && !!imgInfo;
+  const isVideo3d = item?.kind === 'video';
+  /** GIFs and videos move with their own switch; pictures with theirs. Out of the frame needs depth too. */
+  const depthFor = animated || isVideo3d ? depthMoving || depthFrame : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || depthFrame : false;
+  /** Moving on its own or with the mouse (just the frame: the picture stays still). */
+  const depthMotion = animated || isVideo3d ? depthMoving || depthByMouse : depthAuto || depthByMouse;
+  const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
+  const depth3d = depthFor && depthPackOk && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
   /** Each shown GIF frame, for the 3D layer. */
   const gifFeed = useMemo(() => frameFeed(), []);
+  // Live video 3D with the delay on: the sound is delayed by the same amount as the picture.
+  const videoDelay = depth3d && isVideo3d && !!prefs.depthVideoDelay;
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    const route = audioRoute(v, videoDelay);
+    return () => route?.(false);
+  }, [videoDelay, item?.key]);
   // 3D to the beat: listens to the music while it's on and something is in 3D.
   const beat3d = useBeatSync({ enabled: !!prefs.depthBeat && depth3d, everyBeats: 1, minSeconds: 0, onAdvance: () => {} });
   useEffect(() => {
@@ -1279,13 +1293,15 @@ export function Player(props: PlayerProps) {
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
             {/* 3D photos (begin) */}
-            {depth3d && item && imgInfo && (
-              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={{ w: imgInfo.width, h: imgInfo.height }} fit={s.fit}
-                amount={animated ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
+            {depth3d && item && depthNatural && (
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={depthNatural} fit={s.fit}
+                amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
+                video={isVideo3d ? { ref: videoRef, delayMs: prefs.depthVideoDelay ? 100 : 0 } : undefined}
+                frame={depthFrame ? { outside: prefs.depthFrameOutside === 'black' ? 'black' : 'dim', size: prefs.depthFrameSize ?? 0.1 } : undefined} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 frames={animated ? gifFeed : undefined}
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
-                motion={{ shape: motionChoice(prefs.depthShape), amount: prefs.depthMotion ?? 1, speed: prefs.depthSpeed ?? 1 }}
-                endless={!slideshow} halted={slideshow ? halted : !!props.hold}
+                motion={{ shape: motionChoice(prefs.depthShape), amount: depthMotion ? prefs.depthMotion ?? 1 : 0, speed: prefs.depthSpeed ?? 1 }}
+                endless={!slideshow} halted={(slideshow ? halted : !!props.hold) || !depthMotion}
                 showMs={s.imageSeconds * 1000} sharpen={prefs.sharpen && prefs.smoothFit} />
             )}
             {/* 3D photos (end) */}
@@ -1464,9 +1480,9 @@ export function Player(props: PlayerProps) {
                 </div>
               )}
               {up.button}
-              {isPicture && !failed && !props.compact && (
+              {(isPicture || isVideo3d) && !failed && !props.compact && (
                 <div className="depth-btns" role="group" aria-label="3D">
-                  {(item?.kind === 'image' || !animated) ? (
+                  {!(animated || isVideo3d) ? (
                     <button type="button" className={`pbtn lg${depthAuto ? ' on' : ''}`} aria-pressed={depthAuto} aria-label="3D motion for pictures"
                       title={depthAuto ? '3D motion for pictures is on (shape, amount and speed in View ▾ → 3D photo settings) · click to turn off' : '3D motion for pictures: still pictures move gently in depth'}
                       onClick={() => toggleDepth({ depthAuto: !depthAuto }, !depthAuto, depthAuto ? '3D motion for pictures off' : '3D motion for pictures on')}>
@@ -1474,7 +1490,7 @@ export function Player(props: PlayerProps) {
                     </button>
                   ) : (
                     <button type="button" className={`pbtn lg${depthMoving ? ' on' : ''}`} aria-pressed={depthMoving} aria-label="3D for GIFs and videos"
-                      title={depthMoving ? '3D for GIFs and videos is on (amount in View ▾ → 3D photo settings) · click to turn off' : '3D for GIFs and videos: each frame gets its own depth (worked out when it opens)'}
+                      title={depthMoving ? '3D for GIFs and videos is on (amount in View ▾ → 3D photo settings) · click to turn off' : '3D for GIFs and videos: GIFs get every frame\'s depth when they open; videos are worked out live while they play'}
                       onClick={() => toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : '3D for GIFs and videos on · the depth of every frame is worked out first')}>
                       <Film3DIcon size={18} />
                     </button>
@@ -1483,6 +1499,11 @@ export function Player(props: PlayerProps) {
                     aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in View ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
                     onClick={toggleDepthMouse}>
                     3D
+                  </button>
+                  <button type="button" className={`pbtn lg${depthFrame ? ' on' : ''}`} aria-pressed={depthFrame} aria-label="Out of the frame"
+                    title={depthFrame ? 'Out of the frame is on: the subject steps out over a photo frame (outside and size in View ▾ → 3D photo settings) · click to turn off' : 'Out of the frame: a photo frame the subject steps out of (uses the depth)'}
+                    onClick={() => toggleDepth({ depthFrame: !depthFrame }, !depthFrame, depthFrame ? 'Out of the frame off' : 'Out of the frame on')}>
+                    <FrameOutIcon size={18} />
                   </button>
                   <button type="button" className={`pbtn lg${prefs.depthBeat ? ' on' : ''}`} aria-pressed={!!prefs.depthBeat} aria-label="3D to the beat"
                     title={prefs.depthBeat ? `3D to the beat is on${beat3d.silent ? ' (no music heard yet)' : beat3d.bpm ? ` · ${Math.round(beat3d.bpm)} BPM` : ''} · push or bounce in View ▾ → 3D photo settings · click to turn off` : '3D to the beat: with music playing, the 3D picture pulses on each beat'}
@@ -1530,4 +1551,29 @@ export function Player(props: PlayerProps) {
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
     </div>
   );
+}
+
+/** Sound of a video through a short delay (or straight through again): once routed, a video's sound always goes this way. */
+const routes = new WeakMap<HTMLVideoElement, { ctx: AudioContext; delay: DelayNode }>();
+function audioRoute(v: HTMLVideoElement, on: boolean): ((on: boolean) => void) | null {
+  let r = routes.get(v);
+  if (!r) {
+    if (!on) return null;
+    try {
+      const ctx = new AudioContext();
+      const src = ctx.createMediaElementSource(v);
+      const delay = ctx.createDelay(1);
+      src.connect(delay).connect(ctx.destination);
+      r = { ctx, delay };
+      routes.set(v, r);
+    } catch {
+      return null;
+    }
+  }
+  const set = (yes: boolean) => {
+    r!.delay.delayTime.value = yes ? 0.1 : 0;
+    if (yes) void r!.ctx.resume().catch(() => {});
+  };
+  set(on);
+  return set;
 }
