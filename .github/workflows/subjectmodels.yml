@@ -1,0 +1,178 @@
+name: subject models
+
+# Builds the optional "subject outline" models (BiRefNet, MIT licence) as their
+# own downloads, MediaVault-subject-<id>-windows.zip, each unzipping to
+# MediaVault\tools\subject-<id>\ with model.onnx, subject.json (what the app
+# reads), ONNX Runtime + DirectML, and the licences:
+#   birefnet-lite = "Fast" (BiRefNet lite), birefnet = "Best" (BiRefNet).
+#
+# The model is converted here (fp32, 1024 x 1024) from the official PyTorch
+# weights (ZhengPeng7/BiRefNet_lite or ZhengPeng7/BiRefNet on Hugging Face,
+# pinned to a commit) and checked against the PyTorch model on several
+# pictures before it is packed (.github/scripts/birefnet_export.py: mask
+# correlation >= 0.995 and IoU >= 0.98 on every picture, else the job fails).
+# The weights' licence must be MIT. 32-bit only: half precision stalled the
+# shipped ONNX Runtime on the processor before.
+# Run by hand (Actions → subject models → Run workflow); never on a push.
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: Which model
+        type: choice
+        options: [birefnet-lite, birefnet]
+        required: true
+      tag:
+        description: Release tag (default subject-models-<today>)
+        required: false
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with depthmodels.yml, depthpack.yml, upscaler.yml and facepack.yml.
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  BIREFNET_REPO: https://github.com/ZhengPeng7/BiRefNet
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Which model
+        run: |
+          set -euo pipefail
+          case "${{ github.event.inputs.model }}" in
+            birefnet-lite) echo "NAME=Fast" >> "$GITHUB_ENV"; echo "TITLE=BiRefNet lite" >> "$GITHUB_ENV" ;;
+            birefnet)      echo "NAME=Best" >> "$GITHUB_ENV"; echo "TITLE=BiRefNet" >> "$GITHUB_ENV" ;;
+            *) echo "unknown model"; exit 1 ;;
+          esac
+          echo "ID=${{ github.event.inputs.model }}" >> "$GITHUB_ENV"
+
+      - name: BiRefNet licence and the tools to convert the model
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$BIREFNET_REPO" BiRefNet
+          (cd BiRefNet && git log -1 --format='BiRefNet source: %H %cd')
+          echo "BIREFNET_COMMIT=$(cd BiRefNet && git rev-parse HEAD)" >> "$GITHUB_ENV"
+          grep -q "MIT License" BiRefNet/LICENSE
+          python -m pip install --upgrade pip
+          # The versions the conversion was tried with (newer exporters change behaviour).
+          pip install --index-url https://download.pytorch.org/whl/cpu torch==2.6.0 torchvision==0.21.0
+          pip install "transformers==4.49.0" "timm==1.0.30" "kornia==0.8.3" einops "huggingface_hub<1" safetensors numpy pillow onnx onnxruntime scikit-image
+
+      - name: Convert and check against PyTorch
+        run: |
+          set -euo pipefail
+          python .github/scripts/birefnet_export.py "$ID" pack
+          ls -la pack
+          # The weights' own licence (their model card) must be MIT.
+          python - <<'PY'
+          import pathlib, re
+          f = pathlib.Path("pack/weights-README.md")
+          if not f.is_file():
+              raise SystemExit("the weights' model card is missing")
+          m = re.search(r"^license:\s*([\w.\-]+)", f.read_text(errors="ignore"), re.I | re.M)
+          lic = (m.group(1) if m else "").lower()
+          print("weights licence:", lic or "(not stated)")
+          if lic != "mit":
+              raise SystemExit(f"the weights' licence is {lic or 'not stated'}, not MIT")
+          PY
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+
+      - name: Manifest, licences, readme, checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("pack")
+          made = json.loads((p / "export.json").read_text())
+          manifest = {
+              "id": os.environ["ID"], "name": os.environ["NAME"], "model": os.environ["TITLE"], "file": "model.onnx",
+              "side": made["side"], "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225],
+              "licence": "MIT", "output": made["output"],
+          }
+          (p / "subject.json").write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          read -r HF HF_REV WORST_CORR WORST_IOU < <(python -c "import json;d=json.load(open('pack/export.json'));print(d['repo'],d['revision'],round(d['worstCorrelation'],5),round(d['worstIoU'],5))")
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — SUBJECT OUTLINE MODEL \"$NAME\": LICENCES"
+            echo "===================================================="
+            echo
+            echo "model.onnx   $TITLE by Peng Zheng et al. ($BIREFNET_REPO), MIT licence."
+            echo "    Weights from https://huggingface.co/$HF (commit $HF_REV) under the MIT licence, converted to"
+            echo "    ONNX (fp32, 1024 x 1024 in, the finest mask out) and checked against the PyTorch model"
+            echo "    (worst mask correlation $WORST_CORR, worst IoU $WORST_IOU; details in CONVERSION.json)."
+            echo "onnxruntime.dll   ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence)."
+            echo "DirectML.dll      DirectML $DIRECTML_VERSION (Microsoft); redistributed under its licence below."
+            echo
+            for f in BiRefNet/LICENSE "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          rm -f pack/weights-*
+          printf '%s\r\n' \
+            "Media Vault subject outline model: $NAME ($TITLE)" \
+            "" \
+            "Unzip into the same place as the app: this adds MediaVault\\tools\\subject-$ID." \
+            "Then choose it in View > 3D photo settings (in the viewer) or Settings > Faces & smart search." \
+            "With nothing chosen, Best is used when it's there, else Fast." \
+            "" \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="subject-models-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "$TITLE ($HF@$HF_REV, licence from BiRefNet source $BIREFNET_COMMIT)" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > pack/VERSION.txt
+          cp pack/export.json pack/CONVERSION.json && rm pack/export.json
+          (cd pack && sha256sum model.onnx *.dll subject.json > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "z/MediaVault/tools/subject-$ID"
+          cp pack/* "z/MediaVault/tools/subject-$ID/"
+          zip_name="MediaVault-subject-$ID-windows.zip"
+          (cd z && zip -qr -6 "../$zip_name" MediaVault)
+          ls -la "$zip_name"
+          notes="Optional subject outline models (BiRefNet, MIT). Unzip into the same place as the app, then choose the model in View ▾ → 3D photo settings or Settings → Faces & smart search. Fast = subject-birefnet-lite; Best = subject-birefnet."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$zip_name" --prerelease --title "Subject outline models $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi

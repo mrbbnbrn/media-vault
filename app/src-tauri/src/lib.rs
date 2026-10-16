@@ -29,6 +29,8 @@ mod clip;
 mod config;
 // "3D photos": depth maps for gentle parallax in slideshows (the optional depth pack).
 mod depth;
+// "Subject outlines": a mask of the picture's subject (the optional BiRefNet packs).
+mod subject;
 // Duel mode: pick the better of two; Elo ratings set the slideshow weights.
 mod duel;
 mod engine;
@@ -134,6 +136,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     analyse::stop();
     protocol::forget_cache();
     depth::unload();
+    subject::unload();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         // Again, now that it is closed: whatever a request still running put back.
@@ -2634,6 +2637,12 @@ pub fn run() {
             depth::depth_estimate,
             depth::depth_benchmark,
             depth::depth_forget,
+            // Subject outlines (subject.rs)
+            subject::subject_info,
+            subject::subject_models,
+            subject::subject_estimate,
+            subject::subject_benchmark,
+            subject::subject_forget,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")
