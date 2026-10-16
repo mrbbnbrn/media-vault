@@ -29,7 +29,8 @@ OPTIONS
   --recovery   Unlock with the 24-word recovery key instead of the password.
 
 You will be asked for the password or recovery words; they are never
-accepted on the command line.
+accepted on the command line. A vault without a password opens without
+asking (unless --recovery is given).
 ";
 
 fn main() -> ExitCode {
@@ -86,6 +87,9 @@ fn unlock(root: &Path, recovery: bool) -> Result<Vault, Box<dyn std::error::Erro
         }
         eprintln!("Unlocking...");
         Ok(Vault::unlock_with_recovery(root, &words, Access::ReadOnly)?)
+    } else if read_header(root)?.is_passwordless() {
+        eprintln!("This vault has no password; opening it...");
+        Ok(Vault::open_without_password(root, Access::ReadOnly)?)
     } else {
         let pw = rpassword::prompt_password("Password: ")?;
         eprintln!("Unlocking (this takes a second)...");
@@ -114,6 +118,9 @@ fn info(root: PathBuf) -> R {
     println!("Format:         {} v{}", h.format, h.version);
     println!("Vault id:       {}", h.vault_id);
     println!("Created (unix): {}", h.created_at);
+    if h.is_passwordless() {
+        println!("Password:       none (anyone with this folder can open it)");
+    }
     println!(
         "Password KDF:   {:?}, {} MiB, {} passes, {} lanes",
         h.kdf.alg,

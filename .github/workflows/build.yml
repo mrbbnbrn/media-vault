@@ -66,6 +66,13 @@ jobs:
           ./target/release/vault-export export demo out-rust --recovery < phrase.txt
           python -I tools/reference_decrypt.py demo out-python --recovery < phrase.txt
           diff -r out-rust out-python
+          # A vault without a password opens without asking, in both.
+          ./target/release/examples/make_demo_vault open-demo --no-password > open-phrase.txt
+          ./target/release/vault-export export open-demo open-rust < /dev/null
+          python -I tools/reference_decrypt.py open-demo open-python < /dev/null
+          diff -r open-rust open-python
+          python -I tools/reference_decrypt.py open-demo open-python-rk --recovery < open-phrase.txt
+          diff -r open-rust open-python-rk
           echo "Rust export tool and Python reference decrypter agree."
 
   # Runs at the same time as the tests. Its release is only a draft until

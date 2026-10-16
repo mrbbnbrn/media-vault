@@ -16,9 +16,19 @@ use crate::stream::{
 };
 
 pub const FORMAT_NAME: &str = "media-vault";
-/// 1 = one file per object (media/, thumbs/); 2 = pack files (packs/).
-/// Version 2 apps read both.
-pub const FORMAT_VERSION: u32 = 2;
+/// The newest format this program reads.
+/// 1 = one file per object (media/, thumbs/); 2 = pack files (packs/);
+/// 3 = like 2, but the vault may have no password (an `open_slot`).
+/// Version 3 programs read all three. A vault only says 3 while it has no
+/// password, so older programs refuse it with "made by a newer version"
+/// instead of misreading it.
+pub const FORMAT_VERSION: u32 = 3;
+/// What new vaults with a password are marked as.
+pub const PACKED_VERSION: u32 = 2;
+/// What a vault without a password is marked as.
+pub const NO_PASSWORD_VERSION: u32 = 3;
+/// Text stored next to the unprotected master key in vault.json.
+pub const OPEN_SLOT_WARNING: &str = "This vault has no password. This is its master key, NOT encrypted: anyone who has this folder can open the vault.";
 pub const HEADER_FILE: &str = "vault.json";
 pub const HEADER_BACKUP_FILE: &str = "vault.json.bak";
 pub const DB_FILE: &str = "meta.db.enc";
@@ -44,7 +54,62 @@ pub struct KeySlot {
     pub wrapped_key: String,
 }
 
-/// Contents of vault.json. Contains nothing secret.
+impl KeySlot {
+    /// The stand-in written for "no password": all three fields empty.
+    fn empty() -> KeySlot {
+        KeySlot { salt: String::new(), nonce: String::new(), wrapped_key: String::new() }
+    }
+    fn is_empty(&self) -> bool {
+        self.salt.is_empty() && self.nonce.is_empty() && self.wrapped_key.is_empty()
+    }
+}
+
+/// A vault without a password: the master key itself, unencrypted, so the
+/// vault opens without asking. Anyone with the folder can open such a vault.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct OpenSlot {
+    /// Always [`OPEN_SLOT_WARNING`]; only there for people reading the file.
+    #[serde(default)]
+    pub warning: String,
+    /// The 32-byte master key, hex.
+    pub master_key: String,
+}
+
+impl std::fmt::Debug for OpenSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("OpenSlot { master_key: <hidden> }")
+    }
+}
+
+impl Drop for OpenSlot {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.master_key.zeroize();
+    }
+}
+
+/// `password_slot` is always written, as an empty slot when the vault has
+/// no password, so programs from before format 3 can still read the header
+/// far enough to see the version number and refuse the vault clearly.
+mod password_slot_field {
+    use super::KeySlot;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &Option<KeySlot>, s: S) -> Result<S::Ok, S::Error> {
+        match v {
+            Some(slot) => slot.serialize(s),
+            None => KeySlot::empty().serialize(s),
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Option<KeySlot>, D::Error> {
+        let slot: Option<KeySlot> = Option::deserialize(d)?;
+        Ok(slot.filter(|s| !s.is_empty()))
+    }
+}
+
+/// Contents of vault.json. Contains nothing secret, unless the vault has no
+/// password (then `open_slot` holds the master key).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultHeader {
     pub format: String,
@@ -52,8 +117,24 @@ pub struct VaultHeader {
     pub vault_id: String,
     pub created_at: u64,
     pub kdf: KdfParams,
-    pub password_slot: KeySlot,
+    /// None = the vault has no password (written as an empty slot).
+    #[serde(default, with = "password_slot_field")]
+    pub password_slot: Option<KeySlot>,
     pub recovery_slot: KeySlot,
+    /// Only in a vault without a password.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_slot: Option<OpenSlot>,
+}
+
+impl VaultHeader {
+    /// True if the vault asks for a password to open.
+    pub fn has_password(&self) -> bool {
+        self.password_slot.is_some()
+    }
+    /// True if the vault opens without a password.
+    pub fn is_passwordless(&self) -> bool {
+        self.open_slot.is_some()
+    }
 }
 
 /// The 24 recovery words. Wiped from memory when dropped.
@@ -179,6 +260,25 @@ fn new_recovery_slot(master: &Key, vault_id: &str) -> (KeySlot, RecoveryPhrase) 
     (slot, words)
 }
 
+fn new_open_slot(master: &Key) -> OpenSlot {
+    OpenSlot {
+        warning: OPEN_SLOT_WARNING.into(),
+        master_key: hex::encode(master.as_ref()),
+    }
+}
+
+fn read_open_slot(slot: &OpenSlot) -> Result<Key> {
+    let raw = Zeroizing::new(
+        hex::decode(&slot.master_key)
+            .map_err(|_| Error::Corrupt("vault.json: open_slot.master_key is not hex".into()))?,
+    );
+    let arr: [u8; KEY_LEN] = raw
+        .as_slice()
+        .try_into()
+        .map_err(|_| Error::Corrupt("vault.json: open_slot.master_key has the wrong length".into()))?;
+    Ok(Zeroizing::new(arr))
+}
+
 fn new_password_slot(
     master: &Key,
     password: &str,
@@ -231,6 +331,27 @@ impl Vault {
     /// Create a new, empty vault in `root` (must not exist, or be an empty folder).
     /// Returns the vault and the recovery phrase, which must be shown to the user once.
     pub fn create(root: &Path, password: &str, kdf: KdfParams) -> Result<(Vault, RecoveryPhrase)> {
+        Self::create_inner(root, Some(password), kdf)
+    }
+
+    /// Create a new, empty vault that has no password: it opens with
+    /// [`Vault::open_without_password`], and anyone who has the folder can
+    /// open it. The recovery key works as usual. `kdf` is kept for when a
+    /// password is set later.
+    pub fn create_without_password(root: &Path, kdf: KdfParams) -> Result<(Vault, RecoveryPhrase)> {
+        Self::create_inner(root, None, kdf)
+    }
+
+    fn create_inner(
+        root: &Path,
+        password: Option<&str>,
+        kdf: KdfParams,
+    ) -> Result<(Vault, RecoveryPhrase)> {
+        if let Some(pw) = password
+            && pw.is_empty()
+        {
+            return Err(Error::Invalid("password must not be empty".into()));
+        }
         if root.exists() {
             if is_vault(root) {
                 return Err(Error::AlreadyExists(root.to_path_buf()));
@@ -247,16 +368,20 @@ impl Vault {
 
         let master = crypto::random_key();
         let vault_id = hex::encode(crypto::random_bytes::<16>());
-        let password_slot = new_password_slot(&master, password, &kdf, &vault_id)?;
+        let (password_slot, open_slot) = match password {
+            Some(pw) => (Some(new_password_slot(&master, pw, &kdf, &vault_id)?), None),
+            None => (None, Some(new_open_slot(&master))),
+        };
         let (recovery_slot, phrase) = new_recovery_slot(&master, &vault_id);
         let header = VaultHeader {
             format: FORMAT_NAME.into(),
-            version: FORMAT_VERSION,
+            version: if open_slot.is_some() { NO_PASSWORD_VERSION } else { PACKED_VERSION },
             vault_id,
             created_at: now_secs(),
             kdf,
             password_slot,
             recovery_slot,
+            open_slot,
         };
         atomic_write(&root.join(FORMAT_DOC_FILE), FORMAT_DOC.as_bytes())?;
         let mut vault = Vault {
@@ -276,15 +401,24 @@ impl Vault {
 
     pub fn unlock(root: &Path, password: &str, access: Access) -> Result<Vault> {
         let header = read_header(root)?;
-        let salt = hex::decode(&header.password_slot.salt)
+        let Some(slot) = header.password_slot.as_ref() else {
+            return Err(Error::NoPassword);
+        };
+        let salt = hex::decode(&slot.salt)
             .map_err(|_| Error::Corrupt("vault.json: salt".into()))?;
         let kek = crypto::derive_password_key(password, &salt, &header.kdf)?;
-        let master = open_slot(
-            &kek,
-            &header.password_slot,
-            &slot_aad("password", &header.vault_id),
-        )?
-        .ok_or(Error::WrongKey)?;
+        let master = open_slot(&kek, slot, &slot_aad("password", &header.vault_id))?
+            .ok_or(Error::WrongKey)?;
+        Self::finish_unlock(root, header, master, access)
+    }
+
+    /// Open a vault that has no password (see [`Vault::create_without_password`]).
+    pub fn open_without_password(root: &Path, access: Access) -> Result<Vault> {
+        let header = read_header(root)?;
+        let Some(slot) = header.open_slot.as_ref() else {
+            return Err(Error::Invalid("this vault has a password".into()));
+        };
+        let master = read_open_slot(slot)?;
         Self::finish_unlock(root, header, master, access)
     }
 
@@ -363,16 +497,41 @@ impl Vault {
         &self.header
     }
 
-    /// Re-wrap the master key under a new password. Instant: no media is re-encrypted.
+    /// Re-wrap the master key under a new password. Instant: no media is
+    /// re-encrypted. On a vault without a password this sets one (and the
+    /// unprotected copy of the key is removed).
     pub fn change_password(&mut self, new_password: &str) -> Result<()> {
         self.require_write()?;
-        self.header.password_slot = new_password_slot(
+        let slot = new_password_slot(
             &self.master,
             new_password,
             &self.header.kdf,
             &self.header.vault_id,
         )?;
+        self.header.password_slot = Some(slot);
+        if self.header.open_slot.take().is_some() && self.header.version >= NO_PASSWORD_VERSION {
+            // Readable by older programs again.
+            self.header.version = if self.has_loose_objects()? { 1 } else { PACKED_VERSION };
+        }
         self.write_header()
+    }
+
+    /// Remove the password: the master key is stored unencrypted in
+    /// vault.json, so the vault opens without asking, for anyone who has the
+    /// folder. Instant: only vault.json changes, no media is touched. The
+    /// recovery key keeps working.
+    pub fn turn_password_off(&mut self) -> Result<()> {
+        self.require_write()?;
+        self.header.open_slot = Some(new_open_slot(&self.master));
+        self.header.password_slot = None;
+        self.header.version = self.header.version.max(NO_PASSWORD_VERSION);
+        self.write_header()?;
+        // The format description inside the vault explains the open slot.
+        let doc = self.root.join(FORMAT_DOC_FILE);
+        if fs::read(&doc).ok().as_deref() != Some(FORMAT_DOC.as_bytes()) {
+            atomic_write(&doc, FORMAT_DOC.as_bytes())?;
+        }
+        Ok(())
     }
 
     /// Replace the recovery key. The old 24 words stop working.

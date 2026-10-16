@@ -173,6 +173,8 @@ export interface VaultEntry {
   name: string;
   status: 'ready' | 'missing' | 'notVault';
   sizeBytes: number | null;
+  /** Opens without a password (clicking it opens it). */
+  passwordless: boolean;
 }
 
 export interface SessionInfo {
@@ -181,6 +183,8 @@ export interface SessionInfo {
   items: number;
   folders: number;
   needsNewPassword: boolean;
+  /** False for a vault that opens without a password (it never locks by itself). */
+  hasPassword: boolean;
   restoredFromBackup: string | null;
   /** Only right after unlocking. */
   login?: LoginInfo | null;
@@ -779,8 +783,15 @@ export const api = {
   saveConfig: (config: AppConfig) => call<AppConfig>('save_config', { config }),
   addVault: (path: string) => call<VaultEntry>('add_vault', { path }),
   forgetVault: (path: string) => call<void>('forget_vault', { path }),
-  createVault: (parent: string, name: string, password: string) =>
+  /** `password` null = a vault without a password. */
+  createVault: (parent: string, name: string, password: string | null) =>
     call<{ session: SessionInfo; words: string[] }>('create_vault', { parent, name, password }),
+  /** Open a vault that has no password. */
+  openVault: (path: string) => call<SessionInfo>('open_vault', { path }).then(keepLogin),
+  /** Remove the password (the current one is checked first). */
+  turnPasswordOff: (current: string) => call<SessionInfo>('turn_password_off', { current }),
+  /** Give a vault without a password one. */
+  setPassword: (password: string) => call<SessionInfo>('set_password', { password }),
   unlock: (path: string, password: string) => call<SessionInfo>('unlock', { path, password }).then(keepLogin),
   unlockWithRecovery: (path: string, words: string) => call<SessionInfo>('unlock_with_recovery', { path, words }).then(keepLogin),
   setNewPassword: (password: string) => call<SessionInfo>('set_new_password', { password }),
@@ -1376,9 +1387,9 @@ const mock = {
       lastVault: 'D:\\Vaults\\Photos',
     },
     vaults: [
-      { path: 'D:\\Vaults\\Photos', name: 'Photos', status: 'ready', sizeBytes: 8.2e9 },
-      { path: 'D:\\Vaults\\Archive', name: 'Archive', status: 'ready', sizeBytes: 1.01e11 },
-      { path: 'F:\\Vault backup', name: 'Vault backup', status: 'missing', sizeBytes: null },
+      { path: 'D:\\Vaults\\Photos', name: 'Photos', status: 'ready', sizeBytes: 8.2e9, passwordless: false },
+      { path: 'D:\\Vaults\\Archive', name: 'Archive', status: 'ready', sizeBytes: 1.01e11, passwordless: true },
+      { path: 'F:\\Vault backup', name: 'Vault backup', status: 'missing', sizeBytes: null, passwordless: false },
     ],
     session: null,
     minPasswordChars: 8,
@@ -1419,14 +1430,22 @@ const mock = {
     const crops = await (await import('./mockfacecrops')).cropsAnswer(cmd, a, (person) => this.call('query_items', { filter: { people: [person] } }) as Promise<Item[]>);
     if (crops !== undefined) return crops;
     const s = this.state;
+    const passwordless = (path: string) => !!s.vaults.find((v) => v.path === path)?.passwordless;
     const session = (path: string, needsNewPassword = false): SessionInfo => ({
       path,
       name: path.split('\\').pop() ?? path,
       items: 0,
       folders: 0,
       needsNewPassword,
+      hasPassword: !passwordless(path),
       restoredFromBackup: null,
     });
+    const setPasswordless = (on: boolean) => {
+      const v = s.vaults.find((x) => x.path === s.session?.path);
+      if (v) v.passwordless = on;
+      s.session = { ...s.session!, hasPassword: !on };
+      return s.session;
+    };
     switch (cmd) {
       case 'get_state':
         return structuredClone(s);
@@ -1436,14 +1455,22 @@ const mock = {
       case 'unlock':
         if (a.password !== 'password') throw new Error("That password doesn't match this vault. (Preview: use “password”.)");
         return (s.session = session(a.path as string));
+      case 'open_vault':
+        if (!passwordless(a.path as string)) throw new Error('This vault has a password.');
+        return (s.session = session(a.path as string));
+      case 'turn_password_off':
+        if (a.current !== 'password') throw new Error('Your current password is not correct. (Preview: use “password”.)');
+        return setPasswordless(true);
+      case 'set_password':
+        return setPasswordless(false);
       case 'unlock_with_recovery':
-        return (s.session = session(a.path as string, true));
+        return (s.session = session(a.path as string, !passwordless(a.path as string)));
       case 'set_new_password':
         s.session = { ...s.session!, needsNewPassword: false };
         return s.session;
       case 'create_vault': {
         const path = `${a.parent}\\${a.name}`;
-        s.vaults.push({ path, name: a.name as string, status: 'ready', sizeBytes: 4096 });
+        s.vaults.push({ path, name: a.name as string, status: 'ready', sizeBytes: 4096, passwordless: a.password == null });
         return { session: (s.session = session(path)), words: WORDS };
       }
       case 'reset_recovery':

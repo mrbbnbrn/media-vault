@@ -8,6 +8,7 @@ It shares no code with the app. It exists for two reasons:
 
 Requirements:  pip install cryptography argon2-cffi mnemonic
 Usage:         python reference_decrypt.py <vault folder> <output folder> [--recovery]
+               (a vault without a password opens without asking)
 """
 import getpass
 import json
@@ -34,6 +35,13 @@ def master_from_password(h, password):
                           parallelism=k["parallelism"], hash_len=32, type=Type.ID, version=0x13)
     aad = ("media-vault/v1/slot/password/" + h["vault_id"]).encode()
     return AESGCM(kek).decrypt(bytes.fromhex(s["nonce"]), bytes.fromhex(s["wrapped_key"]), aad)
+
+
+def master_from_open_slot(h):
+    """A vault without a password: the master key is stored as-is (version 3)."""
+    key = bytes.fromhex(h["open_slot"]["master_key"])
+    assert len(key) == 32, "open_slot.master_key has the wrong length"
+    return key
 
 
 def master_from_recovery(h, words):
@@ -101,8 +109,11 @@ def decrypt_object(master, path, object_id, out, offset=0, entry_len=None):
 def main():
     vault, dest = sys.argv[1], sys.argv[2]
     h = json.load(open(os.path.join(vault, "vault.json")))
+    assert h["format"] == "media-vault" and h["version"] in (1, 2, 3), "unknown vault format"
     if "--recovery" in sys.argv:
         master = master_from_recovery(h, sys.stdin.read() if not sys.stdin.isatty() else input("Recovery words: "))
+    elif h.get("open_slot"):
+        master = master_from_open_slot(h)
     else:
         master = master_from_password(h, sys.stdin.readline().rstrip("\n") if not sys.stdin.isatty() else getpass.getpass())
 

@@ -15,6 +15,7 @@ If the main app ever stops working
   vault-export.exe can decrypt any vault back into normal files:
     vault-export export "D:\Vaults\Photos" "D:\Restored"
   Add --recovery to use the 24 recovery words instead of the password.
+  A vault without a password opens without asking.
   FORMAT.md describes the storage format in full, and reference_decrypt.py
   is a second, independent decrypter (needs Python).
 

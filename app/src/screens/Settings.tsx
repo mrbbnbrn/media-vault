@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react';
 import { api, DEFAULT_LOOK, DEFAULT_VIEWER, onEvent, type AppConfig, type LookSettings, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
-import { BackIcon, ExportIcon, ShieldIcon } from '../components/Icons';
+import { BackIcon, ExportIcon, ShieldIcon, WarnIcon } from '../components/Icons';
+import { autoLocks, NO_PASSWORD_WARNING } from '../vaultpick';
 import { DamageReportView, ExportDialog } from '../components/Safety';
 import { UpscalerSection } from '../components/Upscale';
 import { DepthSection } from '../components/Depth3D';
@@ -147,6 +148,12 @@ export function Settings({ nav }: { nav: Nav }) {
 
               <section className="section">
                 <h2>Auto-lock</h2>
+                {nav.app.session && !autoLocks(nav.app.session) && (
+                  <div className="info" role="note">
+                    This vault has no password, so it never locks by itself; these settings apply to vaults with a password.
+                    You can still lock it by hand with the Lock button or Ctrl + Shift + L.
+                  </div>
+                )}
                 <div className="setting">
                   <div className="text">
                     <label className="title" htmlFor="idle">Lock when I’m idle for</label>
@@ -273,11 +280,48 @@ function VaultSection({ nav }: { nav: Nav }) {
   const [current, setCurrent] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [busy, setBusy] = useState<'pw' | 'rk' | null>(null);
+  const [busy, setBusy] = useState<'pw' | 'rk' | 'off' | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [rkCurrent, setRkCurrent] = useState('');
   const [rkError, setRkError] = useState<string | null>(null);
+  const hasPassword = nav.app.session?.hasPassword !== false;
+  const [offCurrent, setOffCurrent] = useState('');
+  const [offError, setOffError] = useState<string | null>(null);
+  const [confirmOff, setConfirmOff] = useState(false);
+  const [switched, setSwitched] = useState<'off' | 'on' | null>(null);
+
+  async function turnOff() {
+    setOffError(null);
+    setBusy('off');
+    try {
+      await api.turnPasswordOff(offCurrent);
+      setOffCurrent('');
+      setCurrent('');
+      setRkCurrent('');
+      await nav.refresh();
+      setSwitched('off');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setOne(e: React.FormEvent) {
+    e.preventDefault();
+    setBusy('pw');
+    setError(null);
+    try {
+      await api.setPassword(password);
+      setPassword('');
+      setConfirm('');
+      await nav.refresh();
+      setSwitched('on');
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(null);
+    }
+  }
 
   async function change(e: React.FormEvent) {
     e.preventDefault();
@@ -311,6 +355,57 @@ function VaultSection({ nav }: { nav: Nav }) {
     }
   }
 
+  const recoveryForm = (
+    <form className="section" onSubmit={newRecovery} style={{ maxWidth: 520 }}>
+      <h2>New recovery key</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        Makes 24 new words and turns the old ones off. Use this if your paper copy was lost or someone may have seen it.
+      </p>
+      {hasPassword && (
+        <div className="field">
+          <label htmlFor="rkcur">Current password</label>
+          <input id="rkcur" className="input" type="password" autoComplete="current-password" value={rkCurrent} onChange={(e) => setRkCurrent(e.target.value)} />
+        </div>
+      )}
+      <ErrorBox error={rkError} />
+      <div>
+        <button type="submit" className="btn" disabled={!!busy || (hasPassword && !rkCurrent)}>
+          {busy === 'rk' ? <Busy label="Making new key…" /> : 'Make a new recovery key'}
+        </button>
+      </div>
+    </form>
+  );
+
+  if (!hasPassword) {
+    return (
+      <>
+        <form className="section" onSubmit={setOne} style={{ maxWidth: 520 }}>
+          <h2>Set a password</h2>
+          {switched === 'off' && <div className="info" role="status">The password is off. This vault now opens without asking.</div>}
+          <div className="notice" role="note">
+            <WarnIcon />
+            <span>This vault has no password. {NO_PASSWORD_WARNING}</span>
+          </div>
+          <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+            With a password, the vault asks for it every time it opens and locks by itself again. Instant: your files
+            aren’t re-encrypted. Your recovery words keep working.
+          </p>
+          <PasswordPair password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} min={min} label="New password" />
+          <ErrorBox error={error} />
+          <div>
+            <button type="submit" className="btn btn-primary" disabled={!!busy || !passwordsOk(password, confirm, min)}>
+              {busy === 'pw' ? <Busy label="Setting…" /> : 'Set a password'}
+            </button>
+          </div>
+        </form>
+
+        <div className="divider" />
+
+        {recoveryForm}
+      </>
+    );
+  }
+
   return (
     <>
       <form className="section" onSubmit={change} style={{ maxWidth: 520 }}>
@@ -323,6 +418,7 @@ function VaultSection({ nav }: { nav: Nav }) {
         <PasswordPair password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} min={min} label="New password" />
         <ErrorBox error={error} />
         {done && <div className="info" role="status">Password changed.</div>}
+        {switched === 'on' && <div className="info" role="status">Password set. This vault now asks for it when it opens.</div>}
         <div>
           <button type="submit" className="btn btn-primary" disabled={!!busy || !current || !passwordsOk(password, confirm, min)}>
             {busy === 'pw' ? <Busy label="Changing…" /> : 'Change password'}
@@ -332,22 +428,40 @@ function VaultSection({ nav }: { nav: Nav }) {
 
       <div className="divider" />
 
-      <form className="section" onSubmit={newRecovery} style={{ maxWidth: 520 }}>
-        <h2>New recovery key</h2>
+      {recoveryForm}
+
+      <div className="divider" />
+
+      <form className="section" style={{ maxWidth: 520 }} onSubmit={(e) => { e.preventDefault(); setOffError(null); setConfirmOff(true); }}>
+        <h2>Turn the password off</h2>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-          Makes 24 new words and turns the old ones off. Use this if your paper copy was lost or someone may have seen it.
+          The vault then opens without asking and never locks by itself. {NO_PASSWORD_WARNING} Your files aren’t
+          re-encrypted, and your recovery words keep working. You can set a password again any time.
         </p>
         <div className="field">
-          <label htmlFor="rkcur">Current password</label>
-          <input id="rkcur" className="input" type="password" autoComplete="current-password" value={rkCurrent} onChange={(e) => setRkCurrent(e.target.value)} />
+          <label htmlFor="offcur">Current password</label>
+          <input id="offcur" className="input" type="password" autoComplete="current-password" value={offCurrent} onChange={(e) => setOffCurrent(e.target.value)} />
         </div>
-        <ErrorBox error={rkError} />
+        <ErrorBox error={offError} />
         <div>
-          <button type="submit" className="btn" disabled={!!busy || !rkCurrent}>
-            {busy === 'rk' ? <Busy label="Making new key…" /> : 'Make a new recovery key'}
+          <button type="submit" className="btn" disabled={!!busy || !offCurrent}>
+            {busy === 'off' ? <Busy label="Turning off…" /> : 'Turn the password off…'}
           </button>
         </div>
       </form>
+      {confirmOff && (
+        <ConfirmDialog title="Turn the password off?" confirm="Turn it off" danger
+          onConfirm={async () => {
+            try {
+              await turnOff();
+            } catch (err) {
+              setOffError((err as Error).message);
+            }
+          }}
+          onClose={() => setConfirmOff(false)}>
+          {NO_PASSWORD_WARNING} Copies and backups of the folder too. The vault won’t ask for anything when it opens.
+        </ConfirmDialog>
+      )}
     </>
   );
 }

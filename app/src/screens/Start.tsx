@@ -3,8 +3,9 @@ import { api, pickFolder, type VaultEntry } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, OfflineFooter, TopBar } from '../components/Chrome';
 import { PlayIcon } from '../components/Icons';
-import { FolderIcon, PlusIcon } from '../components/Icons';
+import { FolderIcon, LockIcon, PlusIcon } from '../components/Icons';
 import { formatBytes } from '../theme';
+import { pickAction, vaultBadge } from '../vaultpick';
 
 export function Start({ nav, select }: { nav: Nav; select?: string }) {
   const { app } = nav;
@@ -35,6 +36,28 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  /** A vault without a password: open it right away (only when clicked). */
+  async function openNow(v: VaultEntry) {
+    setSelected(v.path);
+    setBusy(true);
+    setError(null);
+    try {
+      await api.openVault(v.path);
+      await nav.refresh();
+      nav.go({ name: 'library' });
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function pick(v: VaultEntry) {
+    if (busy) return;
+    if (pickAction(v) === 'open') openNow(v);
+    else setSelected(v.path);
   }
 
   async function openExisting() {
@@ -73,7 +96,8 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
             </p>
           )}
           {app.vaults.map((v) => (
-            <button key={v.path} type="button" onClick={() => setSelected(v.path)}
+            <button key={v.path} type="button" onClick={() => pick(v)}
+              title={pickAction(v) === 'open' ? 'No password: click to open' : undefined}
               className={`vault${v.path === selected ? ' selected' : ''}${v.status !== 'ready' ? ' missing' : ''}`}
               aria-pressed={v.path === selected}>
               <span className="icon"><FolderIcon /></span>
@@ -84,6 +108,10 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
               <span className="status">
                 {v.status === 'ready' ? formatBytes(v.sizeBytes) : v.status === 'missing' ? 'Drive not connected' : 'Not a vault'}
               </span>
+              {vaultBadge(v) === 'lock' && (
+                <span className="vault-lock" aria-label="Has a password"><LockIcon size={14} /></span>
+              )}
+              {vaultBadge(v) === 'noPassword' && <span className="vault-nopw">No password</span>}
             </button>
           ))}
           <div className="row" style={{ marginTop: 8 }}>
@@ -104,7 +132,7 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
                 <h1 style={{ fontSize: 24 }}>Create your first vault</h1>
               </div>
               <p className="lead" style={{ fontSize: 14 }}>
-                A vault is a folder where everything is encrypted. You choose where it lives and set its password.
+                A vault is a folder where everything is encrypted. You choose where it lives and, if you like, its password.
               </p>
               <ErrorBox error={error} />
               <button type="button" className="btn btn-primary" onClick={() => nav.go({ name: 'create' })}>Create a vault</button>
@@ -124,6 +152,26 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
               <div className="row">
                 <button type="button" className="btn" onClick={() => nav.refresh()}>Check again</button>
                 <button type="button" className="btn" onClick={() => forget(vault)}>Remove from list</button>
+              </div>
+            </>
+          ) : vault.passwordless ? (
+            <>
+              <div className="field" style={{ gap: 6 }}>
+                <span className="muted" style={{ fontSize: 13 }}>No password</span>
+                <h1 style={{ fontSize: 26 }}>{vault.name}</h1>
+              </div>
+              <p className="lead" style={{ fontSize: 14 }}>
+                This vault opens without a password. Click it in the list, or here.
+              </p>
+              <ErrorBox error={error} />
+              <button type="button" className="btn btn-primary" disabled={busy} onClick={() => openNow(vault)}>
+                {busy ? <Busy label="Opening…" /> : 'Open'}
+              </button>
+              <div className="row-between">
+                <span />
+                <button type="button" className="link" style={{ color: 'var(--faint)' }} onClick={() => forget(vault)}>
+                  Remove from list
+                </button>
               </div>
             </>
           ) : (

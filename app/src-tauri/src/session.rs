@@ -42,6 +42,8 @@ pub struct SessionInfo {
     pub items: i64,
     pub folders: i64,
     pub needs_new_password: bool,
+    /// False for a vault that opens without a password.
+    pub has_password: bool,
     /// Set if the main database was damaged and a backup was used.
     pub restored_from_backup: Option<String>,
     /// Only right after unlocking: the previous opening and wrong passwords since.
@@ -56,11 +58,14 @@ pub struct VaultEntry {
     /// "ready", "missing" (drive not connected / folder gone) or "notVault".
     pub status: String,
     pub size_bytes: Option<u64>,
+    /// Opens without a password (no need to ask for one).
+    pub passwordless: bool,
 }
 
 pub fn friendly(e: Error) -> String {
     match e {
         Error::WrongKey => "That password doesn't match this vault.".into(),
+        Error::NoPassword => "This vault has no password. It opens without one.".into(),
         Error::BadRecoveryPhrase(m) => format!("Those recovery words aren't valid: {m}."),
         Error::NotAVault(p) => format!("{} is not a Media Vault folder.", p.display()),
         Error::AlreadyExists(p) => format!("There is already a vault in {}.", p.display()),
@@ -104,11 +109,14 @@ pub fn describe(path: &str) -> VaultEntry {
     } else {
         ("ready", Some(dir_size(p)))
     };
+    let passwordless = status == "ready"
+        && vault_core::read_header(p).is_ok_and(|h| h.is_passwordless());
     VaultEntry {
         path: path.to_string(),
         name: folder_name(p),
         status: status.into(),
         size_bytes: size,
+        passwordless,
     }
 }
 
@@ -150,6 +158,11 @@ impl Session {
 
     pub fn db(&self) -> MutexGuard<'_, Connection> {
         self.db.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// False for a vault that opens without a password (it never locks by itself).
+    pub fn has_password(&self) -> bool {
+        self.vault().header().has_password()
     }
 
     pub fn needs_new_password(&self) -> bool {
@@ -264,6 +277,7 @@ impl Session {
             items: count("SELECT COUNT(*) FROM media WHERE deleted_at IS NULL"),
             folders: count("SELECT COUNT(*) FROM folders WHERE deleted_at IS NULL"),
             needs_new_password: self.needs_new_password(),
+            has_password: self.has_password(),
             restored_from_backup: self
                 .restored_from_backup
                 .as_ref()
@@ -280,6 +294,25 @@ pub fn create(
     password: &str,
     kdf: KdfParams,
 ) -> Result<(Session, Vec<String>), String> {
+    create_with(parent, name, Some(password), kdf)
+}
+
+/// Like [`create`], but the vault has no password: it opens without asking,
+/// for anyone who has the folder.
+pub fn create_without_password(
+    parent: &str,
+    name: &str,
+    kdf: KdfParams,
+) -> Result<(Session, Vec<String>), String> {
+    create_with(parent, name, None, kdf)
+}
+
+fn create_with(
+    parent: &str,
+    name: &str,
+    password: Option<&str>,
+    kdf: KdfParams,
+) -> Result<(Session, Vec<String>), String> {
     let name = name.trim();
     if name.is_empty() {
         return Err("Give the vault a name.".into());
@@ -291,13 +324,19 @@ pub fn create(
     {
         return Err("A vault name can't contain < > : \" / \\ | ? * or end with a dot.".into());
     }
-    check_password(password)?;
+    if let Some(pw) = password {
+        check_password(pw)?;
+    }
     let parent = Path::new(parent);
     if !parent.is_dir() {
         return Err(format!("The folder {} doesn't exist.", parent.display()));
     }
     let root = parent.join(name);
-    let (vault, phrase) = Vault::create(&root, password, kdf).map_err(friendly)?;
+    let (vault, phrase) = match password {
+        Some(pw) => Vault::create(&root, pw, kdf),
+        None => Vault::create_without_password(&root, kdf),
+    }
+    .map_err(friendly)?;
     let words = phrase.words().iter().map(|w| w.to_string()).collect();
     Ok((open_session(vault, false)?, words))
 }
@@ -307,10 +346,18 @@ pub fn unlock(path: &str, password: &str) -> Result<Session, String> {
     open_session(vault, false)
 }
 
+/// Open a vault that has no password.
+pub fn open_without_password(path: &str) -> Result<Session, String> {
+    let vault = Vault::open_without_password(Path::new(path), Access::ReadWrite).map_err(friendly)?;
+    open_session(vault, false)
+}
+
 pub fn unlock_with_recovery(path: &str, phrase: &str) -> Result<Session, String> {
     let vault = Vault::unlock_with_recovery(Path::new(path), phrase, Access::ReadWrite)
         .map_err(friendly)?;
-    open_session(vault, true)
+    // A vault without a password has no password to replace.
+    let needs_new = vault.header().has_password();
+    open_session(vault, needs_new)
 }
 
 /// Verify `current` against the vault on disk (slow on purpose, like unlocking).
@@ -406,6 +453,53 @@ mod tests {
         assert!(d.size_bytes.unwrap() > 0);
         assert_eq!(describe(&format!("{parent}/nope")).status, "missing");
         assert_eq!(describe(parent).status, "notVault");
+    }
+
+    #[test]
+    fn passwordless_vault_opens_without_asking_and_round_trips() {
+        let t = tempfile::tempdir().unwrap();
+        let parent = t.path().to_str().unwrap();
+        let (s, words) = create_without_password(parent, "Open", KDF).unwrap();
+        assert!(!s.has_password());
+        assert!(!s.info().has_password);
+        s.db().execute("INSERT INTO folders(parent_id, name, created_at) VALUES (NULL, 'Kept', 0)", []).unwrap();
+        s.mark_dirty();
+        s.save().unwrap();
+        let path = s.info().path;
+        drop(s);
+
+        let d = describe(&path);
+        assert!(d.passwordless && d.status == "ready");
+        assert_eq!(
+            unlock(&path, "long enough pw").err().unwrap(),
+            "This vault has no password. It opens without one."
+        );
+        let s = open_without_password(&path).unwrap();
+        let kept = |s: &Session| -> i64 {
+            s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Kept'", [], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(kept(&s), 1);
+        // Set a password: now it asks.
+        s.vault_mut().change_password("long enough pw").unwrap();
+        assert!(s.has_password());
+        drop(s);
+        assert!(!describe(&path).passwordless);
+        assert!(open_without_password(&path).is_err());
+        let s = unlock(&path, "long enough pw").unwrap();
+        assert_eq!(kept(&s), 1);
+        // And off again.
+        s.vault_mut().turn_password_off().unwrap();
+        drop(s);
+        assert!(describe(&path).passwordless);
+        assert!(unlock(&path, "long enough pw").is_err());
+        let s = open_without_password(&path).unwrap();
+        assert_eq!(kept(&s), 1);
+        drop(s);
+
+        // The recovery key opens it, and there is no password to replace.
+        let s = unlock_with_recovery(&path, &words.join(" ")).unwrap();
+        assert!(!s.needs_new_password());
+        assert_eq!(kept(&s), 1);
     }
 
     #[test]

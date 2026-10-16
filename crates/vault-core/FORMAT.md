@@ -1,4 +1,4 @@
-# Media Vault — storage format, version 1
+# Media Vault — storage format (versions 1, 2 and 3)
 
 This file is copied into every vault so the format is never lost. It describes
 everything needed to decrypt the vault with any programming language, without
@@ -16,7 +16,8 @@ app). This document is the fallback if that tool is ever unavailable.
 ## Folder layout
 
 ```
-vault.json                header (not secret): salts, settings, encrypted master key
+vault.json                header: salts, settings, encrypted master key (secret only
+                          in a vault without a password, see "No password" below)
 vault.json.bak            identical copy of vault.json
 meta.db.enc               the library database (encrypted object, kind 3)
 meta-backups/             up to 5 previous versions of meta.db.enc (same format)
@@ -62,10 +63,15 @@ if the same id appears twice, either copy is valid.
 
 ## vault.json
 
+`version` is 1 for vaults that store one file per object (see above), 2 for
+vaults with pack files, and 3 for a vault with pack files that has **no
+password** (see "No password" below). A program must refuse a version it
+doesn't know.
+
 ```json
 {
   "format": "media-vault",
-  "version": 1,
+  "version": 2,
   "vault_id": "<32 hex chars>",
   "created_at": <unix seconds>,
   "kdf": { "alg": "argon2id", "memory_kib": 262144, "iterations": 3, "parallelism": 4 },
@@ -92,6 +98,29 @@ twice, encrypted ("wrapped") by two different keys:
 
 The aad strings are ASCII; `vault_id` is the hex text exactly as in the file.
 If decryption fails, the password or recovery words are wrong.
+
+**No password** (version 3)
+
+A vault can be made, or switched, to open without a password. Then
+`password_slot` has all three fields empty (`""`) and there is an extra
+`open_slot` holding the master key itself, **not encrypted**:
+
+```json
+  "password_slot": { "salt": "", "nonce": "", "wrapped_key": "" },
+  "recovery_slot": { "salt": "<hex>", "nonce": "<hex>", "wrapped_key": "<hex>" },
+  "open_slot": {
+    "warning": "This vault has no password. This is its master key, NOT encrypted: anyone who has this folder can open the vault.",
+    "master_key": "<64 hex chars>"
+  }
+```
+
+`master = open_slot.master_key` (32 bytes, hex). The recovery slot works as
+usual. Anyone who has a copy of the folder can open such a vault. Setting a
+password again writes a normal `password_slot`, removes `open_slot` and sets
+`version` back to 2 (or 1 if objects are still stored one file each);
+media is never re-encrypted when switching. The empty `password_slot` is
+only kept so that programs made before version 3 can still read the version
+number and refuse the vault.
 
 ## Encrypted objects (`.bin` files and `meta.db.enc`)
 
@@ -221,7 +250,7 @@ same format.
 
 ## Recovering a file by hand
 
-1. Get the master key from `vault.json` (password or recovery slot).
+1. Get the master key from `vault.json` (password, recovery or open slot).
 2. Decrypt `meta.db.enc`, open it in SQLite, find the row in `media`.
 3. Find that `object_id` in the packs (table `objects`, or by walking the
    packs), or in `media/<first two chars>/<object_id>.bin` for old vaults.
