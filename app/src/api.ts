@@ -111,6 +111,8 @@ export interface ViewerSettings {
   timelapseFps?: number;
   timelapseMorph?: boolean;
   timelapseMorphShare?: number;
+  /** Viewer: drag sideways beside the picture, or click at the far left / right, to go to the previous / next item. */
+  swipeNav?: boolean;
 }
 
 export const DEFAULT_VIEWER: ViewerSettings = {
@@ -126,6 +128,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
   faceWallMin: 40, bestFacesMin: 80, timelapseMin: 120, bestFacesCount: 24, timelapseFps: 8, timelapseMorph: false, timelapseMorphShare: 0.5,
+  swipeNav: true,
 };
 
 export interface AppConfig {
@@ -891,6 +894,9 @@ export const api = {
   /** Save a file made in the app (frame, GIF) into a folder; returns the new item id. */
   addFileBytes: (folder: number | null, name: string, data: Uint8Array) =>
     callRaw<number>('add_file_bytes', { folder, name }, data),
+  /** Save a picture made from item `from` (the picture editor's copy) next to it, with its date and tags. */
+  addCopyBytes: (from: number, name: string, data: Uint8Array, width: number, height: number) =>
+    callRaw<SavedCopy>('add_copy_bytes', { from, name, width, height }, data),
   moveItems: (ids: number[], folder: number | null) => call<number>('move_items', { ids, folder }),
   setFavourite: (ids: number[], on: boolean) => call<void>('set_favourite', { ids, on }),
   setWeight: (ids: number[], weight: number) => call<void>('set_weight', { ids, weight }),
@@ -1074,6 +1080,8 @@ export const api = {
   /** Runs in the background: 'animation-progress' events, then 'animation-done'. */
   animationStart: (request: AnimationRequest) => call<void>('animation_start', { request }),
   cancelVideoTask: (task: VideoTask) => call<void>('cancel_task', { task }),
+  /** Part of a video saved as a new MP4 next to it (with its sound). Runs in the background: 'cut-progress' events, then 'cut-done'. */
+  cutStart: (request: CutRequest) => call<void>('cut_start', { request }),
   // beat detection from the computer's own sound (Windows; nothing is recorded)
   /** True where listening to the computer's sound can work (Windows). */
   beatsSupported: () => call<boolean>('beats_supported'),
@@ -1234,7 +1242,34 @@ export interface VideoToolInfo {
 }
 
 export type ConvertTarget = 'mp4' | 'webm' | 'gif' | 'jpg' | 'png' | 'webp';
-export type VideoTask = 'convert' | 'animation';
+export type VideoTask = 'convert' | 'animation' | 'cut';
+
+export interface CutRequest {
+  item: number;
+  /** Seconds into the video. */
+  start: number;
+  end: number;
+  /** Re-encoded, on the exact frames (otherwise copied as it is, from the keyframe before the start). */
+  exact: boolean;
+  name: string;
+}
+
+/** Payload of 'cut-done'. */
+export interface CutDone {
+  id: number | null;
+  name: string;
+  /** An identical item was already there and is used (nothing new to undo). */
+  reused: boolean;
+  cancelled: boolean;
+  error: string | null;
+}
+
+/** What add_copy_bytes saved. */
+export interface SavedCopy {
+  id: number;
+  /** An identical item was already there and is used (nothing new to undo). */
+  reused: boolean;
+}
 
 export interface ConvertRequest {
   ids: number[];
@@ -1469,6 +1504,7 @@ const mock = {
       ]);
       return { folders: folders ?? [], tags: tags ?? [], items };
     }
+    if (cmd === 'add_copy_bytes') return { id: 90_000 + Math.floor(Math.random() * 1000), reused: false };
     if (cmd === 'move_folders') {
       for (const [id, parent] of a.moves as [number, number | null][]) await this.call('move_folder', { id, parent });
       return { done: (a.moves as unknown[]).length, error: null };

@@ -1669,6 +1669,46 @@ fn animation_start(app: AppHandle, state: State<'_, Shared>, request: videotool:
     })
 }
 
+/// Save part of a video as a new MP4 (with its sound) next to it. "cut-progress", then "cut-done".
+#[tauri::command]
+fn cut_start(app: AppHandle, state: State<'_, Shared>, request: videotool::CutRequest) -> Result<(), String> {
+    video_task(app, state, "cut", move |s, tool, cancel, progress| videotool::run_cut(s, tool, &request, cancel, progress))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CopyBytesArgs {
+    from: i64,
+    name: String,
+    width: Option<u32>,
+    height: Option<u32>,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedCopy {
+    id: i64,
+    /// An identical item was already there and is used instead (nothing new to undo).
+    reused: bool,
+}
+
+/// Save a new picture made from item `from` in the window (the picture editor's
+/// "Save as copy") next to it, with its date taken and tags. The original is
+/// never changed. Raw body: {from, name, width, height}, then the file (binbody.rs).
+#[tauri::command]
+async fn add_copy_bytes(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<SavedCopy, String> {
+    let s = sess(state.inner())?;
+    let (CopyBytesArgs { from, name, width, height }, data) = binbody::request(&request)?;
+    let data = zeroize::Zeroizing::new(data.to_vec());
+    blocking(move || {
+        let size = width.zip(height).filter(|(w, h)| *w > 0 && *h > 0);
+        let (id, reused) = videotool::save_copy(&s, from, &name, &data, size)?;
+        s.save_soon();
+        Ok(SavedCopy { id, reused })
+    })
+    .await
+}
+
 // ---- saving a rotation from the viewer (rotate.rs) ------------------------------------
 
 /// A JPEG: losslessly, by its EXIF orientation.
@@ -2609,6 +2649,8 @@ pub fn run() {
             video_tool_info,
             convert_start,
             animation_start,
+            cut_start,
+            add_copy_bytes,
             beatlisten::beats_supported,
             beatlisten::beats_start,
             beatlisten::beats_stop,

@@ -2,6 +2,7 @@
 // play, order, repeat and sound. Saved by name in the vault.
 
 import type { Order, Repeat } from './playlist';
+import { normalTransition, type Transition } from './transitions';
 
 export interface PlaybackSettings {
   imageSeconds: number;
@@ -16,8 +17,9 @@ export interface PlaybackSettings {
   repeat: Repeat;
   speed: number;
   fit: 'contain' | 'cover';
-  transition: 'none' | 'fade';
-  /** How long a fade between items takes (ms). With beat sync it gets shorter to keep up with fast music. */
+  /** How the next item comes in (transitions.ts). Old saved values ('none', 'fade') keep working. */
+  transition: Transition;
+  /** "Transition speed": how long every transition takes (ms). With beat sync it gets shorter to keep up with fast music. */
   fadeMs: number;
   volume: number;
   muted: boolean;
@@ -76,6 +78,7 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     beatEvery: s.beatEvery === 2 || s.beatEvery === 4 ? s.beatEvery : 1,
     // 2 s was the old default: it made "every beat" wait about 4 beats at 120 BPM.
     beatMinSeconds: s.beatMinSeconds === 2 ? 0.3 : num(s.beatMinSeconds, 0.3, 0.1, 60),
+    transition: normalTransition(s.transition),
     fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
     kenBurns: s.kenBurns === true,
     depth3d: s.depth3d === true,

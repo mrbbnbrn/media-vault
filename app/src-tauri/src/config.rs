@@ -139,6 +139,8 @@ pub struct ViewerSettings {
     pub timelapse_morph: bool,
     /// Face time-lapse: the part of each face's time spent morphing (0.1–0.9).
     pub timelapse_morph_share: f64,
+    /// Viewer: drag sideways beside the picture, or click at the far left / right, to go to the previous / next item.
+    pub swipe_nav: bool,
 }
 
 impl Default for ViewerSettings {
@@ -196,6 +198,7 @@ impl Default for ViewerSettings {
             timelapse_fps: 8.0,
             timelapse_morph: false,
             timelapse_morph_share: 0.5,
+            swipe_nav: true,
         }
     }
 }
