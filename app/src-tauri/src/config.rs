@@ -100,6 +100,14 @@ pub struct ViewerSettings {
     pub depth_model: String,
     /// 3D photos: "standard" or "high" (more detail, about twice as slow; models of any size only).
     pub depth_detail: String,
+    /// Subject outlines: which model ("birefnet-lite", "birefnet"; "" = the best one installed).
+    pub subject_model: String,
+    /// 3D photos: the subject (from its outline) is lifted off the background, and how much (0.3–3).
+    pub depth_lift: bool,
+    pub depth_lift_amount: f64,
+    /// 3D photos: the subject moves on its own, gently ("living" pictures), and how much (0.3–3).
+    pub depth_living: bool,
+    pub depth_living_amount: f64,
     /// Discovery river: the current's speed (0.1–8, 1 = normal).
     pub river_flow: f64,
     /// Discovery river: how many items flow (0.4–2.5, 1 = as designed).
@@ -165,6 +173,11 @@ impl Default for ViewerSettings {
             depth_auto_migrated: false,
             depth_model: String::new(),
             depth_detail: "standard".into(),
+            subject_model: String::new(),
+            depth_lift: false,
+            depth_lift_amount: 1.0,
+            depth_living: false,
+            depth_living_amount: 1.0,
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
@@ -371,6 +384,12 @@ impl AppConfig {
         if !id_ok {
             v.depth_model.clear();
         }
+        let id_ok = v.subject_model.len() <= 40 && v.subject_model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
+        if !id_ok {
+            v.subject_model.clear();
+        }
+        v.depth_lift_amount = clamp(v.depth_lift_amount, 0.3, 3.0, 1.0);
+        v.depth_living_amount = clamp(v.depth_living_amount, 0.3, 3.0, 1.0);
         v.depth_edges = if v.depth_edges.is_finite() && v.depth_edges > 0.0 { v.depth_edges.clamp(0.25, 2.0) } else { 0.0 };
         // Only a small object is kept (anything else is dropped).
         if v.last_playback.as_ref().is_some_and(|p| !p.is_object() || p.to_string().len() > 20_000) {
@@ -582,6 +601,30 @@ mod tests {
         c.viewer.depth_detail = "ultra".into();
         let c = c.sanitized();
         assert_eq!((c.viewer.depth_model.as_str(), c.viewer.depth_detail.as_str()), ("", "standard"));
+    }
+
+    #[test]
+    fn subject_settings_default_and_are_sanitised() {
+        let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
+        assert_eq!(v.subject_model, "");
+        assert_eq!((v.depth_lift, v.depth_lift_amount, v.depth_living, v.depth_living_amount), (false, 1.0, false, 1.0));
+        let v: ViewerSettings = serde_json::from_str(
+            r#"{"subjectModel":"birefnet","depthLift":true,"depthLiftAmount":2.5,"depthLiving":true,"depthLivingAmount":0.5}"#,
+        )
+        .unwrap();
+        assert_eq!((v.subject_model.as_str(), v.depth_lift, v.depth_lift_amount, v.depth_living, v.depth_living_amount), ("birefnet", true, 2.5, true, 0.5));
+        let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
+        assert_eq!(back, v);
+        let mut c = AppConfig { viewer: v, ..AppConfig::default() };
+        assert_eq!(c.clone().sanitized().viewer.subject_model, "birefnet");
+        c.viewer.subject_model = "C:\\evil".into();
+        c.viewer.depth_lift_amount = 9.0;
+        c.viewer.depth_living_amount = f64::NAN;
+        let c = c.sanitized();
+        assert_eq!((c.viewer.subject_model.as_str(), c.viewer.depth_lift_amount, c.viewer.depth_living_amount), ("", 3.0, 1.0));
+        let mut c = AppConfig::default();
+        c.viewer.depth_lift_amount = 0.0;
+        assert_eq!(c.sanitized().viewer.depth_lift_amount, 0.3);
     }
 
     #[test]
