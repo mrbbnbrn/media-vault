@@ -165,10 +165,12 @@ export function knownDepth(src: string): DepthMap | null | undefined {
 
 /**
  * The depth map of the picture at `src` (null if it can't be had). `urgent`
- * puts it ahead of the pictures worked out in advance.
+ * puts it ahead of the pictures worked out in advance; `use` works it out
+ * with another setup than the viewer's.
  */
-export function depthOf(src: string, urgent = false): Promise<DepthMap | null> {
-  const s = setup;
+export function depthOf(src: string, urgent = false, use?: DepthSetup): Promise<DepthMap | null> {
+  // `use`: another model than the viewer's (preparing in the background for every installed model).
+  const s = use ?? setup;
   if (!s) return depthPack().then(() => (setup ? depthOf(src, urgent) : null));
   const key = depthKey(src, s);
   if (cache.has(key)) {

@@ -51,7 +51,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>Saved depth maps and outlines</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
         Once a picture's depth or subject outline is worked out it's saved in the vault (encrypted), so it never has to
-        be worked out again. Pictures only, for the models in use. To prepare one folder or person, right-click it and
+        be worked out again. Pictures only. Preparing works them out for every installed depth and outline model. To prepare one folder or person, right-click it and
         choose Prepare 3D data. It all runs in the background (see the ring at the bottom of the sidebar).
       </p>
       <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
@@ -64,7 +64,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       {(job.running || job.note) && (
         <div className="row" style={{ gap: 10, marginTop: 8, alignItems: 'center' }} role="status">
           <span className="faint">
-            {job.running && job.total > 0 ? `Working out ${job.done.toLocaleString()} of ${job.total.toLocaleString()} pictures in ${job.what}…` : ''}
+            {job.running && job.total > 0 ? `Working out ${job.done.toLocaleString()} of ${job.total.toLocaleString()} maps in ${job.what}…` : ''}
             {job.note ? `${job.running && job.total > 0 ? ' ' : ''}${job.note}` : ''}
           </span>
           {job.running && job.waiting > 0 && <span className="faint">({job.waiting} more waiting)</span>}
@@ -85,8 +85,8 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       {ask === 'again' && (
         <ConfirmDialog title="Work them all out again?" confirm="Clear and work them out" onClose={() => setAsk(null)}
           onConfirm={() => { setAsk(null); setNote(null); prepareVault(true); }}>
-          The saved ones are cleared, then every picture in the vault gets its depth map and outline worked out again in
-          the background, with the models in use. It can take a while; you can stop it at any time.
+          The saved ones are cleared, then every picture in the vault gets its depth maps and outlines worked out again in
+          the background, for every installed model. It can take a while; you can stop it at any time.
         </ConfirmDialog>
       )}
     </div>

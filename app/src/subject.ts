@@ -146,8 +146,9 @@ export function knownSubject(src: string): SubjectMask | null | undefined {
 }
 
 /** The outline of the picture at `src` (null if it can't be had); `urgent` puts it ahead of the pictures worked out in advance. */
-export function subjectOf(src: string, urgent = false): Promise<SubjectMask | null> {
-  const s = setup;
+export function subjectOf(src: string, urgent = false, use?: SubjectSetup): Promise<SubjectMask | null> {
+  // `use`: another model than the viewer's (preparing in the background for every installed model).
+  const s = use ?? setup;
   if (!s) return subjectPack().then(() => (setup ? subjectOf(src, urgent) : null));
   const key = subjectKey(src, s);
   if (cache.has(key)) {

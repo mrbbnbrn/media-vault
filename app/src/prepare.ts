@@ -7,17 +7,20 @@
 // - in the background, on request: the pictures missing a saved map (whole
 //   vault, Settings → Faces & smart search), every picture again (saved ones
 //   cleared first), or the pictures of one folder or person folder (its
-//   right-click menu). One job at a time, the rest wait their turn; progress
+//   right-click menu). Every installed depth and outline model gets its own
+//   maps (one model after another, so models aren't swapped back and forth),
+//   at the detail and edge settings in use. One job at a time, the rest wait their turn; progress
 //   shows in Settings and in the background-jobs ring, with Stop.
 //
 // Both go through the same one-at-a-time queues as the viewer (depth.ts,
 // subject.ts), behind whatever the viewer needs right now.
 
-import { api, mediaUrl, type Item, type ItemFilter } from './api';
+import { api, mediaUrl, onLocked, type Item, type ItemFilter } from './api';
+import { viewerPrefs } from './prefs';
 import { beginJob, endJob, updateJob } from './jobs';
 import { notePictures } from './derived';
-import { depthOf, depthPack, depthSetup, depthTag, forgetDepth, knownDepth } from './depth';
-import { forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectTag } from './subject';
+import { depthChoice, depthOf, depthPack, depthSetup, depthTag, edgesSetting, forgetDepth, knownDepth, setupOf, type DepthSetup } from './depth';
+import { forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
 
 /** No keyboard or mouse for this long counts as idle (ms). */
 export const IDLE_MS = 20000;
@@ -172,60 +175,85 @@ async function picturesOf(filters: ItemFilter[]): Promise<{ kind: string; src: s
   return [...seen.values()].filter((i) => i.kind === 'image' && i.deletedAt == null).map((i) => ({ kind: 'image', src: mediaUrl(i.id), itemId: i.id }));
 }
 
+/** One model's work: its setup and the tag its maps are saved under. */
+type Pass = { kind: 'depth'; setup: DepthSetup; tag: string; name: string } | { kind: 'outline'; setup: SubjectSetup; tag: string; name: string };
+
+/** Every installed, usable depth and outline model, as the viewer would use it (detail and edges as set now). */
+async function allPasses(): Promise<Pass[]> {
+  const p = viewerPrefs();
+  const detail = depthChoice(p).detail;
+  const edges = edgesSetting(p.depthEdges);
+  const [dms, sms] = await Promise.all([api.depthModels().catch(() => []), api.subjectModels().catch(() => [])]);
+  const out: Pass[] = [];
+  for (const m of dms.filter((x) => x.installed && !x.problem)) {
+    const setup = setupOf(await api.depthInfo(m.id, detail).catch(() => null), edges);
+    if (setup && !out.some((o) => o.tag === depthTag(setup))) out.push({ kind: 'depth', setup, tag: depthTag(setup), name: m.name });
+  }
+  for (const m of sms.filter((x) => x.installed && !x.problem)) {
+    const setup = subjectSetupOf(await api.subjectInfo(m.id).catch(() => null));
+    if (setup && !out.some((o) => o.kind === 'outline' && o.tag === subjectTag(setup))) out.push({ kind: 'outline', setup, tag: subjectTag(setup), name: m.name });
+  }
+  return out;
+}
+
 async function runOne(r: PrepareRequest): Promise<void> {
   stopAsked = false;
   set({ running: true, done: 0, total: 0, what: r.what, waiting: queue.length, note: r.again ? 'Clearing the saved ones…' : 'Finding the pictures…' });
-  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.what, long: true, unit: 'pictures', cancel: stopRebuild, cancelLabel: 'Stop' });
+  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.what, long: true, unit: 'maps', cancel: stopRebuild, cancelLabel: 'Stop' });
   let ok = true;
   try {
-    const [di, si] = await Promise.all([depthPack(true), subjectPack(true)]);
-    const d = di?.available ? depthSetup() : null;
-    const s = si?.available ? subjectSetup() : null;
     if (r.again) {
       await api.derivedClear();
       // The copies in memory would otherwise be used without being saved again.
       forgetDepth();
       forgetSubjects();
     }
-    if (!d && !s) {
+    const passes = await allPasses();
+    if (!passes.length) {
       set({ note: r.again ? 'Cleared. No depth or outline model is installed, so nothing was worked out.' : 'No depth or outline model is installed, so there is nothing to work out.' });
       ok = false;
       return;
     }
     const pics = await picturesOf(r.filters);
     notePictures(pics);
-    // Pictures that already have both maps saved for the models in use are skipped.
-    const [hasD, hasS] = await Promise.all([
-      d ? api.derivedHave('depth', depthTag(d)).then((l) => new Set(l)) : Promise.resolve(null),
-      s ? api.derivedHave('outline', subjectTag(s)).then((l) => new Set(l)) : Promise.resolve(null),
-    ]);
-    const todo = pics.filter((p) => (d && !hasD?.has(p.itemId)) || (s && !hasS?.has(p.itemId)));
-    const already = pics.length - todo.length;
-    set({ total: todo.length, note: already ? `${already.toLocaleString()} already saved.` : null });
-    updateJob(JOB, { total: todo.length });
-    for (let i = 0; i < todo.length; i++) {
+    // For each model, the pictures that don't have its map saved yet.
+    const work = await Promise.all(passes.map(async (p) => {
+      const have = new Set(await api.derivedHave(p.kind, p.tag).catch(() => [] as number[]));
+      return { p, todo: pics.filter((x) => !have.has(x.itemId)) };
+    }));
+    const total = work.reduce((n, w) => n + w.todo.length, 0);
+    const already = pics.length * passes.length - total;
+    set({ total, note: `${passes.length} ${passes.length === 1 ? 'model' : 'models'}, ${pics.length.toLocaleString()} ${pics.length === 1 ? 'picture' : 'pictures'}${already ? `, ${already.toLocaleString()} maps already saved` : ''}.` });
+    updateJob(JOB, { total });
+    let done = 0;
+    for (const { p, todo } of work) {
       if (stopAsked) break;
-      const p = todo[i];
-      if (d && !hasD?.has(p.itemId)) await depthOf(p.src);
-      if (stopAsked) break;
-      if (s && !hasS?.has(p.itemId)) await subjectOf(p.src);
-      set({ done: i + 1 });
-      updateJob(JOB, { done: i + 1 });
+      if (todo.length) updateJob(JOB, { detail: `${r.what} · ${p.name}` });
+      for (const x of todo) {
+        if (stopAsked) break;
+        if (p.kind === 'depth') await depthOf(x.src, false, p.setup);
+        else await subjectOf(x.src, false, p.setup);
+        done += 1;
+        set({ done });
+        updateJob(JOB, { done });
+      }
     }
-    const n = state.done;
     if (stopAsked) {
       ok = false;
-      set({ note: `Stopped after ${n.toLocaleString()} of ${todo.length.toLocaleString()} (${r.what}).` });
-    } else if (!todo.length) {
-      set({ note: pics.length ? `Nothing to do: every picture in ${r.what} is already saved.` : `No pictures in ${r.what}.` });
+      set({ note: `Stopped after ${done.toLocaleString()} of ${total.toLocaleString()} maps (${r.what}).` });
+    } else if (!total) {
+      set({ note: pics.length ? `Nothing to do: every picture in ${r.what} is already saved for every model.` : `No pictures in ${r.what}.` });
     } else {
-      set({ note: `Done (${r.what}): ${n.toLocaleString()} ${n === 1 ? 'picture' : 'pictures'} worked out${already ? `, ${already.toLocaleString()} were already saved` : ''}.` });
+      set({ note: `Done (${r.what}): ${done.toLocaleString()} ${done === 1 ? 'map' : 'maps'} worked out for ${passes.length} ${passes.length === 1 ? 'model' : 'models'}${already ? `, ${already.toLocaleString()} were already saved` : ''}.` });
     }
   } catch (e) {
     ok = false;
     set({ note: `Couldn't finish (${r.what}): ${e instanceof Error ? e.message : String(e)}` });
   } finally {
-    endJob(JOB, { failed: !ok, summary: `${state.done.toLocaleString()} pictures prepared for 3D` });
+    endJob(JOB, { failed: !ok, summary: `${state.done.toLocaleString()} maps prepared for 3D` });
     set({ running: false, what: null, waiting: queue.length });
   }
 }
+
+// Locking the vault stops it (nothing can be read or saved any more).
+void onLocked(() => stopRebuild()).catch(() => {});
