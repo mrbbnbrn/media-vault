@@ -398,3 +398,48 @@ export const LivingIcon = ({ size = 16 }: P) => (
     <path d="M2 10.5a4.5 4.5 0 0 0 0 3M22 10.5a4.5 4.5 0 0 1 0 3" strokeWidth={1.3} opacity={0.6} />
   </svg>
 );
+/** Sharper depth edges: a figure whose outline is drawn crisp against hatched depth. */
+export const DepthEdgesIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 20h18" strokeWidth={1.3} opacity={0.55} />
+    <path d="M4 16l3-3M4 12l3-3M4 8l3-3M17 16l3-3M17 12l3-3M17 8l3-3" strokeWidth={1.1} opacity={0.55} />
+    <circle cx="12" cy="7" r="2.6" />
+    <path d="M7.2 20v-3.2a4.8 4.8 0 0 1 9.6 0V20" strokeWidth={2.2} />
+  </svg>
+);
+/** A light that stays put: a small sun at the top left, a figure and its shadow falling away. */
+export const FixedLightIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="5.5" cy="5.5" r="2" />
+    <path d="M5.5 1.5v1M1.5 5.5h1M2.7 2.7l.7.7M8.3 2.7l-.7.7M2.7 8.3l.7-.7" strokeWidth={1.3} />
+    <circle cx="13" cy="9" r="2.2" />
+    <path d="M9.5 19v-2.5a3.5 3.5 0 0 1 7 0V19" />
+    <path d="M16.5 19l4.5 1.5" strokeWidth={2.4} opacity={0.45} />
+  </svg>
+);
+/** 3D only on the subject: a figure with depth arrows, in a still frame. */
+export const SubjectOnly3DIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="2.5" y="3.5" width="19" height="17" rx="2" strokeWidth={1.3} opacity={0.55} />
+    <circle cx="12" cy="9" r="2.3" />
+    <path d="M8.5 17.5v-1.5a3.5 3.5 0 0 1 7 0v1.5" />
+    <path d="M5 12h1.6M17.4 12H19" strokeWidth={1.4} />
+  </svg>
+);
+/** Layered 3D: two layers, one in front of the other. */
+export const Layered3DIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 9l9-5 9 5-9 5z" strokeWidth={1.4} opacity={0.6} />
+    <path d="M3 14l9 5 9-5" />
+    <path d="M12 6.8v4.4" strokeWidth={1.3} />
+  </svg>
+);
+/** Save the subject as a PNG: a figure cut out over a checkerboard, with a down arrow. */
+export const SubjectPngIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <path d="M3 3h4v4H3zM11 3h4v4h-4zM7 7h4v4H7zM3 11h4v4H3z" fill="currentColor" stroke="none" opacity={0.3} />
+    <circle cx="10" cy="9" r="2.3" />
+    <path d="M6.5 17v-1a3.5 3.5 0 0 1 7 0v1" />
+    <path d="M18.5 12v8M15.5 17l3 3 3-3" strokeWidth={1.6} />
+  </svg>
+);

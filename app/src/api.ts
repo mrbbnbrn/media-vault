@@ -76,6 +76,20 @@ export interface ViewerSettings {
   /** Living subject: the subject gently breathes and sways while the background stays still, this strong (1 = as designed; 0.3–3). */
   depthLiving?: boolean;
   depthLivingAmount?: number;
+  /** Sharper depth edges (pictures with an outline): the depth follows the subject's outline, this strong (0.2–1). */
+  depthEdges3d?: boolean;
+  depthEdgesStrength?: number;
+  /** A light that stays put (pictures with an outline): where it comes from (degrees clockwise from the top, 0–359) and how strong (0.2–2). */
+  depthLight?: boolean;
+  depthLightAngle?: number;
+  depthLightStrength?: number;
+  /** 3D only on the subject: the background stays still, only the subject moves in 3D. */
+  depthSubjectOnly?: boolean;
+  /** Layered 3D: a filled-in background behind the subject; how it's filled ('' = Simple, 'migan' MI-GAN, 'lama' LaMa). */
+  depthLayered?: boolean;
+  inpaintModel?: '' | 'migan' | 'lama';
+  /** Pictures' depth maps and outlines are worked out (and saved) while the app is left alone for a while. */
+  depthIdlePrepare?: boolean;
   /** Discovery river: the current's speed (1 = normal), how many items flow (1 = as designed) and how many depth layers. */
   riverFlow?: number;
   riverDensity?: number;
@@ -106,6 +120,8 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthVideoDelay: false, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   subjectModel: '', depthLift: false, depthLiftAmount: 1, depthLiving: false, depthLivingAmount: 1,
+  depthEdges3d: false, depthEdgesStrength: 0.7, depthLight: false, depthLightAngle: 315, depthLightStrength: 1, depthSubjectOnly: false,
+  depthLayered: false, inpaintModel: '', depthIdlePrepare: true,
   riverFlow: 1, riverDensity: 1, riverLayers: 5,
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
@@ -1111,6 +1127,23 @@ export const api = {
   subjectEstimate: (request: SubjectRequest, rgba: Uint8Array) => subjectEstimate(request, rgba),
   /** Free the subject model's memory. */
   subjectForget: () => call<void>('subject_forget'),
+  // Layered 3D: filling in the background behind the subject (Rust: inpaint.rs; window side: inpaint.ts, plate.ts)
+  /** Every background fill model (MI-GAN, LaMa), installed or not. */
+  inpaintModels: () => call<InpaintModel[]>('inpaint_models'),
+  /** What the background fill will use for this choice. */
+  inpaintInfo: (model = '') => call<InpaintInfo>('inpaint_info', { model }),
+  /** Sends a square picture (InpaintInfo.inputSide) and its mask (255 = fill this in); the filled picture comes back. */
+  inpaintEstimate: (request: InpaintRequest, rgba: Uint8Array, mask: Uint8Array) => inpaintEstimate(request, rgba, mask),
+  inpaintBenchmark: (id: string) => call<InpaintBenchmark>('inpaint_benchmark', { id }),
+  inpaintForget: () => call<void>('inpaint_forget'),
+  // Saved depth maps and outlines (pictures only; kept in the vault, encrypted)
+  /** A saved depth map or outline of an item (exactly what depth_estimate / subject_estimate sent back), or null when none is saved. */
+  derivedGet: (item: number, kind: DerivedKind, model: string) => derivedGet(item, kind, model),
+  /** Saves a depth map or outline (the bytes as depth_estimate / subject_estimate sent them back). */
+  derivedPut: (item: number, kind: DerivedKind, model: string, bytes: Uint8Array) => callRaw<void>('derived_put', { item, kind, model }, bytes),
+  /** Forgets the saved ones (of one kind, or all); how many were removed. */
+  derivedClear: (kind?: DerivedKind) => call<number>('derived_clear', kind ? { kind } : {}),
+  derivedStats: () => call<DerivedStats>('derived_stats'),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
@@ -1548,6 +1581,43 @@ const mock = {
       }
       case 'subject_forget':
         return;
+      case 'inpaint_models':
+        return mockInpaintModels();
+      case 'inpaint_info':
+        return mockInpaintInfo(String(a.model ?? ''));
+      case 'inpaint_benchmark':
+        await new Promise((r) => setTimeout(r, 900));
+        return { ms: a.id === 'lama' ? 260 : 60, device: 'gpu', loadMs: 600, side: 512 } satisfies InpaintBenchmark;
+      case 'inpaint_forget':
+        return;
+      case 'derived_put': {
+        const b = a.data as Uint8Array;
+        mockDerived.set(`${a.item}|${a.kind}|${a.model}`, b.slice());
+        return;
+      }
+      case 'derived_get':
+        return mockDerived.get(`${a.item}|${a.kind}|${a.model}`) ?? new Uint8Array(0);
+      case 'derived_clear': {
+        let n = 0;
+        for (const k of [...mockDerived.keys()]) if (!a.kind || k.split('|')[1] === a.kind) {
+          mockDerived.delete(k);
+          n++;
+        }
+        return n;
+      }
+      case 'derived_stats': {
+        const st: DerivedStats = { depthCount: 0, depthBytes: 0, outlineCount: 0, outlineBytes: 0 };
+        for (const [k, v] of mockDerived) {
+          if (k.split('|')[1] === 'depth') {
+            st.depthCount++;
+            st.depthBytes += v.length;
+          } else {
+            st.outlineCount++;
+            st.outlineBytes += v.length;
+          }
+        }
+        return st;
+      }
       case 'upscale_cancel':
         mockJob += 1;
         return;
@@ -1863,6 +1933,7 @@ function mockDepthModels(): DepthModel[] {
   const root = 'C:\\MediaVault\\tools\\';
   return [
     { id: 'v2-small', name: 'Fast', model: 'Depth Anything V2 Small', folder: `${root}depth`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 99_000_000, dynamic: false, zip: 'MediaVault-depth-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
+    { id: 'v2-small-fp16', name: 'Fast (half precision)', model: 'Depth Anything V2 Small (fp16)', folder: `${root}depth-v2-small-fp16`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-v2-small-fp16-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 50_000_000, dynamic: false, zip: 'MediaVault-depth-v2-small-fp16-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
     { id: 'da3-mono-large', name: 'Best', model: 'Depth Anything 3 Mono Large', folder: `${root}depth-da3-mono-large`, installed: !none, problem: none ? 'Not installed: get MediaVault-depth-da3-mono-large-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 1_350_000_000, dynamic: false, zip: 'MediaVault-depth-da3-mono-large-windows.zip', standardSide: 518, highSide: 518, licence: 'Apache-2.0' },
   ];
 }
@@ -2056,4 +2127,143 @@ function mockUpscale(r: UpscaleRequest): number {
     }
   }, 150);
   return job;
+}
+
+// ---- Layered 3D: filling in the background behind the subject --------------------------------
+
+export interface InpaintInfo {
+  available: boolean;
+  problem: string | null;
+  folder: string | null;
+  device: 'gpu' | 'cpu' | null;
+  deviceKnown: boolean;
+  model?: string | null;
+  modelName?: string | null;
+  /** Pictures are sent at this size (square, typically 512). */
+  inputSide?: number;
+}
+
+/** One background fill model ('migan' MI-GAN, 'lama' LaMa). */
+export interface InpaintModel {
+  id: string;
+  name: string;
+  model: string;
+  folder: string | null;
+  installed: boolean;
+  problem: string | null;
+  sizeBytes: number;
+  zip?: string | null;
+  inputSide?: number;
+  licence?: string | null;
+}
+
+export interface InpaintBenchmark {
+  ms: number;
+  device: 'gpu' | 'cpu';
+  loadMs: number;
+  side?: number;
+}
+
+export interface InpaintRequest {
+  width: number;
+  height: number;
+  model?: string;
+}
+
+/** A picture's pixels: w × h × 4 bytes (RGBA). */
+export interface Rgba {
+  w: number;
+  h: number;
+  data: Uint8Array;
+}
+
+/** What inpaint_estimate sends back: width, height (u32 little-endian), then the RGBA bytes. */
+export function parseRgba(buf: ArrayBuffer | Uint8Array): Rgba {
+  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const bad = () => new Error('The background fill came back in an unexpected shape.');
+  if (b.length < 8) throw bad();
+  const v = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  const w = v.getUint32(0, true);
+  const h = v.getUint32(4, true);
+  if (!w || !h || b.length !== 8 + w * h * 4) throw bad();
+  return { w, h, data: b.slice(8) };
+}
+
+async function inpaintEstimate(request: InpaintRequest, rgba: Uint8Array, mask: Uint8Array): Promise<Rgba> {
+  const both = new Uint8Array(rgba.length + mask.length);
+  both.set(rgba, 0);
+  both.set(mask, rgba.length);
+  if (!inTauri) return mockInpaint(request, rgba, mask);
+  try {
+    return parseRgba(await invoke<ArrayBuffer>('inpaint_estimate', rawBody(request as unknown as Record<string, unknown>, both)));
+  } catch (e) {
+    throw new Error(typeof e === 'string' ? e : String(e));
+  }
+}
+
+/** Preview: MI-GAN installed, LaMa not (add ?noinpaint to see neither). */
+function mockInpaintModels(): InpaintModel[] {
+  const none = typeof location !== 'undefined' && new URLSearchParams(location.search).has('noinpaint');
+  const root = 'C:\\MediaVault\\tools\\';
+  return [
+    { id: 'migan', name: 'MI-GAN', model: 'MI-GAN (Places2)', folder: `${root}inpaint-migan`, installed: !none, problem: none ? 'Not installed: get MediaVault-inpaint-migan-windows.zip from the Releases page and unzip it next to the app.' : null, sizeBytes: none ? 0 : 30_000_000, zip: 'MediaVault-inpaint-migan-windows.zip', inputSide: 512, licence: 'MIT' },
+    { id: 'lama', name: 'LaMa', model: 'Big LaMa', folder: `${root}inpaint-lama`, installed: false, problem: 'Not installed: get MediaVault-inpaint-lama-windows.zip from the Releases page and unzip it next to the app.', sizeBytes: 0, zip: 'MediaVault-inpaint-lama-windows.zip', inputSide: 512, licence: 'Apache-2.0' },
+  ];
+}
+
+function mockInpaintInfo(model: string): InpaintInfo {
+  const ready = mockInpaintModels().filter((m) => m.installed && !m.problem);
+  const pick = ready.find((m) => m.id === model) ?? (model ? undefined : ready[0]);
+  if (!pick) return { available: false, problem: "The background fill pack isn't installed.", folder: null, device: null, deviceKnown: false, model: null, modelName: null, inputSide: 512 };
+  return { available: true, problem: null, folder: pick.folder, device: 'gpu', deviceKnown: false, model: pick.id, modelName: pick.name, inputSide: pick.inputSide ?? 512 };
+}
+
+/** Preview: a pretend fill (the surrounding colours pulled in, like Simple). Tests can supply their own via `__mvInpaintMock`. */
+async function mockInpaint(r: InpaintRequest, rgba: Uint8Array, mask: Uint8Array): Promise<Rgba> {
+  const hook = (globalThis as { __mvInpaintMock?: (w: number, h: number, rgba: Uint8Array, mask: Uint8Array) => Promise<Rgba | null> }).__mvInpaintMock;
+  const real = hook ? await hook(r.width, r.height, rgba, mask) : null;
+  if (real) return real;
+  await new Promise((ok) => setTimeout(ok, 250));
+  const { fillRgba } = await import('./layers');
+  const hole = new Float32Array(mask.length);
+  for (let i = 0; i < mask.length; i++) hole[i] = mask[i] / 255;
+  return { w: r.width, h: r.height, data: fillRgba(rgba, r.width, r.height, hole) };
+}
+
+// ---- saved depth maps and outlines (pictures only) -----------------------------------------------
+
+export type DerivedKind = 'depth' | 'outline';
+
+export interface DerivedStats {
+  depthCount: number;
+  depthBytes: number;
+  outlineCount: number;
+  outlineBytes: number;
+}
+
+/** Preview: saved maps live in memory for the session. */
+const mockDerived = new Map<string, Uint8Array>();
+
+async function derivedGet(item: number, kind: DerivedKind, model: string): Promise<Uint8Array | null> {
+  let b: ArrayBuffer | Uint8Array | null;
+  if (!inTauri) b = (await mock.call('derived_get', { item, kind, model })) as Uint8Array;
+  else {
+    try {
+      b = await invoke<ArrayBuffer>('derived_get', { item, kind, model });
+    } catch (e) {
+      throw new Error(typeof e === 'string' ? e : String(e));
+    }
+  }
+  const u = b instanceof Uint8Array ? b : b ? new Uint8Array(b) : null;
+  return u && u.length ? u : null;
+}
+
+/** A depth map or outline as depth_estimate / subject_estimate send it: width, height (u32 little-endian), then the bytes. */
+export function mapBytes(m: DepthMap): Uint8Array {
+  const b = new Uint8Array(8 + m.data.length);
+  const v = new DataView(b.buffer);
+  v.setUint32(0, m.w, true);
+  v.setUint32(4, m.h, true);
+  b.set(m.data, 8);
+  return b;
 }

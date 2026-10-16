@@ -18,6 +18,7 @@ function sizeText(b: number): string {
 /** One line on what each known model is good for. */
 const ABOUT: Record<string, string> = {
   'v2-small': 'quickest, fine on most PCs',
+  'v2-small-fp16': 'quickest on the graphics card; falls back to Fast on the processor',
   'da3-mono-large': 'the most accurate depth, needs a good graphics card',
 };
 

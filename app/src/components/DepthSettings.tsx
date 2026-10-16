@@ -13,6 +13,8 @@ import { DepthModelChoice } from './DepthModels';
 import { SubjectModelChoice } from './SubjectModels';
 import { NO_SUBJECT_PACK, subjectPack } from '../subject';
 import { Modal } from './Dialogs';
+import { InpaintModelChoice } from './InpaintModels';
+import { edgesStrength, lightAngle, lightStrength, lightWords } from '../layers';
 
 const CHOICES: MotionChoice[] = ['random', ...MOTION_SHAPES];
 
@@ -189,6 +191,52 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         </span>
         <Slider id="dp-living" label="Living amount" title="How much the subject breathes and sways" min={0.3} max={3} step={0.1}
           value={prefs.depthLivingAmount ?? 1} onChange={(v) => saveViewerPrefs({ depthLivingAmount: v })} />
+        {/* Picture layers (still pictures with an outline). */}
+        <span style={{ alignSelf: 'start', paddingTop: 12, fontWeight: 600 }}>Picture layers</span>
+        <span className="faint" style={{ fontSize: 12, paddingTop: 12 }}>
+          {subjectOk === false ? NO_SUBJECT_PACK : 'For still pictures, using the subject outline. Each is also a button next to the 3D buttons.'}
+        </span>
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthEdges3d} onChange={(e) => saveViewerPrefs({ depthEdges3d: e.target.checked })} /> Sharper depth edges
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>The depth follows the subject's outline, so the subject and the background move apart cleanly instead of smearing at the edge. Works with every 3D mode.</span>
+        </span>
+        <Slider id="dp-edges3d" label="Edge strength" title="How firmly the depth is made to follow the outline" min={0.2} max={1} step={0.05}
+          value={edgesStrength(prefs.depthEdgesStrength)} onChange={(v) => saveViewerPrefs({ depthEdgesStrength: v })} />
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthLight} onChange={(e) => saveViewerPrefs({ depthLight: e.target.checked })} /> A light that stays put
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>A soft shadow of the subject on the background and a soft rim of light on its edge. As the camera moves they shift as if the light stayed where it is.</span>
+        </span>
+        <label htmlFor="dp-langle">Light direction</label>
+        <span className="row" style={{ gap: 8 }} title="Where the light comes from">
+          <input id="dp-langle" type="range" min={0} max={359} step={1} value={lightAngle(prefs.depthLightAngle)} style={{ flex: 1 }}
+            onChange={(e) => saveViewerPrefs({ depthLightAngle: Number(e.target.value) })} />
+          <span className="faint" style={{ minWidth: 120, fontSize: 12 }}>{lightWords(lightAngle(prefs.depthLightAngle))}</span>
+        </span>
+        <Slider id="dp-lstrength" label="Light strength" title="How dark the shadow and how bright the rim" min={0.2} max={2} step={0.1}
+          value={lightStrength(prefs.depthLightStrength)} onChange={(v) => saveViewerPrefs({ depthLightStrength: v })} />
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthSubjectOnly} onChange={(e) => saveViewerPrefs({ depthSubjectOnly: e.target.checked })} /> 3D only on the subject
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>The background stays completely still; only the subject moves in 3D, with its own depth.</span>
+        </span>
+        <span />
+        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
+          <label className="check">
+            <input type="checkbox" checked={!!prefs.depthLayered} onChange={(e) => saveViewerPrefs({ depthLayered: e.target.checked })} /> Layered 3D
+          </label>
+          <span className="faint" style={{ fontSize: 12 }}>The picture is drawn as two layers: the background with the subject filled in, and the subject on top. Moving the camera shows background behind the subject instead of stretched edges.</span>
+        </span>
+        <span style={{ alignSelf: 'start', paddingTop: 12 }}>Background fill</span>
+        <InpaintModelChoice />
+
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Subject model</span>
         <SubjectModelChoice />
 
