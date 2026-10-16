@@ -190,6 +190,14 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onSaveKey);
+    // The Alt key on its own: kept from Windows everywhere, which would otherwise put the window into
+    // "menu mode" (the mouse seems stuck until Alt is pressed again). Alt+F4, Alt+Tab, Alt+← still work:
+    // only the Alt key itself is held back. Hold-Alt-to-enlarge in grids listens for it on its own.
+    const onAltKey = (e: KeyboardEvent) => {
+      if (e.key === 'Alt') e.preventDefault();
+    };
+    window.addEventListener('keydown', onAltKey);
+    window.addEventListener('keyup', onAltKey);
     // If the library can't be saved, say so (changes are kept and retried).
     const offSave = onEvent<string>('save-failed', (m) => setToast(`${m} Your changes are kept and saving is retried; don't close the app yet.`));
     startExternalDrops();
@@ -209,6 +217,8 @@ export function App() {
       stopTracking();
       offSave.then((u) => u());
       window.removeEventListener('keydown', onSaveKey);
+      window.removeEventListener('keydown', onAltKey);
+      window.removeEventListener('keyup', onAltKey);
       unlisten.then((u) => u());
     };
   }, [refresh]);
