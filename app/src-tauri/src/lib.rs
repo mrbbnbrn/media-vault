@@ -724,7 +724,7 @@ static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 /// With "Reclaim space automatically" on: a few seconds after deleting for
 /// good, the packs holding deleted files are rewritten in the background
 /// (never during an import), so nothing of them stays in the vault folder.
-fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
+pub(crate) fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
     if !inner.config.lock().unwrap().auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -2732,6 +2732,8 @@ pub fn run() {
             derived::derived_clear,
             derived::derived_stats,
             derived::derived_have,
+            derived::derived_summary,
+            derived::derived_remove,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

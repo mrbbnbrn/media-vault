@@ -104,6 +104,8 @@ export interface RebuildState {
 export interface PrepareRequest {
   what: string;
   filters: ItemFilter[];
+  /** Pictures picked one by one (besides what `filters` finds). */
+  ids?: number[];
   /** Clear every saved map first and work everything out again. */
   again?: boolean;
 }
@@ -144,9 +146,25 @@ export function prepareVault(again: boolean): 'started' | 'queued' | 'already' {
 
 /** One folder (and its subfolders); a person folder also gets the pictures their face was recognised in. */
 export function prepareFolder(f: { id: number; name: string; person: boolean }): 'started' | 'queued' | 'already' {
-  const filters: ItemFilter[] = [{ folder: f.id, recursive: true, kinds: ['image'] }];
-  if (f.person) filters.push({ people: [f.id], kinds: ['image'] });
-  return prepareInBackground({ what: `“${f.name}”`, filters });
+  return prepareInBackground({ what: `“${f.name}”`, filters: folderFilters([f], true) });
+}
+
+/** Several folders (and their subfolders; person folders also get the pictures their face was recognised in). */
+export function prepareFolders(fs: { id: number; name: string; person: boolean }[], what: string): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: folderFilters(fs, true) });
+}
+
+/** Pictures picked one by one (the selection). */
+export function prepareItems(ids: number[], what: string): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: [], ids });
+}
+
+/** The filters that find the pictures of these folders; `people`: a person folder also gets its recognised pictures elsewhere. */
+export function folderFilters(fs: { id: number; person: boolean }[], people: boolean): ItemFilter[] {
+  const out: ItemFilter[] = fs.map((f) => ({ folder: f.id, recursive: true, kinds: ['image'] }));
+  const ps = fs.filter((f) => f.person).map((f) => f.id);
+  if (people && ps.length) out.push({ people: ps, kinds: ['image'] });
+  return out;
 }
 
 /** Adds a request (started at once when nothing runs). */
@@ -169,10 +187,17 @@ async function drain() {
   }
 }
 
-async function picturesOf(filters: ItemFilter[]): Promise<{ kind: string; src: string; itemId: number }[]> {
+/** The still pictures these filters find, plus `ids` (ids must already be pictures). */
+export async function pictureIds(filters: ItemFilter[], ids: number[] = []): Promise<number[]> {
   const seen = new Map<number, Item>();
   for (const f of filters) for (const i of await api.queryItems(f)) if (!seen.has(i.id)) seen.set(i.id, i);
-  return [...seen.values()].filter((i) => i.kind === 'image' && i.deletedAt == null).map((i) => ({ kind: 'image', src: mediaUrl(i.id), itemId: i.id }));
+  const out = [...seen.values()].filter((i) => i.kind === 'image' && i.deletedAt == null).map((i) => i.id);
+  for (const id of ids) if (!seen.has(id)) out.push(id);
+  return out;
+}
+
+async function picturesOf(filters: ItemFilter[], ids: number[] = []): Promise<{ kind: string; src: string; itemId: number }[]> {
+  return (await pictureIds(filters, ids)).map((id) => ({ kind: 'image', src: mediaUrl(id), itemId: id }));
 }
 
 /** One model's work: its setup and the tag its maps are saved under. */
@@ -214,7 +239,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
       ok = false;
       return;
     }
-    const pics = await picturesOf(r.filters);
+    const pics = await picturesOf(r.filters, r.ids);
     notePictures(pics);
     // For each model, the pictures that don't have its map saved yet.
     const work = await Promise.all(passes.map(async (p) => {

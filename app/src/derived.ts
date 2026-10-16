@@ -32,6 +32,32 @@ export function onSavedChange(cb: () => void): () => void {
   return () => subs.delete(cb);
 }
 
+/** Saved maps were added or removed somewhere else (Settings refreshes its count). */
+export function savedChanged() {
+  subs.forEach((f) => f());
+}
+
+/**
+ * How a saved map's model reads: its name, then what it was made with
+ * (depth: detail and edges; outline: size when not the usual).
+ * `names`: model id → name, from the installed models.
+ */
+export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, string>): { name: string; detail: string } {
+  const d = /^(.+)@(\d+)~([\d.]+)$/.exec(tag);
+  const o = /^(.+)@(\d+)$/.exec(tag);
+  if (kind === 'depth' && d) {
+    const [, model, side, soft] = d;
+    const k = Number(soft);
+    const edges = k === 1 ? 'edges as designed' : k < 1 ? `sharper edges (×${k})` : `softer edges (×${k})`;
+    return { name: names.get(model) ?? model, detail: `${Number(side) <= 518 ? 'standard detail' : `high detail (${side} px)`} · ${edges}` };
+  }
+  if (kind === 'outline' && o) {
+    const [, model, side] = o;
+    return { name: names.get(model) ?? model, detail: Number(side) === 1024 ? '' : `${side} px` };
+  }
+  return { name: tag, detail: '' };
+}
+
 /** The saved map of this picture for this model (null when none is saved, or it can't be read). */
 export async function loadSaved(kind: DerivedKind, model: string, id: number): Promise<DepthMap | null> {
   try {

@@ -39,7 +39,8 @@ import { ActivityRing } from '../components/ActivityRing';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
-import { prepareFolder } from '../prepare';
+import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
+import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
 import { MediaGrid } from '../components/MediaGrid';
 import { CoverVideo } from '../components/VideoPreview';
 import { Framed } from '../components/FramedCover';
@@ -123,6 +124,7 @@ type Dialog =
   | { t: 'banner'; folder: FolderCard }
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
+  | ({ t: 'del3d' } & Delete3DTarget)
   | { t: 'shortcuts' }
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
@@ -1174,6 +1176,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       showItem(it.id);
     }
   };
+  /** What "Prepare 3D data" says it did. */
+  const prepNote = (r: 'started' | 'queued' | 'already', what: string) =>
+    setNote({ text: r === 'already' ? `Already preparing ${what}.` : r === 'queued' ? `${what} will be prepared for 3D after the job running now.` : `Preparing the pictures in ${what} for 3D in the background (depth maps and outlines). See the ring at the bottom of the sidebar.`, at: 0 });
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
@@ -1196,10 +1201,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
     ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
-    { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => {
-      const r = prepareFolder({ id: f.id, name: f.name, person: f.person });
-      setNote({ text: r === 'already' ? `Already preparing “${f.name}”.` : r === 'queued' ? `“${f.name}” will be prepared for 3D after the job running now.` : `Preparing the pictures in “${f.name}” for 3D in the background (depth maps and outlines). See the ring at the bottom of the sidebar.`, at: 0 });
-    } },
+    { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
+    { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
     { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
     { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
     { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },
@@ -1678,6 +1681,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           sub: moveSub((to) => { moveFolders(fs, to.id).catch((err) => setError(errText(err))); }, fs.map((x) => x.id)) },
         { label: `Merge into one…`, hint: 'asks first', onSelect: () => setDialog({ t: 'merge', folders: fs }) },
         { label: `Rename ${plural(selFolders.size, 'folder')}…`, hint: 'F2', onSelect: askRename },
+        { label: 'Prepare 3D data', hint: 'pictures, in the background', sepBefore: true, onSelect: () => prepNote(prepareFolders(fs.map((x) => ({ id: x.id, name: x.name, person: x.person })), plural(fs.length, 'folder')), plural(fs.length, 'folder')) },
+        { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: plural(fs.length, 'folder'), folders: fs.map((x) => ({ id: x.id, name: x.name, person: x.person })), ids: [] }) },
         { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: fs.map((x) => x.id), what: plural(fs.length, 'folder') }) },
         { label: `Delete ${plural(fs.length, 'folder')}…`, danger: true, sepBefore: true, onSelect: askDeleteMany },
       ] });
@@ -1721,6 +1726,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       ] });
       return;
     }
+    const picIds = ids.filter((id) => itemById(id)?.kind === 'image');
+    const picWhat = many ? plural(ids.length, 'item') : `“${it.name}”`;
     const allFav = ids.every((id) => itemById(id)?.favourite);
     const home = it.folderId != null ? folders.find((f) => f.id === it.folderId) : null;
     const people = await peopleIn(ids);
@@ -1753,6 +1760,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { ids, label: many ? `${ids.length} items` : `“${it.name}”` }) },
         ...(it.thumb === 'failed' && it.kind === 'video' ? [{ label: 'Make a playable copy', hint: 'converts to MP4', onSelect: () => setDialog({ t: 'convert', items: [it], target: 'mp4' }) }] : []),
         { label: 'Convert to…', onSelect: () => setDialog({ t: 'convert', items: shown.filter((x) => sel.has(x.id)) }) },
+        ...(picIds.length ? [
+          { label: 'Prepare 3D data', hint: 'in the background', onSelect: () => prepNote(prepareItems(picIds, picWhat), picWhat) },
+          { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: picWhat, folders: [], ids: picIds }) },
+        ] : []),
         ...(pictures(shown.filter((x) => sel.has(x.id))).length >= 2 ? [{ label: 'Create GIF or video…', onSelect: () => setDialog({ t: 'animation', items: pictures(shown.filter((x) => sel.has(x.id))) }) }] : []),
         ...(many ? [{ label: 'Duel these', onSelect: () => { startDuel(null, shown.filter((x) => sel.has(x.id))); } }] : []),
         { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids, folders: [], what: many ? `${ids.length} items` : `“${it.name}”` }) },
@@ -2564,6 +2575,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           }}>
           {dialog.what} will be removed from the vault and can't be brought back.
         </ConfirmDialog>
+      )}
+      {dialog?.t === 'del3d' && (
+        <Delete3DData what={dialog.what} folders={dialog.folders} ids={dialog.ids} onClose={() => setDialog(null)} onDone={(text) => setNote({ text, at: 0 })} />
       )}
       {dialog?.t === 'emptyTrash' && (
         <ConfirmDialog title="Empty the trash?" confirm="Empty trash" danger onClose={() => setDialog(null)}

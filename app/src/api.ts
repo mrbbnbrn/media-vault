@@ -1149,6 +1149,10 @@ export const api = {
   derivedStats: () => call<DerivedStats>('derived_stats'),
   /** Items that already have a saved map of this kind for this model. */
   derivedHave: (kind: DerivedKind, model: string) => call<number[]>('derived_have', { kind, model }),
+  /** What is saved for these items, per kind and model. */
+  derivedSummary: (items: number[]) => call<DerivedGroup[]>('derived_summary', { items }),
+  /** Remove these items' maps of these kinds and models; how many went. */
+  derivedRemove: (items: number[], which: [DerivedKind, string][]) => call<number>('derived_remove', { items, which }),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
@@ -1635,6 +1639,40 @@ const mock = {
         for (const k of [...mockDerived.keys()]) if (!a.kind || k.split('|')[1] === a.kind) {
           mockDerived.delete(k);
           n++;
+        }
+        return n;
+      }
+      case 'derived_have': {
+        const out: number[] = [];
+        for (const k of mockDerived.keys()) {
+          const [item, kind, model] = k.split('|');
+          if (kind === a.kind && model === a.model) out.push(Number(item));
+        }
+        return out;
+      }
+      case 'derived_summary': {
+        const want = new Set((a.items as number[]) ?? []);
+        const acc = new Map<string, DerivedGroup>();
+        for (const [k, v] of mockDerived) {
+          const [item, kind, model] = k.split('|');
+          if (!want.has(Number(item))) continue;
+          const g = acc.get(`${kind}|${model}`) ?? { kind: kind as DerivedKind, model, count: 0, bytes: 0 };
+          g.count++;
+          g.bytes += v.length;
+          acc.set(`${kind}|${model}`, g);
+        }
+        return [...acc.values()].sort((x, y) => (x.kind === y.kind ? x.model.localeCompare(y.model) : x.kind === 'depth' ? -1 : 1));
+      }
+      case 'derived_remove': {
+        const want = new Set((a.items as number[]) ?? []);
+        const which = new Set(((a.which as [string, string][]) ?? []).map(([k, m]) => `${k}|${m}`));
+        let n = 0;
+        for (const k of [...mockDerived.keys()]) {
+          const [item, kind, model] = k.split('|');
+          if (want.has(Number(item)) && which.has(`${kind}|${model}`)) {
+            mockDerived.delete(k);
+            n++;
+          }
         }
         return n;
       }
@@ -2267,6 +2305,14 @@ async function mockInpaint(r: InpaintRequest, rgba: Uint8Array, mask: Uint8Array
 
 export type DerivedKind = 'depth' | 'outline';
 
+/** What is saved for some pictures, for one kind and model (the model's name carries its settings). */
+export interface DerivedGroup {
+  kind: DerivedKind;
+  model: string;
+  count: number;
+  bytes: number;
+}
+
 export interface DerivedStats {
   depthCount: number;
   depthBytes: number;
@@ -2275,7 +2321,8 @@ export interface DerivedStats {
 }
 
 /** Preview: saved maps live in memory for the session. */
-const mockDerived = new Map<string, Uint8Array>();
+// Shared on the window so tests that load this module again see the same saved maps (browser demo only).
+const mockDerived: Map<string, Uint8Array> = ((globalThis as { __mvDerived?: Map<string, Uint8Array> }).__mvDerived ??= new Map());
 
 async function derivedGet(item: number, kind: DerivedKind, model: string): Promise<Uint8Array | null> {
   let b: ArrayBuffer | Uint8Array | null;

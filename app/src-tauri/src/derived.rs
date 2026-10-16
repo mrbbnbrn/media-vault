@@ -159,6 +159,89 @@ pub fn clear(s: &Session, kind: Option<&str>) -> Result<u64, String> {
     Ok(ids.len() as u64)
 }
 
+/// What is saved for some items, per kind and model (a model saved at other
+/// settings is another line: its name carries the size and softening).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DerivedGroup {
+    pub kind: String,
+    pub model: String,
+    /// Pictures with a map of this kind and model.
+    pub count: u64,
+    pub bytes: u64,
+}
+
+/// Item ids in groups small enough for one statement.
+const CHUNK: usize = 500;
+
+fn in_list(n: usize) -> String {
+    vec!["?"; n].join(",")
+}
+
+/// What is saved for these items, by kind and model (kinds in order, then models by name).
+pub fn summary(conn: &Connection, items: &[i64]) -> Result<Vec<DerivedGroup>, String> {
+    let mut acc: std::collections::BTreeMap<(String, String), (u64, u64)> = std::collections::BTreeMap::new();
+    for part in items.chunks(CHUNK) {
+        let mut st = conn
+            .prepare(&format!("SELECT kind, model, COUNT(*), IFNULL(SUM(bytes), 0) FROM derived WHERE media_id IN ({}) GROUP BY kind, model", in_list(part.len())))
+            .map_err(e)?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(part.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
+            .map_err(e)?;
+        for row in rows {
+            let (kind, model, n, b) = row.map_err(e)?;
+            let a = acc.entry((kind, model)).or_default();
+            a.0 += n as u64;
+            a.1 += b as u64;
+        }
+    }
+    let mut out: Vec<DerivedGroup> = acc.into_iter().map(|((kind, model), (count, bytes))| DerivedGroup { kind, model, count, bytes }).collect();
+    out.sort_by_key(|g| (KINDS.iter().position(|k| *k == g.kind).unwrap_or(9), g.model.clone()));
+    Ok(out)
+}
+
+/// Remove these items' saved maps of the chosen kinds and models; how many maps went.
+/// Saved before the encrypted objects are removed (a crash can't leave rows pointing at nothing).
+pub fn remove(s: &Session, items: &[i64], which: &[(String, String)]) -> Result<u64, String> {
+    for (k, m) in which {
+        check_kind(k)?;
+        check_model(m)?;
+    }
+    if items.is_empty() || which.is_empty() {
+        return Ok(0);
+    }
+    let mut gone: Vec<String> = Vec::new();
+    {
+        let db = s.db();
+        let tx = db.unchecked_transaction().map_err(e)?;
+        for (k, m) in which {
+            for part in items.chunks(CHUNK) {
+                let mut args: Vec<rusqlite::types::Value> = vec![k.clone().into(), m.clone().into()];
+                args.extend(part.iter().map(|i| rusqlite::types::Value::Integer(*i)));
+                let w = format!("kind = ?1 AND model = ?2 AND media_id IN ({})", (3..3 + part.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(","));
+                {
+                    let mut st = tx.prepare(&format!("SELECT object_id FROM derived WHERE {w}")).map_err(e)?;
+                    for r in st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, String>(0)).map_err(e)? {
+                        gone.push(r.map_err(e)?);
+                    }
+                }
+                tx.execute(&format!("DELETE FROM derived WHERE {w}"), rusqlite::params_from_iter(args.iter())).map_err(e)?;
+            }
+        }
+        tx.commit().map_err(e)?;
+    }
+    if gone.is_empty() {
+        return Ok(0);
+    }
+    s.mark_dirty();
+    s.save()?;
+    let v = s.vault();
+    for id in gone.iter().filter_map(|h| ObjectId::from_hex(h).ok()) {
+        let _ = v.delete_object(ObjectKind::Thumbnail, &id);
+    }
+    Ok(gone.len() as u64)
+}
+
 /// The items that have a usable saved map of this kind for this model.
 pub fn have(conn: &Connection, kind: &str, model: &str) -> Result<Vec<i64>, String> {
     check_kind(kind)?;
@@ -236,6 +319,25 @@ pub async fn derived_clear(state: State<'_, crate::Shared>, kind: Option<String>
 pub async fn derived_stats(state: State<'_, crate::Shared>) -> Result<DerivedStats, String> {
     let s = crate::sess(&state)?;
     tauri::async_runtime::spawn_blocking(move || stats(&s.db())).await.map_err(|x| x.to_string())?
+}
+
+/// What is saved for these items, by kind and model ("Delete 3D data…").
+#[tauri::command]
+pub async fn derived_summary(state: State<'_, crate::Shared>, items: Vec<i64>) -> Result<Vec<DerivedGroup>, String> {
+    let s = crate::sess(&state)?;
+    tauri::async_runtime::spawn_blocking(move || summary(&s.db(), &items)).await.map_err(|x| x.to_string())?
+}
+
+/// Remove these items' saved maps of the chosen kinds and models; the space is then reclaimed (when that's on).
+#[tauri::command]
+pub async fn derived_remove(state: State<'_, crate::Shared>, items: Vec<i64>, which: Vec<(String, String)>) -> Result<u64, String> {
+    let s = crate::sess(&state)?;
+    let s2 = s.clone();
+    let n = tauri::async_runtime::spawn_blocking(move || remove(&s, &items, &which)).await.map_err(|x| x.to_string())??;
+    if n > 0 {
+        crate::reclaim_soon(state.inner().clone(), s2);
+    }
+    Ok(n)
 }
 
 /// Which items already have a saved map of this kind for this model (so background work can skip them).
@@ -363,6 +465,48 @@ mod tests {
             assert!(put(&s, a, "depth", bad, &map(2, 2, 1)).is_err(), "{bad:?}");
         }
         assert_eq!(stats(&s.db()).unwrap().depth_count, 2);
+    }
+
+    #[test]
+    fn some_maps_of_some_items_are_summed_up_and_removed() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let (a, b, c) = (item(&s, "image"), item(&s, "image"), item(&s, "image"));
+        for id in [a, b, c] {
+            put(&s, id, "depth", "da3-mono-large@518~0.5", &map(2, 2, 1)).unwrap();
+            put(&s, id, "outline", "birefnet@1024", &map(3, 3, 255)).unwrap();
+        }
+        put(&s, a, "depth", "da3-mono-large@518~1", &map(4, 4, 1)).unwrap();
+        put(&s, a, "depth", "v2-small@518~1", &map(2, 2, 1)).unwrap();
+        let g = summary(&s.db(), &[a, b]).unwrap();
+        let line = |k: &str, m: &str| g.iter().find(|x| x.kind == k && x.model == m).map(|x| (x.count, x.bytes));
+        assert_eq!(g.len(), 4, "{g:?}");
+        assert_eq!(g[0].kind, "depth", "depth first");
+        assert_eq!(g.last().unwrap().kind, "outline");
+        assert_eq!(line("depth", "da3-mono-large@518~0.5"), Some((2, 24)));
+        assert_eq!(line("depth", "da3-mono-large@518~1"), Some((1, 24)), "the same model at other settings is its own line");
+        assert_eq!(line("outline", "birefnet@1024"), Some((2, 34)));
+        // Many ids (more than one statement's worth) are fine.
+        let many: Vec<i64> = (10_000..11_200).chain([c]).collect();
+        assert_eq!(summary(&s.db(), &many).unwrap().iter().map(|x| x.count).sum::<u64>(), 2);
+        // Remove Best's sharper depth maps of a and b only.
+        let before = thumbs(&s);
+        let n = remove(&s, &[a, b], &[("depth".into(), "da3-mono-large@518~0.5".into())]).unwrap();
+        assert_eq!(n, 2);
+        assert_eq!(thumbs(&s), before - 2, "their files go");
+        assert!(get(&s, a, "depth", "da3-mono-large@518~0.5").unwrap().is_none());
+        assert!(get(&s, c, "depth", "da3-mono-large@518~0.5").unwrap().is_some(), "other items keep theirs");
+        assert!(get(&s, a, "outline", "birefnet@1024").unwrap().is_some(), "other kinds stay");
+        assert!(get(&s, a, "depth", "da3-mono-large@518~1").unwrap().is_some(), "other settings stay");
+        assert_eq!(remove(&s, &[a], &[]).unwrap(), 0);
+        assert!(remove(&s, &[a], &[("thumbs".into(), "x".into())]).is_err());
+        assert!(remove(&s, &[a], &[("depth".into(), "../x".into())]).is_err());
+        // Survives reopening.
+        s.save().unwrap();
+        let path = s.vault().root().display().to_string();
+        drop(s);
+        let s = crate::session::unlock(&path, "long enough pw").unwrap();
+        assert_eq!(summary(&s.db(), &[a, b, c]).unwrap().iter().map(|x| x.count).sum::<u64>(), 3 + 1 + 2);
     }
 
     #[test]
