@@ -143,24 +143,6 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         <Slider id="dp-moving" label="GIF / video 3D depth" title="How strongly GIFs and videos move in depth (separate from pictures)" min={0.2} max={3} step={0.1}
           value={prefs.depthMovingAmount ?? 0.6} onChange={(v) => saveViewerPrefs({ depthMovingAmount: v })} />
 
-        {/* Out of the frame. */}
-        <span />
-        <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
-          <label className="check">
-            <input type="checkbox" checked={!!prefs.depthFrame} onChange={(e) => saveViewerPrefs({ depthFrame: e.target.checked })} /> Out of the frame
-          </label>
-          <span className="faint" style={{ fontSize: 12 }}>A photo frame inside the picture; the subject (the nearest things) steps out over it. Works with the motion, the mouse, GIFs and videos.</span>
-        </span>
-        <span>Outside the frame</span>
-        <div role="radiogroup" aria-label="Outside the frame" className="seg">
-          {(['dim', 'black'] as const).map((k) => (
-            <button key={k} type="button" role="radio" aria-checked={(prefs.depthFrameOutside ?? 'dim') === k} className={(prefs.depthFrameOutside ?? 'dim') === k ? 'on' : ''}
-              onClick={() => saveViewerPrefs({ depthFrameOutside: k })}>{k === 'dim' ? 'Dimmed and blurred' : 'Black'}</button>
-          ))}
-        </div>
-        <Slider id="dp-frame" label="Frame size" title="How far in from the picture's edge the frame sits" min={0.03} max={0.3} step={0.01}
-          value={prefs.depthFrameSize ?? 0.1} onChange={(v) => saveViewerPrefs({ depthFrameSize: v })} />
-
         {/* 3D to the beat. */}
         <span />
         <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>

@@ -3,6 +3,7 @@
 // actions with undo, and importing by drag and drop.
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { gridShown } from '../firstgrid';
 import {
@@ -1788,6 +1789,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const animated = f.coverKind === 'video' || f.coverKind === 'gif';
     if (f.cover && playing && animated) {
       const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+      // "Show the whole video on hover": the hovered card's video/GIF also shows uncropped.
+      if (hovered && cfg.wholeOnHover) return <><WholeCover id={f.cover} kind={f.coverKind === 'gif' ? 'gif' : 'video'} />{still}</>;
       if (f.coverPos) return <Framed pos={f.coverPos}>{f.coverKind === 'video' ? <>{still}<CoverVideo id={f.cover} /></> : <img src={mediaUrl(f.cover)} alt="" draggable={false} />}</Framed>;
       if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
       return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
@@ -3136,5 +3139,39 @@ function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked:
         <button type="button" className="btn" onClick={props.onClose}>Close</button>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * A folder card's video or GIF cover shown whole while hovered: at the same
+ * scale as on the card, growing in the direction that was cut off, kept
+ * inside the window (like "Show the whole video on hover" in the grid).
+ */
+function WholeCover(props: { id: number; kind: 'video' | 'gif' }) {
+  const anchor = useRef<HTMLSpanElement>(null);
+  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
+  const [box, setBox] = useState<{ left: number; top: number; w: number; h: number } | null>(null);
+  useEffect(() => {
+    const card = anchor.current?.parentElement;
+    if (!card || !nat) return;
+    const r = card.getBoundingClientRect();
+    const sc = Math.max(r.width / nat.w, r.height / nat.h);
+    const w = nat.w * sc;
+    const h = nat.h * sc;
+    if (w <= r.width + 2 && h <= r.height + 2) return setBox(null);
+    const left = Math.max(4, Math.min(window.innerWidth - 4 - w, r.left + (r.width - w) / 2));
+    const top = Math.max(40, Math.min(window.innerHeight - 4 - h, r.top + (r.height - h) / 2));
+    setBox({ left, top, w, h });
+  }, [nat]);
+  const media = props.kind === 'video'
+    ? <video src={mediaUrl(props.id)} autoPlay muted loop playsInline crossOrigin="anonymous" onLoadedMetadata={(e) => setNat({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
+    : <img src={mediaUrl(props.id)} alt="" draggable={false} onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />;
+  return (
+    <span ref={anchor} className="whole-anchor" aria-hidden="true">
+      {createPortal(
+        <div className="whole-pop whole-card" style={box ? { left: box.left, top: box.top, width: box.w, height: box.h } : { left: -9999, top: 0, width: 10, height: 10, opacity: 0 }}>{media}</div>,
+        document.body,
+      )}
+    </span>
   );
 }

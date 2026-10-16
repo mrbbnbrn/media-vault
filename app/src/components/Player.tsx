@@ -44,7 +44,7 @@ import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, FrameOutIcon, OrbitIcon,
+  BeatIcon, Film3DIcon, OrbitIcon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
@@ -807,9 +807,8 @@ export function Player(props: PlayerProps) {
   const [depthPackOk, setDepthPackOk] = useState(false);
   // (Asked again when another depth model or detail is chosen: maps from the old one are forgotten.)
   const depthMoving = !!prefs.depthMoving;
-  const depthFrame = !!prefs.depthFrame;
   useEffect(() => {
-    if (!depthAuto && !prefs.depthMouse && !depthMoving && !depthFrame) return;
+    if (!depthAuto && !prefs.depthMouse && !depthMoving) return;
     let alive = true;
     depthPack().then((i) => {
       if (!alive) return;
@@ -819,7 +818,7 @@ export function Player(props: PlayerProps) {
     return () => {
       alive = false;
     };
-  }, [depthAuto, depthMoving, depthFrame, prefs.depthMouse, prefs.depthModel, prefs.depthDetail, prefs.depthEdges]);
+  }, [depthAuto, depthMoving, prefs.depthMouse, prefs.depthModel, prefs.depthDetail, prefs.depthEdges]);
   /** The model and size in use: the picture starts again with the new model's depth when it changes. */
   const [depthModelKey, setDepthModelKey] = useState('');
   // Just viewing (no slideshow), the movement goes on for as long as the picture is open; only
@@ -830,9 +829,9 @@ export function Player(props: PlayerProps) {
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
   const isVideo3d = item?.kind === 'video';
-  /** GIFs and videos move with their own switch; pictures with theirs. Out of the frame needs depth too. */
-  const depthFor = animated || isVideo3d ? depthMoving || depthFrame : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || depthFrame : false;
-  /** Moving on its own or with the mouse (just the frame: the picture stays still). */
+  /** GIFs and videos move with their own switch; pictures with theirs. */
+  const depthFor = animated || isVideo3d ? depthMoving : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse : false;
+  /** Moving on its own or with the mouse. */
   const depthMotion = animated || isVideo3d ? depthMoving || depthByMouse : depthAuto || depthByMouse;
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   const depth3d = depthFor && depthPackOk && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
@@ -1297,7 +1296,6 @@ export function Player(props: PlayerProps) {
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}`} src={item.src} natural={depthNatural} fit={s.fit}
                 amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
                 video={isVideo3d ? { ref: videoRef, delayMs: prefs.depthVideoDelay ? 100 : 0 } : undefined}
-                frame={depthFrame ? { outside: prefs.depthFrameOutside === 'black' ? 'black' : 'dim', size: prefs.depthFrameSize ?? 0.1 } : undefined} mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 frames={animated ? gifFeed : undefined}
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
                 motion={{ shape: motionChoice(prefs.depthShape), amount: depthMotion ? prefs.depthMotion ?? 1 : 0, speed: prefs.depthSpeed ?? 1 }}
@@ -1499,11 +1497,6 @@ export function Player(props: PlayerProps) {
                     aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in View ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
                     onClick={toggleDepthMouse}>
                     3D
-                  </button>
-                  <button type="button" className={`pbtn lg${depthFrame ? ' on' : ''}`} aria-pressed={depthFrame} aria-label="Out of the frame"
-                    title={depthFrame ? 'Out of the frame is on: the subject steps out over a photo frame (outside and size in View ▾ → 3D photo settings) · click to turn off' : 'Out of the frame: a photo frame the subject steps out of (uses the depth)'}
-                    onClick={() => toggleDepth({ depthFrame: !depthFrame }, !depthFrame, depthFrame ? 'Out of the frame off' : 'Out of the frame on')}>
-                    <FrameOutIcon size={18} />
                   </button>
                   <button type="button" className={`pbtn lg${prefs.depthBeat ? ' on' : ''}`} aria-pressed={!!prefs.depthBeat} aria-label="3D to the beat"
                     title={prefs.depthBeat ? `3D to the beat is on${beat3d.silent ? ' (no music heard yet)' : beat3d.bpm ? ` · ${Math.round(beat3d.bpm)} BPM` : ''} · push or bounce in View ▾ → 3D photo settings · click to turn off` : '3D to the beat: with music playing, the 3D picture pulses on each beat'}

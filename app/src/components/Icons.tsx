@@ -379,11 +379,3 @@ export const BeatIcon = ({ size = 16 }: P) => (
     <path d="M20.5 7.5a3 3 0 0 1 0 4" strokeWidth={1.5} />
   </svg>
 );
-/** Out of the frame: a frame with something stepping out of it. */
-export const FrameOutIcon = ({ size = 16 }: P) => (
-  <svg {...base(size)}>
-    <rect x="3" y="6" width="14" height="13" rx="1" />
-    <circle cx="14" cy="8" r="3" />
-    <path d="M10 19c0-4 2-7 4-7s5 2 6 6" />
-  </svg>
-);

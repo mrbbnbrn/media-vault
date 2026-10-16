@@ -53,6 +53,20 @@ export function Settings({ nav }: { nav: Nav }) {
     ['about', 'About'],
   ];
   const custom = !ACCENTS.some((a) => a.hex === cfg.accent);
+  // Esc or Backspace goes back to the library (not while typing in a box, or with a window open on top).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.key !== 'Escape' && e.key !== 'Backspace') || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'
+        || (t.tagName === 'INPUT' && !['checkbox', 'radio', 'range', 'button', 'color'].includes((t as HTMLInputElement).type)));
+      if (typing || document.querySelector('.modal-back, [role="dialog"], [role="menu"]')) return;
+      e.preventDefault();
+      nav.go({ name: 'library' });
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [nav]);
 
   return (
     <>

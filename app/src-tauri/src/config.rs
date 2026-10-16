@@ -94,10 +94,6 @@ pub struct ViewerSettings {
     pub depth_beat_amount: f64,
     /// Live video 3D: each frame (and the sound) ~0.1 s late so it meets its own depth.
     pub depth_video_delay: bool,
-    /// Out of the frame: on, outside "dim" or "black", frame size (0.03–0.3 of the shorter side).
-    pub depth_frame: bool,
-    pub depth_frame_outside: String,
-    pub depth_frame_size: f64,
     /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
     pub depth_auto_migrated: bool,
     /// 3D photos: which depth model ("v2-small", "da3-mono-large"; "" = the best one installed; the retired "da3-base" falls back to it).
@@ -166,9 +162,6 @@ impl Default for ViewerSettings {
             depth_beat_kind: "push".into(),
             depth_beat_amount: 1.0,
             depth_video_delay: false,
-            depth_frame: false,
-            depth_frame_outside: "dim".into(),
-            depth_frame_size: 0.1,
             depth_auto_migrated: false,
             depth_model: String::new(),
             depth_detail: "standard".into(),
@@ -385,10 +378,6 @@ impl AppConfig {
         }
         v.depth_moving_amount = clamp(v.depth_moving_amount, 0.2, 3.0, 0.6);
         v.depth_beat_amount = clamp(v.depth_beat_amount, 0.2, 3.0, 1.0);
-        v.depth_frame_size = clamp(v.depth_frame_size, 0.03, 0.3, 0.1);
-        if v.depth_frame_outside != "black" {
-            v.depth_frame_outside = "dim".into();
-        }
         if v.depth_beat_kind != "bounce" {
             v.depth_beat_kind = "push".into();
         }

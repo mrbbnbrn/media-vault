@@ -234,6 +234,8 @@ body.clean-fs .toast { display: none; }
 .mgrid .group-head .faint { font-size: 12px; }
 .mgrid.shape .tile img { object-fit: cover; }
 .whole-pop { position: absolute; z-index: 6; border-radius: 10px; overflow: hidden; pointer-events: none; background: #000; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.7), 0 0 0 2px var(--accent-ring); animation: pop-in 0.14s ease-out; }
+.whole-pop.whole-card { position: fixed; z-index: 60; }
+.whole-anchor { display: none; }
 .whole-pop video, .whole-pop img { width: 100%; height: 100%; object-fit: contain; display: block; }
 @keyframes pop-in { from { opacity: 0; transform: scale(0.96); } to { opacity: 1; transform: none; } }
 

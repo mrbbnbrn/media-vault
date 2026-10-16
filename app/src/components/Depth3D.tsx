@@ -50,8 +50,6 @@ interface Props {
   frames?: FrameFeed;
   /** A video: drawn frame by frame from the playing video with live depth; `delayMs` shows each frame that much later so it meets its own depth (0 = off). */
   video?: { ref: { current: HTMLVideoElement | null }; delayMs: number };
-  /** Out of the frame: a photo frame inside the picture that near things step out of; outside it dimmed or black; frame size (share of the shorter side). */
-  frame?: { outside: 'dim' | 'black'; size: number };
   /** 3D to the beat: `pulse` goes up by one on every beat; a push closer or a little bounce, this strong (1 = as designed). */
   beat?: { pulse: number; kind: 'push' | 'bounce'; amount: number };
 }
@@ -93,14 +91,6 @@ uniform float uPivot;
 uniform vec2 uFocus;
 uniform vec2 uPx;
 uniform float uSharp;
-// Out of the frame: on (1) or off (0); the frame's inner edge from the picture's edge and the
-// border's width (share of the picture, each way); outside the frame dimmed (0) or black (1);
-// from which nearness on things step out over the frame.
-uniform float uFrame;
-uniform vec2 uInset;
-uniform vec2 uBorder;
-uniform float uOutside;
-uniform float uPopZ;
 const int N = ${STEPS};
 void main() {
   vec2 p = 0.5 + (vUv - 0.5) / uScale;
@@ -134,32 +124,6 @@ void main() {
       + texture2D(uImg, h + vec2(0.0, d.y)).rgb + texture2D(uImg, h - vec2(0.0, d.y)).rgb;
     c.rgb = clamp(c.rgb * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
   }
-  if (uFrame > 0.5) {
-    // Where this screen point is against the frame (not moved by the camera).
-    vec2 e = min(vUv, 1.0 - vUv);
-    float inside = step(uInset.x, e.x) * step(uInset.y, e.y);
-    vec2 o = uInset - uBorder;
-    float onFrame = (1.0 - inside) * step(o.x, e.x) * step(o.y, e.y);
-    // Near things (the subject) step out over the frame and beyond it.
-    float z = texture2D(uDepth, h).r;
-    float pop = smoothstep(uPopZ - 0.03, uPopZ + 0.03, z);
-    vec3 outside;
-    if (uOutside > 0.5) {
-      outside = vec3(0.0);
-    } else {
-      vec2 d = 14.0 * uPx / uScale;
-      vec3 b = texture2D(uImg, h + vec2(d.x, 0.0)).rgb + texture2D(uImg, h - vec2(d.x, 0.0)).rgb
-        + texture2D(uImg, h + vec2(0.0, d.y)).rgb + texture2D(uImg, h - vec2(0.0, d.y)).rgb
-        + texture2D(uImg, h + d * 0.7).rgb + texture2D(uImg, h - d * 0.7).rgb
-        + texture2D(uImg, h + vec2(d.x, -d.y) * 0.7).rgb + texture2D(uImg, h + vec2(-d.x, d.y) * 0.7).rgb;
-      outside = b / 8.0 * 0.32;
-    }
-    // A soft shadow just inside the frame, so the picture sits behind it.
-    float shade = 1.0 - 0.35 * inside * (1.0 - smoothstep(0.0, 0.025, min(e.x - uInset.x, e.y - uInset.y)));
-    vec3 frameCol = vec3(0.94, 0.93, 0.90);
-    vec3 back = inside > 0.5 ? c.rgb * shade : (onFrame > 0.5 ? frameCol : outside);
-    c.rgb = inside > 0.5 ? back : mix(back, c.rgb, pop);
-  }
   gl_FragColor = vec4(c.rgb, 1.0);
 }`;
 
@@ -171,7 +135,7 @@ interface Scene {
   buf: WebGLBuffer;
   img: WebGLTexture;
   depth: WebGLTexture;
-  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'frame' | 'inset' | 'border' | 'outside' | 'popZ', WebGLUniformLocation | null>;
+  u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp', WebGLUniformLocation | null>;
 }
 
 /**
@@ -311,11 +275,6 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     depth: gl.getUniformLocation(prog, 'uDepth'),
     px: gl.getUniformLocation(prog, 'uPx'),
     sharp: gl.getUniformLocation(prog, 'uSharp'),
-    frame: gl.getUniformLocation(prog, 'uFrame'),
-    inset: gl.getUniformLocation(prog, 'uInset'),
-    border: gl.getUniformLocation(prog, 'uBorder'),
-    outside: gl.getUniformLocation(prog, 'uOutside'),
-    popZ: gl.getUniformLocation(prog, 'uPopZ'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
@@ -632,18 +591,6 @@ export function Depth3D(props: Props) {
         gl.uniform2f(s.u.focus, 0.5, 0.5);
         gl.uniform2f(s.u.px, 1 / Math.max(1, vw), 1 / Math.max(1, vh));
         gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
-        const fr = p.frame;
-        gl.uniform1f(s.u.frame, fr ? 1 : 0);
-        if (fr) {
-          // The same width in pixels on every side.
-          const short = Math.min(d.width, d.height) || 1;
-          const inset = Math.min(0.3, Math.max(0.03, fr.size)) * short;
-          const border = Math.max(4, short * 0.018);
-          gl.uniform2f(s.u.inset, inset / (d.width || 1), inset / (d.height || 1));
-          gl.uniform2f(s.u.border, border / (d.width || 1), border / (d.height || 1));
-          gl.uniform1f(s.u.outside, fr.outside === 'black' ? 1 : 0);
-          gl.uniform1f(s.u.popZ, Math.min(0.95, Math.max(0.05, pivot - 0.04)));
-        }
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
         const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
@@ -703,7 +650,7 @@ export function Depth3D(props: Props) {
   // Resumed, resized, refitted or made stronger: draw again.
   useEffect(() => {
     kick.current();
-  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.frame?.outside, props.frame?.size, !!props.frame]);
+  }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape]);
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;
