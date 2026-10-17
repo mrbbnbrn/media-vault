@@ -21,6 +21,11 @@
 //! The key-wrap associated data = header bytes 0..23 || object id, which
 //! authenticates the length and chunk size. Reordered, removed, appended or
 //! modified chunks all fail authentication.
+//!
+//! Version 2 is the same layout **without encryption** (vaults made without
+//! encryption): bytes 16..83 of the header are zero and the chunks are the
+//! plain bytes, without tags. Media of such vaults isn't stored as objects at
+//! all but as ordinary files ([`ObjectReader::raw`] reads those).
 
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
@@ -32,6 +37,8 @@ use crate::error::{Error, Result};
 
 pub const MAGIC: &[u8; 4] = b"MVOB";
 pub const OBJECT_VERSION: u8 = 1;
+/// The same layout, not encrypted.
+pub const PLAIN_OBJECT_VERSION: u8 = 2;
 pub const HEADER_LEN: u64 = 83;
 pub const DEFAULT_CHUNK_LOG2: u8 = 20; // 1 MiB
 const PREFIX_LEN: usize = 7;
@@ -92,13 +99,13 @@ fn chunk_nonce(prefix: &[u8; PREFIX_LEN], index: u64, last: bool) -> io::Result<
     Ok(n)
 }
 
-fn fixed_head(kind: ObjectKind, chunk_log2: u8) -> [u8; 8] {
+fn fixed_head(kind: ObjectKind, chunk_log2: u8, plain: bool) -> [u8; 8] {
     [
         MAGIC[0],
         MAGIC[1],
         MAGIC[2],
         MAGIC[3],
-        OBJECT_VERSION,
+        if plain { PLAIN_OBJECT_VERSION } else { OBJECT_VERSION },
         kind as u8,
         chunk_log2,
         0,
@@ -178,6 +185,8 @@ pub struct ObjectWriter<W: Write + Seek> {
     threads: usize,
     /// Chunks encrypted at once.
     batch: usize,
+    /// Written without encryption (format version 2).
+    plain: bool,
 }
 
 impl<W: Write + Seek> ObjectWriter<W> {
@@ -191,7 +200,7 @@ impl<W: Write + Seek> ObjectWriter<W> {
         inner.seek(SeekFrom::Start(0))?;
         inner.write_all(&[0u8; HEADER_LEN as usize])?; // placeholder, filled in by finish()
         let prefix = crypto::random_bytes::<PREFIX_LEN>();
-        let fixed = fixed_head(kind, chunk_log2);
+        let fixed = fixed_head(kind, chunk_log2, false);
         let chunk_size = 1usize << chunk_log2;
         let mut w = Self {
             inner,
@@ -208,9 +217,17 @@ impl<W: Write + Seek> ObjectWriter<W> {
             hasher: Sha256::new(),
             threads: 1,
             batch: 1,
+            plain: false,
         };
         w.set_threads(default_threads());
         Ok(w)
+    }
+
+    /// Write this object without encryption (format version 2). Only before writing anything.
+    pub fn set_plain(&mut self, plain: bool) {
+        if self.total == 0 {
+            self.plain = plain;
+        }
     }
 
     /// How many cores to encrypt on (1 = one chunk at a time, for callers
@@ -245,6 +262,13 @@ impl<W: Write + Seek> ObjectWriter<W> {
         let cs = self.chunk_size;
         let n = full + last as usize;
         let take = if last { self.buf.len() } else { full * cs };
+        if self.plain {
+            self.hasher.update(&self.buf[..take]);
+            self.inner.write_all(&self.buf[..take])?;
+            self.buf.drain(..take);
+            self.next_index += n as u64;
+            return Ok(());
+        }
         let first = self.next_index;
         let nonces = (0..n)
             .map(|k| chunk_nonce(&self.prefix, first + k as u64, last && k == full))
@@ -274,13 +298,15 @@ impl<W: Write + Seek> ObjectWriter<W> {
         self.emit(full, true)?;
 
         let mut header = [0u8; HEADER_LEN as usize];
-        header[..8].copy_from_slice(&fixed_head(self.kind, self.chunk_log2));
+        header[..8].copy_from_slice(&fixed_head(self.kind, self.chunk_log2, self.plain));
         header[8..16].copy_from_slice(&self.total.to_le_bytes());
-        header[16..23].copy_from_slice(&self.prefix);
-        let wrap_aad = [&header[..23], &self.id.0[..]].concat();
-        let (knonce, wrapped) = crypto::wrap_key(master, &self.data_key, &wrap_aad);
-        header[23..35].copy_from_slice(&knonce);
-        header[35..83].copy_from_slice(&wrapped);
+        if !self.plain {
+            header[16..23].copy_from_slice(&self.prefix);
+            let wrap_aad = [&header[..23], &self.id.0[..]].concat();
+            let (knonce, wrapped) = crypto::wrap_key(master, &self.data_key, &wrap_aad);
+            header[23..35].copy_from_slice(&knonce);
+            header[35..83].copy_from_slice(&wrapped);
+        }
 
         self.inner.seek(SeekFrom::Start(0))?;
         self.inner.write_all(&header)?;
@@ -325,6 +351,10 @@ pub struct ObjectHeader {
     pub kind: ObjectKind,
     pub chunk_log2: u8,
     pub plaintext_len: u64,
+    /// Not encrypted (format version 2, or an ordinary media file).
+    pub plain: bool,
+    /// Where the data starts in the file (HEADER_LEN; 0 for an ordinary file).
+    pub base: u64,
 }
 
 impl ObjectHeader {
@@ -338,9 +368,12 @@ impl ObjectHeader {
             self.plaintext_len.div_ceil(self.chunk_size())
         }
     }
-    /// The exact size the encrypted file must have.
+    fn tag_len(&self) -> u64 {
+        if self.plain { 0 } else { TAG_LEN as u64 }
+    }
+    /// The exact size the object file must have.
     pub fn expected_file_len(&self) -> u64 {
-        HEADER_LEN + self.plaintext_len + self.chunk_count() * TAG_LEN as u64
+        self.base + self.plaintext_len + self.chunk_count() * self.tag_len()
     }
 }
 
@@ -380,9 +413,10 @@ impl<R: Read + Seek> ObjectReader<R> {
         if &h[..4] != MAGIC {
             return Err(Error::Corrupt(format!("object {id} has no valid header")));
         }
-        if h[4] != OBJECT_VERSION {
+        if h[4] != OBJECT_VERSION && h[4] != PLAIN_OBJECT_VERSION {
             return Err(Error::UnsupportedVersion(h[4] as u32));
         }
+        let plain = h[4] == PLAIN_OBJECT_VERSION;
         let kind = ObjectKind::from_u8(h[5])
             .ok_or_else(|| Error::Corrupt(format!("object {id}: unknown kind")))?;
         if let Some(k) = expected_kind
@@ -400,8 +434,12 @@ impl<R: Read + Seek> ObjectReader<R> {
         let prefix: [u8; PREFIX_LEN] = h[16..23].try_into().unwrap();
         let knonce: [u8; NONCE_LEN] = h[23..35].try_into().unwrap();
         let wrap_aad = [&h[..23], &id.0[..]].concat();
-        let data_key = crypto::unwrap_key(master, &knonce, &h[35..83], &wrap_aad)
-            .ok_or_else(|| Error::Corrupt(format!("object {id}: header failed authentication")))?;
+        let data_key = if plain {
+            crypto::random_key() // never used
+        } else {
+            crypto::unwrap_key(master, &knonce, &h[35..83], &wrap_aad)
+                .ok_or_else(|| Error::Corrupt(format!("object {id}: header failed authentication")))?
+        };
         let fixed: [u8; 8] = h[..8].try_into().unwrap();
         Ok(Self {
             inner,
@@ -409,6 +447,8 @@ impl<R: Read + Seek> ObjectReader<R> {
                 kind,
                 chunk_log2,
                 plaintext_len,
+                plain,
+                base: HEADER_LEN,
             },
             data_key,
             aad: chunk_aad(&fixed, &prefix, &id),
@@ -419,6 +459,28 @@ impl<R: Read + Seek> ObjectReader<R> {
             ahead: 0,
             threads: default_threads(),
         })
+    }
+
+    /// An ordinary (unencrypted) file of `len` bytes read as an object: the
+    /// media of a vault without encryption.
+    pub fn raw(inner: R, len: u64, kind: ObjectKind) -> Self {
+        Self {
+            inner,
+            header: ObjectHeader { kind, chunk_log2: DEFAULT_CHUNK_LOG2, plaintext_len: len, plain: true, base: 0 },
+            data_key: crypto::random_key(), // never used
+            prefix: [0; PREFIX_LEN],
+            aad: Vec::new(),
+            pos: 0,
+            cached: None,
+            next: u64::MAX,
+            ahead: 0,
+            threads: 1,
+        }
+    }
+
+    /// Not encrypted (format version 2, or an ordinary file).
+    pub fn is_plain(&self) -> bool {
+        self.header.plain
     }
 
     /// How many cores to decrypt on (1 = one chunk at a time).
@@ -462,10 +524,28 @@ impl<R: Read + Seek> ObjectReader<R> {
         let count = count.clamp(1, n - first);
         let len = self.header.plaintext_len;
         let plain = |i: u64| (len.min((i + 1) * cs) - (i * cs).min(len)) as usize;
-        let sizes: Vec<usize> = (first..first + count).map(|i| plain(i) + TAG_LEN).collect();
+        let tag = self.header.tag_len();
+        if self.header.plain {
+            // Not encrypted: the bytes as they are, cut into chunks.
+            self.inner.seek(SeekFrom::Start(self.header.base + first * cs))?;
+            let mut out = Vec::with_capacity(count as usize);
+            for i in first..first + count {
+                let mut b = Zeroizing::new(vec![0u8; plain(i)]);
+                self.inner.read_exact(&mut b).map_err(|e| {
+                    if e.kind() == io::ErrorKind::UnexpectedEof {
+                        io::Error::new(io::ErrorKind::InvalidData, "file is truncated")
+                    } else {
+                        e
+                    }
+                })?;
+                out.push(b);
+            }
+            return Ok(out);
+        }
+        let sizes: Vec<usize> = (first..first + count).map(|i| plain(i) + tag as usize).collect();
         let mut ct = vec![0u8; sizes.iter().sum()];
         self.inner
-            .seek(SeekFrom::Start(HEADER_LEN + first * (cs + TAG_LEN as u64)))?;
+            .seek(SeekFrom::Start(self.header.base + first * (cs + tag)))?;
         self.inner.read_exact(&mut ct).map_err(|e| {
             if e.kind() == io::ErrorKind::UnexpectedEof {
                 io::Error::new(io::ErrorKind::InvalidData, "encrypted file is truncated")
@@ -662,7 +742,7 @@ mod tests {
                 let (master, id, enc, done) = write(&plain, 12, wt, piece);
                 assert_eq!(done.sha256_hex, want, "len {len} threads {wt}");
                 assert_eq!(done.plaintext_len, len as u64);
-                let head = ObjectHeader { kind: ObjectKind::Media, chunk_log2: 12, plaintext_len: len as u64 };
+                let head = ObjectHeader { kind: ObjectKind::Media, chunk_log2: 12, plaintext_len: len as u64, plain: false, base: HEADER_LEN };
                 assert_eq!(enc.len() as u64, head.expected_file_len());
                 for rt in [1, 4] {
                     let mut r = ObjectReader::open(Cursor::new(&enc), &master, id, None).unwrap();
@@ -712,5 +792,39 @@ mod tests {
         assert!(back.len() <= 13 * cs);
         let mut r = ObjectReader::open(Cursor::new(&bad), &master, id, None).unwrap();
         assert!(r.verify_all().is_err());
+    }
+
+    #[test]
+    fn plain_objects_round_trip_and_are_readable_as_they_are() {
+        for len in [0usize, 1, 4095, 4096, 4097, 3 * 4096 + 5] {
+            let plain = data(len);
+            let id = ObjectId::random();
+            let mut w = ObjectWriter::new(Cursor::new(Vec::new()), id, ObjectKind::Thumbnail, 12).unwrap();
+            w.set_plain(true);
+            w.write_all(&plain).unwrap();
+            let master = crypto::random_key();
+            let (cur, done) = w.finish(&master).unwrap();
+            assert_eq!(done.sha256_hex, hex::encode(Sha256::digest(&plain)));
+            let bytes = cur.into_inner();
+            assert_eq!(bytes[4], PLAIN_OBJECT_VERSION);
+            assert_eq!(&bytes[HEADER_LEN as usize..], &plain[..], "the bytes as they are");
+            // Any key reads it (there's nothing to decrypt).
+            let other = crypto::random_key();
+            let mut r = ObjectReader::open(Cursor::new(bytes), &other, id, Some(ObjectKind::Thumbnail)).unwrap();
+            assert!(r.is_plain());
+            let mut back = Vec::new();
+            r.read_to_end(&mut back).unwrap();
+            assert_eq!(back, plain);
+            r.verify_all().unwrap();
+            // An ordinary file, with seeking.
+            let mut raw = ObjectReader::raw(Cursor::new(plain.clone()), len as u64, ObjectKind::Media);
+            if len > 10 {
+                raw.seek(SeekFrom::Start(len as u64 - 10)).unwrap();
+                let mut tail = Vec::new();
+                raw.read_to_end(&mut tail).unwrap();
+                assert_eq!(tail, plain[len - 10..]);
+            }
+            raw.verify_all().unwrap();
+        }
     }
 }

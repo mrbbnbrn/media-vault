@@ -312,6 +312,21 @@ pub fn reclaim_all_deleted(s: &Session) -> Result<ReclaimReport, String> {
     reclaim_over(s, 1e-9)
 }
 
+/// Only packs that are (almost) all unused: cheap, nearly nothing to copy (while a vault is being converted).
+pub fn reclaim_emptied(s: &Session) -> Result<ReclaimReport, String> {
+    // Only when there is such a pack (the full check before rewriting is slow on a big vault).
+    let any = s
+        .vault()
+        .pack_usage()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|u| u.size > (1 << 20) && u.size.saturating_sub(u.live_bytes) as f64 >= 0.98 * u.size as f64);
+    if !any {
+        return Ok(ReclaimReport { moved: 0, reclaimed_bytes: 0, packs_removed: 0 });
+    }
+    reclaim_over(s, 0.98)
+}
+
 fn reclaim_over(s: &Session, min_waste: f64) -> Result<ReclaimReport, String> {
     s.save()?;
     check_all_present(s)?;

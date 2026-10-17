@@ -1,4 +1,4 @@
-# Media Vault — storage format (versions 1, 2 and 3)
+# Media Vault — storage format (versions 1, 2, 3 and 4)
 
 This file is copied into every vault so the format is never lost. It describes
 everything needed to decrypt the vault with any programming language, without
@@ -158,6 +158,29 @@ For chunk `i` (counting from 0):
 - aad = header bytes 0..8 || nonce prefix (7 bytes) || object id bytes (16)
 
 Concatenate the decrypted chunks to get the original file.
+
+## Vaults without encryption (version 4)
+
+A vault can be made without encryption, and an encrypted vault can be changed
+to one without (and back). `vault.json` then says `"plain": true` and
+`"version": 4`; it has no password and no recovery key (their slots are empty).
+
+- **Media are ordinary files** under `Files/`, in folders named like the
+  vault's folders, with their original names (a number is added to tell
+  apart files with the same name). Items in the trash are in `Files/.trash/`.
+  A file that was just added waits in `Files/.new/` under its object id until
+  the app puts it in its folder. The table `plain_files` in the database says
+  where each file is (`path`, and `prev` while a move may not have happened yet).
+  Moving or renaming these files outside the app makes the app lose them.
+- **Everything else** (thumbnails, preview clips, saved depth maps and
+  outlines, the database) is stored as before, in the packs and
+  `meta.db.enc`, but as **version 2 objects**: the same 83-byte header with
+  version byte 2 and bytes 16..83 zero, followed by the plain bytes (no tags).
+  `meta.db.enc` is then simply a SQLite database after an 83-byte header.
+
+While a vault is being changed, `vault.json` has `"converting": "plain"` or
+`"converting": "encrypted"` and version 4. Both kinds of object can be present
+then; each object's version byte (and the files under `Files/`) tells which.
 
 ## The database
 

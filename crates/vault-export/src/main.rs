@@ -109,6 +109,8 @@ fn load_conn(v: &Vault) -> Result<db::Connection, Box<dyn std::error::Error>> {
     // Where each encrypted file lives inside the pack files. If anything is
     // missing from this index, the packs are scanned automatically.
     v.load_index(db::load_index(&conn)?);
+    // A vault without encryption: where its ordinary media files are.
+    v.set_media_files(db::load_plain_files(&conn)?);
     Ok(conn)
 }
 
@@ -118,7 +120,9 @@ fn info(root: PathBuf) -> R {
     println!("Format:         {} v{}", h.format, h.version);
     println!("Vault id:       {}", h.vault_id);
     println!("Created (unix): {}", h.created_at);
-    if h.is_passwordless() {
+    if h.plain {
+        println!("Encryption:     none (media are ordinary files in Files/)");
+    } else if h.is_passwordless() {
         println!("Password:       none (anyone with this folder can open it)");
     }
     println!(

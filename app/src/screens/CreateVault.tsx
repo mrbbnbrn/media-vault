@@ -12,10 +12,11 @@ export function CreateVault({ nav }: { nav: Nav }) {
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
   const [noPassword, setNoPassword] = useState(false);
+  const [noEncryption, setNoEncryption] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const ready = canCreate({ name, parent, noPassword, passwordOk: passwordsOk(password, confirm, min) });
+  const ready = canCreate({ name, parent, noPassword: noPassword || noEncryption, passwordOk: passwordsOk(password, confirm, min) });
 
   async function choose() {
     const p = await pickFolder('Where should the new vault folder be created?');
@@ -28,11 +29,13 @@ export function CreateVault({ nav }: { nav: Nav }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.createVault(parent, name.trim(), noPassword ? null : password);
+      const r = await api.createVault(parent, name.trim(), noPassword || noEncryption ? null : password, !noEncryption);
       setPassword('');
       setConfirm('');
       await nav.refresh();
-      nav.go({ name: 'words', words: r.words, context: 'create' });
+      // A vault without encryption has no recovery key.
+      if (r.words.length) nav.go({ name: 'words', words: r.words, context: 'create' });
+      else nav.go({ name: 'library' });
     } catch (err) {
       setError((err as Error).message);
       setBusy(false);
@@ -42,7 +45,7 @@ export function CreateVault({ nav }: { nav: Nav }) {
   const sep = parent?.includes('\\') ? '\\' : '/';
   return (
     <>
-      <TopBar title="Create vault · step 1 of 2">
+      <TopBar title={noEncryption ? "Create vault" : "Create vault · step 1 of 2"}>
         <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'start' })} disabled={busy}>
           <BackIcon /> Back
         </button>
@@ -52,7 +55,8 @@ export function CreateVault({ nav }: { nav: Nav }) {
           <div className="field" style={{ gap: 10 }}>
             <h1>Create a new vault</h1>
             <p className="lead">
-              Everything you put in it is encrypted on disk. You can keep several vaults, each with its own password (or none).
+              Everything you put in it is encrypted on disk (unless you choose no encryption). You can keep several vaults,
+              each with its own password (or none).
             </p>
           </div>
 
@@ -75,6 +79,21 @@ export function CreateVault({ nav }: { nav: Nav }) {
 
           <div className="setting">
             <div className="text">
+              <span className="title">No encryption</span>
+              <span className="desc">Your files are kept as ordinary files in folders inside the vault folder, so Explorer and other apps can open them. No password. You can encrypt it later in Settings.</span>
+            </div>
+            <button type="button" role="switch" aria-checked={noEncryption} aria-label="No encryption" className="toggle"
+              onClick={() => setNoEncryption(!noEncryption)} disabled={busy} />
+          </div>
+
+          {noEncryption ? (
+            <div className="notice" role="note">
+              <WarnIcon />
+              <span>Nothing in this vault is protected: anyone who can open the folder can see your files, your folders, tags and faces.</span>
+            </div>
+          ) : (<>
+          <div className="setting">
+            <div className="text">
               <span className="title">No password</span>
               <span className="desc">The vault opens straight away, without asking. You can set a password later in Settings.</span>
             </div>
@@ -90,6 +109,7 @@ export function CreateVault({ nav }: { nav: Nav }) {
           ) : (
             <PasswordPair password={password} confirm={confirm} onPassword={setPassword} onConfirm={setConfirm} min={min} />
           )}
+          </>)}
 
           <ErrorBox error={error} />
           <div className="row" style={{ justifyContent: 'flex-end' }}>

@@ -209,6 +209,8 @@ export interface VaultEntry {
   sizeBytes: number | null;
   /** Opens without a password (clicking it opens it). */
   passwordless: boolean;
+  /** False for a vault without encryption. */
+  encrypted?: boolean;
 }
 
 export interface SessionInfo {
@@ -219,6 +221,10 @@ export interface SessionInfo {
   needsNewPassword: boolean;
   /** False for a vault that opens without a password (it never locks by itself). */
   hasPassword: boolean;
+  /** False for a vault without encryption (its files are ordinary files). */
+  encrypted?: boolean;
+  /** "plain" or "encrypted" while the vault is being changed to that. */
+  converting?: 'plain' | 'encrypted' | null;
   restoredFromBackup: string | null;
   /** Only right after unlocking. */
   login?: LoginInfo | null;
@@ -818,8 +824,19 @@ export const api = {
   addVault: (path: string) => call<VaultEntry>('add_vault', { path }),
   forgetVault: (path: string) => call<void>('forget_vault', { path }),
   /** `password` null = a vault without a password. */
-  createVault: (parent: string, name: string, password: string | null) =>
-    call<{ session: SessionInfo; words: string[] }>('create_vault', { parent, name, password }),
+  /** `encrypt` false: a vault without encryption (no password, no recovery key; `words` is empty). */
+  createVault: (parent: string, name: string, password: string | null, encrypt = true) =>
+    call<{ session: SessionInfo; words: string[] }>('create_vault', { parent, name, password, encrypt }),
+  /** Remove the encryption (the current password is checked first, when there is one). Runs in the background. */
+  encryptionOff: (current: string | null) => call<SessionInfo>('encryption_off', { current }),
+  /** Encrypt a vault without encryption, with this password or none. Returns the new recovery key. */
+  encryptionOn: (password: string | null) => call<{ session: SessionInfo; words: string[] }>('encryption_on', { password }),
+  /** Carry on with a paused or interrupted change (false: nothing to carry on with). */
+  encryptionContinue: () => call<boolean>('encryption_continue'),
+  encryptionStop: () => call<void>('encryption_stop'),
+  encryptionRunning: () => call<boolean>('encryption_running'),
+  /** Open a vault-without-encryption's Files folder in Explorer. */
+  openFilesFolder: () => call<void>('open_files_folder'),
   /** Open a vault that has no password. */
   openVault: (path: string) => call<SessionInfo>('open_vault', { path }).then(keepLogin),
   /** Remove the password (the current one is checked first). */
@@ -1357,9 +1374,25 @@ export interface BeatStatus {
 
 export type SimilarLevel = 'strict' | 'normal' | 'loose';
 
+const mockListeners = new Map<string, Set<(p: unknown) => void>>();
+
 export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<UnlistenFn> {
-  if (!inTauri) return Promise.resolve(() => {});
+  if (!inTauri) {
+    // Browser preview: events sent by the mock.
+    const set = mockListeners.get(name) ?? new Set();
+    mockListeners.set(name, set);
+    const f = cb as (p: unknown) => void;
+    set.add(f);
+    return Promise.resolve(() => {
+      set.delete(f);
+    });
+  }
   return listen<T>(name, (e) => cb(e.payload));
+}
+
+/** Browser preview: send an event to the window. */
+function mockEmit(name: string, payload: unknown) {
+  mockListeners.get(name)?.forEach((f) => f(payload));
 }
 
 const isWindows = typeof navigator !== 'undefined' && /Windows/i.test(navigator.userAgent);
@@ -1541,6 +1574,8 @@ const mock = {
       folders: 0,
       needsNewPassword,
       hasPassword: !passwordless(path),
+      encrypted: s.vaults.find((v) => v.path === path)?.encrypted !== false,
+      converting: null,
       restoredFromBackup: null,
     });
     const setPasswordless = (on: boolean) => {
@@ -1573,9 +1608,41 @@ const mock = {
         return s.session;
       case 'create_vault': {
         const path = `${a.parent}\\${a.name}`;
-        s.vaults.push({ path, name: a.name as string, status: 'ready', sizeBytes: 4096, passwordless: a.password == null });
-        return { session: (s.session = session(path)), words: WORDS };
+        const plain = a.encrypt === false;
+        s.vaults.push({ path, name: a.name as string, status: 'ready', sizeBytes: 4096, passwordless: plain || a.password == null, encrypted: !plain });
+        return { session: (s.session = session(path)), words: plain ? [] : WORDS };
       }
+      case 'encryption_off':
+      case 'encryption_on': {
+        const to = cmd === 'encryption_off' ? 'plain' : 'encrypted';
+        if (to === 'plain' && s.session?.hasPassword && a.current !== 'password') throw new Error('Your current password is not correct. (Preview: use “password”.)');
+        const v = s.vaults.find((x) => x.path === s.session?.path);
+        s.session = { ...s.session!, converting: to };
+        // Preview: about three seconds of progress.
+        let done = 0;
+        const t = setInterval(() => {
+          done += 7;
+          mockEmit('encryption-progress', { to, done: Math.min(done, 40), total: 40 });
+          if (done >= 40) {
+            clearInterval(t);
+            if (v) {
+              v.encrypted = to === 'encrypted';
+              v.passwordless = to === 'plain' || a.password == null;
+            }
+            s.session = { ...s.session!, converting: null, encrypted: to === 'encrypted', hasPassword: to === 'encrypted' && a.password != null };
+            mockEmit('encryption-done', { to, ok: true, stopped: false, message: to === 'plain' ? 'The vault isn’t encrypted any more: your files are ordinary files in its Files folder.' : 'The vault is encrypted now.' });
+          }
+        }, 500);
+        return to === 'plain' ? s.session : { session: s.session, words: WORDS };
+      }
+      case 'encryption_continue':
+        return false;
+      case 'encryption_stop':
+        return;
+      case 'encryption_running':
+        return false;
+      case 'open_files_folder':
+        return;
       case 'reset_recovery':
         return WORDS;
       case 'lock_vault':

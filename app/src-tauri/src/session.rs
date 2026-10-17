@@ -32,6 +32,8 @@ pub struct Session {
     first_unsaved: Mutex<Option<Instant>>,
     /// One save at a time (the watcher, imports and commands all save).
     save_lock: Mutex<()>,
+    /// Counts changes (so work that follows changes can tell when there were none).
+    changes: std::sync::atomic::AtomicU64,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -44,6 +46,10 @@ pub struct SessionInfo {
     pub needs_new_password: bool,
     /// False for a vault that opens without a password.
     pub has_password: bool,
+    /// False for a vault without encryption (its files are ordinary files).
+    pub encrypted: bool,
+    /// "plain" or "encrypted" while the vault is being changed to that.
+    pub converting: Option<String>,
     /// Set if the main database was damaged and a backup was used.
     pub restored_from_backup: Option<String>,
     /// Only right after unlocking: the previous opening and wrong passwords since.
@@ -60,6 +66,8 @@ pub struct VaultEntry {
     pub size_bytes: Option<u64>,
     /// Opens without a password (no need to ask for one).
     pub passwordless: bool,
+    /// False for a vault without encryption.
+    pub encrypted: bool,
 }
 
 pub fn friendly(e: Error) -> String {
@@ -109,14 +117,16 @@ pub fn describe(path: &str) -> VaultEntry {
     } else {
         ("ready", Some(dir_size(p)))
     };
-    let passwordless = status == "ready"
-        && vault_core::read_header(p).is_ok_and(|h| h.is_passwordless());
+    let header = if status == "ready" { vault_core::read_header(p).ok() } else { None };
+    let passwordless = header.as_ref().is_some_and(|h| h.is_passwordless());
+    let encrypted = !header.as_ref().is_some_and(|h| h.is_plain());
     VaultEntry {
         path: path.to_string(),
         name: folder_name(p),
         status: status.into(),
         size_bytes: size,
         passwordless,
+        encrypted,
     }
 }
 
@@ -133,6 +143,8 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
     let (bytes, backup) = vault.load_db().map_err(friendly)?;
     let db = db::deserialize(&bytes).map_err(friendly)?;
     vault.load_index(db::load_index(&db).map_err(friendly)?);
+    // A vault without encryption: where its ordinary files are.
+    vault.set_media_files(db::load_plain_files(&db).map_err(friendly)?);
     Ok(Session {
         vault: RwLock::new(vault),
         db: Mutex::new(db),
@@ -144,6 +156,10 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         first_unsaved: Mutex::new(None),
         save_pending: AtomicBool::new(false),
         save_lock: Mutex::new(()),
+        // Starts somewhere new for every opening (work that remembers a count from another vault never matches).
+        changes: std::sync::atomic::AtomicU64::new(
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1,
+        ),
     })
 }
 
@@ -183,6 +199,7 @@ impl Session {
 
     /// Record that the library changed; it is saved shortly afterwards.
     pub fn mark_dirty(&self) {
+        self.changes.fetch_add(1, Ordering::SeqCst);
         let now = Instant::now();
         *self.last_change.lock().unwrap_or_else(|e| e.into_inner()) = now;
         self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(now);
@@ -202,6 +219,11 @@ impl Session {
                 let _ = s.save();
             }
         });
+    }
+
+    /// How many changes there have been (grows with every change).
+    pub fn changes(&self) -> u64 {
+        self.changes.load(Ordering::SeqCst)
     }
 
     pub fn is_dirty(&self) -> bool {
@@ -278,6 +300,8 @@ impl Session {
             folders: count("SELECT COUNT(*) FROM folders WHERE deleted_at IS NULL"),
             needs_new_password: self.needs_new_password(),
             has_password: self.has_password(),
+            encrypted: !self.vault().header().is_plain(),
+            converting: self.vault().conversion().map(str::to_string),
             restored_from_backup: self
                 .restored_from_backup
                 .as_ref()
@@ -307,11 +331,27 @@ pub fn create_without_password(
     create_with(parent, name, None, kdf)
 }
 
+/// Like [`create`], but the vault has **no encryption**: media are ordinary
+/// files under `Files/`; no password, no recovery key.
+pub fn create_plain(parent: &str, name: &str, kdf: KdfParams) -> Result<Session, String> {
+    create_inner(parent, name, None, kdf, true).map(|(s, _)| s)
+}
+
 fn create_with(
     parent: &str,
     name: &str,
     password: Option<&str>,
     kdf: KdfParams,
+) -> Result<(Session, Vec<String>), String> {
+    create_inner(parent, name, password, kdf, false)
+}
+
+fn create_inner(
+    parent: &str,
+    name: &str,
+    password: Option<&str>,
+    kdf: KdfParams,
+    plain: bool,
 ) -> Result<(Session, Vec<String>), String> {
     let name = name.trim();
     if name.is_empty() {
@@ -332,6 +372,10 @@ fn create_with(
         return Err(format!("The folder {} doesn't exist.", parent.display()));
     }
     let root = parent.join(name);
+    if plain {
+        let vault = Vault::create_plain(&root, kdf).map_err(friendly)?;
+        return Ok((open_session(vault, false)?, Vec::new()));
+    }
     let (vault, phrase) = match password {
         Some(pw) => Vault::create(&root, pw, kdf),
         None => Vault::create_without_password(&root, kdf),

@@ -22,7 +22,16 @@ pub const FORMAT_NAME: &str = "media-vault";
 /// Version 3 programs read all three. A vault only says 3 while it has no
 /// password, so older programs refuse it with "made by a newer version"
 /// instead of misreading it.
-pub const FORMAT_VERSION: u32 = 3;
+/// 4 = a vault without encryption (or one being changed to or from that):
+/// media are ordinary files under `Files/`, everything else is stored as
+/// unencrypted objects (version 2) in the packs and the database file.
+pub const FORMAT_VERSION: u32 = 4;
+/// What a vault without encryption is marked as.
+pub const PLAIN_VERSION: u32 = 4;
+/// Where the media of a vault without encryption are, as ordinary files.
+pub const FILES_DIR: &str = "Files";
+/// New media files land here (named by object id) until the app puts them in their folder.
+pub const NEW_FILES_DIR: &str = ".new";
 /// What new vaults with a password are marked as.
 pub const PACKED_VERSION: u32 = 2;
 /// What a vault without a password is marked as.
@@ -124,6 +133,16 @@ pub struct VaultHeader {
     /// Only in a vault without a password.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub open_slot: Option<OpenSlot>,
+    /// A vault without encryption (no key slots are used then).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub plain: bool,
+    /// Being changed: "plain" (encryption being removed) or "encrypted" (being added).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub converting: Option<String>,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 impl VaultHeader {
@@ -133,8 +152,27 @@ impl VaultHeader {
     }
     /// True if the vault opens without a password.
     pub fn is_passwordless(&self) -> bool {
-        self.open_slot.is_some()
+        self.open_slot.is_some() || (self.plain && self.password_slot.is_none())
     }
+    /// True for a vault without encryption (not while it is being encrypted).
+    pub fn is_plain(&self) -> bool {
+        self.plain && self.converting.is_none()
+    }
+}
+
+/// Where an ordinary media file of a vault without encryption is, relative to
+/// `Files/` ('/'-separated). `prev`: where it was before a move that may not
+/// have happened yet (looked at too).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlainFile {
+    pub path: String,
+    pub prev: Option<String>,
+}
+
+/// What [`Vault::convert_one`] did: a file to remove once the database is saved.
+#[derive(Debug, Default)]
+pub struct Converted {
+    pub remove_after_save: Option<PathBuf>,
 }
 
 /// The 24 recovery words. Wiped from memory when dropped.
@@ -164,6 +202,8 @@ pub struct Encrypted {
     kind: ObjectKind,
     bytes: Vec<u8>,
     written: WrittenObject,
+    /// The plain bytes of a media file of a vault without encryption (stored as an ordinary file).
+    raw: bool,
 }
 
 impl Encrypted {
@@ -191,6 +231,10 @@ pub struct Vault {
     access: Access,
     packs: PackStore,
     _lock: Option<File>,
+    /// New objects are written without encryption (media as ordinary files).
+    write_plain: std::sync::atomic::AtomicBool,
+    /// The ordinary media files (vault without encryption), from the database.
+    files: std::sync::RwLock<std::collections::HashMap<ObjectId, PlainFile>>,
 }
 
 fn now_secs() -> u64 {
@@ -331,7 +375,7 @@ impl Vault {
     /// Create a new, empty vault in `root` (must not exist, or be an empty folder).
     /// Returns the vault and the recovery phrase, which must be shown to the user once.
     pub fn create(root: &Path, password: &str, kdf: KdfParams) -> Result<(Vault, RecoveryPhrase)> {
-        Self::create_inner(root, Some(password), kdf)
+        Self::create_inner(root, Some(password), kdf, false)
     }
 
     /// Create a new, empty vault that has no password: it opens with
@@ -339,13 +383,22 @@ impl Vault {
     /// open it. The recovery key works as usual. `kdf` is kept for when a
     /// password is set later.
     pub fn create_without_password(root: &Path, kdf: KdfParams) -> Result<(Vault, RecoveryPhrase)> {
-        Self::create_inner(root, None, kdf)
+        Self::create_inner(root, None, kdf, false)
+    }
+
+    /// Create a new, empty vault **without encryption**: media are stored as
+    /// ordinary files under `Files/`, everything else unencrypted in the packs.
+    /// It has no password and no recovery key. `kdf` is kept for when it is
+    /// encrypted later.
+    pub fn create_plain(root: &Path, kdf: KdfParams) -> Result<Vault> {
+        Self::create_inner(root, None, kdf, true).map(|(v, _)| v)
     }
 
     fn create_inner(
         root: &Path,
         password: Option<&str>,
         kdf: KdfParams,
+        plain: bool,
     ) -> Result<(Vault, RecoveryPhrase)> {
         if let Some(pw) = password
             && pw.is_empty()
@@ -370,18 +423,25 @@ impl Vault {
         let vault_id = hex::encode(crypto::random_bytes::<16>());
         let (password_slot, open_slot) = match password {
             Some(pw) => (Some(new_password_slot(&master, pw, &kdf, &vault_id)?), None),
+            None if plain => (None, None),
             None => (None, Some(new_open_slot(&master))),
         };
-        let (recovery_slot, phrase) = new_recovery_slot(&master, &vault_id);
+        let (mut recovery_slot, phrase) = new_recovery_slot(&master, &vault_id);
+        if plain {
+            recovery_slot = KeySlot::empty();
+            fs::create_dir_all(root.join(FILES_DIR))?;
+        }
         let header = VaultHeader {
             format: FORMAT_NAME.into(),
-            version: if open_slot.is_some() { NO_PASSWORD_VERSION } else { PACKED_VERSION },
+            version: if plain { PLAIN_VERSION } else if open_slot.is_some() { NO_PASSWORD_VERSION } else { PACKED_VERSION },
             vault_id,
             created_at: now_secs(),
             kdf,
             password_slot,
             recovery_slot,
             open_slot,
+            plain,
+            converting: None,
         };
         atomic_write(&root.join(FORMAT_DOC_FILE), FORMAT_DOC.as_bytes())?;
         let mut vault = Vault {
@@ -391,6 +451,8 @@ impl Vault {
             access: Access::ReadWrite,
             packs: PackStore::new(root, true),
             _lock: None,
+            write_plain: std::sync::atomic::AtomicBool::new(plain),
+            files: Default::default(),
         };
         vault.write_header()?;
         vault.acquire_lock()?;
@@ -415,10 +477,12 @@ impl Vault {
     /// Open a vault that has no password (see [`Vault::create_without_password`]).
     pub fn open_without_password(root: &Path, access: Access) -> Result<Vault> {
         let header = read_header(root)?;
-        let Some(slot) = header.open_slot.as_ref() else {
-            return Err(Error::Invalid("this vault has a password".into()));
+        let master = match header.open_slot.as_ref() {
+            Some(slot) => read_open_slot(slot)?,
+            // Without encryption: there is no key (a fresh one is only used if it gets encrypted).
+            None if header.plain && header.password_slot.is_none() => crypto::random_key(),
+            None => return Err(Error::Invalid("this vault has a password".into())),
         };
-        let master = read_open_slot(slot)?;
         Self::finish_unlock(root, header, master, access)
     }
 
@@ -443,6 +507,12 @@ impl Vault {
         master: Key,
         access: Access,
     ) -> Result<Vault> {
+        // New objects are plain while the vault is (or is becoming) one without encryption.
+        let plain = match header.converting.as_deref() {
+            Some("plain") => true,
+            Some(_) => false,
+            None => header.plain,
+        };
         let mut v = Vault {
             root: root.to_path_buf(),
             header,
@@ -450,6 +520,8 @@ impl Vault {
             access,
             packs: PackStore::new(root, access == Access::ReadWrite),
             _lock: None,
+            write_plain: std::sync::atomic::AtomicBool::new(plain),
+            files: Default::default(),
         };
         if access == Access::ReadWrite {
             v.acquire_lock()?;
@@ -473,6 +545,13 @@ impl Vault {
             )),
             Err(fs::TryLockError::Error(e)) => Err(Error::Io(e)),
         }
+    }
+
+    fn require_encrypted(&self) -> Result<()> {
+        if self.header.plain || self.header.converting.is_some() {
+            return Err(Error::Invalid("this vault isn't encrypted (or is being changed); it has no password".into()));
+        }
+        Ok(())
     }
 
     fn require_write(&self) -> Result<()> {
@@ -502,6 +581,7 @@ impl Vault {
     /// unprotected copy of the key is removed).
     pub fn change_password(&mut self, new_password: &str) -> Result<()> {
         self.require_write()?;
+        self.require_encrypted()?;
         let slot = new_password_slot(
             &self.master,
             new_password,
@@ -522,6 +602,7 @@ impl Vault {
     /// recovery key keeps working.
     pub fn turn_password_off(&mut self) -> Result<()> {
         self.require_write()?;
+        self.require_encrypted()?;
         self.header.open_slot = Some(new_open_slot(&self.master));
         self.header.password_slot = None;
         self.header.version = self.header.version.max(NO_PASSWORD_VERSION);
@@ -537,6 +618,7 @@ impl Vault {
     /// Replace the recovery key. The old 24 words stop working.
     pub fn reset_recovery(&mut self) -> Result<RecoveryPhrase> {
         self.require_write()?;
+        self.require_encrypted()?;
         let (slot, phrase) = new_recovery_slot(&self.master, &self.header.vault_id);
         self.header.recovery_slot = slot;
         self.write_header()?;
@@ -568,13 +650,366 @@ impl Vault {
     ) -> Result<(ObjectId, WrittenObject)> {
         self.require_write()?;
         let id = ObjectId::random();
+        let plain = self.writes_plain();
+        if plain && kind == ObjectKind::Media {
+            return Ok((id, self.write_new_file(id, source)?));
+        }
         let (written, _) = self.packs.append(kind, id, |w| {
             let mut ow = ObjectWriter::new(w, id, kind, DEFAULT_CHUNK_LOG2)?;
+            ow.set_plain(plain);
             std::io::copy(&mut source, &mut ow)?;
             let (_, written) = ow.finish(&self.master)?;
             Ok(written)
         })?;
         Ok((id, written))
+    }
+
+    // ---- without encryption ------------------------------------------------
+
+    /// New objects are written without encryption (media as ordinary files).
+    pub fn writes_plain(&self) -> bool {
+        self.write_plain.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Ordinary media files may exist (a vault without encryption, or one being changed).
+    fn any_plain(&self) -> bool {
+        self.header.plain || self.header.converting.is_some()
+    }
+
+    /// `Files/` of this vault.
+    pub fn files_dir(&self) -> PathBuf {
+        self.root.join(FILES_DIR)
+    }
+
+    /// Where a new media file waits (named by its id) until the app puts it in its folder.
+    pub fn new_file_path(&self, id: &ObjectId) -> PathBuf {
+        self.files_dir().join(NEW_FILES_DIR).join(id.to_hex())
+    }
+
+    fn rel_path(&self, rel: &str) -> PathBuf {
+        let mut p = self.files_dir();
+        for part in rel.split('/').filter(|x| !x.is_empty() && *x != "." && *x != "..") {
+            p.push(part);
+        }
+        p
+    }
+
+    /// The ordinary file holding this media object, if there is one.
+    pub fn media_file(&self, id: &ObjectId) -> Option<PathBuf> {
+        if !self.any_plain() {
+            return None;
+        }
+        let known = self.files.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
+        if let Some(f) = known {
+            for rel in std::iter::once(f.path).chain(f.prev) {
+                let p = self.rel_path(&rel);
+                if p.is_file() {
+                    return Some(p);
+                }
+            }
+        }
+        let p = self.new_file_path(id);
+        p.is_file().then_some(p)
+    }
+
+    /// Where the database says the ordinary media files are (after unlocking, and after changes).
+    pub fn set_media_files(&self, entries: impl IntoIterator<Item = (ObjectId, PlainFile)>) {
+        let mut m = self.files.write().unwrap_or_else(|e| e.into_inner());
+        m.clear();
+        m.extend(entries);
+    }
+
+    /// Record one media file's place (`None`: forget it).
+    pub fn set_media_file(&self, id: ObjectId, f: Option<PlainFile>) {
+        let mut m = self.files.write().unwrap_or_else(|e| e.into_inner());
+        match f {
+            Some(f) => {
+                m.insert(id, f);
+            }
+            None => {
+                m.remove(&id);
+            }
+        }
+    }
+
+    /// Move a media file to `Files/<rel>` (folders made as needed). Nothing
+    /// happens if it's already there. The file must exist.
+    pub fn move_media_file(&self, id: &ObjectId, rel: &str) -> Result<()> {
+        self.require_write()?;
+        let to = self.rel_path(rel);
+        let from = self.media_file(id).ok_or_else(|| Error::NotFound(format!("file of {id}")))?;
+        if from == to {
+            return Ok(());
+        }
+        if let Some(parent) = to.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let same_but_case = from.to_string_lossy().to_lowercase() == to.to_string_lossy().to_lowercase();
+        if same_but_case {
+            // Only the case changes (Windows sees the same name): via a temporary name.
+            let tmp = from.with_extension(format!("{}.mvtmp", id.to_hex()));
+            fs::rename(&from, &tmp)?;
+            fs::rename(&tmp, &to)?;
+            return Ok(());
+        }
+        if to.exists() {
+            return Err(Error::AlreadyExists(to));
+        }
+        fs::rename(&from, &to)?;
+        // Folders left empty by the move go (never Files/ itself).
+        let base = self.files_dir();
+        let mut dir = from.parent().map(Path::to_path_buf);
+        while let Some(d) = dir {
+            if d == base || !d.starts_with(&base) || fs::remove_dir(&d).is_err() {
+                break;
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+        Ok(())
+    }
+
+    /// Media objects kept as ordinary files (known to the database or waiting in `.new`).
+    pub fn media_file_ids(&self) -> Vec<ObjectId> {
+        if !self.any_plain() {
+            return Vec::new();
+        }
+        let mut out: Vec<ObjectId> = self.files.read().unwrap_or_else(|e| e.into_inner()).keys().copied().collect();
+        if let Ok(rd) = fs::read_dir(self.files_dir().join(NEW_FILES_DIR)) {
+            for e in rd.flatten() {
+                if let Some(id) = e.file_name().to_str().and_then(|n| ObjectId::from_hex(n).ok()) {
+                    out.push(id);
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out.retain(|id| self.media_file(id).is_some());
+        out
+    }
+
+    /// Write an ordinary media file (`Files/.new/<id>`), safely (complete or not there at all).
+    fn write_new_file(&self, id: ObjectId, mut source: impl Read) -> Result<WrittenObject> {
+        use sha2::Digest;
+        let path = self.new_file_path(&id);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let tmp = tmp_path(&path);
+        let result = (|| -> Result<WrittenObject> {
+            let mut f = File::create(&tmp)?;
+            let mut h = sha2::Sha256::new();
+            let mut buf = vec![0u8; 1 << 20];
+            let mut total = 0u64;
+            loop {
+                let n = source.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                h.update(&buf[..n]);
+                f.write_all(&buf[..n])?;
+                total += n as u64;
+            }
+            f.sync_all()?;
+            Ok(WrittenObject { plaintext_len: total, sha256_hex: hex::encode(h.finalize()) })
+        })();
+        match result {
+            Ok(w) => {
+                fs::rename(&tmp, &path)?;
+                Ok(w)
+            }
+            Err(e) => {
+                let _ = fs::remove_file(&tmp);
+                Err(e)
+            }
+        }
+    }
+
+    // ---- changing between encrypted and not encrypted ----------------------
+
+    /// "plain" or "encrypted" while the vault is being changed to that.
+    pub fn conversion(&self) -> Option<&str> {
+        self.header.converting.as_deref()
+    }
+
+    /// Start removing the encryption: from now on everything new is written
+    /// plain. Then [`Vault::conversion_todo`] / [`Vault::convert_one`] for
+    /// everything (saving the database in between), then [`Vault::finish_conversion`].
+    /// The password and recovery key keep working until it's finished.
+    pub fn begin_plain(&mut self) -> Result<()> {
+        self.require_write()?;
+        if self.header.is_plain() {
+            return Err(Error::Invalid("this vault isn't encrypted".into()));
+        }
+        self.header.converting = Some("plain".into());
+        self.header.version = PLAIN_VERSION;
+        self.write_plain.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.write_header()?;
+        fs::create_dir_all(self.files_dir())?;
+        Ok(())
+    }
+
+    /// Start encrypting a vault without encryption: with a password, or none
+    /// (then it opens without asking, like a vault without a password). The
+    /// returned recovery key must be shown once. Then the same steps as
+    /// [`Vault::begin_plain`].
+    pub fn begin_encrypted(&mut self, password: Option<&str>) -> Result<RecoveryPhrase> {
+        self.require_write()?;
+        if !self.header.plain {
+            return Err(Error::Invalid("this vault is already encrypted".into()));
+        }
+        let (password_slot, open_slot) = match password {
+            Some(pw) => (Some(new_password_slot(&self.master, pw, &self.header.kdf, &self.header.vault_id)?), None),
+            None => (None, Some(new_open_slot(&self.master))),
+        };
+        let (recovery_slot, phrase) = new_recovery_slot(&self.master, &self.header.vault_id);
+        self.header.password_slot = password_slot;
+        self.header.open_slot = open_slot;
+        self.header.recovery_slot = recovery_slot;
+        self.header.converting = Some("encrypted".into());
+        self.header.version = PLAIN_VERSION;
+        self.write_plain.store(false, std::sync::atomic::Ordering::SeqCst);
+        self.write_header()?;
+        Ok(phrase)
+    }
+
+    /// What still has to be changed (encrypted or not) for the conversion
+    /// under way: media and thumbnail objects, in no particular order.
+    pub fn conversion_todo(&self) -> Result<Vec<(ObjectKind, ObjectId)>> {
+        let Some(to) = self.header.converting.clone() else { return Ok(Vec::new()) };
+        let to_plain = to == "plain";
+        let mut out = Vec::new();
+        let files: std::collections::HashSet<ObjectId> = self.media_file_ids().into_iter().collect();
+        if to_plain {
+            for id in self.stored_ids(ObjectKind::Media)? {
+                if !files.contains(&id) {
+                    out.push((ObjectKind::Media, id));
+                }
+            }
+        } else {
+            out.extend(files.iter().map(|id| (ObjectKind::Media, *id)));
+        }
+        for id in self.stored_ids(ObjectKind::Thumbnail)? {
+            let plain = self.open_stored(ObjectKind::Thumbnail, &id).map(|r| r.is_plain()).unwrap_or(to_plain);
+            if plain != to_plain {
+                out.push((ObjectKind::Thumbnail, id));
+            }
+        }
+        // In the order they are stored, so the packs empty one after another
+        // (each can then go at once instead of the whole vault's space being needed twice).
+        out.sort_by_key(|(k, id)| self.packs.location(id).map(|l| (0, l.kind as u8, l.pack, l.offset)).unwrap_or((1, *k as u8, 0, 0)));
+        Ok(out)
+    }
+
+    /// Change one object to the conversion's target (same id). A file to
+    /// remove once the database (with the new pack index) is saved is returned.
+    pub fn convert_one(&self, kind: ObjectKind, id: &ObjectId) -> Result<Converted> {
+        self.require_write()?;
+        let Some(to) = self.header.converting.clone() else { return Ok(Converted::default()) };
+        let to_plain = to == "plain";
+        let loose = self.object_path(kind, id);
+        let loose = loose.is_file().then_some(loose);
+        if kind == ObjectKind::Media && to_plain {
+            if self.media_file(id).is_some() {
+                return Ok(Converted::default());
+            }
+            let r = self.open_stored(kind, id)?;
+            self.write_new_file(*id, r)?;
+            self.packs.remove(id);
+            return Ok(Converted { remove_after_save: loose });
+        }
+        if kind == ObjectKind::Media {
+            let Some(file) = self.media_file(id) else { return Ok(Converted::default()) };
+            let src = File::open(&file)?;
+            self.packs.append(kind, *id, |w| {
+                let mut ow = ObjectWriter::new(w, *id, kind, DEFAULT_CHUNK_LOG2)?;
+                std::io::copy(&mut std::io::BufReader::with_capacity(1 << 20, src), &mut ow)?;
+                ow.finish(&self.master)?;
+                Ok(())
+            })?;
+            return Ok(Converted { remove_after_save: Some(file) });
+        }
+        // Thumbnails, maps…: read and stored again in the packs, the other way.
+        let data = {
+            let mut r = self.open_stored(kind, id)?;
+            if r.is_plain() == to_plain && loose.is_none() {
+                return Ok(Converted::default());
+            }
+            let mut b = Zeroizing::new(Vec::with_capacity(r.len() as usize));
+            r.read_to_end(&mut b)?;
+            b
+        };
+        self.packs.append(kind, *id, |w| {
+            let mut ow = ObjectWriter::new(w, *id, kind, DEFAULT_CHUNK_LOG2)?;
+            ow.set_plain(to_plain);
+            ow.write_all(&data)?;
+            ow.finish(&self.master)?;
+            Ok(())
+        })?;
+        Ok(Converted { remove_after_save: loose })
+    }
+
+    /// Remove a file left by [`Vault::convert_one`] (only after the database was saved).
+    pub fn remove_converted(&self, path: &Path) -> Result<()> {
+        self.require_write()?;
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let base = self.files_dir();
+        let mut dir = path.parent().map(Path::to_path_buf);
+        while let Some(d) = dir {
+            if d == base || !d.starts_with(&base) || fs::remove_dir(&d).is_err() {
+                break;
+            }
+            dir = d.parent().map(Path::to_path_buf);
+        }
+        Ok(())
+    }
+
+    /// Everything is converted (and the database saved, and the old copies'
+    /// space reclaimed): the vault is now plain or encrypted for good. Old
+    /// database backups (made the other way) are removed.
+    pub fn finish_conversion(&mut self) -> Result<()> {
+        self.require_write()?;
+        let Some(to) = self.header.converting.take() else { return Ok(()) };
+        if to == "plain" {
+            self.header.plain = true;
+            self.header.password_slot = None;
+            self.header.open_slot = None;
+            self.header.recovery_slot = KeySlot::empty();
+            self.header.version = PLAIN_VERSION;
+        } else {
+            self.header.plain = false;
+            self.header.version = if self.header.open_slot.is_some() { NO_PASSWORD_VERSION } else { PACKED_VERSION };
+            self.files.write().unwrap_or_else(|e| e.into_inner()).clear();
+            let _ = fs::remove_dir(self.files_dir().join(NEW_FILES_DIR));
+            let _ = fs::remove_dir(self.files_dir());
+        }
+        self.write_header()?;
+        for b in self.db_backups()? {
+            let _ = fs::remove_file(b);
+        }
+        let doc = self.root.join(FORMAT_DOC_FILE);
+        if fs::read(&doc).ok().as_deref() != Some(FORMAT_DOC.as_bytes()) {
+            atomic_write(&doc, FORMAT_DOC.as_bytes())?;
+        }
+        Ok(())
+    }
+
+    /// Ids stored as objects (packed or loose), not ordinary files.
+    fn stored_ids(&self, kind: ObjectKind) -> Result<Vec<ObjectId>> {
+        let mut out = self.packs.ids(kind);
+        out.extend(self.loose_objects(kind)?);
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
+    /// An object as stored in the packs (or a loose file), never an ordinary media file.
+    fn open_stored(&self, kind: ObjectKind, id: &ObjectId) -> Result<ObjectReader<Slice>> {
+        let s = self.open_raw(kind, id)?;
+        ObjectReader::open(s, &self.master, *id, Some(kind))
     }
 
     /// Encrypt everything read from `source` into memory, on one core
@@ -588,18 +1023,31 @@ impl Vault {
             return Err(Error::Invalid("the database is not stored in packs".into()));
         }
         let id = ObjectId::random();
+        let plain = self.writes_plain();
+        if plain && kind == ObjectKind::Media {
+            use sha2::Digest;
+            let mut bytes = Vec::with_capacity(size_hint.min(1 << 30) as usize);
+            source.read_to_end(&mut bytes)?;
+            let written = WrittenObject { plaintext_len: bytes.len() as u64, sha256_hex: hex::encode(sha2::Sha256::digest(&bytes)) };
+            return Ok(Encrypted { id, kind, bytes, written, raw: true });
+        }
         let chunks = size_hint.div_ceil(1 << DEFAULT_CHUNK_LOG2).max(1);
         let room = size_hint.saturating_add(crate::stream::HEADER_LEN + chunks.saturating_mul(crate::crypto::TAG_LEN as u64)).min(1 << 30) as usize;
         let mut ow = ObjectWriter::new(std::io::Cursor::new(Vec::with_capacity(room)), id, kind, DEFAULT_CHUNK_LOG2)?;
         ow.set_threads(1);
+        ow.set_plain(plain);
         std::io::copy(&mut source, &mut ow)?;
         let (cur, written) = ow.finish(&self.master)?;
-        Ok(Encrypted { id, kind, bytes: cur.into_inner(), written })
+        Ok(Encrypted { id, kind, bytes: cur.into_inner(), written, raw: false })
     }
 
     /// Store an object made by [`Vault::encrypt_to_memory`] (appended to the newest pack).
     pub fn add_encrypted(&self, e: &Encrypted) -> Result<()> {
         self.require_write()?;
+        if e.raw {
+            self.write_new_file(e.id, &e.bytes[..])?;
+            return Ok(());
+        }
         self.packs.append(e.kind, e.id, |w| {
             w.write_all(&e.bytes)?;
             Ok(())
@@ -623,6 +1071,7 @@ impl Vault {
         let result = (|| -> Result<WrittenObject> {
             let file = File::create(&tmp)?;
             let mut w = ObjectWriter::new(file, id, kind, DEFAULT_CHUNK_LOG2)?;
+            w.set_plain(self.writes_plain());
             std::io::copy(&mut source, &mut w)?;
             let (file, written) = w.finish(&self.master)?;
             file.sync_all()?;
@@ -654,8 +1103,14 @@ impl Vault {
 
     /// Open an object for random-access reading.
     pub fn open_object(&self, kind: ObjectKind, id: &ObjectId) -> Result<ObjectReader<Slice>> {
-        let s = self.open_raw(kind, id)?;
-        ObjectReader::open(s, &self.master, *id, Some(kind))
+        if kind == ObjectKind::Media
+            && let Some(p) = self.media_file(id)
+        {
+            let f = File::open(&p)?;
+            let len = f.metadata()?.len();
+            return Ok(ObjectReader::raw(Slice::whole(f)?, len, kind));
+        }
+        self.open_stored(kind, id)
     }
 
     /// Decrypt a whole object into memory (fine for thumbnails and images).
@@ -669,6 +1124,12 @@ impl Vault {
     /// Forget an object. Its space inside a pack is freed by [`Vault::compact`].
     pub fn delete_object(&self, kind: ObjectKind, id: &ObjectId) -> Result<()> {
         self.require_write()?;
+        if kind == ObjectKind::Media
+            && let Some(p) = self.media_file(id)
+        {
+            self.remove_converted(&p)?;
+            self.set_media_file(*id, None);
+        }
         self.packs.remove(id);
         match fs::remove_file(self.object_path(kind, id)) {
             Ok(()) => Ok(()),
@@ -720,6 +1181,9 @@ impl Vault {
         }
         let mut out = self.packs.ids(kind);
         out.extend(self.loose_objects(kind)?);
+        if kind == ObjectKind::Media {
+            out.extend(self.media_file_ids());
+        }
         out.sort();
         out.dedup();
         Ok(out)
@@ -744,6 +1208,12 @@ impl Vault {
 
     /// The file and byte range holding an object (for tools and tests).
     pub fn object_location(&self, kind: ObjectKind, id: &ObjectId) -> Option<(PathBuf, u64, u64)> {
+        if kind == ObjectKind::Media
+            && let Some(p) = self.media_file(id)
+        {
+            let len = fs::metadata(&p).ok()?.len();
+            return Some((p, 0, len));
+        }
         if self.packs.open(kind, id).ok().flatten().is_some()
             && let Some(l) = self.packs.location(id)
         {

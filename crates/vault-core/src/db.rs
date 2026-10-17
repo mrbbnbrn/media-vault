@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 19;
+pub const SCHEMA_VERSION: i64 = 20;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -658,6 +658,20 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- nothing left behind (end) ----
+    // ---- vaults without encryption (begin) ----
+    if v < 20 || !has_table(conn, "plain_files")? {
+        // v20: where each media file of a vault without encryption is, as an
+        // ordinary file under Files/ (path '/'-separated, relative to Files/).
+        // `prev`: where it was before a move that may not have happened yet.
+        // Empty in encrypted vaults. Safe to run again.
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS plain_files (object_id TEXT PRIMARY KEY, path TEXT NOT NULL, prev TEXT) WITHOUT ROWID;",
+        )?;
+        if v < 20 {
+            conn.pragma_update(None, "user_version", 20)?;
+        }
+    }
+    // ---- vaults without encryption (end) ----
     Ok(())
 }
 
@@ -766,6 +780,23 @@ fn has_table(conn: &Connection, t: &str) -> Result<bool> {
 }
 
 /// The pack index stored in the database.
+/// Where the media files of a vault without encryption are (see `plain_files`).
+pub fn load_plain_files(conn: &Connection) -> Result<Vec<(ObjectId, crate::vault::PlainFile)>> {
+    if !has_table(conn, "plain_files")? {
+        return Ok(Vec::new());
+    }
+    let mut st = conn.prepare("SELECT object_id, path, prev FROM plain_files")?;
+    let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?)))?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (id, path, prev) = row?;
+        if let Ok(id) = ObjectId::from_hex(&id) {
+            out.push((id, crate::vault::PlainFile { path, prev }));
+        }
+    }
+    Ok(out)
+}
+
 pub fn load_index(conn: &Connection) -> Result<Vec<(ObjectId, Location)>> {
     let mut st = conn.prepare("SELECT object_id, kind, pack, offset, length FROM objects")?;
     let rows = st.query_map([], |r| {
@@ -1222,6 +1253,22 @@ mod tests {
         // Deleting the item for good takes its rows.
         c.execute("DELETE FROM media", []).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn v20_adds_where_ordinary_files_are() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO plain_files(object_id, path) VALUES ('00112233445566778899aabbccddeeff', 'Trip/a.jpg')", []).unwrap();
+        c.execute_batch("PRAGMA user_version = 19;").unwrap();
+        migrate(&c).unwrap();
+        let l = load_plain_files(&c).unwrap();
+        assert_eq!(l.len(), 1);
+        assert_eq!(l[0].1.path, "Trip/a.jpg");
+        c.execute_batch("DROP TABLE plain_files; PRAGMA user_version = 19;").unwrap();
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(load_plain_files(&c).unwrap().is_empty());
     }
 
     #[test]

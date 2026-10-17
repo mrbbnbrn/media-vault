@@ -2,6 +2,8 @@
 //! vault core. All crypto happens here in Rust; the UI never sees keys.
 
 mod access;
+mod encryption; // turning a vault's encryption off or on
+mod plainfiles; // vaults without encryption: ordinary files in folders
 mod activity;
 mod banner; // folder banners
 // The native analysis pass: decode each picture once for its thumbnail,
@@ -335,10 +337,13 @@ async fn create_vault(
     name: String,
     // None = a vault without a password.
     password: Option<String>,
+    // false = a vault without encryption (no password, ordinary files).
+    encrypt: Option<bool>,
 ) -> Result<Created, String> {
     let inner = state.inner().clone();
     blocking(move || {
         let (s, words) = match password {
+            _ if encrypt == Some(false) => (session::create_plain(&parent, &name, inner.kdf)?, Vec::new()),
             Some(pw) => session::create(&parent, &name, &pw, inner.kdf)?,
             None => session::create_without_password(&parent, &name, inner.kdf)?,
         };
@@ -2324,7 +2329,13 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             // for a second, and at the latest 5 s after the first one (the
             // background analysis keeps changing things all the time).
             match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(5)) {
-                Ok(()) => told_failure = false,
+                Ok(()) => {
+                    told_failure = false;
+                    // A vault without encryption: files follow their items (moves, renames, the trash).
+                    if let Err(e) = plainfiles::arrange_if_changed(&open) {
+                        eprintln!("Couldn't put files in their folders: {e}");
+                    }
+                }
                 Err(e) => {
                     if !told_failure {
                         let _ = app.emit("save-failed", e);
@@ -2735,6 +2746,12 @@ pub fn run() {
             derived::derived_summary,
             derived::derived_remove,
             derived::faces_split,
+            encryption::encryption_off,
+            encryption::encryption_on,
+            encryption::encryption_continue,
+            encryption::encryption_stop,
+            encryption::encryption_running,
+            encryption::open_files_folder,
         ])
         .build(tauri::generate_context!())
         .expect("Media Vault failed to start")

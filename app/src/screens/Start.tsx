@@ -112,6 +112,7 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
                 <span className="vault-lock" aria-label="Has a password"><LockIcon size={14} /></span>
               )}
               {vaultBadge(v) === 'noPassword' && <span className="vault-nopw">No password</span>}
+              {vaultBadge(v) === 'notEncrypted' && <span className="vault-nopw">Not encrypted</span>}
             </button>
           ))}
           <div className="row" style={{ marginTop: 8 }}>

@@ -1096,7 +1096,7 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .look-group { content-visibility: auto; contain-intrinsic-block-size: auto 220px; }
 .settings main > .section { content-visibility: auto; contain-intrinsic-block-size: auto 300px; }
 /* An open "⋯" menu inside one must be able to spill out over its neighbours. */
-.person:has(.menu), .look-group:has(.menu), .settings main > .section:has(.menu) { content-visibility: visible; }
+.person:has(.menu), .look-group:has(.menu), .settings main > .section:has(.menu), .settings main > .section:has(.modal-back) { content-visibility: visible; }
 
 /* 3D photos settings (View ▾ → 3D photos): the motion shape chooser, a small drawing over each name. */
 .shape-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }

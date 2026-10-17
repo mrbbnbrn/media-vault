@@ -15,8 +15,9 @@ export function pickAction(v: VaultEntry | undefined): 'open' | 'select' {
 }
 
 /** What the vault list shows beside a vault: a lock, a "No password" label, or nothing (not available). */
-export function vaultBadge(v: VaultEntry): 'lock' | 'noPassword' | null {
+export function vaultBadge(v: VaultEntry): 'lock' | 'noPassword' | 'notEncrypted' | null {
   if (v.status !== 'ready') return null;
+  if (v.encrypted === false) return 'notEncrypted';
   return v.passwordless ? 'noPassword' : 'lock';
 }
 

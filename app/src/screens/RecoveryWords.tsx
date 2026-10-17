@@ -4,13 +4,13 @@ import { TopBar } from '../components/Chrome';
 import { WarnIcon } from '../components/Icons';
 
 /** Shows the 24 recovery words exactly once. */
-export function RecoveryWords({ nav, words, context }: { nav: Nav; words: string[]; context: 'create' | 'reset' }) {
+export function RecoveryWords({ nav, words, context }: { nav: Nav; words: string[]; context: 'create' | 'reset' | 'encrypt' }) {
   const [confirmed, setConfirmed] = useState(false);
   const vaultName = nav.app.session?.name ?? '';
 
   return (
     <>
-      <TopBar title={context === 'create' ? 'Create vault · step 2 of 2' : 'New recovery key'} />
+      <TopBar title={context === 'create' ? 'Create vault · step 2 of 2' : context === 'encrypt' ? 'Encryption on · recovery key' : 'New recovery key'} />
       <div className="page">
         <div className="page-inner">
           <div className="field" style={{ gap: 10 }}>
@@ -19,6 +19,7 @@ export function RecoveryWords({ nav, words, context }: { nav: Nav; words: string
               If you forget your password, these 24 words are the only way back in. This is the only time they are shown.
               They are not saved anywhere on this PC.
               {context === 'reset' && ' Your old recovery words no longer work.'}
+              {context === 'encrypt' && ' The vault is being encrypted in the background meanwhile.'}
             </p>
           </div>
 

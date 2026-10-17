@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { EncryptionSection } from '../components/EncryptionSection';
 import { api, DEFAULT_LOOK, DEFAULT_VIEWER, onEvent, type AppConfig, type LookSettings, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
@@ -390,9 +391,18 @@ function VaultSection({ nav }: { nav: Nav }) {
     </form>
   );
 
+  // Not encrypted (or being changed): only the encryption choice applies.
+  if (nav.app.session?.encrypted === false || nav.app.session?.converting) {
+    return <EncryptionSection nav={nav} />;
+  }
+
   if (!hasPassword) {
     return (
       <>
+        <EncryptionSection nav={nav} />
+
+        <div className="divider" />
+
         <form className="section" onSubmit={setOne} style={{ maxWidth: 520 }}>
           <h2>Set a password</h2>
           {switched === 'off' && <div className="info" role="status">The password is off. This vault now opens without asking.</div>}
@@ -422,6 +432,10 @@ function VaultSection({ nav }: { nav: Nav }) {
 
   return (
     <>
+      <EncryptionSection nav={nav} />
+
+      <div className="divider" />
+
       <form className="section" onSubmit={change} style={{ maxWidth: 520 }}>
         <h2>Change password</h2>
         <p className="muted" style={{ margin: 0 }}>Instant: your files aren’t re-encrypted. Your recovery words keep working.</p>

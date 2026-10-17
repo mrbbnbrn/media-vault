@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { continueIfNeeded, listenForEncryption } from './encryptionjob';
 import { api, onEvent, onLocked, type AppState, type LockReason } from './api';
 import { applyAccent } from './theme';
 import { setPrefsConfig } from './prefs';
@@ -43,7 +44,7 @@ export type Screen =
   | { name: 'create' }
   | { name: 'recover'; path: string }
   | { name: 'newPassword' }
-  | { name: 'words'; words: string[]; context: 'create' | 'reset' }
+  | { name: 'words'; words: string[]; context: 'create' | 'reset' | 'encrypt' }
   | { name: 'library' }
   | { name: 'settings' }
   | ViewerRoute
@@ -222,6 +223,12 @@ export function App() {
       unlisten.then((u) => u());
     };
   }, [refresh]);
+
+  // Turning encryption off or on: progress anywhere, and a change left unfinished carries on (encryptionjob.ts).
+  useEffect(() => listenForEncryption(() => void refresh()), [refresh]);
+  useEffect(() => {
+    if (app?.session?.converting) void continueIfNeeded(app.session);
+  }, [app?.session?.path, app?.session?.converting]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Thumbnails are made in the background while a vault is open.
   const open = !!app?.session && !app.session.needsNewPassword && !app.session.name.startsWith('SelfTest');

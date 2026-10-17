@@ -17,4 +17,4 @@ pub mod vault;
 pub use crypto::KdfParams;
 pub use error::{Error, Result};
 pub use stream::{ObjectId, ObjectKind, ObjectReader};
-pub use vault::{Access, Encrypted, RecoveryPhrase, Vault, is_vault, read_header};
+pub use vault::{Access, Converted, Encrypted, PlainFile, RecoveryPhrase, Vault, is_vault, read_header};
