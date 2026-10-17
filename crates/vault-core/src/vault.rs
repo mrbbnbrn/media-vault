@@ -562,7 +562,11 @@ impl Vault {
     }
 
     fn write_header(&self) -> Result<()> {
-        let json = serde_json::to_vec_pretty(&self.header)?;
+        self.write_header_of(&self.header)
+    }
+
+    fn write_header_of(&self, header: &VaultHeader) -> Result<()> {
+        let json = serde_json::to_vec_pretty(header)?;
         atomic_write(&self.root.join(HEADER_FILE), &json)?;
         atomic_write(&self.root.join(HEADER_BACKUP_FILE), &json)?;
         Ok(())
@@ -701,7 +705,8 @@ impl Vault {
         }
         let known = self.files.read().unwrap_or_else(|e| e.into_inner()).get(id).cloned();
         if let Some(f) = known {
-            for rel in std::iter::once(f.path).chain(f.prev) {
+            // Where it was first: while a move is pending, the new place may hold something else.
+            for rel in f.prev.into_iter().chain(std::iter::once(f.path)) {
                 let p = self.rel_path(&rel);
                 if p.is_file() {
                     return Some(p);
@@ -840,11 +845,14 @@ impl Vault {
         if self.header.is_plain() {
             return Err(Error::Invalid("this vault isn't encrypted".into()));
         }
-        self.header.converting = Some("plain".into());
-        self.header.version = PLAIN_VERSION;
-        self.write_plain.store(true, std::sync::atomic::Ordering::SeqCst);
-        self.write_header()?;
         fs::create_dir_all(self.files_dir())?;
+        // Written first: only once it's on disk do new objects change format.
+        let mut h = self.header.clone();
+        h.converting = Some("plain".into());
+        h.version = PLAIN_VERSION;
+        self.write_header_of(&h)?;
+        self.header = h;
+        self.write_plain.store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 
@@ -862,13 +870,16 @@ impl Vault {
             None => (None, Some(new_open_slot(&self.master))),
         };
         let (recovery_slot, phrase) = new_recovery_slot(&self.master, &self.header.vault_id);
-        self.header.password_slot = password_slot;
-        self.header.open_slot = open_slot;
-        self.header.recovery_slot = recovery_slot;
-        self.header.converting = Some("encrypted".into());
-        self.header.version = PLAIN_VERSION;
+        // Written first (with the key slots): only once it's on disk is anything encrypted with this key.
+        let mut h = self.header.clone();
+        h.password_slot = password_slot;
+        h.open_slot = open_slot;
+        h.recovery_slot = recovery_slot;
+        h.converting = Some("encrypted".into());
+        h.version = PLAIN_VERSION;
+        self.write_header_of(&h)?;
+        self.header = h;
         self.write_plain.store(false, std::sync::atomic::Ordering::SeqCst);
-        self.write_header()?;
         Ok(phrase)
     }
 
@@ -970,9 +981,45 @@ impl Vault {
     /// Everything is converted (and the database saved, and the old copies'
     /// space reclaimed): the vault is now plain or encrypted for good. Old
     /// database backups (made the other way) are removed.
-    pub fn finish_conversion(&mut self) -> Result<()> {
+    pub fn finish_conversion(&mut self) -> Result<Vec<PathBuf>> {
         self.require_write()?;
-        let Some(to) = self.header.converting.take() else { return Ok(()) };
+        let Some(to) = self.header.converting.clone() else { return Ok(Vec::new()) };
+        // Old database copies (made the other way) go first.
+        for b in self.db_backups()? {
+            fs::remove_file(&b)?;
+        }
+        let mut left = Vec::new();
+        if to == "encrypted" {
+            // Nothing of ours may stay unencrypted: half-written files and files waiting in .new go;
+            // anything else in Files/ isn't the vault's (it's left, and reported).
+            fn walk(d: &Path, out: &mut Vec<PathBuf>) {
+                if let Ok(rd) = fs::read_dir(d) {
+                    for e in rd.flatten() {
+                        let p = e.path();
+                        if p.is_dir() {
+                            walk(&p, out);
+                            let _ = fs::remove_dir(&p);
+                        } else {
+                            out.push(p);
+                        }
+                    }
+                }
+            }
+            let mut all = Vec::new();
+            walk(&self.files_dir(), &mut all);
+            for p in all {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if name.ends_with(".tmp") || name.ends_with(".mvtmp") {
+                    fs::remove_file(&p)?; // half-written: never a whole file
+                } else if p.starts_with(self.files_dir().join(NEW_FILES_DIR)) && ObjectId::from_hex(name).is_ok() {
+                    // A media file not encrypted yet: never thrown away.
+                    return Err(Error::Invalid("a file still has to be encrypted".into()));
+                } else {
+                    left.push(p);
+                }
+            }
+        }
+        self.header.converting = None;
         if to == "plain" {
             self.header.plain = true;
             self.header.password_slot = None;
@@ -987,14 +1034,11 @@ impl Vault {
             let _ = fs::remove_dir(self.files_dir());
         }
         self.write_header()?;
-        for b in self.db_backups()? {
-            let _ = fs::remove_file(b);
-        }
         let doc = self.root.join(FORMAT_DOC_FILE);
         if fs::read(&doc).ok().as_deref() != Some(FORMAT_DOC.as_bytes()) {
             atomic_write(&doc, FORMAT_DOC.as_bytes())?;
         }
-        Ok(())
+        Ok(left)
     }
 
     /// Ids stored as objects (packed or loose), not ordinary files.
@@ -1009,7 +1053,7 @@ impl Vault {
     /// An object as stored in the packs (or a loose file), never an ordinary media file.
     fn open_stored(&self, kind: ObjectKind, id: &ObjectId) -> Result<ObjectReader<Slice>> {
         let s = self.open_raw(kind, id)?;
-        ObjectReader::open(s, &self.master, *id, Some(kind))
+        ObjectReader::open_with(s, &self.master, *id, Some(kind), self.any_plain())
     }
 
     /// Encrypt everything read from `source` into memory, on one core
@@ -1388,7 +1432,7 @@ impl Vault {
 
     fn read_db_file(&self, path: &Path) -> Result<Zeroizing<Vec<u8>>> {
         let f = Slice::whole(File::open(path)?)?;
-        let mut r = ObjectReader::open(f, &self.master, DB_OBJECT_ID, Some(ObjectKind::Database))?;
+        let mut r = ObjectReader::open_with(f, &self.master, DB_OBJECT_ID, Some(ObjectKind::Database), self.any_plain())?;
         let mut out = Zeroizing::new(Vec::new());
         r.read_to_end(&mut out)
             .map_err(|e| Error::Corrupt(e.to_string()))?;

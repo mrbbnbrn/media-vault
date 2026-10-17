@@ -96,7 +96,8 @@ fn numbered(name: &str, n: usize) -> String {
 }
 
 /// Where every stored file should be now: object id (hex) → path relative to `Files/`.
-pub fn wanted(conn: &Connection, current: &HashMap<String, String>) -> Result<HashMap<String, String>, String> {
+/// `on_disk(path)`: something is already at that path (never chosen as a new place).
+pub fn wanted(conn: &Connection, current: &HashMap<String, String>, on_disk: &dyn Fn(&str) -> bool) -> Result<HashMap<String, String>, String> {
     // Folder paths.
     let mut folders: HashMap<i64, (String, Option<i64>)> = HashMap::new();
     {
@@ -168,7 +169,7 @@ pub fn wanted(conn: &Connection, current: &HashMap<String, String>) -> Result<Ha
     for (obj, dir, name) in rest {
         let mut n = 1;
         let mut p = join(&dir, &name);
-        while taken.contains(&p.to_lowercase()) {
+        while taken.contains(&p.to_lowercase()) || on_disk(&p) {
             n += 1;
             p = join(&dir, &numbered(&name, n));
         }
@@ -211,9 +212,11 @@ pub fn arrange(s: &Session) -> Result<usize, String> {
                 current.insert(o, p);
             }
         }
-        let want = wanted(&db, &current)?;
-        // Only files that exist (an encrypted object waiting to be converted isn't one yet).
         let v = s.vault();
+        let files = v.files_dir();
+        let on_disk = |rel: &str| rel.split('/').fold(files.clone(), |p, part| p.join(part)).exists();
+        let want = wanted(&db, &current, &on_disk)?;
+        // Only files that exist (an encrypted object waiting to be converted isn't one yet).
         let moves: Vec<(String, Option<String>, String)> = want
             .iter()
             .filter(|(o, p)| current.get(*o) != Some(*p))
@@ -234,10 +237,19 @@ pub fn arrange(s: &Session) -> Result<usize, String> {
         let db = s.db();
         let v = s.vault();
         for o in &gone {
-            db.execute("DELETE FROM plain_files WHERE object_id = ?", [o]).map_err(e)?;
-            if let Ok(id) = ObjectId::from_hex(o) {
+            // No item uses it now (a rotation's old file kept for undoing it, or one about to be deleted):
+            // back to .new under its id, where it's still found, then forgotten here.
+            if let Ok(id) = ObjectId::from_hex(o)
+                && v.media_file(&id).is_some()
+            {
+                let back = format!("{}/{o}", vault_core::vault::NEW_FILES_DIR);
+                if let Err(err) = v.move_media_file(&id, &back) {
+                    eprintln!("Couldn't put an unused file back in .new: {err}");
+                    continue;
+                }
                 v.set_media_file(id, None);
             }
+            db.execute("DELETE FROM plain_files WHERE object_id = ?", [o]).map_err(e)?;
         }
         for (o, cur, to) in &moves {
             let Ok(id) = ObjectId::from_hex(o) else { continue };

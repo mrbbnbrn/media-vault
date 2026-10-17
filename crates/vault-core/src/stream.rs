@@ -398,11 +398,20 @@ pub struct ObjectReader<R: Read + Seek> {
 }
 
 impl<R: Read + Seek> ObjectReader<R> {
-    pub fn open(
+    /// Open an encrypted object (a version 2, unencrypted, object is refused:
+    /// in an encrypted vault it would be a swapped-in, unauthenticated file).
+    pub fn open(inner: R, master: &Key, id: ObjectId, expected_kind: Option<ObjectKind>) -> Result<Self> {
+        Self::open_with(inner, master, id, expected_kind, false)
+    }
+
+    /// Like [`ObjectReader::open`]; `allow_plain`: unencrypted (version 2)
+    /// objects are read too (vaults without encryption, or being changed).
+    pub fn open_with(
         mut inner: R,
         master: &Key,
         id: ObjectId,
         expected_kind: Option<ObjectKind>,
+        allow_plain: bool,
     ) -> Result<Self> {
         let mut h = [0u8; HEADER_LEN as usize];
         inner.seek(SeekFrom::Start(0))?;
@@ -417,6 +426,9 @@ impl<R: Read + Seek> ObjectReader<R> {
             return Err(Error::UnsupportedVersion(h[4] as u32));
         }
         let plain = h[4] == PLAIN_OBJECT_VERSION;
+        if plain && !allow_plain {
+            return Err(Error::Corrupt(format!("object {id} isn't encrypted, but this vault is")));
+        }
         let kind = ObjectKind::from_u8(h[5])
             .ok_or_else(|| Error::Corrupt(format!("object {id}: unknown kind")))?;
         if let Some(k) = expected_kind
@@ -810,7 +822,8 @@ mod tests {
             assert_eq!(&bytes[HEADER_LEN as usize..], &plain[..], "the bytes as they are");
             // Any key reads it (there's nothing to decrypt).
             let other = crypto::random_key();
-            let mut r = ObjectReader::open(Cursor::new(bytes), &other, id, Some(ObjectKind::Thumbnail)).unwrap();
+            assert!(ObjectReader::open(Cursor::new(bytes.clone()), &other, id, Some(ObjectKind::Thumbnail)).is_err(), "refused where only encrypted ones belong");
+            let mut r = ObjectReader::open_with(Cursor::new(bytes), &other, id, Some(ObjectKind::Thumbnail), true).unwrap();
             assert!(r.is_plain());
             let mut back = Vec::new();
             r.read_to_end(&mut back).unwrap();

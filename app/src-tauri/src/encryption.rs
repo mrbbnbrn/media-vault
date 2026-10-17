@@ -53,75 +53,87 @@ pub struct Started {
 }
 
 /// Convert everything still to be converted, then finish. Stops early (and
-/// returns Ok(false)) when asked to.
-pub fn run(s: &Session, gate: &std::sync::Mutex<()>, mut progress: impl FnMut(usize, usize)) -> Result<bool, String> {
+/// returns Ok(None)) when asked to; otherwise how many files in Files/ weren't
+/// the vault's (left there when encrypting).
+///
+/// Every batch runs with `gate` held (imports and reclaiming space wait), and
+/// the list of what's left is worked out again until nothing is: an object
+/// written in the old format meanwhile (an import that had started) is
+/// converted too before the vault is finished.
+pub fn run(s: &Session, gate: &std::sync::Mutex<()>, mut progress: impl FnMut(usize, usize)) -> Result<Option<usize>, String> {
     let to = s.vault().conversion().map(str::to_string);
-    let Some(to) = to else { return Ok(true) };
-    let todo = s.vault().conversion_todo().map_err(session::friendly)?;
-    let total = todo.len();
-    progress(0, total);
-    let mut i = 0;
-    while i < total {
-        if STOP.load(Ordering::SeqCst) || s.is_closed() {
-            return Ok(false);
-        }
-        let mut later = Vec::new();
-        let mut converted_files = Vec::new();
-        let mut bytes = 0u64;
-        let start = i;
-        while i < total && i - start < BATCH && bytes < BATCH_BYTES {
-            let (kind, id) = todo[i];
-            bytes += s.vault().object_location(kind, &id).map(|l| l.2).unwrap_or(0);
-            let r = s.vault().convert_one(kind, &id).map_err(session::friendly)?;
-            if let Some(p) = r.remove_after_save {
-                later.push(p);
+    let Some(to) = to else { return Ok(Some(0)) };
+    let mut done_before = 0;
+    loop {
+        let turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+        let todo = s.vault().conversion_todo().map_err(session::friendly)?;
+        if todo.is_empty() {
+            // Everything converted: the old copies' space is reclaimed, then it's final (still holding the gate).
+            crate::storage::reclaim_all_deleted(s)?;
+            let left = s.vault_mut().finish_conversion().map_err(session::friendly)?;
+            if to == "encrypted" {
+                let _ = s.db().execute("DELETE FROM plain_files", []);
             }
-            if kind == ObjectKind::Media && to == "encrypted" {
-                converted_files.push(id);
-            }
-            i += 1;
-        }
-        // The new copies are recorded before the old ones go.
-        s.mark_dirty();
-        s.save()?;
-        {
-            let v = s.vault();
-            for p in &later {
-                v.remove_converted(p).map_err(session::friendly)?;
-            }
-        }
-        // Packs emptied by now go at once (the space isn't needed twice over).
-        if to == "plain" {
-            let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
-            crate::storage::reclaim_emptied(s)?;
-        }
-        if !converted_files.is_empty() {
-            let db = s.db();
-            for id in &converted_files {
-                let _ = db.execute("DELETE FROM plain_files WHERE object_id = ?", [id.to_hex()]);
-                s.vault().set_media_file(*id, None);
-            }
-            drop(db);
             s.mark_dirty();
+            s.save()?;
+            drop(turn);
+            if to == "plain" {
+                crate::plainfiles::arrange(s)?;
+                s.save()?;
+            }
+            return Ok(Some(left.len()));
         }
-        progress(i, total);
+        drop(turn);
+        let total = done_before + todo.len();
+        progress(done_before, total);
+        let mut i = 0;
+        while i < todo.len() {
+            if STOP.load(Ordering::SeqCst) || s.is_closed() {
+                return Ok(None);
+            }
+            let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
+            let mut later = Vec::new();
+            let mut converted_files = Vec::new();
+            let mut bytes = 0u64;
+            let start = i;
+            while i < todo.len() && i - start < BATCH && bytes < BATCH_BYTES {
+                let (kind, id) = todo[i];
+                bytes += s.vault().object_location(kind, &id).map(|l| l.2).unwrap_or(0);
+                let r = s.vault().convert_one(kind, &id).map_err(session::friendly)?;
+                if let Some(p) = r.remove_after_save {
+                    later.push(p);
+                }
+                if kind == ObjectKind::Media && to == "encrypted" {
+                    converted_files.push(id);
+                }
+                i += 1;
+            }
+            // The new copies are recorded before the old ones go.
+            s.mark_dirty();
+            s.save()?;
+            {
+                let v = s.vault();
+                for p in &later {
+                    v.remove_converted(p).map_err(session::friendly)?;
+                }
+            }
+            // Packs emptied by now go at once (the space isn't needed twice over).
+            if to == "plain" {
+                crate::storage::reclaim_emptied(s)?;
+            }
+            if !converted_files.is_empty() {
+                let db = s.db();
+                for id in &converted_files {
+                    let _ = db.execute("DELETE FROM plain_files WHERE object_id = ?", [id.to_hex()]);
+                    s.vault().set_media_file(*id, None);
+                }
+                drop(db);
+                s.mark_dirty();
+            }
+            progress(done_before + i, total);
+        }
+        done_before += todo.len();
     }
-    // Everything converted: the old copies' space is reclaimed (never during an import), then it's final.
-    {
-        let _turn = gate.lock().unwrap_or_else(|e| e.into_inner());
-        crate::storage::reclaim_all_deleted(s)?;
-    }
-    s.vault_mut().finish_conversion().map_err(session::friendly)?;
-    if to == "encrypted" {
-        let _ = s.db().execute("DELETE FROM plain_files", []);
-    }
-    s.mark_dirty();
-    s.save()?;
-    if to == "plain" {
-        crate::plainfiles::arrange(s)?;
-        s.save()?;
-    }
-    Ok(true)
 }
 
 fn start(app: AppHandle, inner: crate::Shared, s: Arc<Session>) {
@@ -140,17 +152,19 @@ fn start(app: AppHandle, inner: crate::Shared, s: Arc<Session>) {
         });
         RUNNING.store(false, Ordering::SeqCst);
         let done = match r {
-            Ok(true) => Done {
+            Ok(Some(left)) => Done {
                 to: to.clone(),
                 ok: true,
                 stopped: false,
                 message: if to == "plain" {
                     "The vault isn't encrypted any more: your files are ordinary files in its Files folder.".into()
+                } else if left > 0 {
+                    format!("The vault is encrypted now. {left} file(s) in its Files folder weren't the vault's own (put there by hand?), so they were left there, unencrypted.")
                 } else {
                     "The vault is encrypted now.".into()
                 },
             },
-            Ok(false) => Done { to: to.clone(), ok: false, stopped: true, message: "Paused. It carries on when you press Continue (or next time the vault opens).".into() },
+            Ok(None) => Done { to: to.clone(), ok: false, stopped: true, message: "Paused. It carries on when you press Continue (or next time the vault opens).".into() },
             Err(e) => Done { to: to.clone(), ok: false, stopped: false, message: format!("It stopped: {e} Nothing is lost; press Continue to try again.") },
         };
         let _ = app.emit("encryption-done", done);
@@ -174,7 +188,11 @@ pub async fn encryption_off(app: AppHandle, state: State<'_, crate::Shared>, cur
             session::verify_password(&root, current.as_deref().unwrap_or(""))?;
         }
         s.save()?;
-        s.vault_mut().begin_plain().map_err(session::friendly)?;
+        {
+            // Not while an import is storing files (it would store them the old way after the list is made).
+            let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
+            s.vault_mut().begin_plain().map_err(session::friendly)?;
+        }
         let info = s.info();
         start(app, inner.clone(), s);
         Ok(info)
@@ -198,7 +216,10 @@ pub async fn encryption_on(app: AppHandle, state: State<'_, crate::Shared>, pass
             session::check_password(pw)?;
         }
         s.save()?;
-        let phrase = s.vault_mut().begin_encrypted(password.as_deref()).map_err(session::friendly)?;
+        let phrase = {
+            let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
+            s.vault_mut().begin_encrypted(password.as_deref()).map_err(session::friendly)?
+        };
         let words = phrase.words().iter().map(|w| w.to_string()).collect();
         let info = s.info();
         start(app, inner.clone(), s);
@@ -292,7 +313,7 @@ mod tests {
         let gate = std::sync::Mutex::new(());
         // Off.
         s.vault_mut().begin_plain().unwrap();
-        assert!(run(&s, &gate, |_, _| {}).unwrap());
+        assert_eq!(run(&s, &gate, |_, _| {}).unwrap(), Some(0));
         assert!(s.vault().header().is_plain());
         let files = s.vault().files_dir();
         assert_eq!(files_under(&files), vec!["Holiday/Day 1/b.png", "Holiday/Day 1/c.png", "Holiday/a.jpg"]);
@@ -321,12 +342,45 @@ mod tests {
         // On again, without a password.
         let phrase = s.vault_mut().begin_encrypted(None).unwrap();
         assert_eq!(phrase.words().len(), 24);
-        assert!(run(&s, &gate, |_, _| {}).unwrap());
+        assert_eq!(run(&s, &gate, |_, _| {}).unwrap(), Some(0));
         assert!(!files.exists());
         assert!(!s.vault().header().plain);
         assert_eq!(s.vault().read_object(ObjectKind::Media, &ObjectId::from_hex(&obj).unwrap()).unwrap()[..], vec![3u8; 70_000][..]);
         let n: i64 = s.db().query_row("SELECT COUNT(*) FROM plain_files", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn unused_files_stay_findable_and_occupied_names_are_never_taken() {
+        let t = tempfile::tempdir().unwrap();
+        let s = session::create_plain(t.path().to_str().unwrap(), "P", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("Cats");
+        std::fs::create_dir_all(&src).unwrap();
+        std::fs::write(src.join("tom.jpg"), b"tom").unwrap();
+        std::fs::write(src.join("kit.jpg"), b"kit").unwrap();
+        // Something that isn't the vault's is already where "kit.jpg" would go.
+        let files = s.vault().files_dir();
+        std::fs::create_dir_all(files.join("Cats")).unwrap();
+        std::fs::write(files.join("Cats").join("kit.jpg"), b"someone else's").unwrap();
+        import::run(&s, &job(&src), &AtomicBool::new(false), &mut |_| {});
+        crate::plainfiles::arrange(&s).unwrap();
+        assert_eq!(std::fs::read(files.join("Cats").join("kit (2).jpg")).unwrap(), b"kit");
+        assert_eq!(std::fs::read(files.join("Cats").join("kit.jpg")).unwrap(), b"someone else's", "left alone");
+        // An object no item uses any more (as a rotation keeps the old file for undoing it): back in .new, still readable.
+        let obj: String = s.db().query_row("SELECT object_id FROM media WHERE original_name = 'tom.jpg'", [], |r| r.get(0)).unwrap();
+        s.db().execute("UPDATE media SET object_id = 'something else' WHERE original_name = 'tom.jpg'", []).unwrap();
+        crate::plainfiles::arrange(&s).unwrap();
+        let id = ObjectId::from_hex(&obj).unwrap();
+        assert!(s.vault().media_file(&id).unwrap().starts_with(files.join(".new")));
+        assert_eq!(&s.vault().read_object(ObjectKind::Media, &id).unwrap()[..], b"tom");
+        // Encrypting: the vault's files all go; the stranger's file is left (and counted).
+        s.db().execute("UPDATE media SET object_id = ? WHERE original_name = 'tom.jpg'", [&obj]).unwrap();
+        s.vault_mut().begin_encrypted(Some("long enough pw")).unwrap();
+        let gate = std::sync::Mutex::new(());
+        assert_eq!(run(&s, &gate, |_, _| {}).unwrap(), Some(1));
+        assert_eq!(std::fs::read(files.join("Cats").join("kit.jpg")).unwrap(), b"someone else's");
+        assert!(!files.join("Cats").join("kit (2).jpg").exists() && !files.join(".new").exists());
+        assert_eq!(&s.vault().read_object(ObjectKind::Media, &id).unwrap()[..], b"tom");
     }
 
     #[test]
