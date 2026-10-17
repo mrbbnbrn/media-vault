@@ -15,6 +15,7 @@ import { api, jobsApi, mediaUrl } from './api';
 import { loopJob } from './jobs';
 import { makeVideoPreviews } from './tinyclip';
 import { previewsPaused, onPreviewsPaused, whenPreviewsMayRun } from './previewgate';
+import { giveWay } from './bgpace';
 
 export const COLS = 8;
 export const ROWS = 6;
@@ -181,6 +182,8 @@ export function startPreviewMaker(): () => void {
         if (stopped) break;
         // Not while the window is minimised or hidden (nothing would be drawn).
         await whenPreviewsMayRun(() => stopped);
+        // Nor while you are using it (bgpace.ts).
+        await giveWay(() => stopped);
         if (stopped) break;
         const t0 = performance.now();
         try {

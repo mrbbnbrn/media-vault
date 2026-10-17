@@ -653,6 +653,8 @@ pub fn start(s: Arc<Session>) {
             }
             match sweep.pop() {
                 Some(f) => {
+                    // The slow sweep waits while you use the window (pages a grid asks for don't).
+                    crate::userbusy::give_way(&|| s.is_closed());
                     let _ = refresh_folder(&s, f, Size::Small, Duration::from_millis(2));
                     if s.is_dirty() {
                         s.save_soon();

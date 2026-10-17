@@ -15,6 +15,7 @@ import { mediaUrl, thumbUrl, type FolderCard } from '../api';
 import { coverFit } from '../facealign';
 import { placement } from '../coverframe';
 import { CoverVideo } from './VideoPreview';
+import { useThumbVersion } from '../thumbver';
 
 export function RoundCover(props: {
   folder: Pick<FolderCard, 'cover' | 'coverFace' | 'coverPos'> & { coverKind?: FolderCard['coverKind'] };
@@ -34,6 +35,9 @@ export function RoundCover(props: {
 }) {
   const { cover, coverFace, coverPos, coverKind } = props.folder;
   const [aspect, setAspect] = useState<number | null>(null);
+  // Loads again only when this cover's own thumbnail changed (thumbver.ts).
+  const ver = useThumbVersion(cover);
+  const bump = props.bump ?? (ver || undefined);
   if (cover == null) return null;
   const face = coverFace ? { x: coverFace[0], y: coverFace[1], w: coverFace[2], h: coverFace[3] } : null;
   const fit = !aspect ? null : coverPos ? placement(aspect, 1, coverPos) : coverFit(aspect, face, !props.open);
@@ -43,7 +47,7 @@ export function RoundCover(props: {
   return (
     <span className={`pround${props.open ? ' open' : ''}${props.className ? ` ${props.className}` : ''}`} aria-hidden="true"
       style={props.size ? { width: props.size, height: props.size } : undefined}>
-      <img src={`${thumbUrl(cover)}${props.bump != null ? `?c=${props.bump}` : ''}`} alt="" draggable={false}
+      <img src={`${thumbUrl(cover)}${bump != null ? `?c=${bump}` : ''}`} alt="" draggable={false}
         style={at ?? { opacity: 0 }}
         onLoad={(e) => {
           const im = e.currentTarget;

@@ -8,6 +8,7 @@
 
 import { api, mediaUrl, type FaceEngineStatus, type FaceIn, type Kind } from '../api';
 import { loopJob, updateJob } from '../jobs';
+import { giveWay } from '../bgpace';
 
 /** Where to get the faces pack (shown when it isn't installed). */
 export const NO_FACE_PACK =
@@ -244,6 +245,7 @@ export function startFaceScanner(): () => void {
       job.batch();
       updateJob('faces', { label: upgrading ? 'Updating faces (new model)' : 'Scanning faces' });
       for (const t of tasks) {
+        await giveWay(() => stopped || paused);
         if (stopped || paused || !available) break;
         try {
           const faces = await scanItem(t.id, t.kind);

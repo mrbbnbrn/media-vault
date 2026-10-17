@@ -21,6 +21,7 @@ import { beginJob, endJob, updateJob } from './jobs';
 import { notePictures } from './derived';
 import { depthChoice, depthOf, depthPack, depthSetup, depthTag, edgesSetting, forgetDepth, knownDepth, setupOf, type DepthSetup } from './depth';
 import { forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
+import { giveWay } from './bgpace';
 
 /** No keyboard or mouse for this long counts as idle (ms). */
 export const IDLE_MS = 20000;
@@ -269,6 +270,8 @@ async function runOne(r: PrepareRequest): Promise<void> {
       if (stopAsked) break;
       if (todo.length) updateJob(JOB, { detail: `${r.what} · ${p.name}` });
       for (const x of todo) {
+        // While you use the window, preparing waits between pictures (bgpace.ts).
+        await giveWay(() => stopAsked);
         if (stopAsked) break;
         if (p.kind === 'depth') await depthOf(x.src, false, p.setup);
         else await subjectOf(x.src, false, p.setup);

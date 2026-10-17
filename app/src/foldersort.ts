@@ -134,3 +134,36 @@ export function markOpened(opened: Opened, id: number, now: number): Opened {
     .slice(0, KEEP_MAX);
   return Object.fromEntries(entries);
 }
+
+// ---- a steady order ------------------------------------------------------------------------------
+// Sorts by what is inside (newest picture, most items, size, recently opened)
+// would otherwise reshuffle the sidebar and the folder cards whenever background
+// work or opening a folder changes those numbers. Instead the numbers are taken
+// once (when the sort is chosen, or chosen again) and kept: folders new since
+// then use their own. Names are always the live ones (a rename re-sorts).
+
+export interface SortSnap {
+  /** Changes when a new snapshot starts (the sort changed or was chosen again). */
+  key: string;
+  values: Map<number, { newest?: number; oldest?: number; items: number; bytes?: number; opened?: number }>;
+}
+
+/** Keep `snap` (or start a new one when `key` changed), adding folders it doesn't know yet. */
+export function updateSnap(snap: SortSnap | null, key: string, folders: SortableFolder[], opened: Opened): SortSnap {
+  const s = snap && snap.key === key ? snap : { key, values: new Map() };
+  for (const f of folders) {
+    if (!s.values.has(f.id)) s.values.set(f.id, { newest: f.newest, oldest: f.oldest, items: f.items, bytes: f.bytes, opened: opened[f.id] });
+  }
+  return s;
+}
+
+/** Sort `folders` (with `sortTree` or `sortFolders`) by the snapshot's numbers; returns the live folders. */
+export function sortSteady<T extends SortableFolder>(folders: T[], snap: SortSnap, how: (list: (SortableFolder & { live: T })[], opened: Opened) => (SortableFolder & { live: T })[]): T[] {
+  const opened: Opened = {};
+  const view = folders.map((f) => {
+    const v = snap.values.get(f.id);
+    if (v?.opened != null) opened[f.id] = v.opened;
+    return { id: f.id, name: f.name, parentId: f.parentId, createdAt: f.createdAt, newest: v?.newest ?? f.newest, oldest: v?.oldest ?? f.oldest, items: v?.items ?? f.items, bytes: v?.bytes ?? f.bytes, live: f };
+  });
+  return how(view, opened).map((x) => x.live);
+}

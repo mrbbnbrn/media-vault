@@ -3,6 +3,8 @@
 // once the library has shown its first page, or after a short wait at most,
 // so it doesn't compete with that first load.
 
+import { endStep } from './perf';
+
 let shown = false;
 const waiters = new Set<() => void>();
 
@@ -10,6 +12,7 @@ const waiters = new Set<() => void>();
 export function gridShown(): void {
   if (shown) return;
   shown = true;
+  endStep('Unlock');
   waiters.forEach((w) => w());
   waiters.clear();
 }

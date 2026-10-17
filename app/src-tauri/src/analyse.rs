@@ -419,6 +419,8 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
             sc.spawn(|| {
                 polite_thread();
                 loop {
+                    // While you are using the window, wait between items (userbusy.rs).
+                    crate::userbusy::give_way(&|| stop.load(Ordering::SeqCst) || s.is_closed());
                     let i = next.fetch_add(1, Ordering::SeqCst);
                     if i >= tasks.len() || stop.load(Ordering::SeqCst) || s.is_closed() {
                         break;

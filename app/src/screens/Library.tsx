@@ -26,7 +26,7 @@ import type { RenameEntry } from '../components/RenameDialog';
 import type { Memory } from '../components/Memories';
 import { ShareDialog } from '../components/ShareDialog';
 import type { WhyQuery } from '../components/WhyHere';
-import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortTree, type FolderSort } from '../foldersort';
+import { FOLDER_SORTS, placeIds, sortFolders, sortPinned, sortSteady, sortTree, updateSnap, type FolderSort, type SortSnap } from '../foldersort';
 import { useFolderPrefs } from '../folderprefs';
 import { MuseumHost, museumOpen, openFolderMuseum, openMuseum } from '../components/museum/launch';
 import { openFolderRiver, openVaultRiver, RiverHost, RiverIcon, riverOpen } from '../components/river/launch';
@@ -36,6 +36,7 @@ import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } 
 import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { ActivityRing } from '../components/ActivityRing';
+import { CoverImg, useHoverCycle } from '../components/CoverImg';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
@@ -61,6 +62,8 @@ import {
 import type { ScrollAnchor } from '../viewmemory';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onItemsChanged, onThumb } from '../media';
+import { beginStep, dropStep, endStep, whenImagesShown } from '../perf';
+import { calmly, reuseSame, shallowSame, useStableList } from '../calm';
 import { sorted, type Order } from '../playlist';
 import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
@@ -299,9 +302,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- end frozen ----
   const s = nav.app.session!;
   const cfg = nav.app.config;
-  const [folders, setFolders] = useState<FolderCard[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
-  const [subfolders, setSubfolders] = useState<FolderCard[]>([]);
+  const [folders, setFoldersRaw] = useState<FolderCard[]>([]);
+  const [items, setItemsRaw] = useState<Item[]>([]);
+  const [subfolders, setSubfoldersRaw] = useState<FolderCard[]>([]);
+  // What you do yourself shows at once; changes from background work keep things in place (calm.ts).
+  const bgList = useRef(false);
+  const setItems = (f: Item[]) => { bgList.current = false; setItemsRaw(f); };
   const [folder, setFolder] = useState<FolderCard | null>(null);
   const [trash, setTrash] = useState<TrashView | null>(null);
   const [tags, setTags] = useState<TagCount[]>([]);
@@ -349,7 +355,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [reports, setReports] = useState<ImportReport[]>([]);
-  const [coverBump, setCoverBump] = useState(0);
   // ---- folder banners (begin) ----
   const [banner, reloadBanner] = useFolderBanner(view.kind === 'folder' ? folder : null);
   // Choosing what the banner shows (the item being repositioned).
@@ -371,7 +376,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
   const [hoverCard, setHoverCard] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, number[]>>({});
-  const [cycle, setCycle] = useState(0);
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
   const [smartModels, setSmartModels] = useState(false);
@@ -565,8 +569,29 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     await nav.refresh();
   };
 
-  const reload = useCallback(async () => {
-    setLoading(true);
+  /**
+   * Load the page again. `bg`: because of background work (an import or a conversion
+   * finished, thumbnails arrived): no "loading…", unchanged things keep their objects,
+   * and what is on screen keeps its order (calm.ts). Views worked out by models
+   * (smart search, similar) aren't recomputed then.
+   */
+  const reload = useCallback(async (opts?: { bg?: boolean }) => {
+    const bg = !!opts?.bg;
+    bgList.current = bg;
+    const setFolders = (f: FolderCard[]) => setFoldersRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setSubfolders = (f: FolderCard[]) => setSubfoldersRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setItems = (f: Item[]) => setItemsRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    if (!bg) setLoading(true);
+    else if (view.kind === 'smart' || view.kind === 'similar' || view.kind === 'lookalikes') {
+      // Only the folders and tags (the sidebar) then.
+      const page = await api.libraryPage(null, false).catch(() => null);
+      if (page) {
+        setFolders(page.folders);
+        tabsRef.current?.onFolders(page.folders);
+        setTags(page.tags);
+      }
+      return;
+    }
     try {
       // A folder's own card and its subfolders come from the full folder
       // list, so the library works out every folder's counts once, not twice.
@@ -616,11 +641,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     } catch (e) {
       setError(errText(e));
     } finally {
-      setLoading(false);
+      if (!bg) setLoading(false);
       // Background work may start now (firstgrid.ts).
       gridShown();
     }
   }, [view, similarSmart]);
+  /** Load again because of background work, once you have paused (calm.ts). */
+  const reloadCalmly = useCallback(() => calmly('library-reload', () => void reloadRef.current({ bg: true })), []);
+  const reloadRef = useRef(reload);
+  reloadRef.current = reload;
 
   useEffect(() => {
     let live = true;
@@ -634,8 +663,16 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const here = view.kind === 'folder' && view.id != null ? view.id : null;
     setSelFolders(kept ? new Set(kept.folders) : here != null ? new Set([here]) : new Set());
     setFolderAnchor(here);
+    // Timing panel (perf.ts): the page, then its first thumbnails.
+    const what = viewTitle(view, null);
+    beginStep('Open view', what);
+    dropStep('First thumbnails');
     reload().then(() => {
-      if (live) restoreScroll();
+      if (!live) return dropStep('Open view');
+      restoreScroll();
+      endStep('Open view');
+      beginStep('First thumbnails', what);
+      whenImagesShown(scroller.current, () => live && endStep('First thumbnails'));
     });
     return () => {
       live = false;
@@ -650,8 +687,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     if (openedId != null) markOpened(openedId);
   }, [openedId, markOpened]);
 
-  // Folder covers appear as soon as their first thumbnail is made.
-  useEffect(() => onThumb(() => setCoverBump((b) => b + 1)), []);
+  // Folder covers appear as soon as their first thumbnail is made (each cover
+  // loads again by itself: thumbver.ts); the folder list follows once you pause.
+  useEffect(() => onThumb(() => calmly('library-folders', () => {
+    api.folders().then((f) => {
+      bgList.current = true;
+      setFoldersRaw((prev) => reuseSame(prev, f, (x) => x.id, shallowSame));
+    }).catch(() => {});
+  })), []);
   // A rotation saved in the viewer changes an item's shape: load again once the viewer closes.
   const itemsStale = useRef(false);
   useEffect(() => onItemsChanged(() => { itemsStale.current = true; }), []);
@@ -660,11 +703,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     itemsStale.current = false;
     reload();
   }, [frozen]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => {
-    if (!coverBump) return;
-    const t = setTimeout(() => api.folders().then(setFolders).catch(() => {}), 1500);
-    return () => clearTimeout(t);
-  }, [coverBump]);
 
   // ---- undo -------------------------------------------------------------------------------
 
@@ -949,7 +987,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const b = onEvent<ImportReport>('import-done', (r) => {
       setReports((rs) => [...rs, r]);
       kickThumbnails();
-      reload();
+      // Once you pause, in place (calm.ts).
+      reloadCalmly();
       nav.refresh().catch(() => {});
     });
     return () => {
@@ -976,15 +1015,25 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const faceWall = facePerson != null && faceWallFor === facePerson;
   const inTrash = view.kind === 'trash';
   const smart = view.kind === 'smart';
-  const shown = useMemo(() => {
+  // Each item's grid entry is made once per item object (unchanged items keep
+  // theirs, so their tiles don't draw again: MediaGrid's Tile is memoised).
+  const deco = useRef(new WeakMap<Item, Item & { key: string; added: number; date: number }>());
+  const shownFresh = useMemo(() => {
+    const d = (i: Item) => {
+      let x = deco.current.get(i);
+      if (!x) deco.current.set(i, (x = { ...i, key: String(i.id), added: i.importedAt, date: i.takenAt }));
+      return x;
+    };
     const k = kind === 'any' ? items : items.filter((i) => i.kind === kind);
     if (timeline) {
       const dir = sort === 'oldest' ? 1 : -1;
-      return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
+      return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map(d);
     }
-    if (inTrash || smart || view.kind === 'similar') return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
-    return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt, date: i.takenAt })), sort);
+    if (inTrash || smart || view.kind === 'similar') return k.map(d);
+    return sorted(k.map(d), sort);
   }, [items, kind, sort, timeline, inTrash, smart, view.kind]);
+  // After background work, what is on screen keeps its place (calm.ts).
+  const shown = useStableList(shownFresh, (x) => x.id, bgList.current, `${viewK}|${sort}|${kind}`);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
   // Faces of the items shown, for face boxes and face-aware tiles.
   const wantFaces = faceBoxesOn || look.faceCrop;
@@ -1009,13 +1058,26 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [faceKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The sidebar tree, every level sorted the same way; folder cards sorted by the Sort menu.
-  const tree = useMemo(() => sortTree(folders, sideSort, fprefs.opened), [folders, sideSort, fprefs.opened]);
+  // Steady (foldersort.ts): the numbers a sort uses are taken when the sort is chosen
+  // (or chosen again), so background work and opening folders don't reshuffle them.
+  const sideSnap = useRef<SortSnap | null>(null);
+  const cardSnap = useRef<SortSnap | null>(null);
+  const [resort, setResort] = useState(0);
+  const tree = useMemo(() => {
+    sideSnap.current = updateSnap(sideSnap.current, `${sideSort}#${resort}`, folders, fprefs.opened);
+    return sortSteady(folders, sideSnap.current, (l, o) => sortTree(l, sideSort, o));
+  }, [folders, sideSort, fprefs.opened, resort]);
   const cards = useMemo(() => {
-    if (view.kind !== 'folders') return sortFolders(subfolders, cardSort, fprefs.opened);
-    if (!everyFolder) return sortFolders(folders.filter((f) => f.parentId === null), cardSort, fprefs.opened);
-    return cardSort === 'own' ? folders : sortFolders(folders, cardSort, fprefs.opened);
-  }, [view.kind, subfolders, folders, everyFolder, cardSort, fprefs.opened]);
-  const pinned = useMemo(() => sortPinned(folders.filter((f) => f.pinned), sideSort, fprefs.pins, fprefs.opened), [folders, sideSort, fprefs.pins, fprefs.opened]);
+    const list = view.kind !== 'folders' ? subfolders : !everyFolder ? folders.filter((f) => f.parentId === null) : folders;
+    if (view.kind === 'folders' && everyFolder && cardSort === 'own') return folders;
+    cardSnap.current = updateSnap(cardSnap.current, `${cardSort}#${resort}#${viewK}`, list, fprefs.opened);
+    return sortSteady(list, cardSnap.current, (l, o) => sortFolders(l, cardSort, o));
+  }, [view.kind, subfolders, folders, everyFolder, cardSort, fprefs.opened, resort, viewK]);
+  const pinned = useMemo(() => {
+    const list = folders.filter((f) => f.pinned);
+    if (!sideSnap.current) return sortPinned(list, sideSort, fprefs.pins, fprefs.opened);
+    return sortSteady(list, sideSnap.current, (l, o) => sortPinned(l, sideSort, fprefs.pins, o));
+  }, [folders, sideSort, fprefs.pins, fprefs.opened, tree]); // eslint-disable-line react-hooks/exhaustive-deps
   const selIds = [...selected];
   const allSelected = shown.length > 0 && shown.every((i) => selected.has(i.id));
   /** Everything shown here: the folder cards and the items (not the folder you are in). */
@@ -1817,7 +1879,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     });
   };
 
-  // Living folder cards: hovering a card cycles through a few items inside.
+  // Living folder cards: hovering a card cycles through a few items inside
+  // (the counter lives in the hovered card's FolderCover, not here).
   const cardIndex = useMemo(() => new Map(cards.map((c, i) => [c.id, i])), [cards]);
   useEffect(() => {
     if (hoverCard == null) return;
@@ -1825,67 +1888,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const t = setTimeout(() => {
       if (!samples[id]) api.folderSamples(id, 8).then((v) => setSamples((m) => ({ ...m, [id]: v }))).catch(() => {});
     }, 200);
-    setCycle(0);
-    const iv = setInterval(() => setCycle((c) => c + 1), 900);
-    return () => {
-      clearTimeout(t);
-      clearInterval(iv);
-    };
+    return () => clearTimeout(t);
   }, [hoverCard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const coverView = (f: FolderCard) => {
-    const hovered = hoverCard === f.id;
-    // Person folders: a round cover centred on the face; hovering opens it
-    // into the card's square, and holding there cycles pictures from inside.
-    if (f.person && f.cover) {
-      const others = samples[f.id]?.filter((x) => x !== f.cover) ?? [];
-      const cycling = hovered && others.length > 0 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
-      const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
-      return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} bump={coverBump} open={hovered} cycle={cycling} before={before}
-        play={preview === 'all' || (preview === 'hover' && hovered)} /></span>;
-    }
-    const playing = preview === 'all' || (preview === 'hover' && hovered);
-    const animated = f.coverKind === 'video' || f.coverKind === 'gif';
-    if (f.cover && playing && animated) {
-      const still = <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
-      // "Show the whole video on hover": the hovered card's video/GIF also shows uncropped.
-      if (hovered && cfg.wholeOnHover) return <><WholeCover id={f.cover} kind={f.coverKind === 'gif' ? 'gif' : 'video'} />{still}</>;
-      if (f.coverPos) return <Framed pos={f.coverPos}>{f.coverKind === 'video' ? <>{still}<CoverVideo id={f.cover} /></> : <img src={mediaUrl(f.cover)} alt="" draggable={false} />}</Framed>;
-      if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
-      return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
-    }
-    const list = samples[f.id];
-    // Stacked card: two more pictures from inside peek out behind the cover;
-    // hovering fans them out over the neighbouring cards (the mouse passes
-    // through them), the front card grows a little and then cycles through
-    // the folder. Cards in the first or last column fan less towards the edge.
-    const behind = f.cover ? f.samples.filter((x) => x !== f.cover).slice(0, 2) : [];
-    if (behind.length) {
-      const others = list?.filter((x) => !behind.includes(x)) ?? [];
-      const cycling = hovered && others.length > 1 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
-      // The picture before stays underneath while the next one fades in.
-      const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
-      const per = Math.max(1, cols - 1);
-      const at = (cardIndex.get(f.id) ?? 0) % per;
-      const edge = `${at === 0 ? ' edge-l' : ''}${at === per - 1 ? ' edge-r' : ''}`;
-      return (
-        <span className={`fstack${edge}`}>
-          {behind.map((x, k) => <img key={x} className={`fstack-${k + 1}`} src={thumbUrl(x)} alt="" draggable={false} />)}
-          {f.coverPos
-            ? <Framed pos={f.coverPos} className="fstack-top"><img src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} /></Framed>
-            : <img className="fstack-top" src={`${thumbUrl(f.cover!)}?c=${coverBump}`} alt="" draggable={false} />}
-          {before != null && <img key={`b${before}`} className="fstack-top" src={thumbUrl(before)} alt="" draggable={false} />}
-          {cycling != null && <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />}
-        </span>
-      );
-    }
-    if (hovered && list && list.length > 1 && cycle > 0) {
-      const id = list[(cycle - 1) % list.length];
-      return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
-    }
-    if (!f.cover) return <FolderIcon size={40} />;
-    if (f.coverPos) return <Framed pos={f.coverPos}><img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} /></Framed>;
-    return <img src={`${thumbUrl(f.cover)}?c=${coverBump}`} alt="" draggable={false} />;
+    const per = Math.max(1, cols - 1);
+    const at = (cardIndex.get(f.id) ?? 0) % per;
+    const edge = `${at === 0 ? ' edge-l' : ''}${at === per - 1 ? ' edge-r' : ''}`;
+    return <FolderCover f={f} hovered={hoverCard === f.id} samples={samples[f.id]} preview={preview} whole={!!cfg.wholeOnHover} edge={edge} />;
   };
 
   // ---- the top bar: your buttons in your order (right-click → Customise top bar) ----------
@@ -2045,7 +2055,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       onClick={(e) => {
         const r = e.currentTarget.getBoundingClientRect();
         setCtx({ x: rail ? r.right + 6 : r.left, y: rail ? r.top : r.bottom + 4, title: 'Sort folders',
-          items: FOLDER_SORTS.map((o) => ({ label: o.label, hint: o.hint, checked: o.id === sideSort, onSelect: () => fprefs.setSide(o.id) })) });
+          items: FOLDER_SORTS.map((o) => ({ label: o.label, hint: o.hint, checked: o.id === sideSort, onSelect: () => (o.id === sideSort ? setResort((r) => r + 1) : fprefs.setSide(o.id)) })) });
       }}>
       <SortIcon size={13} />{!rail && sideSort !== 'own' && <span>{sideSortInfo.short}</span>}
     </button>
@@ -2062,11 +2072,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   };
   /** A folder's little picture (its cover), or the folder icon. */
   const folderPic = (f: FolderCard, size: number) => f.cover && f.person
-    ? <RoundCover folder={f} size={size} bump={coverBump} className="side-round" />
+    ? <RoundCover folder={f} size={size} className="side-round" />
     : f.cover && f.coverPos
-    ? <Framed pos={f.coverPos} className="side-cover" style={{ width: size, height: size }}><img src={thumbUrl(f.cover, `c${coverBump}`, size <= 80)} alt="" draggable={false} /></Framed>
+    ? <Framed pos={f.coverPos} className="side-cover" style={{ width: size, height: size }}><CoverImg id={f.cover} small={size <= 80} /></Framed>
     : f.cover
-    ? <img className="side-cover" src={thumbUrl(f.cover, `c${coverBump}`, size <= 80)} alt="" draggable={false} style={{ width: size, height: size }} />
+    ? <CoverImg id={f.cover} small={size <= 80} className="side-cover" style={{ width: size, height: size }} />
     : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
 
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
@@ -2160,10 +2170,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                     title={f.path.map((c) => c.name).concat(f.name).join(' › ')} aria-label={f.name}
                     onClick={(e) => folderClick(e, f, tree, true)} onPointerDown={(e) => startFolderDrag(e, f)} onContextMenu={(e) => folderContext(e, f)} {...middle(f)}>
                     {parent && <span className="rail-shape" aria-hidden="true" />}
-                    {f.cover && f.person ? <RoundCover folder={f} bump={coverBump} className="rail-round" />
+                    {f.cover && f.person ? <RoundCover folder={f} className="rail-round" />
                       // (a framed cover borrows the blank tile's size and selection ring)
-                      : f.cover && f.coverPos ? <Framed pos={f.coverPos} className="rail-blank"><img src={thumbUrl(f.cover, `c${coverBump}`, true)} alt="" draggable={false} /></Framed>
-                      : f.cover ? <img src={thumbUrl(f.cover, `c${coverBump}`, true)} alt="" draggable={false} /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
+                      : f.cover && f.coverPos ? <Framed pos={f.coverPos} className="rail-blank"><CoverImg id={f.cover} small /></Framed>
+                      : f.cover ? <CoverImg id={f.cover} small /> : <span className="rail-blank">{f.emoji ?? <FolderIcon size={14} />}</span>}
                     {f.pinned && <span className="rail-pin" aria-hidden="true"><PinIcon size={9} /></span>}
                   </button>
                 );
@@ -2322,7 +2332,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
               )}
               {view.kind === 'folders' && folders.length > 0 && (
                 <Dropdown title="Sort the folders" label={`${FOLDER_SORTS.find((o) => o.id === cardSort)?.label} ▾`}
-                  items={FOLDER_SORTS.map((o) => ({ label: o.label, checked: o.id === cardSort, onSelect: () => setCardSort(o.id) }))} />
+                  items={FOLDER_SORTS.map((o) => ({ label: o.label, checked: o.id === cardSort, onSelect: () => (o.id === cardSort ? setResort((r) => r + 1) : setCardSort(o.id)) }))} />
               )}
               {view.kind === 'folders' && (
                 <div role="group" aria-label="Show" className="seg">
@@ -2358,7 +2368,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                       ...(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) })),
                       // Inside a folder the same menu sorts its subfolder cards.
                       ...(view.kind === 'folder' && cards.length > 0 ? FOLDER_SORTS.map((o, k) => ({
-                        label: `Folders: ${o.label.charAt(0).toLowerCase()}${o.label.slice(1)}`, sepBefore: k === 0, checked: o.id === cardSort, onSelect: () => setCardSort(o.id),
+                        label: `Folders: ${o.label.charAt(0).toLowerCase()}${o.label.slice(1)}`, sepBefore: k === 0, checked: o.id === cardSort, onSelect: () => (o.id === cardSort ? setResort((r) => r + 1) : setCardSort(o.id)),
                       })) : []),
                     ]} />}
                   <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
@@ -2750,9 +2760,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       <RiverHost nav={nav} />
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (
-        <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />
+        <ConvertDialog items={dialog.items} target={dialog.target} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reloadCalmly(); }} />
       )}
-      {dialog?.t === 'animation' && <AnimationDialog items={dialog.items} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reload(); }} />}
+      {dialog?.t === 'animation' && <AnimationDialog items={dialog.items} onClose={() => setDialog(null)} onDone={() => { kickThumbnails(); reloadCalmly(); }} />}
       {dialog?.t === 'dragOut' && (() => {
         const d = dialog;
         let answered = false;
@@ -3083,6 +3093,64 @@ function ImportSummary({ r, onClose }: { r: ImportReport; onClose: () => void })
 
 /** Where "Choose cover…" looks: this folder, the person's photos anywhere, or the whole library. */
 type CoverSource = 'here' | 'person' | 'all';
+/**
+ * A folder card's picture: a round face for person folders, a playing video/GIF
+ * cover, a stack of three with the cover on top, or the cover alone. While hovered
+ * it cycles through pictures from inside (its own counter: nothing else redraws).
+ */
+function FolderCover({ f, hovered, samples: list, preview, whole, edge }: {
+  f: FolderCard; hovered: boolean; samples: number[] | undefined; preview: 'all' | 'hover' | 'off'; whole: boolean; edge: string;
+}) {
+  const cycle = useHoverCycle(hovered);
+  // Person folders: a round cover centred on the face; hovering opens it
+  // into the card's square, and holding there cycles pictures from inside.
+  if (f.person && f.cover) {
+    const others = list?.filter((x) => x !== f.cover) ?? [];
+    const cycling = hovered && others.length > 0 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
+    const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
+    return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} open={hovered} cycle={cycling} before={before}
+      play={preview === 'all' || (preview === 'hover' && hovered)} /></span>;
+  }
+  const playing = preview === 'all' || (preview === 'hover' && hovered);
+  const animated = f.coverKind === 'video' || f.coverKind === 'gif';
+  if (f.cover && playing && animated) {
+    const still = <CoverImg id={f.cover} />;
+    // "Show the whole video on hover": the hovered card's video/GIF also shows uncropped.
+    if (hovered && whole) return <><WholeCover id={f.cover} kind={f.coverKind === 'gif' ? 'gif' : 'video'} />{still}</>;
+    if (f.coverPos) return <Framed pos={f.coverPos}>{f.coverKind === 'video' ? <>{still}<CoverVideo id={f.cover} /></> : <img src={mediaUrl(f.cover)} alt="" draggable={false} />}</Framed>;
+    if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
+    return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
+  }
+  // Stacked card: two more pictures from inside peek out behind the cover;
+  // hovering fans them out over the neighbouring cards (the mouse passes
+  // through them), the front card grows a little and then cycles through
+  // the folder. Cards in the first or last column fan less towards the edge.
+  const behind = f.cover ? f.samples.filter((x) => x !== f.cover).slice(0, 2) : [];
+  if (behind.length) {
+    const others = list?.filter((x) => !behind.includes(x)) ?? [];
+    const cycling = hovered && others.length > 1 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
+    // The picture before stays underneath while the next one fades in.
+    const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
+    return (
+      <span className={`fstack${edge}`}>
+        {behind.map((x, k) => <CoverImg key={x} id={x} className={`fstack-${k + 1}`} />)}
+        {f.coverPos
+          ? <Framed pos={f.coverPos} className="fstack-top"><CoverImg id={f.cover!} /></Framed>
+          : <CoverImg id={f.cover!} className="fstack-top" />}
+        {before != null && <img key={`b${before}`} className="fstack-top" src={thumbUrl(before)} alt="" draggable={false} />}
+        {cycling != null && <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />}
+      </span>
+    );
+  }
+  if (hovered && list && list.length > 1 && cycle > 0) {
+    const id = list[(cycle - 1) % list.length];
+    return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
+  }
+  if (!f.cover) return <FolderIcon size={40} />;
+  if (f.coverPos) return <Framed pos={f.coverPos}><CoverImg id={f.cover} /></Framed>;
+  return <CoverImg id={f.cover} />;
+}
+
 const COVER_PAGE = 600;
 
 function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked: (id: number | null) => Promise<void> }) {

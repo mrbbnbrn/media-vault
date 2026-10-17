@@ -70,6 +70,7 @@ mod similar;
 mod sketch;
 mod storage;
 mod throttle;
+mod userbusy; // background work waits while you use the window
 // Thumbnail pages: a folder's thumbnails in a few encrypted objects (derived, a cache).
 mod thumbpages;
 // Removing camera info, location and dates from files that leave the vault.
@@ -142,6 +143,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     focus::set(None);
     faceid::unload();
     analyse::stop();
+    userbusy::reset();
     protocol::forget_cache();
     depth::unload();
     subject::unload();
@@ -2531,6 +2533,7 @@ pub fn run() {
             reset_recovery,
             lock_vault,
             report_activity,
+            userbusy::set_user_busy,
             library_folders,
             library_page,
             move_folders,

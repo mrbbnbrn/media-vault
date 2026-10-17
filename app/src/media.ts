@@ -7,6 +7,7 @@ import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
 import { httpRanges, keyframeNear, readKeyframes } from './keyframes';
 import { canvasPicture, THUMB_JPEG_QUALITY, THUMB_WEBP_QUALITY } from './canvaspic';
+import { giveWay } from './bgpace';
 
 /** Something a player can show: from the vault or from a dropped folder. */
 export interface PlayItem extends Entry {
@@ -468,6 +469,9 @@ export function startThumbnailer(): () => void {
       }
       job.batch();
       for (let i = 0; i < tasks.length && !stopped; i += 2) {
+        // While you use the window, thumbnails wait (bgpace.ts).
+        await giveWay(() => stopped);
+        if (stopped) break;
         const two = tasks.slice(i, i + 2);
         await Promise.all(two.map(work));
         two.forEach(() => job.step());

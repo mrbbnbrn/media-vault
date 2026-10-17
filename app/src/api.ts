@@ -3,6 +3,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { noteCall, noteEvent } from './perf';
 import { open, save } from '@tauri-apps/plugin-dialog';
 import type { CoverPos } from './coverframe';
 import type { RiverFace } from './riverplay';
@@ -824,6 +825,8 @@ export function takeLogin(): LoginInfo | null {
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export const api = {
+  /** The user is using the window (or a video plays): the backend's background loops wait between items (bgpace.ts). */
+  setUserBusy: (busy: boolean, video: boolean) => call<void>('set_user_busy', { busy, video }),
   getState: () => call<AppState>('get_state'),
   saveConfig: (config: AppConfig) => call<AppConfig>('save_config', { config }),
   addVault: (path: string) => call<VaultEntry>('add_vault', { path }),
@@ -1392,11 +1395,15 @@ export function onEvent<T>(name: string, cb: (payload: T) => void): Promise<Unli
       set.delete(f);
     });
   }
-  return listen<T>(name, (e) => cb(e.payload));
+  return listen<T>(name, (e) => {
+    noteEvent(name);
+    cb(e.payload);
+  });
 }
 
 /** Browser preview: send an event to the window. */
 function mockEmit(name: string, payload: unknown) {
+  noteEvent(name);
   mockListeners.get(name)?.forEach((f) => f(payload));
 }
 
@@ -1461,11 +1468,14 @@ export async function onLocked(cb: (reason: LockReason) => void): Promise<Unlist
 }
 
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
-  if (!inTauri) return mock.call(cmd, args ?? {}) as Promise<T>;
+  const t0 = performance.now();
   try {
+    if (!inTauri) return (await mock.call(cmd, args ?? {})) as T;
     return await invoke<T>(cmd, args);
   } catch (e) {
-    throw new Error(typeof e === 'string' ? e : String(e));
+    throw e instanceof Error ? e : new Error(typeof e === 'string' ? e : String(e));
+  } finally {
+    noteCall(cmd, performance.now() - t0);
   }
 }
 
@@ -1488,11 +1498,14 @@ export function rawBody(args: Record<string, unknown>, data: Bytes): Uint8Array 
 }
 
 async function callRaw<T>(cmd: string, args: Record<string, unknown>, data: Bytes): Promise<T> {
-  if (!inTauri) return mock.call(cmd, { ...args, data }) as Promise<T>;
+  const t0 = performance.now();
   try {
+    if (!inTauri) return (await mock.call(cmd, { ...args, data })) as T;
     return await invoke<T>(cmd, rawBody(args, data));
   } catch (e) {
-    throw new Error(typeof e === 'string' ? e : String(e));
+    throw e instanceof Error ? e : new Error(typeof e === 'string' ? e : String(e));
+  } finally {
+    noteCall(cmd, performance.now() - t0);
   }
 }
 

@@ -66,3 +66,22 @@ describe('newest / oldest go by the pictures inside', () => {
     expect(sortFolders(list, 'oldest').map((x) => x.id)).toEqual([4, 1, 2, 3]);
   });
 });
+
+describe('steady order', () => {
+  it('keeps the numbers taken when the sort was chosen; new folders use their own', async () => {
+    const { updateSnap, sortSteady, sortTree: tree } = await import('./foldersort');
+    const a = { id: 1, name: 'A', parentId: null, items: 5 };
+    const b = { id: 2, name: 'B', parentId: null, items: 3 };
+    let snap = updateSnap(null, 'items', [a, b], {});
+    // B grows past A in the background: the order stays.
+    const b2 = { ...b, items: 50 };
+    const c = { id: 3, name: 'C', parentId: null, items: 4 };
+    snap = updateSnap(snap, 'items', [a, b2, c], {});
+    const out = sortSteady([a, b2, c], snap, (l, o) => tree(l, 'items', o));
+    expect(out.map((f) => f.id)).toEqual([1, 3, 2]);
+    expect(out[2]).toBe(b2);
+    // Choosing the sort again (a new key) takes the numbers anew.
+    snap = updateSnap(snap, 'items#2', [a, b2, c], {});
+    expect(sortSteady([a, b2, c], snap, (l, o) => tree(l, 'items', o)).map((f) => f.id)).toEqual([2, 1, 3]);
+  });
+});

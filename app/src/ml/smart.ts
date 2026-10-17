@@ -9,6 +9,7 @@ import { api, modelUrl, previewUrl, thumbUrl } from '../api';
 import { loopJob } from '../jobs';
 import { COLS, ROWS } from '../previews';
 import { FILES, SIZE, coverRect, toPixelValues } from './clipcore';
+import { giveWay } from '../bgpace';
 
 let worker: Worker | null = null;
 let seq = 0;
@@ -157,6 +158,7 @@ export function startClipIndexer(): () => void {
       }
       job.batch();
       for (const t of tasks) {
+        await giveWay(() => stopped);
         if (stopped) break;
         try {
           const v = t.kind === 'video' && t.preview ? await embedVideo(t.id) : await embedItem(t.id);

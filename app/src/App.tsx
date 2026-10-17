@@ -7,6 +7,8 @@ import { applyLook, setZoom, zoomKey } from './look';
 import { clearUndo } from './undo';
 import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
+import { beginStep, clearPerf, setPerfJobs, startPerfObservers } from './perf';
+import { jobList } from './jobs';
 import { Start } from './screens/Start';
 import { CreateVault } from './screens/CreateVault';
 import { RecoveryWords } from './screens/RecoveryWords';
@@ -38,6 +40,10 @@ const Library = lazyPart(() => import('./screens/Library').then((m) => m.Library
 const Viewer = lazyPart(() => import('./screens/Viewer').then((m) => m.Viewer), true);
 const Settings = lazyPart(() => import('./screens/Settings').then((m) => m.Settings));
 const MultiScreen = lazyPart(() => import('./screens/MultiScreen').then((m) => m.MultiScreen));
+const PerfPanel = lazyPart(() => import('./components/PerfPanel').then((m) => m.PerfPanel));
+
+startPerfObservers();
+setPerfJobs(() => jobList().filter((j) => !j.endedAt).map((j) => j.label));
 
 export type Screen =
   | { name: 'start'; select?: string }
@@ -98,6 +104,8 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   /** The viewer shrunk into the mini player (it keeps playing over the library). */
   const [mini, setMini] = useState<ViewerRoute | null>(null);
+  /** The timing panel (Ctrl+Shift+T). */
+  const [perfOpen, setPerfOpen] = useState(false);
   /** Whether the open vault has a password (a vault without one is "closed", not "locked"). */
   const hadPassword = useRef(true);
   if (app?.session) hadPassword.current = app.session.hasPassword !== false;
@@ -194,6 +202,15 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onSaveKey);
+    // Ctrl+Shift+T: the timing panel.
+    const onPerfKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyT') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        setPerfOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onPerfKey, true);
     // The Alt key on its own: kept from Windows everywhere, which would otherwise put the window into
     // "menu mode" (the mouse seems stuck until Alt is pressed again). Alt+F4, Alt+Tab, Alt+← still work:
     // only the Alt key itself is held back. Hold-Alt-to-enlarge in grids listens for it on its own.
@@ -214,6 +231,7 @@ export function App() {
       tabsRef.current.reset();
       viewerTab.current = null;
       clearViewMemory();
+      clearPerf();
       setToast(reason === 'manual' && !hadPassword.current ? 'Vault closed.' : LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });
@@ -221,6 +239,7 @@ export function App() {
       stopTracking();
       offSave.then((u) => u());
       window.removeEventListener('keydown', onSaveKey);
+      window.removeEventListener('keydown', onPerfKey, true);
       window.removeEventListener('keydown', onAltKey);
       window.removeEventListener('keyup', onAltKey);
       unlisten.then((u) => u());
@@ -275,7 +294,10 @@ export function App() {
     if (s.name !== 'library' && s.name !== 'settings') setMini(null);
     if (s.name === 'viewer' || s.name === 'multi') viewerTab.current = tabs.activeId;
     // The library stays mounted (frozen) under a viewer opened from it: same scroll, same everything.
-    if (s.name === 'viewer') s = { ...s, overLibrary: screen.name === 'library' };
+    if (s.name === 'viewer') {
+      s = { ...s, overLibrary: screen.name === 'library' };
+      beginStep('Open picture', s.title);
+    }
     setScreen(s);
   };
   const libraryShown = !!app.session && tabs.ready
@@ -378,6 +400,7 @@ export function App() {
       {screen.name === 'player' && (
         <MultiScreen nav={nav} vault={false} onBack={() => setScreen(app.session ? { name: 'library' } : { name: 'start' })} />
       )}
+      {perfOpen && <PerfPanel onClose={() => setPerfOpen(false)} />}
       {toast && (
         <div className="toast" role="status">
           {toast}

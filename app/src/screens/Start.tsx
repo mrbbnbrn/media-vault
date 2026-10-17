@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api, pickFolder, type VaultEntry } from '../api';
 import type { Nav } from '../App';
+import { beginStep, dropStep } from '../perf';
 import { Busy, ErrorBox, OfflineFooter, TopBar } from '../components/Chrome';
 import { PlayIcon } from '../components/Icons';
 import { FolderIcon, LockIcon, PlusIcon } from '../components/Icons';
@@ -26,12 +27,14 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
     if (!vault || !password) return;
     setBusy(true);
     setError(null);
+    beginStep('Unlock', 'until the first page of the library shows');
     try {
       await api.unlock(vault.path, password);
       setPassword('');
       await nav.refresh();
       nav.go({ name: 'library' });
     } catch (err) {
+      dropStep('Unlock');
       setError((err as Error).message);
     } finally {
       setBusy(false);
@@ -43,11 +46,13 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
     setSelected(v.path);
     setBusy(true);
     setError(null);
+    beginStep('Unlock', 'until the first page of the library shows');
     try {
       await api.openVault(v.path);
       await nav.refresh();
       nav.go({ name: 'library' });
     } catch (err) {
+      dropStep('Unlock');
       setError((err as Error).message);
     } finally {
       setBusy(false);

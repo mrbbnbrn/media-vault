@@ -45,6 +45,8 @@ import { startIdlePrepare } from '../prepare';
 import { inpaintChoice, inpaintPack, noFillText } from '../inpaint';
 import { subjectPng } from '../plate';
 import { lazyPart } from '../lazypart';
+import { beginStep, endStep, stepRunning } from '../perf';
+import { setVideoPlaying } from '../bgpace';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
 const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.UpscaleCompare));
@@ -683,6 +685,13 @@ export function Player(props: PlayerProps) {
     reportPlaying(props.activityId, isPlaying);
     return () => reportPlaying(props.activityId, false);
   }, [isPlaying, props.activityId]);
+  // A video playing: background work goes slower meanwhile (bgpace.ts).
+  const videoOn = !!item && !halted && item.kind === 'video';
+  useEffect(() => {
+    if (!videoOn) return;
+    setVideoPlaying(true);
+    return () => setVideoPlaying(false);
+  }, [videoOn]);
 
   // ---- continue watching: long videos opened by hand remember where you were ----
   const lastPos = useRef<{ id: number; at: number; dur: number; saved: number | null | undefined } | null>(null);
@@ -769,8 +778,19 @@ export function Player(props: PlayerProps) {
 
   // The video element is memoised; its handlers always reach this render's state.
   const onVideoShown = () => item && setShownKey(item.key);
+  // Timing panel (perf.ts): opening the viewer, and each next item, until it shows.
+  const shownStep = () => {
+    endStep('Open picture');
+    endStep('Next item');
+  };
+  useEffect(() => {
+    if (!cur?.key) return;
+    // Text and PDFs draw themselves: not timed.
+    if (cur.kind === 'text' || cur.kind === 'pdf') return shownStep();
+    if (!stepRunning('Open picture')) beginStep('Next item', cur.kind);
+  }, [cur?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const vh = useRef({ meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: onVideoShown });
-  vh.current = { meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: onVideoShown };
+  vh.current = { meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: () => { shownStep(); onVideoShown(); } };
 
   // ---- where the picture is drawn (face boxes, the grow / shrink animation) ------------------
 
@@ -1555,7 +1575,7 @@ export function Player(props: PlayerProps) {
               <ImageStage key={item.key + tick} ref={imgRef} src={item.src} kind={isGif ? 'gif' : 'image'} name={item.name} fit={s.fit} zoom={zoom} rot={rot}
                 size={item.width && item.height ? { w: item.width, h: item.height } : null}
                 prefs={prefs} paused={halted} className={anim}
-                onInfo={(i) => { setImgInfo(i); setShownKey(item.key); }} onFrame={(i, n) => setGifFrame({ index: i, count: n })}
+                onInfo={(i) => { shownStep(); setImgInfo(i); setShownKey(item.key); }} onFrame={(i, n) => setGifFrame({ index: i, count: n })}
                 onFrameImage={depth3d && animated ? (img, i) => gifFeed.emit(img as unknown as TexImageSource, i) : undefined} onError={() => setFailed(true)} />
             ) : (
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>

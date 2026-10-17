@@ -5,6 +5,7 @@
 
 import { api, thumbUrl } from './api';
 import { loopJob } from './jobs';
+import { giveWay } from './bgpace';
 
 // cos((2x + 1) · u · π / 64) for the 8 lowest frequencies over 32 pixels.
 const COS: Float64Array[] = Array.from({ length: 8 }, (_, u) =>
@@ -165,6 +166,7 @@ export function startFingerprinter(): () => void {
       }
       job.batch();
       for (const t of tasks) {
+        await giveWay(() => stopped);
         if (stopped) break;
         try {
           const f = await fingerprintOf(t.id);

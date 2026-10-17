@@ -185,3 +185,22 @@ select.input { min-height: 42px; font-size: 14px; width: auto; }
 :root[data-style="oled"] { --ground: #000000; --panel: #050506; --card: #0b0c0e; --raised: #121316; --line: #17191c; --line-2: #22252a; }
 :root[data-style="graphite"] { --ground: #17181a; --panel: #1c1d20; --card: #222327; --raised: #28292e; --line: #2c2e33; --line-2: #383a40; }
 :root[data-style="midnight"] { --ground: #0b0f17; --panel: #0f1420; --card: #141a28; --raised: #1a2131; --line: #1e2638; --line-2: #2a3447; }
+
+/* ---- the timing panel (Ctrl+Shift+T, components/PerfPanel.tsx) ---- */
+.perf-panel { position: fixed; right: 14px; bottom: 14px; width: min(560px, calc(100vw - 28px)); max-height: min(70vh, 620px); display: flex; flex-direction: column;
+  background: var(--raised); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.6); z-index: 60; font-size: 12.5px; }
+.perf-head { display: flex; align-items: center; gap: 10px; padding: 10px 12px 6px; }
+.perf-head .faint { font-size: 11.5px; }
+.perf-tabs { display: flex; gap: 4px; padding: 0 10px 8px; border-bottom: 1px solid var(--line); }
+.perf-tabs button { background: none; border: 1px solid transparent; border-radius: 7px; padding: 4px 10px; cursor: pointer; color: var(--muted); }
+.perf-tabs button.on { background: var(--accent-soft); border-color: var(--accent-border); color: var(--accent-text); }
+.perf-body { overflow: auto; padding: 6px 12px 12px; user-select: text; }
+.perf-row { display: flex; gap: 10px; align-items: baseline; padding: 4px 0; border-bottom: 1px solid var(--line); }
+.perf-ms { flex: 0 0 74px; text-align: right; font-family: var(--mono); font-size: 12px; }
+.perf-ms.ok { color: var(--accent-text); }
+.perf-ms.meh { color: var(--warn); }
+.perf-ms.bad { color: var(--danger); }
+.perf-what { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.perf-jobs { display: block; color: var(--faint); font-size: 11.5px; }
+.perf-at { font-size: 11px; white-space: nowrap; }
+.perf-sub { margin: 10px 0 2px; color: var(--muted); font-weight: 500; }
