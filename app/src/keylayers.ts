@@ -130,6 +130,14 @@ type Marked = KeyboardEvent & { [OWNED]?: number };
 function capture(e: KeyboardEvent) {
   const top = topLayer();
   if (!top) return;
+  if (e.type === 'keyup') {
+    // Key releases only go where the press could go (nobody behind a dialog or menu).
+    if (!top.modal) return;
+    const el = top.el?.();
+    if (el && e.target instanceof Node && el.contains(e.target)) (e as Marked)[OWNED] = top.id;
+    else if (!globalKey(e)) e.stopImmediatePropagation();
+    return;
+  }
   // The layer itself first (also non-modal ones that asked for it).
   if (top.onKey) {
     if (top.onKey(e)) {

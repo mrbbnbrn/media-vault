@@ -64,6 +64,7 @@ import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onItemsChanged, onThumb } from '../media';
 import { beginStep, dropStep, endStep, whenImagesShown } from '../perf';
 import { calmly, reuseSame, shallowSame, useStableList } from '../calm';
+import { useEvent } from '../useevent';
 import { sorted, type Order } from '../playlist';
 import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
@@ -575,13 +576,16 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
    * and what is on screen keeps its order (calm.ts). Views worked out by models
    * (smart search, similar) aren't recomputed then.
    */
-  const reload = useCallback(async (opts?: { bg?: boolean }) => {
+  const reload = useCallback(async (opts?: { bg?: boolean; quiet?: boolean }) => {
     const bg = !!opts?.bg;
+    // `quiet`: after something you did (it already shows): no "loading…", and unchanged
+    // things keep their objects so only what changed draws again (the order is fresh, though).
+    const keep = bg || !!opts?.quiet;
     bgList.current = bg;
-    const setFolders = (f: FolderCard[]) => setFoldersRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
-    const setSubfolders = (f: FolderCard[]) => setSubfoldersRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
-    const setItems = (f: Item[]) => setItemsRaw((prev) => (bg ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
-    if (!bg) setLoading(true);
+    const setFolders = (f: FolderCard[]) => setFoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setSubfolders = (f: FolderCard[]) => setSubfoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setItems = (f: Item[]) => setItemsRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    if (!keep) setLoading(true);
     else if (view.kind === 'smart' || view.kind === 'similar' || view.kind === 'lookalikes') {
       // Only the folders and tags (the sidebar) then.
       const page = await api.libraryPage(null, false).catch(() => null);
@@ -641,7 +645,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     } catch (e) {
       setError(errText(e));
     } finally {
-      if (!bg) setLoading(false);
+      if (!keep) setLoading(false);
       // Background work may start now (firstgrid.ts).
       gridShown();
     }
@@ -716,7 +720,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       const label = await undoLast();
       if (label) {
         setNote({ text: `Undone: ${label}`, at: 0 });
-        await reload();
+        await reload({ quiet: true });
         nav.refresh().catch(() => {});
       }
     } catch (e) {
@@ -810,9 +814,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const act = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
-      await reload();
+      await reload({ quiet: true });
     } catch (e) {
       setError(errText(e));
+      // Anything shown ahead of time goes back to how it really is.
+      void reload({ quiet: true });
     }
   };
   /** A folder got a new cover: then the cover editor opens, to choose what part shows. */
@@ -821,19 +827,47 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setDialog({ t: 'coverFrame', folder: folderId });
   });
 
+  /**
+   * Show a change at once (before the backend has it): `patch` gives the item's new
+   * look, or null when it leaves this view. The quiet reload afterwards puts right
+   * anything that came out differently.
+   */
+  const patchItems = (ids: number[], patch: (i: Item) => Item | null) => {
+    const set = new Set(ids);
+    setItemsRaw((prev) => {
+      let changed = false;
+      const out: Item[] = [];
+      for (const i of prev) {
+        if (!set.has(i.id)) {
+          out.push(i);
+          continue;
+        }
+        changed = true;
+        const n = patch(i);
+        if (n) out.push(n);
+      }
+      return changed ? out : prev;
+    });
+  };
   const moveItems = async (ids: number[], target: number | null) => {
     const before = groupBy(ids, (id) => itemById(id)?.folderId ?? null);
-    await api.moveItems(ids, target);
+    // They leave the folder on screen right away.
+    if (view.kind === 'folder' && view.id !== target) patchItems(ids, () => null);
+    await api.moveItems(ids, target).catch((e) => {
+      void reload({ quiet: true });
+      throw e;
+    });
     bumpMoveStat(target);
     const name = target === null ? 'Top level' : folders.find((f) => f.id === target)?.name ?? 'folder';
     did(`Moved ${plural(ids.length, 'item')} to “${name}”`, async () => {
       for (const [f, g] of before) await api.moveItems(g, f);
     });
     setSelected(new Set());
-    await reload();
+    await reload({ quiet: true });
   };
   const setFav = (ids: number[], on: boolean) => act(async () => {
     const before = groupBy(ids, (id) => !!itemById(id)?.favourite);
+    patchItems(ids, (i) => ({ ...i, favourite: on }));
     await api.setFavourite(ids, on);
     did(on ? `Added ${plural(ids.length, 'item')} to favourites` : `Removed ${plural(ids.length, 'item')} from favourites`, async () => {
       for (const [f, g] of before) await api.setFavourite(g, f);
@@ -841,11 +875,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   });
   const setWeight = async (ids: number[], w: number) => {
     const before = groupBy(ids, (id) => itemById(id)?.weight ?? 1);
+    patchItems(ids, (i) => ({ ...i, weight: w }));
     await api.setWeight(ids, w);
     did(`Weight ${w} for ${plural(ids.length, 'item')}`, async () => {
       for (const [old, g] of before) await api.setWeight(g, old);
     });
-    await reload();
+    await reload({ quiet: true });
   };
   /** Originals about to be deleted that have free copies (not being deleted too). */
   const originalsWithCopies = async (ids: number[]): Promise<[Item, Item[]][]> => {
@@ -876,19 +911,19 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const trashFolder = async (f: FolderCard) => {
     await api.deleteFolder(f.id);
     did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
-    if (!leaveDeleted([f])) await reload();
+    if (!leaveDeleted([f])) await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
   const moveFolder = async (f: FolderCard, parent: number | null) => {
     await api.moveFolder(f.id, parent);
     did(`Moved “${f.name}”`, () => api.moveFolder(f.id, f.parentId));
-    await reload();
+    await reload({ quiet: true });
   };
   const tagFolder = async (f: FolderCard, list: string[]) => {
     const fresh = list.map((t) => t.trim().replace(/^#/, '')).filter((t) => t && !f.tags.some((x) => x.toLowerCase() === t.toLowerCase()));
     await api.tagFolder(f.id, list);
     if (fresh.length) did(`Tagged “${f.name}”`, async () => { for (const t of fresh) await api.untagFolder(f.id, t); });
-    await reload();
+    await reload({ quiet: true });
   };
   const untagFolder = (f: FolderCard, t: string) => act(async () => {
     await api.untagFolder(f.id, t);
@@ -901,7 +936,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const setLook = async (f: FolderCard, color: string | null, emoji: string | null) => {
     await api.setFolderLook(f.id, color, emoji);
     did(`Changed the look of “${f.name}”`, () => api.setFolderLook(f.id, f.color, f.emoji));
-    await reload();
+    await reload({ quiet: true });
   };
   const restoreItems = (ids: number[]) => act(async () => {
     const homeless = await api.restoreItems(ids);
@@ -1345,7 +1380,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     });
     setSelFolders(new Set());
     setSelected(new Set());
-    await reload();
+    await reload({ quiet: true });
   };
 
   /** F2: rename what is selected (folders in tree order, then items as shown). */
@@ -1366,7 +1401,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     await api.renameMany(pick('folder', true), pick('item', true));
     did(changes.length === 1 ? `Renamed “${changes[0].entry.name}” to “${changes[0].name}”` : `Renamed ${plural(changes.length, 'thing')}`,
       () => api.renameMany(pick('folder', false), pick('item', false)));
-    await reload();
+    await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
 
@@ -1458,7 +1493,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           const id = await savePastedPicture(to, p.picture);
           did('Pasted a picture', () => api.deleteItems([id]));
           kickThumbnails();
-          await reload();
+          await reload({ quiet: true });
         }
         return;
       }
@@ -1486,7 +1521,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       await api.deleteFolders(r.folders);
     });
     kickThumbnails();
-    await reload();
+    await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
   const freeCopyTo = async (ids: number[], target: number | null) => {
@@ -1497,7 +1532,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       await api.deleteItems(made);
       await api.deleteForever(made);
     });
-    await reload();
+    await reload({ quiet: true });
   };
   /** "Separate pictures without faces": into a new folder inside `parent` or a chosen one; moved or free-copied; one undo. */
   const separate = async (parent: number, items: Item[], target: SeparateTarget, copy: boolean) => {
@@ -1528,7 +1563,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         await dropMade();
       });
     }
-    await reload();
+    await reload({ quiet: true });
   };
   /** Your most-used destination folders (the "Move to" submenu). */
   const topFolders = (n: number, except: number[] = []) => {
@@ -1552,14 +1587,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const finishMerge = async (m: Merged, target: FolderCard, sources: FolderCard[]) => {
     did(`Merged ${plural(sources.length, 'folder')} into “${target.name}”`, () => api.unmergeFolders(m));
     if (view.kind === 'folder' && sources.some((f) => f.id === view.id || folder?.path.some((c) => c.id === f.id))) setView({ kind: 'folder', id: target.id });
-    else await reload();
+    else await reload({ quiet: true });
     setSelFolders(new Set());
     nav.refresh().catch(() => {});
   };
   const saveNote = async (isFolder: boolean, id: number, name: string, note: string | null) => {
     const old = await api.setNote(isFolder, id, note);
     did(note ? `Saved the note on “${name}”` : `Removed the note on “${name}”`, () => api.setNote(isFolder, id, old));
-    await reload();
+    await reload({ quiet: true });
   };
   const showCopies = async (it: Item) => {
     const list = await api.itemCopies(it.id);
@@ -1621,8 +1656,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
   };
   const deleteMany = async (fs: FolderCard[], items: number[], links: CopyLinks[] = []) => {
-    await api.deleteFolders(fs.map((f) => f.id));
-    if (items.length) await api.deleteItems(items);
+    // Gone from the screen right away (to the trash).
+    if (items.length && view.kind !== 'trash') patchItems(items, () => null);
+    try {
+      await api.deleteFolders(fs.map((f) => f.id));
+      if (items.length) await api.deleteItems(items);
+    } catch (e) {
+      void reload({ quiet: true });
+      throw e;
+    }
     const what = [fs.length ? plural(fs.length, 'folder') : '', items.length ? plural(items.length, 'item') : ''].filter(Boolean).join(' and ');
     did(`Moved ${what} to the trash`, async () => {
       await api.restoreFolders(fs.map((f) => f.id));
@@ -1631,7 +1673,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     });
     setSelFolders(new Set());
     setSelected(new Set());
-    if (!leaveDeleted(fs)) await reload();
+    if (!leaveDeleted(fs)) await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
   const moveFolders = async (fs: FolderCard[], parent: number | null) => {
@@ -1648,7 +1690,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         });
       }
       setSelFolders(new Set());
-      await reload();
+      await reload({ quiet: true });
     }
   };
   /** "Extract here": everything inside goes up one level; then ask about the empty folder. */
@@ -1656,7 +1698,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     try {
       const x = await api.extractFolder(f.id);
       setDialog({ t: 'extracted', folder: f, x });
-      await reload();
+      await reload({ quiet: true });
     } catch (err) {
       setError(errText(err));
     }
@@ -1669,7 +1711,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       await api.unextractFolder(f.id, x);
     });
     if (remove && view.kind === 'folder' && view.id === f.id) setView(x.parent == null ? { kind: 'folders' } : { kind: 'folder', id: x.parent });
-    else await reload();
+    else await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
 
@@ -1745,7 +1787,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       await api.moveFolders(moving.map((g) => [g.id, g.parentId]));
       if (unseed) await unseed();
     });
-    await reload();
+    await reload({ quiet: true });
     nav.refresh().catch(() => {});
   };
   /** Drop on a pinned folder's edge: arrange the pinned list (pinning what wasn't pinned yet). */
@@ -1763,7 +1805,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       fprefs.setPins(wasPins);
       if (unseed) await unseed();
     });
-    if (newlyPinned.length) await reload();
+    if (newlyPinned.length) await reload({ quiet: true });
   };
 
   // ---- one set of actions ------------------------------------------------------------------
@@ -2109,6 +2151,25 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ? <CoverImg id={f.cover} small={size <= 80} className="side-cover" style={{ width: size, height: size }} />
     : (!f.emoji ? <FolderIcon size={Math.round(size * 0.9)} /> : null);
 
+  // The grid's handlers never change (useEvent), so the grid (memoised) draws again
+  // only when what it shows changes, not on every redraw of the library around it.
+  const gridQuickLook = useEvent((it: Item) => setQuick(it.id));
+  const gridSelect = useEvent((sel: Set<number>, a: number | null, additive: boolean) => {
+    setSelected(sel);
+    setAnchor(a);
+    if (a != null) setCursor(a);
+    if (!additive) setSelFolders(new Set());
+  });
+  const gridOpen = useEvent((it: Item) => playItems(false, it.id));
+  const gridContext = useEvent((e: React.MouseEvent, it: Item) => itemContext(e, it));
+  const gridDragStart = useEvent((e: React.PointerEvent, ids: number[]) => dragOut(e, ids, []));
+  const gridDrop = useEvent((ids: number[], target: string) => act(() => moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7)))));
+  const folderNames = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders]);
+  const personName = useCallback((id: number) => folderNames.get(id), [folderNames]);
+  const dimmed = useMemo(() => (clipboard?.mode === 'cut' ? new Set(clipboard.ids) : undefined), [clipboard]);
+  const minimapSort = timeline || smart || inTrash || view.kind === 'similar' ? null : sort;
+  const gridMinimapLabel = useMemo(() => minimapLabel(minimapSort), [minimapSort]);
+
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
     : view.kind === 'timeline' && view.person != null ? `${folders.find((f) => f.id === view.person)?.name ?? 'Person'} · timeline`
     : viewTitle(view, folder);
@@ -2433,7 +2494,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           )}
 
           {view.kind === 'people' && (
-            <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
+            <PeopleView folders={folders} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
               onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
           )}
           {smart && <SmartProgressNote />}
@@ -2527,16 +2588,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           ) : gridView && (
             shown.length ? (
               <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
-              <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={(it) => setQuick(it.id)}
+              <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={gridQuickLook}
                 keyboard={quick == null && !dialog && !ctx && !asleep} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
-                onSelect={(sel, a, additive) => {
-                  setSelected(sel);
-                  setAnchor(a);
-                  if (a != null) setCursor(a);
-                  if (!additive) setSelFolders(new Set());
-                }}
-                onOpen={(it) => playItems(false, it.id)}
-                onContext={itemContext}
+                onSelect={gridSelect}
+                onOpen={gridOpen}
+                onContext={gridContext}
                 preview={inTrash ? 'off' : scrollMode ? 'all' : preview}
                 wholeOnHover={!!cfg.wholeOnHover && !scrollMode}
                 previewQuality={cfg.previewQuality ?? 'auto'}
@@ -2544,12 +2600,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 groups={groups}
                 hoverInfo={look.hoverInfo && !scrollMode}
                 faces={gridFaces} faceBoxes={faceBoxesOn} faceCrop={look.faceCrop}
-                personName={(id) => folders.find((f) => f.id === id)?.name}
-                dimmed={clipboard?.mode === 'cut' ? new Set(clipboard.ids) : undefined}
-                onDragStart={inTrash ? undefined : (e, ids) => dragOut(e, ids, [])}
+                personName={personName}
+                dimmed={dimmed}
+                onDragStart={inTrash ? undefined : gridDragStart}
                 gap={look.tileGap}
-                minimap={look.minimap !== false} minimapLabel={minimapLabel(timeline || smart || inTrash || view.kind === 'similar' ? null : sort)}
-                onDropOnFolder={inTrash ? undefined : (ids, target) => act(() => moveItems(ids, target === 'folder:top' ? null : Number(target.slice(7))))} />
+                minimap={look.minimap !== false} minimapLabel={gridMinimapLabel}
+                onDropOnFolder={inTrash ? undefined : gridDrop} />
               </div>
             ) : !loading && !(inTrash && trash?.folders.length) && (
               <div className="dropzone">
@@ -2605,7 +2661,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       {pick && !dialog && (
         <TodaysPickCard item={pick} onClose={dismissPick} onOpen={() => { dismissPick(); openInFolder(pick); }} />
       )}
-      <FaceSortOffer did={did} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} />
+      <FaceSortOffer did={did} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} />
       </div>
 
       {quick != null && (
@@ -2617,7 +2673,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
 
       {dialog?.t === 'newFolder' && (
         <PromptDialog title="New folder" label="Name" confirm="Create" onClose={() => setDialog(null)}
-          onSubmit={async (name) => { await api.createFolder(dialog.parent, name); await reload(); }} />
+          onSubmit={async (name) => { await api.createFolder(dialog.parent, name); await reload({ quiet: true }); }} />
       )}
       {dialog?.t === 'folderTag' && (
         <PromptDialog title={`Tag “${dialog.folder.name}”`} label="Tags (separate with commas)" confirm="Add"
@@ -2628,7 +2684,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <FolderLookDialog folder={dialog.folder} onClose={() => setDialog(null)} onSave={(c, e) => setLook(dialog.folder, c, e)} />
       )}
       {dialog?.t === 'tagItems' && (
-        <TagItemsDialog ids={dialog.ids} all={tags} onClose={() => setDialog(null)} onDone={reload} did={did} />
+        <TagItemsDialog ids={dialog.ids} all={tags} onClose={() => setDialog(null)} onDone={() => reload({ quiet: true })} did={did} />
       )}
       {dialog?.t === 'weight' && (
         <PromptDialog title={`Weight for ${dialog.ids.length} item${dialog.ids.length > 1 ? 's' : ''}`} label="Weight" type="number"
@@ -2661,7 +2717,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             if (dialog.folder != null) await api.deleteFolderForever(dialog.folder);
             else await api.deleteForever(dialog.ids);
             setSelected(new Set());
-            await reload();
+            await reload({ quiet: true });
           }}>
           {dialog.what} will be removed from the vault and can't be brought back.
         </ConfirmDialog>
@@ -2676,7 +2732,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
       {dialog?.t === 'emptyTrash' && (
         <ConfirmDialog title="Empty the trash?" confirm="Empty trash" danger onClose={() => setDialog(null)}
-          onConfirm={async () => { await api.emptyTrash(); clearUndo(); await reload(); }}>
+          onConfirm={async () => { await api.emptyTrash(); clearUndo(); await reload({ quiet: true }); }}>
           Everything in the trash ({plural(trash?.totalItems ?? 0, 'item')}, {formatBytes(trash?.totalBytes ?? 0)}) is removed for good.
         </ConfirmDialog>
       )}
@@ -2693,7 +2749,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       {dialog?.t === 'cover' && (
         <CoverPicker folder={dialog.folder} onClose={() => setDialog((d) => (d?.t === 'cover' ? null : d))} onPicked={async (id) => {
           await api.setCover(dialog.folder.id, id);
-          await reload();
+          await reload({ quiet: true });
           // A new picture: choose what part of it shows (the picker then closes, the editor stays).
           if (id != null && id !== dialog.folder.cover) setDialog({ t: 'coverFrame', folder: dialog.folder.id });
         }} />
@@ -2707,7 +2763,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             const was = f.coverPos ?? null;
             await api.setCoverFrame(f.id, f.cover, pos);
             did(pos ? `Adjusted the cover of “${f.name}”` : `“${f.name}” cover framed automatically again`, () => api.setCoverFrame(f.id, f.cover, was));
-            await reload();
+            await reload({ quiet: true });
           }} />
         );
       })()}
@@ -2772,21 +2828,21 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </Modal>
       )}
       {dialog?.t === 'tags' && (
-        <TagManager onClose={() => setDialog(null)} did={did} onChanged={() => { reload(); }}
+        <TagManager onClose={() => setDialog(null)} did={did} onChanged={() => { void reload({ quiet: true }); }}
           onSearch={(t) => { setDialog(null); setView({ kind: 'search', tags: [t], names: [], people: [] }); }} />
       )}
       {dialog?.t === 'quickSort' && (
         <QuickSort source={dialog.folder} folders={folders} moveStats={moveStats.current} onMoved={bumpMoveStat} did={did} undo={undo}
-          onClose={(changed) => { setDialog(null); if (changed) { reload(); nav.refresh().catch(() => {}); } }} />
+          onClose={(changed) => { setDialog(null); if (changed) { void reload({ quiet: true }); nav.refresh().catch(() => {}); } }} />
       )}
-      {dialog?.t === 'duel' && <Duel items={dialog.items} onClose={() => { setDialog(null); reload(); }} />}
+      {dialog?.t === 'duel' && <Duel items={dialog.items} onClose={() => { setDialog(null); void reload({ quiet: true }); }} />}
       {dialog?.t === 'slots' && (
         <SlotMachine folder={dialog.folder} onClose={() => setDialog(null)}
           onPlay={(list, title) => { setDialog(null); playList(list, true, undefined, title); }} />
       )}
       {dialog?.t === 'why' && <WhyHere item={dialog.item} query={dialog.query} kind={kind} onClose={() => setDialog(null)} />}
       <MuseumHost nav={nav} view={view} />
-      <FaceToolsHost nav={nav} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} />
+      <FaceToolsHost nav={nav} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} />
       <RiverHost nav={nav} />
       {dialog?.t === 'share' && <ShareDialog ids={dialog.ids} folders={dialog.folders} what={dialog.what} onClose={() => setDialog(null)} />}
       {dialog?.t === 'convert' && (

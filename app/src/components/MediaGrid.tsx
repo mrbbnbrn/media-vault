@@ -35,7 +35,8 @@ function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): bo
   return mode === 'all' || hover === it.id;
 }
 
-export function MediaGrid(props: {
+/** Memoised: it draws again only when one of its props changes (the library keeps them steady). */
+export const MediaGrid = memo(function MediaGrid(props: {
   items: Item[];
   /** Items per row. */
   columns: number;
@@ -465,7 +466,7 @@ export function MediaGrid(props: {
       )}
     </div>
   );
-}
+});
 
 /** Where the picture sits inside a cropped tile: object-position (0–1) and its drawn size. */
 function placement(it: Item, w: number, h: number, mode: 'grid' | 'shape', fs: FaceBox[] | undefined, faceCrop: boolean) {
