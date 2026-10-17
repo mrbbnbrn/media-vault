@@ -16,6 +16,7 @@ import type { LibView } from '../screens/Library';
 import { RoundCover } from './RoundCover';
 import { PoorFacesSection } from './PoorFaces';
 import './people.css';
+import { calmly } from '../calm';
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
@@ -58,7 +59,8 @@ function useReview(req: ReviewRequest) {
     let t: ReturnType<typeof setTimeout> | null = null;
     // While scanning, refresh now and then (not on every item).
     const off = onFaceProgress(() => {
-      if (!t) t = setTimeout(() => { t = null; load(); }, 3000);
+      // …and only once you pause (calm.ts): the page doesn't shift while you use it.
+      if (!t) t = setTimeout(() => { t = null; calmly('people-review', () => void load()); }, 3000);
     });
     return () => {
       off();

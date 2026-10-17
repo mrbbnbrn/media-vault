@@ -12,6 +12,7 @@ import { thumbMade } from '../media';
 import { faceScanPaused, noteFaceProgress, onFaceScanPaused, setFaceScanPaused } from './facescan';
 import { noteClipProgress } from './smart';
 import { noteFingerprintProgress } from '../fingerprint';
+import { userBusy } from '../calm';
 
 const JOB = 'analyse';
 let options = { smart: true, facesPaused: false };
@@ -100,7 +101,8 @@ export function startNativeAnalyser(smart: boolean): () => void {
         if (st.smart !== prev.smart) noteClipProgress();
         if (st.faces !== prev.faces) noteFaceProgress();
       }
-      await sleep(st.busy || st.left > 0 ? 1500 : 6000);
+      // Asking holds the library a moment (it counts): less often while you are using the window.
+      await sleep(userBusy() ? 4000 : st.busy || st.left > 0 ? 1500 : 6000);
     }
     finish();
     running = false;

@@ -72,7 +72,7 @@ import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 import { lazyPart } from '../lazypart';
 import { FaceToolsHost, faceToolOpen, openFaceTool } from '../components/facecrops/launch';
 import { noLayerOpen, setScreenNav } from '../keylayers';
-import { setItemMenuProvider } from '../itemmenu';
+import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -759,6 +759,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       } else if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
         document.getElementById('lib-search')?.focus();
+      } else if (!e.altKey && !e.ctrlKey && !e.metaKey && e.key.startsWith('Arrow') && keyActions.current.cardArrow(e.key, e.shiftKey)) {
+        e.preventDefault();
       } else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
         if (e.key === 'ArrowLeft') keyActions.current.back();
@@ -954,11 +956,43 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
     anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {}, selectionHidden: () => false as boolean,
+    cardArrow: (_k: string, _shift: boolean) => false as boolean,
     clip: (_m: 'cut' | 'copy') => {}, paste: () => {},
   });
   keyActions.current = {
     selected,
     selectionHidden: () => faceWall,
+    // Arrow keys move between folder cards too (like items); down from the last row goes on into the items.
+    cardArrow: (k: string, shift: boolean) => {
+      if (selected.size || selFolders.size !== 1) return false;
+      const [id] = selFolders;
+      const i = cards.findIndex((c) => c.id === id);
+      if (i < 0) return false;
+      const per = Math.max(1, cols - 1);
+      const j = k === 'ArrowLeft' ? i - 1 : k === 'ArrowRight' ? i + 1 : k === 'ArrowUp' ? i - per : i + per;
+      if (j >= cards.length && k === 'ArrowDown' && gridView && shown.length && Math.floor(i / per) === Math.floor((cards.length - 1) / per)) {
+        setSelFolders(new Set());
+        setSelected(new Set([shown[0].id]));
+        setAnchor(shown[0].id);
+        setCursor(shown[0].id);
+        return true;
+      }
+      const n = Math.max(0, Math.min(cards.length - 1, j));
+      const next = cards[n];
+      if (shift && folderAnchor != null) {
+        const a = cards.findIndex((c) => c.id === folderAnchor);
+        if (a >= 0) {
+          const [lo, hi] = a < n ? [a, n] : [n, a];
+          setSelFolders(new Set(cards.slice(lo, hi + 1).map((c) => c.id)));
+          document.querySelector<HTMLElement>(`[data-card="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
+          return true;
+        }
+      }
+      setSelFolders(new Set([next.id]));
+      setFolderAnchor(next.id);
+      document.querySelector<HTMLElement>(`[data-card="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
+      return true;
+    },
     anySelected: () => selected.size > 0 || selFolders.size > 0,
     rename: () => askRename(),
     clip: (m: 'cut' | 'copy') => clipSelection(m),
@@ -1958,9 +1992,24 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const people = await peopleIn([id]);
     return menuOf(mediaActions([], [id], it, people).filter((a) => !leaveOut.includes(a.id)));
   };
+  // …and its Delete key, the same way as here (asks first about an original with free copies).
+  const trashRef = useRef<(id: number) => Promise<boolean>>(async () => false);
+  trashRef.current = async (id) => {
+    const groups = await originalsWithCopies([id]).catch(() => []);
+    if (groups.length) {
+      setDialog({ t: 'deleteOriginal', groups, ids: [id], folders: [] });
+      return false;
+    }
+    await deleteMany([], [id]);
+    return true;
+  };
   useEffect(() => {
     setItemMenuProvider((id, leaveOut) => itemMenuRef.current(id, leaveOut));
-    return () => setItemMenuProvider(null);
+    setItemTrasher((id) => trashRef.current(id));
+    return () => {
+      setItemMenuProvider(null);
+      setItemTrasher(null);
+    };
   }, []);
   /** The actions as a right-click menu. */
   const menuOf = (acts: Act[]): MenuItem[] => acts.filter((a) => !a.noMenu).map((a) => ({
@@ -2589,7 +2638,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             shown.length ? (
               <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
               <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={gridQuickLook}
-                keyboard={quick == null && !dialog && !ctx && !asleep} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
+                keyboard={quick == null && !dialog && !ctx && !asleep && !(selected.size === 0 && selFolders.size === 1 && cards.some((c) => selFolders.has(c.id)))} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={gridSelect}
                 onOpen={gridOpen}
                 onContext={gridContext}

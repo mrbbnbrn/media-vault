@@ -123,6 +123,8 @@ export const MediaGrid = memo(function MediaGrid(props: {
   const realBudget = useRealBudget();
   /** Tiles playing the real video last time: they keep it (no swapping back and forth while scrolling). */
   const wasReal = useRef<Set<number>>(new Set());
+  /** Tiles playing a preview at the last draw. */
+  const playingNow = useRef<Set<number>>(new Set());
   // ---- end video previews ----
 
   useLayoutEffect(() => {
@@ -424,6 +426,12 @@ export const MediaGrid = memo(function MediaGrid(props: {
     return props.items[i] ? props.minimapLabel?.(props.items[i]) ?? null : null;
   };
 
+  // Previews while scrolling fast: only those already playing go on (lighter while it moves).
+  const scrolling = view.ahead > 900;
+  const playingNext = new Set<number>();
+  useLayoutEffect(() => {
+    playingNow.current = playingNext;
+  });
   return (
     <div ref={ref} className={`mgrid${mode === 'shape' ? ' shape' : ''}`} style={{ height: layout.height, width: showMini ? `calc(100% - ${MINIMAP_RESERVE}px)` : undefined }} role="grid" aria-label="Media"
       {...tileEvents}>
@@ -437,7 +445,9 @@ export const MediaGrid = memo(function MediaGrid(props: {
       {props.items.slice(from, to).map((it, k) => {
         const i = from + k;
         const b = layout.boxes[i];
-        const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
+        // While scrolling fast no new previews start (those playing go on): lighter while it moves.
+        const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i) && (!scrolling || playingNow.current.has(it.id));
+        if (playing) playingNext.add(it.id);
         const ver = readyVersion(it);
         // Its thumbnail's address (a new address is a new QueuedThumb).
         const url = tileThumbUrl(it, b.w, b.h, ver);

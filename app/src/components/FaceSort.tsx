@@ -9,6 +9,7 @@ import { Modal } from './Dialogs';
 import { plural } from '../undo';
 import { CloseIcon, FaceIcon } from './Icons';
 import './people.css';
+import { calmly } from '../calm';
 
 export function FaceSortOffer(props: {
   /** Record an undoable change (Library's toast + Ctrl+Z). */
@@ -118,7 +119,7 @@ export function SortAllDialog(props: { scope?: SortScope | null; did: (label: st
       if (t) return;
       t = setTimeout(() => {
         t = null;
-        load();
+        calmly('face-sort', () => void load());
       }, 1500);
     });
     return () => {

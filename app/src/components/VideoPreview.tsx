@@ -111,7 +111,9 @@ function startMonitor() {
       sum = 0;
       windowStart = now;
     }
-    requestAnimationFrame(loop);
+    // Every frame only while previews play; otherwise a look once a second (no busy loop).
+    if (wanted > 0 && !previewsPaused()) requestAnimationFrame(loop);
+    else setTimeout(() => requestAnimationFrame(loop), 1000);
   };
   requestAnimationFrame(loop);
 }

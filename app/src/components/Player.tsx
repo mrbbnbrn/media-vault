@@ -67,7 +67,7 @@ import { ImageEditor } from './ImageEditor';
 import { useItemTransition } from './ItemTransition';
 import { pickEffect, transitionMs, type Effect } from '../transitions';
 import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
-import { libraryItemMenu } from '../itemmenu';
+import { libraryItemMenu, trashFromViewer } from '../itemmenu';
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
@@ -273,6 +273,23 @@ export function Player(props: PlayerProps) {
   const alignSnap = useRef<() => void>(() => {});
   /** Starts the transition to the next item (set further down, where its settings are known). */
   const txStart = useRef<(dir: 'next' | 'prev', how?: { effect: Effect; fromPx: number }) => void>(() => {});
+  // Delete (vault items): to the trash, the same way as in the library (undoable), and on to the next one.
+  const gone = useRef(new Set<string>());
+  const deleteCurrent = () => {
+    const p = listRef.current;
+    const c = p?.current();
+    if (!p || !c || c.itemId == null) return;
+    trashFromViewer(c.itemId).then((ok) => {
+      if (!ok || listRef.current !== p) return;
+      gone.current.add(c.key);
+      const rest = props.items.filter((x) => !gone.current.has(x.key));
+      if (!rest.length) return props.onClose?.();
+      const nextKey = p.peek(1).find((x) => !gone.current.has(x.key))?.key ?? p.peekBack(1).find((x) => !gone.current.has(x.key))?.key;
+      p.setItems(rest, nextKey);
+      setCur(p.current());
+      setFlash('Moved to the trash · Ctrl+Z in the library undoes it');
+    });
+  };
   const go = useCallback((dir: 'next' | 'prev', auto = false, how?: { effect: Effect; fromPx: number }) => {
     const p = listRef.current;
     if (!p) return;
@@ -1414,6 +1431,9 @@ export function Player(props: PlayerProps) {
           const st = stageSize();
           zoomAt(st.w / 2, st.h / 2, f);
         }
+      } else if (k === 'delete' && inVault && !e.ctrlKey && !e.altKey && !e.shiftKey && !props.compact) {
+        e.preventDefault();
+        deleteCurrent();
       } else if (k === 'escape' && bmOpen) setBmOpen(false);
       else if (k === 'escape' && (rect || zoomed)) {
         setRect(null);
@@ -1699,6 +1719,7 @@ export function Player(props: PlayerProps) {
           ...(inVault && item?.itemId != null ? [
             ...(props.onFavourite ? [{ label: fav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => { setMenu(null); toggleFavourite(); } }] : []),
             ...libMenu.map((m, k) => (k === 0 ? { ...m, sepBefore: false } : m)),
+            ...(!props.compact ? [{ label: 'Delete', hint: 'Delete · to the trash', danger: true, sepBefore: true, onSelect: () => { setMenu(null); deleteCurrent(); } }] : []),
           ] : []),
         ]} />
       )}

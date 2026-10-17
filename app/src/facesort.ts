@@ -5,6 +5,7 @@
 import { useSyncExternalStore } from 'react';
 import { api, onEvent, type ImportReport, type SortOffers } from './api';
 import { kickFaceScanner, onFaceProgress } from './ml/facescan';
+import { calmly } from './calm';
 
 export type Offer = SortOffers['offers'][number];
 
@@ -70,7 +71,7 @@ export function watchImports(): () => void {
     if (!pending.length || t) return;
     t = setTimeout(() => {
       t = null;
-      check();
+      calmly('face-sort-offer', () => void check());
     }, 1500);
   });
   return () => {
