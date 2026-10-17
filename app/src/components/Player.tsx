@@ -29,7 +29,7 @@ import { gifShowMs, SPEEDS, type PlaybackSettings } from '../presets';
 import { beatFilled, clockFrac, gifSegments, newClock, remainingWait, videoFrac, type RingInfo } from '../slidering';
 import { SlideRing } from './SlideRing';
 import { rememberSound, saveViewerPrefs, setFaceBoxes, unmuteVolume, useViewerPrefs } from '../prefs';
-import { ConfirmDialog, ContextMenu, Dropdown } from './Dialogs';
+import { ConfirmDialog, ContextMenu, Dropdown, type MenuItem } from './Dialogs';
 import { FaceLayer } from './FaceBoxes';
 import { visibleFaces } from '../poorfaces';
 import { PdfView, TextView } from './DocViews';
@@ -67,6 +67,7 @@ import { ImageEditor } from './ImageEditor';
 import { useItemTransition } from './ItemTransition';
 import { pickEffect, transitionMs, type Effect } from '../transitions';
 import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
+import { libraryItemMenu } from '../itemmenu';
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
@@ -1455,6 +1456,24 @@ export function Player(props: PlayerProps) {
   }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
+  const toggleFavourite = () => {
+    if (!item || !props.onFavourite) return;
+    setOverrides((o) => ({ ...o, [item.key]: { ...o[item.key], favourite: !fav } }));
+    props.onFavourite(item, !fav);
+  };
+  // The library's actions for the right-click menu (itemmenu.ts), asked for when it opens.
+  const [libMenu, setLibMenu] = useState<MenuItem[]>([]);
+  useEffect(() => {
+    setLibMenu([]);
+    if (!menu || item?.itemId == null) return;
+    let live = true;
+    // Left out: what the viewer does itself (open, slideshow, favourite, weight) and what would leave it.
+    libraryItemMenu(item.itemId, ['open', 'play', 'showFolder', 'fav', 'weight', 'delete', 'similar', 'why', 'museum', 'speed', 'duel'])
+      .then((m) => live && setLibMenu(m));
+    return () => {
+      live = false;
+    };
+  }, [menu, item?.itemId]); // eslint-disable-line react-hooks/exhaustive-deps
   const way = item ? saveWay(item.kind, item.name) : null;
   const saveTip = way?.way === 'no' ? way.why : way?.way === 'jpeg' ? 'Keep it turned this way, without touching the picture itself (Ctrl+Z undoes it)'
     : way?.way === 'video' ? 'Keep it turned this way, without re-encoding the video (Ctrl+Z undoes it)' : 'Keep it turned this way (Ctrl+Z undoes it)';
@@ -1576,7 +1595,7 @@ export function Player(props: PlayerProps) {
             panMoved.current = false;
             return;
           }
-          if (canTurn && !props.compact) setMenu({ x: e.clientX, y: e.clientY });
+          if ((canTurn || inVault) && !props.compact) setMenu({ x: e.clientX, y: e.clientY });
         }}>
         {tx.below}
         {isDoc ? media : (
@@ -1675,6 +1694,11 @@ export function Player(props: PlayerProps) {
             { label: 'Show poor faces too', hint: 'small, blurry, turned', checked: poorFaces, onSelect: () => { setMenu(null); togglePoorFaces(); } },
             { label: 'Reset faces and scan again…', hint: 'mark them again', onSelect: () => { setMenu(null); setResetAsk(true); } },
             { label: 'Always show face boxes', checked: prefs.faceBoxes, sepBefore: true, onSelect: () => { setMenu(null); setFaceBoxes(!prefs.faceBoxes); } },
+          ] : []),
+          // The same actions as the library's right-click menu (tags, move, rename, share…).
+          ...(inVault && item?.itemId != null ? [
+            ...(props.onFavourite ? [{ label: fav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => { setMenu(null); toggleFavourite(); } }] : []),
+            ...libMenu.map((m, k) => (k === 0 ? { ...m, sepBefore: false } : m)),
           ] : []),
         ]} />
       )}

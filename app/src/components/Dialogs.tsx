@@ -1,6 +1,7 @@
 // Small modal dialogs and a dropdown menu, kept plain and keyboard-friendly.
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import type { FolderCard } from '../api';
 import { FolderIcon } from './Icons';
 import { useLayer } from '../keylayers';
@@ -55,13 +56,16 @@ export function Modal(props: {
     const r = ref.current;
     (r?.querySelector<HTMLElement>('[data-autofocus]') ?? r?.querySelector<HTMLElement>('input, select, button.btn-primary') ?? r)?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  return (
+  // On the page itself (a portal): a dialog opened from the library still works while the
+  // viewer covers the library (which is inert then), e.g. from the viewer's right-click menu.
+  return createPortal(
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
       <div className={`modal${props.wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={props.title} ref={ref} tabIndex={-1}>
         <h2>{props.title}</h2>
         {props.children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
@@ -228,8 +232,14 @@ export interface MenuItem {
 }
 
 /** A dropdown anchored to its button; closes on outside click or Esc. */
-export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className?: string; up?: boolean; title?: string; ariaLabel?: string }) {
+export function Dropdown(props: {
+  label: ReactNode;
+  /** The items, or a function giving them (worked out only when the menu opens). */
+  items: MenuItem[] | (() => MenuItem[]);
+  className?: string; up?: boolean; title?: string; ariaLabel?: string;
+}) {
   const [open, setOpen] = useState(false);
+  const items = open ? (typeof props.items === 'function' ? props.items() : props.items) : [];
   const [right, setRight] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // Menus near the right edge open towards the left instead of running off screen.
@@ -257,7 +267,7 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
       </button>
       {open && (
         <div className={`menu${props.up ? ' up' : ''}${right ? ' right' : ''}`} role="menu">
-          {props.items.map((it) => [
+          {items.map((it) => [
             it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
             <button key={it.label} type="button" role={it.checked === undefined ? 'menuitem' : 'menuitemradio'}
               aria-checked={it.checked} disabled={it.disabled}
@@ -351,7 +361,7 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
   });
   // Nothing on the screen behind changes while the menu is open (calm.ts).
   useHoldCalm(true);
-  return (
+  return createPortal(
     <div ref={ref} className="menu context" role="menu" aria-label={props.title} style={{ left: pos.left, top: pos.top, maxHeight: 'calc(100vh - 16px)' }}
       onContextMenu={(e) => e.preventDefault()}>
       {props.title && <div className="menu-title ellipsis">{props.title}</div>}
@@ -390,6 +400,7 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
           ))}
         </div>
       )}
-    </div>
+    </div>,
+    document.body,
   );
 }

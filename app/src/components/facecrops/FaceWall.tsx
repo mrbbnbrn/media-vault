@@ -11,7 +11,7 @@ import { FaceTile } from './FaceTile';
 import { MinFaceSlider, PicturesOnly } from './MinFace';
 import './facecrops.css';
 
-export function FaceWall(props: { person: number; name: string; onOpen: (mediaId: number) => void; tick?: number }) {
+export function FaceWall(props: { person: number; name: string; onOpen: (mediaId: number) => void; onContext?: (e: React.MouseEvent, mediaId: number) => void; tick?: number }) {
   const prefs = useViewerPrefs();
   const [all, setAll] = useState<PersonFace[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +43,7 @@ export function FaceWall(props: { person: number; name: string; onOpen: (mediaId
             <h3>{g.label} <span className="faint">· {g.faces.length}</span></h3>
             <div className="fc-month-faces">
               {g.faces.map((f) => (
-                <FaceTile key={f.id} face={f} size={96} round title={`${date(f.date)} · ${Math.round(f.facePx)} px face — click to open the photo`} onOpen={() => props.onOpen(f.mediaId)} />
+                <FaceTile key={f.id} face={f} size={96} round title={`${date(f.date)} · ${Math.round(f.facePx)} px face — click to open the photo`} onOpen={() => props.onOpen(f.mediaId)} onContext={props.onContext ? (e) => props.onContext!(e, f.mediaId) : undefined} />
               ))}
             </div>
           </section>
