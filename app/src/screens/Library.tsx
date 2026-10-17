@@ -16,7 +16,7 @@ import { ActionBar, type BarAction } from '../components/ActionBar';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
 import {
-  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LockIcon, MoveIcon, PinIcon,
+  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LeaveIcon, LockIcon, MoveIcon, PinIcon,
   ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
 } from '../components/Icons';
 import { FaceSortOffer } from '../components/FaceSort';
@@ -1879,7 +1879,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       onClick={() => setView({ kind: 'stats' })}><ChartIcon /></button> },
     help: { label: 'Shortcuts', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={showHelp}><HelpIcon /></button> },
     settings: { label: 'Settings', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Settings" onClick={() => nav.go({ name: 'settings' })}><GearIcon /></button> },
-    lock: { label: 'Lock', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button> },
+    lock: nav.app.session?.hasPassword === false
+      ? { label: 'Close vault', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Close vault" title="Close the vault, back to the vault list (Ctrl+Shift+L)" onClick={() => api.lock()}><LeaveIcon size={16} /></button> }
+      : { label: 'Lock', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button> },
   };
   const TOP_DEFAULT = ['dice', 'faces', 'preview', 'slideshow', 'multi', 'import', 'stats', 'help', 'settings', 'lock'];
   const savedTop = (look.topBar ?? []).filter((k) => topButtons[k]);

@@ -98,6 +98,9 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   /** The viewer shrunk into the mini player (it keeps playing over the library). */
   const [mini, setMini] = useState<ViewerRoute | null>(null);
+  /** Whether the open vault has a password (a vault without one is "closed", not "locked"). */
+  const hadPassword = useRef(true);
+  if (app?.session) hadPassword.current = app.session.hasPassword !== false;
   /** A new number for each viewer opened, so expanding the mini player keeps the same one. */
   const viewerIds = useRef(new WeakMap<ViewerRoute, number>());
   const nextViewerId = useRef(1);
@@ -211,7 +214,7 @@ export function App() {
       tabsRef.current.reset();
       viewerTab.current = null;
       clearViewMemory();
-      setToast(LOCK_MESSAGES[reason] ?? 'Vault locked.');
+      setToast(reason === 'manual' && !hadPassword.current ? 'Vault closed.' : LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });
     return () => {
@@ -299,7 +302,7 @@ export function App() {
     <>
     <TitleBar tabs={withTabs ? tabs : null} onTab={() => {
       if (screen.name !== 'library') go({ name: 'library' });
-    }} onLock={app.session ? () => { api.lock().catch(() => {}); } : undefined} />
+    }} onLock={app.session ? () => { api.lock().catch(() => {}); } : undefined} closeOnly={app.session?.hasPassword === false} />
     <div className="app">
       {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">

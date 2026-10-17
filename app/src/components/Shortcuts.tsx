@@ -127,7 +127,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
   },
   {
     group: 'Anywhere',
-    keys: [['Ctrl+Shift+L', 'Lock the vault now (panic key)']],
+    keys: [['Ctrl+Shift+L', 'Lock the vault now (panic key; a vault without a password just closes)']],
   },
 ];
 

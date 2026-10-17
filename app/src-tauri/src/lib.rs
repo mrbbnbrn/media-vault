@@ -153,6 +153,8 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
         if s.is_dirty() {
             let _ = s.save();
         }
+        // Background work may still hold it for a moment: the vault can be opened again meanwhile.
+        s.release();
         drop(s); // the last reference wipes the keys
     }
     if was_open {
@@ -192,6 +194,10 @@ fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     let s = Arc::new(s);
     if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
         old.close();
+        if old.is_dirty() {
+            let _ = old.save();
+        }
+        old.release();
     }
     // Nothing decrypted from another vault stays in memory.
     protocol::forget_cache();

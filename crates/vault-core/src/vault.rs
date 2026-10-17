@@ -547,6 +547,14 @@ impl Vault {
         }
     }
 
+    /// The vault is closed: let go of the lock file at once (so it can be
+    /// opened again straight away, even while background work still holds a
+    /// reference to this one) and refuse any further writes.
+    pub fn release(&mut self) {
+        self.access = Access::ReadOnly;
+        self._lock = None;
+    }
+
     fn require_encrypted(&self) -> Result<()> {
         if self.header.plain || self.header.converting.is_some() {
             return Err(Error::Invalid("this vault isn't encrypted (or is being changed); it has no password".into()));

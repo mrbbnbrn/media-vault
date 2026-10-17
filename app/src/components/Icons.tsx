@@ -19,6 +19,14 @@ export const LockIcon = ({ size = 20 }: P) => (
     <path d="M8 10V7a4 4 0 0 1 8 0v3" />
   </svg>
 );
+/** Leave (a door with an arrow out): closing a vault that has no password. */
+export const LeaveIcon = ({ size = 20 }: P) => (
+  <svg {...base(size)}>
+    <path d="M14 4h4a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-4" />
+    <path d="M10 8l-4 4 4 4" />
+    <path d="M6 12h10" />
+  </svg>
+);
 export const FolderIcon = ({ size = 18 }: P) => (
   <svg {...base(size)}>
     <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />

@@ -197,6 +197,13 @@ impl Session {
         self.closed.store(true, Ordering::SeqCst)
     }
 
+    /// After closing (and the last save): the vault's lock file is let go at
+    /// once, so it can be opened again straight away even while some
+    /// background work still holds this session; that work can't write any more.
+    pub fn release(&self) {
+        self.vault_mut().release();
+    }
+
     /// Record that the library changed; it is saved shortly afterwards.
     pub fn mark_dirty(&self) {
         self.changes.fetch_add(1, Ordering::SeqCst);
@@ -417,6 +424,23 @@ pub fn verify_password(path: &Path, current: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_closed_vault_opens_again_while_something_still_holds_it() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create_without_password(t.path().to_str().unwrap(), "V", KdfParams::TEST_ONLY).unwrap();
+        let path = s.vault().root().display().to_string();
+        let held = std::sync::Arc::new(s);
+        let background = held.clone(); // e.g. a thumbnail job still running
+        assert!(open_without_password(&path).is_err(), "open: locked");
+        held.close();
+        held.release();
+        let again = open_without_password(&path).expect("opens again at once");
+        // The old one can't write any more.
+        assert!(background.vault().add_object(vault_core::ObjectKind::Thumbnail, &b"x"[..]).is_err());
+        assert!(background.save().is_err());
+        drop(again);
+    }
 
     const KDF: KdfParams = KdfParams::TEST_ONLY;
 

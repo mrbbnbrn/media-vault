@@ -44,19 +44,21 @@ const win = (fn: (w: ReturnType<typeof getCurrentWindow>) => Promise<unknown>) =
   if (inTauri) fn(getCurrentWindow()).catch(() => {});
 };
 
-export function TitleBar({ tabs, onTab, onLock }: {
+export function TitleBar({ tabs, onTab, onLock, closeOnly }: {
   /** Tabs to show (null on the start and unlock screens). */
   tabs: LibraryTabs | null;
   /** A tab was chosen (the app shows the library if it was elsewhere). */
   onTab?: () => void;
   /** With a vault open, the lock mark locks it (like Ctrl+Shift+L). */
   onLock?: () => void;
+  /** The vault has no password: the mark closes it (back to the vault list) instead of locking it. */
+  closeOnly?: boolean;
 }) {
   const max = useMaximized();
   return (
     <div className="titlebar" data-tauri-drag-region>
       {/* lock from the title bar (begin) */}
-      {onLock ? <LockMark onLock={onLock} /> : (
+      {onLock ? <LockMark onLock={onLock} closeOnly={closeOnly} /> : (
         <div className="wt-mark" data-tauri-drag-region="deep" title="Media Vault">
           <LockGlyph />
         </div>
@@ -100,7 +102,7 @@ function LockGlyph() {
 /** With a vault open the mark is a button: it locks the vault, with the
  *  shackle snapping shut. Not a drag region, so clicks always land and a
  *  double-click doesn't maximise the window. */
-function LockMark({ onLock }: { onLock: () => void }) {
+function LockMark({ onLock, closeOnly }: { onLock: () => void; closeOnly?: boolean }) {
   const [snap, setSnap] = useState(0);
   useEffect(() => {
     if (!snap) return;
@@ -108,7 +110,7 @@ function LockMark({ onLock }: { onLock: () => void }) {
     return () => clearTimeout(t);
   }, [snap]);
   return (
-    <button type="button" className={`wt-mark wt-lock${snap ? ' snap' : ''}`} aria-label="Lock the vault" title="Lock (Ctrl+Shift+L)" tabIndex={-1}
+    <button type="button" className={`wt-mark wt-lock${snap ? ' snap' : ''}`} aria-label={closeOnly ? 'Close the vault' : 'Lock the vault'} title={closeOnly ? 'Close the vault, back to the vault list (Ctrl+Shift+L)' : 'Lock (Ctrl+Shift+L)'} tabIndex={-1}
       onDoubleClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
       onClick={() => {
         setSnap(Date.now());
