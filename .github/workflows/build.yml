@@ -42,7 +42,14 @@ jobs:
           npm test
           npm run build
       - name: Rust tests
-        run: cargo test --workspace --release --locked
+        shell: bash
+        # Failing tests also go out as annotations, so they can be read without the full log.
+        run: |
+          set -o pipefail
+          cargo test --workspace --release --locked 2>&1 | tee rust-tests.txt || {
+            grep -E "panicked at|^---- |^test .* FAILED|assertion|left:|right:" rust-tests.txt | head -40 | while IFS= read -r l; do echo "::error::$l"; done
+            exit 1
+          }
       - name: Lint
         shell: bash
         # Lint messages also go out as annotations, so they can be read without the full log.

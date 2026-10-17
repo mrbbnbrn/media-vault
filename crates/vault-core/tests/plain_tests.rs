@@ -80,6 +80,7 @@ fn a_vault_without_encryption_keeps_media_as_ordinary_files() {
     let mut b = vec![0u8; 10];
     r.read_exact(&mut b).unwrap();
     assert_eq!(b, pic[2_500_000..2_500_010]);
+    drop(r); // Windows can't remove a folder while a file in it is open
     assert_eq!(v.read_object(ObjectKind::Thumbnail, &tid).unwrap()[..], thumb[..]);
     assert!(v.list_objects(ObjectKind::Media).unwrap().contains(&id));
     drop(v);
