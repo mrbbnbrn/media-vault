@@ -3,6 +3,7 @@
 import { useEffect } from 'react';
 import { useViewerPrefs } from '../prefs';
 import { Modal } from './Dialogs';
+import { noLayerOpen } from '../keylayers';
 
 export const shortcuts = (seek: number, big: number): { group: string; keys: [string, string][] }[] => [
   {
@@ -161,7 +162,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
 export function useHelpKey(open: () => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '?' || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      if (e.key !== '?' || !noLayerOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       e.preventDefault();
       open();
     };

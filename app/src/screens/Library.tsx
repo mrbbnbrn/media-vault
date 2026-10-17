@@ -39,7 +39,7 @@ import { ActivityRing } from '../components/ActivityRing';
 import { CoverImg, useHoverCycle } from '../components/CoverImg';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
-import { useTasks } from '../tasks';
+import { useTaskPart } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
 import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
 import { SeparateFaces, type SeparateTarget } from '../components/SeparateFaces';
@@ -70,6 +70,7 @@ import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 import { lazyPart } from '../lazypart';
 import { FaceToolsHost, faceToolOpen, openFaceTool } from '../components/facecrops/launch';
+import { noLayerOpen, setScreenNav } from '../keylayers';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -372,7 +373,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- folder banners (end) ----
   const [ctx, setCtx] = useState<{ x: number; y: number; title: string; items: MenuItem[] } | null>(null);
   const [storage, setStorage] = useState<StorageInfo | null>(null);
-  const [storageJob, setStorageJob] = useState<StorageProgress | null>(null);
+  // Only whether packing runs (its progress shows in the jobs ring): progress messages don't redraw the library.
+  const [storageJob, setStorageJob] = useState(false);
   const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
   const [hoverCard, setHoverCard] = useState<number | null>(null);
   const [samples, setSamples] = useState<Record<number, number[]>>({});
@@ -384,7 +386,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const smartOn = smartOk && !!cfg.smartSearch;
   // "Find similar" uses smart search when it is on (only that view reloads when it changes).
   const similarSmart = view.kind === 'similar' && smartOn;
-  const [clip, setClip] = useState<ClipStatus | null>(null);
   const [lookTick, setLookTick] = useState(0);
   // Cut / copy inside the library (Ctrl+X / Ctrl+C, then Ctrl+V).
   const [clipboard, setClipboard] = useState<{ mode: 'cut' | 'copy'; ids: number[]; folders: number[] } | null>(null);
@@ -400,7 +401,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   };
   // Faces on the grid (face boxes / face-aware tiles), by item.
   const [gridFaces, setGridFaces] = useState<Map<number, FaceBox[]>>(new Map());
-  const tasks = useTasks();
+  // Only whether a result card shows: progress messages don't redraw the library.
+  const taskCards = useTaskPart(hasTaskCards);
   const undoTop = useUndoTop();
   const [pick, dismissPick] = useTodaysPick(s.path);
   const preview = cfg.preview ?? 'hover';
@@ -537,9 +539,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
 
   useEffect(() => {
     api.storageInfo().then(setStorage).catch(() => {});
-    const a = onEvent<StorageProgress>('storage-progress', setStorageJob);
+    const a = onEvent<StorageProgress>('storage-progress', () => setStorageJob(true));
     const b = onEvent<StorageDone>('storage-done', (d) => {
-      setStorageJob(null);
+      setStorageJob(false);
       setStorageMsg(d);
       api.storageInfo().then(setStorage).catch(() => {});
     });
@@ -548,12 +550,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       b.then((u) => u());
     };
   }, []);
-  // Smart search: are the models there, and how far is the analysis?
+  // Smart search: are the models there? (How far the analysis is: SmartProgressNote.)
   useEffect(() => {
     smartAvailable().then(setSmartModels);
-    const upd = () => api.clipStatus().then(setClip).catch(() => {});
-    upd();
-    return onClipProgress(upd);
   }, []);
   // The login note goes away by itself unless wrong passwords were tried.
   useEffect(() => {
@@ -725,10 +724,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (asleepRef.current || museumOpen() || riverOpen() || faceToolOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      // Anything open on top (a menu, a dialog, the museum, the river…) has the keys (keylayers.ts).
+      if (asleepRef.current || !noLayerOpen() || museumOpen() || riverOpen() || faceToolOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
+      // The face wall shows instead of the grid: what is selected there can't be seen, so no selection keys.
+      const hiddenSel = keyActions.current.selectionHidden();
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z' && !e.shiftKey) {
         e.preventDefault();
         undo();
+      } else if (hiddenSel && (e.key === 'Delete' || e.key === 'F2' || ((e.ctrlKey || e.metaKey) && ['a', 'x', 'c'].includes(e.key.toLowerCase())))) {
+        return;
       } else if (e.key === 'Delete' && keyActions.current.anySelected()) {
         e.preventDefault();
         keyActions.current.del();
@@ -913,11 +917,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // The Delete key acts on the current selection.
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
-    anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {},
+    anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {}, selectionHidden: () => false as boolean,
     clip: (_m: 'cut' | 'copy') => {}, paste: () => {},
   });
   keyActions.current = {
     selected,
+    selectionHidden: () => faceWall,
     anySelected: () => selected.size > 0 || selFolders.size > 0,
     rename: () => askRename(),
     clip: (m: 'cut' | 'copy') => clipSelection(m),
@@ -941,6 +946,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     },
     del: () => {
       const ids = [...selected];
+      // Only the folder you are in (it shows as selected): Delete doesn't delete the folder around you.
+      if (!ids.length && view.kind === 'folder' && selFolders.size === 1 && selFolders.has(view.id ?? -1)) return;
       if (selFolders.size && view.kind !== 'trash') {
         askDeleteMany();
         return;
@@ -950,6 +957,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       else trashItems(ids);
     },
   };
+
+  // The mouse's back / forward buttons do what Backspace / Alt+→ do here (App, keylayers.ts).
+  useEffect(() => {
+    if (frozen) return;
+    setScreenNav({ back: () => keyActions.current.back(), forward: () => keyActions.current.forward() });
+    return () => setScreenNav(null);
+  }, [frozen]);
 
   // ---- import ----------------------------------------------------------------------
 
@@ -2406,11 +2420,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             <PeopleView folders={folders} onChanged={() => { reload(); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
               onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
           )}
-          {smart && clip && clip.done + clip.failed < clip.total && (
-            <div className="info" style={{ marginBottom: 12 }}>
-              Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
-            </div>
-          )}
+          {smart && <SmartProgressNote />}
 
           {view.kind === 'memories' && (
             <MemoriesView folders={folders} onPlay={(m: Memory) => nav.go({
@@ -2555,7 +2565,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           <button type="button" className="link" aria-label="Dismiss" onClick={() => setNote(null)}><CloseIcon size={12} /></button>
         </div>
       )}
-      {(reports.length > 0 || storageMsg || hasTaskCards(tasks)) && (
+      {(reports.length > 0 || storageMsg || taskCards) && (
         <section className="imports" aria-label="Import progress">
           <TaskCards />
           {storageMsg && (
@@ -3149,6 +3159,22 @@ function FolderCover({ f, hovered, samples: list, preview, whole, edge }: {
   if (!f.cover) return <FolderIcon size={40} />;
   if (f.coverPos) return <Framed pos={f.coverPos}><CoverImg id={f.cover} /></Framed>;
   return <CoverImg id={f.cover} />;
+}
+
+/** Smart search results while pictures are still being analysed (only this redraws as it moves on). */
+function SmartProgressNote() {
+  const [clip, setClip] = useState<ClipStatus | null>(null);
+  useEffect(() => {
+    const upd = () => api.clipStatus().then(setClip).catch(() => {});
+    upd();
+    return onClipProgress(upd);
+  }, []);
+  if (!clip || clip.done + clip.failed >= clip.total) return null;
+  return (
+    <div className="info" style={{ marginBottom: 12 }}>
+      Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
+    </div>
+  );
 }
 
 const COVER_PAGE = 600;

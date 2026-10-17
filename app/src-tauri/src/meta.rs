@@ -257,6 +257,7 @@ pub fn media_date<R: Read + Seek>(ext: &str, head: &[u8], full: Option<&mut R>) 
 /// background while the vault is open.
 pub fn backfill(s: Arc<Session>) {
     std::thread::spawn(move || {
+        crate::analyse::polite_thread();
         while !s.is_closed() {
             let todo: Vec<(i64, String, String, Option<i64>)> = {
                 let db = s.db();
@@ -279,6 +280,8 @@ pub fn backfill(s: Arc<Session>) {
                 continue;
             }
             for (id, obj, ext, _mtime) in todo {
+                // While you use the window, wait between items (userbusy.rs).
+                crate::userbusy::give_way(&|| s.is_closed());
                 if s.is_closed() {
                     return;
                 }

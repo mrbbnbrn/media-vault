@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
 import { FaceIcon, FolderIcon, SparkleIcon, TagIcon, TrashIcon } from './Icons';
+import { useLayer } from '../keylayers';
 
 const fold = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/̇/g, '');
 
@@ -80,6 +81,9 @@ export function QuickSort(props: {
     };
   }, [cur?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // A dialog (keylayers.ts): keys typed here never reach the library; back closes it.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayer(true, { name: 'quick sort', modal: true, el: () => rootRef.current, onKey: () => false, onBack: () => props.onClose(changed.current) });
   // The search box keeps the focus.
   useEffect(() => {
     const t = setInterval(() => {
@@ -226,7 +230,7 @@ export function QuickSort(props: {
   const total = queue?.length ?? 0;
   const byId = new Map(props.folders.map((f) => [f.id, f]));
   return (
-    <div className="qsort" role="dialog" aria-modal="false" aria-label="Quick sort">
+    <div className="qsort" role="dialog" aria-modal="false" aria-label="Quick sort" ref={rootRef}>
       <div className="qsort-head">
         <b>Quick sort · “{props.source?.name ?? 'Top level'}”</b>
         <label className="check">

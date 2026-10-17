@@ -96,6 +96,8 @@ export interface PlayerProps {
   controlsOnMouse?: boolean;
   /** Listen to keyboard shortcuts (the focused player only). */
   keys?: boolean;
+  /** Whether the keys are the player's right now (nothing open over it: keylayers.ts). */
+  keysMine?: () => boolean;
   activityId: string;
   title?: ReactNode;
   topRight?: ReactNode;
@@ -1341,6 +1343,8 @@ export function Player(props: PlayerProps) {
         if (!['Tab'].includes(e.key)) tgt.blur();
       } else if (tgt.closest('input, textarea, select, [role=dialog]')) return;
       if (menu || editing) return; // the right-click menu and the picture editor handle their own keys
+      // A dialog, menu or dropdown open over the viewer has the keys (keylayers.ts).
+      if (props.keysMine && !props.keysMine()) return;
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
       if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
@@ -1368,6 +1372,13 @@ export function Player(props: PlayerProps) {
         else if (e.shiftKey) go('prev');
         else if (timed && !slideshow) setPaused((p) => !p);
         else toggleSlideshow();
+      } else if (e.altKey && (k === 'arrowleft' || k === 'arrowright')) {
+        // Alt+← is "back" everywhere: it leaves the viewer (Alt+→ does nothing here).
+        if (k === 'arrowleft') {
+          e.preventDefault();
+          props.onClose?.();
+        }
+        return;
       } else if (k === 'arrowright' || k === 'arrowleft') {
         const dir = k === 'arrowright' ? 1 : -1;
         e.preventDefault();

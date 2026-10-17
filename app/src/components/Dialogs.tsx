@@ -3,25 +3,61 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import type { FolderCard } from '../api';
 import { FolderIcon } from './Icons';
+import { useLayer } from '../keylayers';
+import { holdCalm } from '../calm';
 
-export function Modal(props: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
-  const ref = useRef<HTMLDivElement>(null);
+let holdN = 0;
+/** While `on`, changes from background work wait (an open menu stays as it is). */
+function useHoldCalm(on: boolean) {
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
+    if (!on) return;
+    const key = `menu${holdN++}`;
+    holdCalm(key, true);
+    return () => holdCalm(key, false);
+  }, [on]);
+}
+
+/** ↑ / ↓ / Home / End move between a menu's items; Esc closes it. True when handled. */
+export function menuKeys(e: KeyboardEvent, menu: HTMLElement | null, close: () => void): boolean {
+  if (e.key === 'Escape') {
+    close();
+    return true;
+  }
+  if (!menu || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) return false;
+  const items = [...menu.querySelectorAll<HTMLElement>(':scope > button:not(:disabled), :scope > .menu-item:not(:disabled)')];
+  if (!items.length) return true;
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  const n = e.key === 'Home' ? 0 : e.key === 'End' ? items.length - 1
+    : e.key === 'ArrowDown' ? (i + 1) % items.length : (i <= 0 ? items.length - 1 : i - 1);
+  items[n].focus();
+  return true;
+}
+
+export function Modal(props: {
+  title: string; children: ReactNode; onClose: () => void; wide?: boolean;
+  /** Keys for the dialog itself (← / → in a preview…): return true when handled. Esc still closes it. */
+  onKey?: (e: KeyboardEvent) => boolean | void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  // A layer: Esc closes it, and keys pressed here never reach what is behind (keylayers.ts).
+  useLayer(true, {
+    name: `dialog: ${props.title}`, modal: true, el: () => ref.current, onClose: props.onClose,
+    onKey: (e) => {
+      if (props.onKey?.(e)) return true;
       if (e.key === 'Escape') {
-        e.stopPropagation();
         props.onClose();
+        return true;
       }
-    };
-    window.addEventListener('keydown', onKey, true);
+    },
+  });
+  useEffect(() => {
     // The marked button first (e.g. Delete in a confirmation), else the first field, else the main button.
     const r = ref.current;
-    (r?.querySelector<HTMLElement>('[data-autofocus]') ?? r?.querySelector<HTMLElement>('input, select, button.btn-primary'))?.focus();
-    return () => window.removeEventListener('keydown', onKey, true);
+    (r?.querySelector<HTMLElement>('[data-autofocus]') ?? r?.querySelector<HTMLElement>('input, select, button.btn-primary') ?? r)?.focus();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-      <div className={`modal${props.wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={props.title} ref={ref}>
+      <div className={`modal${props.wide ? ' wide' : ''}`} role="dialog" aria-modal="true" aria-label={props.title} ref={ref} tabIndex={-1}>
         <h2>{props.title}</h2>
         {props.children}
       </div>
@@ -207,14 +243,12 @@ export function Dropdown(props: { label: ReactNode; items: MenuItem[]; className
     const close = (e: Event) => {
       if (!ref.current?.contains(e.target as Node)) setOpen(false);
     };
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
     window.addEventListener('mousedown', close);
-    window.addEventListener('keydown', key);
-    return () => {
-      window.removeEventListener('mousedown', close);
-      window.removeEventListener('keydown', key);
-    };
+    return () => window.removeEventListener('mousedown', close);
   }, [open]);
+  // While open: a layer (Esc closes it, ↑ / ↓ move through it, nothing behind gets the keys).
+  useLayer(open, { name: 'menu', modal: true, el: () => ref.current, onKey: (e) => menuKeys(e, ref.current?.querySelector('.menu') ?? null, () => setOpen(false)) });
+  useHoldCalm(open);
   return (
     <div className="dropdown" ref={ref}>
       <button type="button" className={props.className ?? 'btn btn-sm'} aria-expanded={open} aria-haspopup="menu"
@@ -282,25 +316,48 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
     const close = (e: Event) => {
       if (!ref.current?.contains(e.target as Node) && !subRef.current?.contains(e.target as Node)) props.onClose();
     };
-    const key = (e: KeyboardEvent) => e.key === 'Escape' && props.onClose();
     window.addEventListener('mousedown', close, true);
-    window.addEventListener('keydown', key);
     window.addEventListener('resize', props.onClose);
     window.addEventListener('wheel', props.onClose, { passive: true });
     return () => {
       window.removeEventListener('mousedown', close, true);
-      window.removeEventListener('keydown', key);
       window.removeEventListener('resize', props.onClose);
       window.removeEventListener('wheel', props.onClose);
     };
   }, [props.x, props.y]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A layer: Esc closes it, ↑ / ↓ move through it, → opens a submenu, nothing behind gets the keys.
+  useLayer(true, {
+    name: 'context menu', modal: true, el: () => ref.current,
+    onKey: (e) => {
+      const inSub = !!subRef.current?.contains(document.activeElement);
+      if (inSub && e.key === 'ArrowLeft') {
+        const key = sub?.key;
+        setSub(null);
+        [...(ref.current?.querySelectorAll<HTMLElement>(':scope > button') ?? [])].find((b) => b.dataset.label === key)?.focus();
+        return true;
+      }
+      if (!inSub && e.key === 'ArrowRight') {
+        const b = document.activeElement as HTMLElement | null;
+        const it = b?.getAttribute('aria-haspopup') === 'menu' ? props.items.find((x) => x.label === b.dataset.label) : undefined;
+        if (b && it?.sub?.length) {
+          const r = b.getBoundingClientRect();
+          setSub({ items: it.sub, left: r.right - 4, top: r.top - 5, key: it.label });
+          requestAnimationFrame(() => subRef.current?.querySelector<HTMLElement>('button')?.focus());
+          return true;
+        }
+      }
+      return menuKeys(e, inSub ? subRef.current : ref.current, props.onClose);
+    },
+  });
+  // Nothing on the screen behind changes while the menu is open (calm.ts).
+  useHoldCalm(true);
   return (
     <div ref={ref} className="menu context" role="menu" aria-label={props.title} style={{ left: pos.left, top: pos.top, maxHeight: 'calc(100vh - 16px)' }}
       onContextMenu={(e) => e.preventDefault()}>
       {props.title && <div className="menu-title ellipsis">{props.title}</div>}
       {props.items.map((it) => [
         it.sepBefore && <div key={`${it.label}-sep`} className="menu-sep" role="separator" />,
-        <button key={it.label} type="button" role="menuitem" disabled={it.disabled} aria-haspopup={it.sub ? 'menu' : undefined}
+        <button key={it.label} type="button" role="menuitem" disabled={it.disabled} aria-haspopup={it.sub ? 'menu' : undefined} data-label={it.label}
           className={`menu-item${it.danger ? ' danger' : ''}${sub?.key === it.label ? ' on' : ''}`}
           onPointerEnter={(e) => {
             if (it.sub?.length) {

@@ -7,6 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type Item, type SlotData } from '../api';
 import { evaluate, planSpin, reelStrip, usefulGroups, type SlotGroup, type SpinResult } from '../slots';
 import { CloseIcon, FaceIcon, MuteIcon, PlayIcon, SoundIcon, TagIcon } from './Icons';
+import { useLayer } from '../keylayers';
 
 const REDUCED = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 /** How long each reel spins (ms); they stop one after another. */
@@ -174,9 +175,10 @@ export function SlotMachine({ folder, onClose, onPlay }: {
     return () => cancelAnimationFrame(r);
   }, [phase]);
 
+  const layer = useLayer(true, { name: 'slot machine', onBack: () => onClose() });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select')) return;
+      if (!layer.mine() || (e.target as HTMLElement).closest('input, textarea, select')) return;
       if (e.key === 'Escape') onClose();
       else if (e.key === ' ' || e.key === 'Enter') {
         if ((e.target as HTMLElement).closest('button') && e.key === 'Enter') return;

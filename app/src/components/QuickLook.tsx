@@ -5,6 +5,7 @@ import { useEffect, useRef } from 'react';
 import { mediaUrl, thumbUrl, type Item } from '../api';
 import { useViewerPrefs } from '../prefs';
 import { ArrowIcon, CloseIcon, FolderIcon, PlayIcon } from './Icons';
+import { globalKey, useLayer } from '../keylayers';
 
 export function QuickLook(props: {
   items: Item[];
@@ -21,8 +22,11 @@ export function QuickLook(props: {
   const state = useRef({ props, i });
   state.current = { props, i };
 
+  // A layer (keylayers.ts): the grid underneath gets no keys (Ctrl ones neither); back closes it.
+  const layer = useLayer(true, { name: 'quick look', onBack: () => state.current.props.onClose() });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!layer.mine()) return;
       const { props: p, i: at } = state.current;
       const k = e.key;
       if (k === ' ' || k === 'Escape' || k === 'Backspace') p.onClose();
@@ -30,8 +34,8 @@ export function QuickLook(props: {
       else if (k === 'ArrowLeft' && at > 0) p.onMove(p.items[at - 1].id);
       else if (k === 'Enter') p.onOpen(p.items[at]);
       else {
-        // Everything else stays inside quick look (the grid underneath doesn't react).
-        if (!e.ctrlKey) e.stopImmediatePropagation();
+        // Everything else stays inside quick look (the grid underneath doesn't react), except the app's own keys.
+        if (!globalKey(e)) e.stopImmediatePropagation();
         return;
       }
       e.preventDefault();

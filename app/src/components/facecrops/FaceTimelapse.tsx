@@ -11,6 +11,7 @@ import { saveViewerPrefs, useViewerPrefs } from '../../prefs';
 import { recordLapse } from './lapsevideo';
 import { AlignedCache, drawLapse, FRAME, measureFaces, measureOf } from './render';
 import { MinFaceSlider, PicturesOnly } from './MinFace';
+import { useLayer } from '../../keylayers';
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const longDate = (s: number) => new Date(s * 1000).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
@@ -173,8 +174,15 @@ export default function FaceTimelapse(props: {
 
   // Keys (not while the viewer is open over it, or while saving).
   const keys = useRef<(e: KeyboardEvent) => void>(() => {});
+  // A layer (keylayers.ts): the library underneath gets no keys; back closes it.
+  const layer = useLayer(true, { name: 'face time-lapse', onBack: () => props.onClose() });
   keys.current = (e) => {
-    if (props.covered) return;
+    if (props.covered || !layer.mine()) return;
+    if (e.key === 'Backspace' && !(e.target as HTMLElement | null)?.closest?.('input, textarea')) {
+      e.preventDefault();
+      props.onClose();
+      return;
+    }
     if ((e.target as HTMLElement | null)?.closest?.('input[type=text], textarea')) return;
     if (e.key === 'Escape') {
       if (saving) stopSave.current = true;

@@ -105,3 +105,18 @@ export function dismissExport() {
 export function clearTasks() {
   set(idle);
 }
+
+/**
+ * Only a part of the state: the component draws again only when that part
+ * changes (not on every progress message), e.g. `useTaskPart((t) => !!t.exportDone)`.
+ */
+export function useTaskPart<T>(pick: (t: TaskState) => T): T {
+  listen();
+  return useSyncExternalStore(
+    (cb) => {
+      subs.add(cb);
+      return () => subs.delete(cb);
+    },
+    () => pick(state),
+  );
+}

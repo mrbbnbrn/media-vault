@@ -19,6 +19,7 @@ import { CloseIcon } from '../Icons';
 import { RoundCover } from '../RoundCover';
 import { grainTile, RiverEngine, type RiverItem, type Sources } from './engine';
 import './river.css';
+import { useLayer } from '../../keylayers';
 
 /** The bar shows while the mouse is in the bottom part of the river and has moved lately. */
 const BAR_ZONE = 0.78;
@@ -186,10 +187,12 @@ export default function River(props: {
   }, []);
 
   // Keys, ahead of the library underneath (not while the viewer is on top).
+  // A layer (keylayers.ts): the library gets no keys (Enter no longer opens a tile under it); back leaves.
+  const layer = useLayer(true, { name: 'discovery river', onBack: () => p.current.onClose() });
   useEffect(() => {
     if (props.covered) return;
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest?.('input, textarea, select, [role=dialog]')) return;
+      if (!layer.mine() || (e.target as HTMLElement).closest?.('input, textarea, select, [role=dialog]')) return;
       const en = engine.current;
       if (!en) return;
       const k = e.key;

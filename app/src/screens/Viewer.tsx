@@ -17,6 +17,7 @@ import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } 
 import { TRANSITIONS } from '../transitions';
 import { saveViewerPrefs, useViewerPrefs, viewerPrefs, withSound } from '../prefs';
 import { setCleanFullscreen } from '../fullscreen';
+import { useLayer } from '../keylayers';
 
 /** The timing settings last used: this run's, else the ones saved last time (every change is saved). */
 let lastSettings: PlaybackSettings | null = null;
@@ -86,15 +87,11 @@ export function Viewer(props: {
     }
     props.onBack(last, close);
   };
-  // The mouse's back button leaves the viewer (not from the mini player).
-  useEffect(() => {
-    if (mini) return;
-    const up = (e: MouseEvent) => {
-      if (e.button === 3) back();
-    };
-    window.addEventListener('mouseup', up);
-    return () => window.removeEventListener('mouseup', up);
-  });
+  // A layer while full screen (keylayers.ts): what is underneath gets no keys, and
+  // "back" (the mouse's back button, from App) leaves the viewer.
+  const backRef = useRef(back);
+  backRef.current = back;
+  const viewerLayer = useLayer(!mini, { name: 'viewer', onBack: () => backRef.current() });
   const [settings, setSettings] = useState<PlaybackSettings>(() => {
     // Follow the library's sort order, unless a random order was chosen before.
     const last = lastPlayback();
@@ -240,6 +237,7 @@ export function Viewer(props: {
         clean={clean}
         controlsOnMouse={props.nav.app.config.fullscreenControlsOnMouse}
         keys={!mini}
+        keysMine={viewerLayer.mine}
         hold={card}
         kenBurns={props.kenBurns}
         mini={mini ? { onExpand: () => props.onExpand?.(), onClose: () => props.onCloseMini?.() } : undefined}
@@ -307,6 +305,10 @@ let beatsOk: Promise<boolean> | null = null;
 
 function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; onClose: () => void }) {
   const num = (v: string) => (v === '' ? 0 : Number(v));
+  // A dialog (keylayers.ts): Esc closes it, keys here don't reach the viewer behind.
+  const boxRef = useRef<HTMLDivElement>(null);
+  useLayer(true, { name: 'dialog: Slideshow settings', modal: true, el: () => boxRef.current, onClose });
+  useEffect(() => boxRef.current?.focus(), []);
   const [beats, setBeats] = useState(false);
   const prefs = useViewerPrefs();
   useEffect(() => {
@@ -319,7 +321,7 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
   }, []);
   return (
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal" role="dialog" aria-modal="true" aria-label="Slideshow settings">
+      <div className="modal" role="dialog" aria-modal="true" aria-label="Slideshow settings" ref={boxRef} tabIndex={-1}>
         <h2>Slideshow settings</h2>
         <div className="form-grid">
           <label htmlFor="ps-img">Pictures stay for</label>

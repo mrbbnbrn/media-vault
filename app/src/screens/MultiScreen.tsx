@@ -23,6 +23,7 @@ import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
 import { rememberSound, unmuteVolume, withSound } from '../prefs';
 import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_LAYOUTS } from '../shapes';
 import { SettingsMenu } from './Viewer';
+import { useLayer } from '../keylayers';
 
 export type Source =
   | { t: 'folder'; id: number; name: string; recursive: boolean }
@@ -233,11 +234,27 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   };
 
   // Keyboard: Space pause all, 1–9 choose a panel, ←/→ and M act on it, F clean full screen, Esc.
+  // Backspace, Alt+← and the mouse's back button go back, like everywhere.
+  const backNow = () => {
+    if (wallSolo) setWallSolo(null);
+    else if (solo != null) exitSolo();
+    else if (clean) toggleClean();
+    else onBack();
+  };
+  const backRef = useRef(backNow);
+  backRef.current = backNow;
+  const layer = useLayer(true, { name: 'multi-screen', onBack: () => backRef.current() });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       if (wallSolo) return; // the player on top has the keyboard
+      if (!layer.mine()) return; // a menu or dialog on top has it
       const k = e.key.toLowerCase();
+      if (k === 'backspace' || (e.altKey && k === 'arrowleft')) {
+        e.preventDefault();
+        backNow();
+        return;
+      }
       if (k === ' ') { e.preventDefault(); pauseAll(!allPaused); }
       else if (/^[1-9]$/.test(k) && Number(k) <= n) setFocus(Number(k) - 1);
       else if (k === 'arrowright') handles.current[focus]?.next();

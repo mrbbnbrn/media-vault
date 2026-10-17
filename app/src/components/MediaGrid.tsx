@@ -15,7 +15,7 @@ import { reportPlan, useRealBudget, VideoPreview } from './VideoPreview';
 // ---- end video previews ----
 import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayout';
 import { startMoveDrag } from '../dragmove';
-import { formatTime, onThumb } from '../media';
+import { formatTime } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
 import { AltEnlarge } from './AltEnlarge';
 import { Minimap, MINIMAP_RESERVE } from './Minimap';
@@ -26,6 +26,8 @@ import { useGridReveal } from '../viewerflip';
 import { lookAhead, ON_SCREEN, thumbQueue, tilePriority } from '../loadqueue';
 import * as thumbCache from '../thumbcache';
 import { sketchUrl } from '../sketch';
+import { thumbVersion, useThumbVersion } from '../thumbver';
+import { noLayerOpen } from '../keylayers';
 
 /** Should this tile play its video / GIF right now? (Always muted.) */
 function live(it: Item, mode: 'all' | 'hover' | 'off', hover: number | null): boolean {
@@ -86,7 +88,6 @@ export function MediaGrid(props: {
   // dir: which way the scroll last went (+1 down, −1 up); ahead: how far past the view to draw tiles that way.
   const [view, setView] = useState({ top: 0, bottom: 1200, dir: 1, ahead: 600 });
   // Thumbnails made (again) while this grid shows: how many times, so a remade one (e.g. after a saved rotation) loads afresh.
-  const [ready, setReady] = useState<Map<number, number>>(new Map());
   const mode = props.layout ?? 'grid';
   useResumeChanges();
 
@@ -115,7 +116,7 @@ export function MediaGrid(props: {
     };
   }, []);
 
-  useEffect(() => onThumb((id) => setReady((r) => new Map(r).set(id, (r.get(id) ?? 0) + 1))), []);
+  // A thumbnail made while the grid shows: only its own tile draws again (thumbver.ts).
   // ---- video previews ----
   const made = useMadePreviews();
   const realBudget = useRealBudget();
@@ -164,13 +165,22 @@ export function MediaGrid(props: {
         setView((v) => (v.ahead === 600 ? v : { ...v, ahead: 600 }));
       }, 300);
     };
+    // At most once per frame (scroll events can come faster than the screen draws).
+    let frame = 0;
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(() => {
+        frame = 0;
+        update();
+      });
+    };
     update();
-    sc.addEventListener('scroll', update, { passive: true });
-    window.addEventListener('resize', update);
+    sc.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll);
     return () => {
       if (idle) clearTimeout(idle);
-      sc.removeEventListener('scroll', update);
-      window.removeEventListener('resize', update);
+      cancelAnimationFrame(frame);
+      sc.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
     };
   }, [props.scroller, layout]);
 
@@ -221,8 +231,9 @@ export function MediaGrid(props: {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const { props: p, layout: L } = keyState.current;
-      if (!p.keyboard || !p.items.length) return;
-      if ((e.target as HTMLElement).closest('input, textarea, select, [role=dialog]') || document.querySelector('[aria-modal="true"]')) return;
+      if (!p.keyboard || !p.items.length || e.defaultPrevented) return;
+      // Something open on top (a menu, a dialog, the river…) has the keys (keylayers.ts).
+      if (!noLayerOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       const k = e.key;
       if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(k) || e.altKey) return;
       // Start from the last selected item; if the selection moved elsewhere, from a selected one.
@@ -353,7 +364,10 @@ export function MediaGrid(props: {
     onKeyDown: (e: React.KeyboardEvent) => {
       if (e.key !== 'Enter') return;
       const it = itemOf(e.target);
-      if (it) props.onOpen(it);
+      if (!it) return;
+      // Opened here: the grid's own Enter below doesn't open it a second time.
+      e.preventDefault();
+      props.onOpen(it);
     },
     onPointerDown: (e: React.PointerEvent) => {
       const it = itemOf(e.target);
@@ -423,13 +437,13 @@ export function MediaGrid(props: {
         const i = from + k;
         const b = layout.boxes[i];
         const playing = live(it, props.preview, hover) && pop?.item.id !== it.id && onScreen(i);
-        const ver = ready.get(it.id);
+        const ver = readyVersion(it);
         // Its thumbnail's address (a new address is a new QueuedThumb).
         const url = tileThumbUrl(it, b.w, b.h, ver);
         const faces = props.faceBoxes || props.faceCrop ? props.faces?.get(it.id) : undefined;
         return (
           <Tile key={it.id} it={it} x={b.x} y={b.y} w={b.w} h={b.h} mode={mode} store={selStore}
-            ready={ver} flinging={view.ahead > 900} prio={loaded.current.has(url) ? 0 : tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
+            flinging={view.ahead > 900} prio={loaded.current.has(url) ? 0 : tilePriority(b.y, b.y + b.h, view.top, view.bottom, view.dir)}
             dimmed={!!props.dimmed?.has(it.id)} hoverInfo={!!props.hoverInfo}
             playing={playing} layer={playing && it.kind === 'video' ? layerOf(it.id) : 'thumb'} eager={hover === it.id}
             hasStrip={hasStrip(it)} hasTiny={hasTiny(it)}
@@ -485,6 +499,12 @@ function useMember(store: MemberStore, id: number): boolean {
  * props, so scrolling, hovering and selecting redraw just the tiles they
  * change; clicks etc. are handled once on the grid (tileEvents).
  */
+/** A tile's thumbnail version: undefined while its thumbnail never changed since the grid loaded. */
+function readyVersion(it: Item): number | undefined {
+  if (it.thumb === 'ok') return undefined;
+  return thumbVersion(it.id) || undefined;
+}
+
 const Tile = memo(function Tile(p: {
   it: Item;
   x: number;
@@ -493,8 +513,6 @@ const Tile = memo(function Tile(p: {
   h: number;
   mode: 'grid' | 'shape';
   store: MemberStore;
-  /** How many times its thumbnail was made again while the grid shows (undefined: not at all). */
-  ready: number | undefined;
   /** Scrolling fast: thumbnails off screen wait their turn a little longer. */
   flinging: boolean;
   prio: number;
@@ -515,7 +533,11 @@ const Tile = memo(function Tile(p: {
   const { it, w, h, mode, watched } = p;
   const b = { w, h };
   const sel = useMember(p.store, it.id);
-  const hasThumb = it.thumb === 'ok' || p.ready !== undefined;
+  // Made while the grid shows (a tile that had none yet). A tile already showing one
+  // keeps it (a quietly sharpened copy shows next time: no flash under your eyes).
+  useThumbVersion(it.thumb === 'ok' ? null : it.id);
+  const ready = readyVersion(it);
+  const hasThumb = it.thumb === 'ok' || ready !== undefined;
   const playing = p.playing;
   const place = p.faces ? placement(it, w, h, mode, p.faces, p.faceCrop) : null;
   const names = p.faceNames.split('\u0001');
@@ -524,7 +546,7 @@ const Tile = memo(function Tile(p: {
       className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${p.dimmed ? ' cut' : ''}${p.hoverInfo ? ' hinfo' : ''}`}
       style={{ left: p.x, top: p.y, width: w, height: h, ...sketchStyle(it, place && p.faceCrop ? place : null) }}>
       {hasThumb && it.thumb !== 'failed' ? (
-        <QueuedThumb key={tileThumbUrl(it, w, h, p.ready)} url={tileThumbUrl(it, w, h, p.ready)} prio={p.prio} flinging={p.flinging}
+        <QueuedThumb key={tileThumbUrl(it, w, h, ready)} url={tileThumbUrl(it, w, h, ready)} prio={p.prio} flinging={p.flinging}
           style={place && p.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
       ) : it.thumb === 'failed' ? (
         <span className="tile-msg"><BrokenIcon /> Can't play</span>

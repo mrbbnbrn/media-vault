@@ -10,6 +10,7 @@ import {
   countText, demoJobs, formatLeft, jobFraction, listenForJobs, overall, secondsLeft, setNotifyWhenDone, useJobs, visibleJobs, type Job,
 } from '../jobs';
 import { CloseIcon, PauseIcon } from './Icons';
+import { useLayer } from '../keylayers';
 
 let demoStarted = false;
 
@@ -60,6 +61,8 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
     return () => window.removeEventListener('resize', place);
   }, [open]);
 
+  // While open, a layer (keylayers.ts): Esc closes it, nothing behind reacts.
+  const ringLayer = useLayer(open, { name: 'background jobs', onBack: () => setOpen(false) });
   useEffect(() => {
     if (!open) return;
     const away = (e: PointerEvent) => {
@@ -67,7 +70,7 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
       if (!pop.current?.contains(t) && !btn.current?.contains(t)) setOpen(false);
     };
     const esc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && ringLayer.mine()) {
         e.stopPropagation();
         setOpen(false);
         btn.current?.focus();

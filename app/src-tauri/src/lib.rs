@@ -2335,8 +2335,11 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             };
             // Save library edits shortly after they happen: once they settle
             // for a second, and at the latest 5 s after the first one (the
-            // background analysis keeps changing things all the time).
-            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(5)) {
+            // background analysis keeps changing things all the time). While
+            // you are using the window, at the latest after 20 s: saving holds
+            // the library for a moment, and thumbnails would wait for it.
+            let max_wait = if userbusy::busy() { 20 } else { 5 };
+            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait)) {
                 Ok(()) => {
                     told_failure = false;
                     // A vault without encryption: files follow their items (moves, renames, the trash).

@@ -14,6 +14,7 @@ import {
   activate, activeTab, closeOthers, closeTab, closeToRight, cycle, duplicateTab, goBack, goForward, HOME, initialTabs, jumpTo, moveTab, navigate,
   openTab, reopenClosed, replaceView, restoreTabs, serializeTabs, tabLook, type FolderName, type TabIconKind, type TabsState,
 } from './tabs';
+import { noLayerOpen } from '../keylayers';
 
 const STORE_KEY = 'tabs';
 
@@ -181,7 +182,8 @@ export function useTabKeys(tabs: LibraryTabs, enabled: boolean) {
     if (!enabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
-      if (document.querySelector('[aria-modal="true"]')) return;
+      // Not while something is open over the library (a dialog, the museum, the river…).
+      if (!noLayerOpen() || document.querySelector('[aria-modal="true"]')) return;
       const t = ref.current;
       const k = e.key.toLowerCase();
       let done = true;

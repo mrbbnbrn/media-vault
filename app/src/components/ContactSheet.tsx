@@ -1,18 +1,21 @@
 // A folder at a glance: every item as a small thumbnail with its name, on
 // one light sheet like a photographer's contact print.
 
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { thumbUrl, type Item } from '../api';
 import { formatTime } from '../media';
 import { formatBytes } from '../theme';
+import { useLayer } from '../keylayers';
 
 export function ContactSheet(props: { title: string; items: Item[]; onClose: () => void; onOpen: (it: Item) => void }) {
+  // A dialog (keylayers.ts): Esc closes it wherever the focus is; nothing behind gets the keys.
+  const rootRef = useRef<HTMLDivElement>(null);
+  useLayer(true, { name: 'contact sheet', modal: true, el: () => rootRef.current, onClose: props.onClose });
   const [cols, setCols] = useState(8);
   const [names, setNames] = useState(true);
   const bytes = props.items.reduce((a, i) => a + i.size, 0);
   return (
-    <div className="sheet-back" role="dialog" aria-modal="true" aria-label={`Contact sheet: ${props.title}`}
-      onKeyDown={(e) => e.key === 'Escape' && props.onClose()} tabIndex={-1}>
+    <div className="sheet-back" role="dialog" aria-modal="true" aria-label={`Contact sheet: ${props.title}`} ref={rootRef} tabIndex={-1}>
       <div className="sheet-bar">
         <b>Contact sheet</b>
         <label className="faint" htmlFor="sheet-cols" style={{ fontSize: 12 }}>Columns</label>

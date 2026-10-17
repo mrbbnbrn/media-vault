@@ -19,6 +19,7 @@ import { STYLES } from '../look';
 import { GrowthSpark } from '../components/VaultGrowth';
 import { setNotifyWhenDone } from '../jobs';
 import { setFaceBoxes, useFaceBoxes } from '../prefs';
+import { useLayer } from '../keylayers';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
@@ -54,9 +55,17 @@ export function Settings({ nav }: { nav: Nav }) {
     ['about', 'About'],
   ];
   const custom = !ACCENTS.some((a) => a.hex === cfg.accent);
-  // Esc or Backspace goes back to the library (not while typing in a box, or with a window open on top).
+  // Esc, Backspace, Alt+← or the mouse's back button go back to the library (not while typing in a
+  // box, or with a window open on top: keylayers.ts).
+  const layer = useLayer(true, { name: 'settings', onBack: () => nav.go({ name: 'library' }) });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!layer.mine()) return;
+      if (e.altKey && e.key === 'ArrowLeft' && !e.ctrlKey) {
+        e.preventDefault();
+        nav.go({ name: 'library' });
+        return;
+      }
       if ((e.key !== 'Escape' && e.key !== 'Backspace') || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey) return;
       const t = e.target as HTMLElement | null;
       const typing = !!t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT'

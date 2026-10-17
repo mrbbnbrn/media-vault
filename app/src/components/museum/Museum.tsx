@@ -12,6 +12,7 @@ import type { WebGLRenderer } from 'three';
 import { MuseumEngine, type Aim, type Pose, type Quality, type Sources } from './engine';
 import { hallAt, layoutWing, planWings, roman, wingContent, type Door, type Frame, type MuseumItem, type WingLayout } from './layout';
 import './museum.css';
+import { useLayer } from '../../keylayers';
 
 export interface MuseumProps {
   title: string;
@@ -319,10 +320,14 @@ export default function Museum(props: MuseumProps) {
   };
 
   // ---- keyboard (captured so the library underneath doesn't react) ------------------------
+  // A layer (keylayers.ts): "back" steps out of a close look, else leaves the museum.
+  const stepBackRef = useRef(stepBack);
+  stepBackRef.current = stepBack;
+  const layer = useLayer(true, { name: 'museum', onBack: () => (closeRef.current ? stepBackRef.current(true) : props_.current.onClose()) });
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
-      // Under the viewer the keys are the viewer's.
-      if (coveredRef.current) return;
+      // Under the viewer (or a dialog) the keys are theirs.
+      if (coveredRef.current || !layer.mine()) return;
       if (e.ctrlKey && e.shiftKey) return; // the panic key and friends
       e.stopPropagation();
       const eng = engine.current;
@@ -363,7 +368,7 @@ export default function Museum(props: MuseumProps) {
       }
     };
     const up = (e: KeyboardEvent) => {
-      if (coveredRef.current) return;
+      if (coveredRef.current || !layer.mine()) return;
       if (e.ctrlKey && e.shiftKey) return;
       e.stopPropagation();
       if (MOVE.has(e.code)) engine.current?.setKey(e.code, false);

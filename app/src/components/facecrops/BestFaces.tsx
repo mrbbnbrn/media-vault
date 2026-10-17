@@ -11,6 +11,7 @@ import { saveViewerPrefs, useViewerPrefs } from '../../prefs';
 import { FaceTile } from './FaceTile';
 import { MinFaceSlider, PicturesOnly } from './MinFace';
 import { measureFaces, measureOf } from './render';
+import { useLayer } from '../../keylayers';
 
 /** Only this many of the biggest faces are measured: size counts, so tiny ones rarely win and measuring takes time. */
 export const MEASURE_AT_MOST = 400;
@@ -78,9 +79,11 @@ export default function BestFaces(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pool, count, tick, progress == null]);
 
+  // A layer (keylayers.ts): the library underneath gets no keys; back closes it.
+  const layer = useLayer(true, { name: 'best faces', onBack: () => props.onClose() });
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (props.covered || e.key !== 'Escape') return;
+      if (props.covered || !layer.mine() || e.key !== 'Escape') return;
       e.preventDefault();
       e.stopPropagation();
       props.onClose();

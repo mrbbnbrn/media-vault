@@ -8,6 +8,7 @@ import { api, mediaUrl, thumbUrl, type FolderBanner, type FolderCard, type Item 
 import { bannerRank, bannerSpan, dragFocus } from '../bannerlogic';
 import { Modal } from './Dialogs';
 import './folderbanner.css';
+import { useLayer } from '../keylayers';
 
 /** The banner of the folder shown (refetched whenever the folder is reloaded). */
 export function useFolderBanner(folder: FolderCard | null): [FolderBanner | null, () => void] {
@@ -110,9 +111,11 @@ export function FolderBannerView({ banner, title, note, preview, scroller, editi
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
   };
+  const layer = useLayer(editing, { name: 'banner position', onBack: () => onEditDone(null) });
   useEffect(() => {
     if (!editing) return;
     const onKey = (e: KeyboardEvent) => {
+      if (!layer.mine()) return;
       if (e.key === 'Escape') {
         e.stopPropagation();
         onEditDone(null);

@@ -33,6 +33,7 @@ import { startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
+import { backTopLayer, noLayerOpen, screenStep } from './keylayers';
 
 // Screens load when first needed (lazypart.tsx): the start screen comes up
 // without compiling the library, viewer and settings first.
@@ -133,12 +134,16 @@ export function App() {
     const down = (e: MouseEvent) => {
       if (e.button === 3 || e.button === 4) e.preventDefault();
     };
+    // One "back" everywhere (keylayers.ts): whatever is on top steps back or closes
+    // (a menu, a dialog, the viewer, the museum, settings…); else the library goes
+    // back like Backspace / Alt+← (history, else the folder above).
     const up = (e: MouseEvent) => {
       if (e.button !== 3 && e.button !== 4) return;
       e.preventDefault();
-      if (screenRef.current.name !== 'library' || document.querySelector('[aria-modal="true"]')) return;
-      if (e.button === 3) goBackRef.current();
-      else goForwardRef.current();
+      if (e.button === 3) {
+        if (backTopLayer()) return;
+        if (screenRef.current.name === 'library' && !screenStep('back')) goBackRef.current();
+      } else if (noLayerOpen() && screenRef.current.name === 'library' && !screenStep('forward')) goForwardRef.current();
     };
     window.addEventListener('mousedown', down);
     window.addEventListener('mouseup', up);

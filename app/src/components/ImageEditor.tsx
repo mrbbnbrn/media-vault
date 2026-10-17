@@ -15,6 +15,7 @@ import { kickThumbnails, noteItemsChanged, type PlayItem } from '../media';
 import { saveWay, type Quarter } from '../rotation';
 import { pushUndo } from '../undo';
 import { CloseIcon, FlipIcon, RotateIcon } from './Icons';
+import { useLayer } from '../keylayers';
 
 /** Biggest picture the window can draw in one piece. */
 const MAX_SIDE = 16384;
@@ -137,9 +138,11 @@ export function ImageEditor(props: {
   // R / Shift+R turn, Esc cancels (the viewer's own keys wait meanwhile).
   const keys = useRef({ turn, cancel: props.onClose, busy: false });
   keys.current = { turn, cancel: props.onClose, busy: !!busy };
+  // A layer over the viewer (keylayers.ts): back cancels the edit.
+  const layer = useLayer(true, { name: 'picture editor', onBack: () => keys.current.cancel() });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (keys.current.busy) return;
+      if (keys.current.busy || !layer.mine()) return;
       const k = e.key.toLowerCase();
       if (k === 'escape') {
         e.preventDefault();

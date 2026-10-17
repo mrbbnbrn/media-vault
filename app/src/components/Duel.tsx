@@ -8,6 +8,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type DuelState, type Item } from '../api';
 import { pairKey, pickPair } from '../viewerlogic';
 import { CloseIcon, UndoIcon } from './Icons';
+import { useLayer } from '../keylayers';
 
 interface Done {
   winner: number;
@@ -101,9 +102,10 @@ export function Duel({ items, onClose }: { items: Item[]; onClose: () => void })
     }
   };
 
+  const layer = useLayer(true, { name: 'duel', onBack: () => (summary || history.length === 0 ? onClose() : setSummary(true)) });
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select')) return;
+      if (!layer.mine() || (e.target as HTMLElement).closest('input, textarea, select')) return;
       const k = e.key.toLowerCase();
       if ((e.ctrlKey || e.metaKey) && k === 'z') {
         e.preventDefault();

@@ -121,9 +121,10 @@ fn open(gpu: bool) -> Result<ort::session::Session, String> {
         b = b.with_parallel_execution(false).map_err(|e| err(&e))?;
         b = b.with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()]).map_err(|e| err(&e))?;
     } else {
-        // Leave one core for the window.
+        // Half the cores: its own threads run at normal priority (they don't take the
+        // analysis pass's low one), so the rest stays free for the window and videos.
         let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
-        b = b.with_intra_threads(cores.saturating_sub(1).max(1)).map_err(|e| err(&e))?;
+        b = b.with_intra_threads((cores / 2).max(1)).map_err(|e| err(&e))?;
         b = b.with_execution_providers([ort::ep::CPU::default().build()]).map_err(|e| err(&e))?;
     }
     b.commit_from_file(&path).map_err(|e| err(&e))
