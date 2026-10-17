@@ -41,6 +41,7 @@ import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTasks } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
 import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
+import { SeparateFaces, type SeparateTarget } from '../components/SeparateFaces';
 import { MediaGrid } from '../components/MediaGrid';
 import { CoverVideo } from '../components/VideoPreview';
 import { Framed } from '../components/FramedCover';
@@ -125,6 +126,7 @@ type Dialog =
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | ({ t: 'del3d' } & Delete3DTarget)
+  | { t: 'separate'; folder: { id: number; name: string } }
   | { t: 'shortcuts' }
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
@@ -1200,6 +1202,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
     { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { folder: f.id, label: `“${f.name}”` }) },
+    { label: 'Separate pictures without faces…', hint: 'move them to a folder', onSelect: () => setDialog({ t: 'separate', folder: { id: f.id, name: f.name } }) },
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
     ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
     { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
@@ -1437,6 +1440,37 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       await api.deleteItems(made);
       await api.deleteForever(made);
     });
+    await reload();
+  };
+  /** "Separate pictures without faces": into a new folder inside `parent` or a chosen one; moved or free-copied; one undo. */
+  const separate = async (parent: number, items: Item[], target: SeparateTarget, copy: boolean) => {
+    let to: number | null;
+    let made: number | null = null;
+    if ('newName' in target) {
+      to = made = await api.createFolder(parent, target.newName);
+    } else to = target.id;
+    const ids = items.map((i) => i.id);
+    const name = 'newName' in target ? target.newName : to === null ? 'Top level' : folders.find((f) => f.id === to)?.name ?? 'folder';
+    const dropMade = async () => {
+      if (made != null) await api.deleteFolder(made).catch(() => {});
+    };
+    if (copy) {
+      const copies = await api.freeCopy(ids, to);
+      did(`Made ${plural(copies.length, 'free copy', 'free copies')} in “${name}”`, async () => {
+        await api.deleteItems(copies);
+        await api.deleteForever(copies);
+        await dropMade();
+      });
+    } else {
+      const byFolder = new Map(items.map((i) => [i.id, i.folderId ?? null] as const));
+      const before = groupBy(ids, (id) => byFolder.get(id) ?? null);
+      await api.moveItems(ids, to);
+      bumpMoveStat(to);
+      did(`Moved ${plural(ids.length, 'item')} to “${name}”`, async () => {
+        for (const [f, g] of before) await api.moveItems(g, f);
+        await dropMade();
+      });
+    }
     await reload();
   };
   /** Your most-used destination folders (the "Move to" submenu). */
@@ -2587,6 +2621,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           }}>
           {dialog.what} will be removed from the vault and can't be brought back.
         </ConfirmDialog>
+      )}
+      {dialog?.t === 'separate' && (
+        <SeparateFaces folder={dialog.folder} folders={folders} onClose={() => setDialog(null)}
+          onScan={async (ids) => { await api.facesQueue({ ids }); kickFaceScanner(); }}
+          onApply={(items, target, copy) => separate(dialog.folder.id, items, target, copy)} />
       )}
       {dialog?.t === 'del3d' && (
         <Delete3DData what={dialog.what} folders={dialog.folders} ids={dialog.ids} onClose={() => setDialog(null)} onDone={(text) => setNote({ text, at: 0 })} />
