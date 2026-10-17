@@ -2277,6 +2277,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
               </div>
             )}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
+              {view.kind === 'folder' && !inTrash && (
+                <button type="button" className="btn btn-sm" title="Make a new folder inside this one" onClick={() => setDialog({ t: 'newFolder', parent: view.id })}>
+                  <PlusIcon size={14} /> New folder
+                </button>
+              )}
               {view.kind === 'folders' && folders.length > 0 && (
                 <Dropdown title="Sort the folders" label={`${FOLDER_SORTS.find((o) => o.id === cardSort)?.label} ▾`}
                   items={FOLDER_SORTS.map((o) => ({ label: o.label, checked: o.id === cardSort, onSelect: () => setCardSort(o.id) }))} />
