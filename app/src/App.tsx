@@ -9,6 +9,7 @@ import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
 import { beginStep, clearPerf, setPerfJobs, startPerfObservers } from './perf';
 import { jobList } from './jobs';
+import { clearFolderSamples } from './components/CoverImg';
 import { Start } from './screens/Start';
 import { CreateVault } from './screens/CreateVault';
 import { RecoveryWords } from './screens/RecoveryWords';
@@ -237,6 +238,7 @@ export function App() {
       viewerTab.current = null;
       clearViewMemory();
       clearPerf();
+      clearFolderSamples();
       setToast(reason === 'manual' && !hadPassword.current ? 'Vault closed.' : LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });

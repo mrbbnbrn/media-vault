@@ -36,7 +36,7 @@ import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } 
 import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { ActivityRing } from '../components/ActivityRing';
-import { CoverImg, useHoverCycle } from '../components/CoverImg';
+import { CoverImg, leaveCard, setHoveredCard, useCardHovered, useFolderSamples, useHoverCycle } from '../components/CoverImg';
 import { kickFaceScanner } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTaskPart } from '../tasks';
@@ -378,8 +378,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // Only whether packing runs (its progress shows in the jobs ring): progress messages don't redraw the library.
   const [storageJob, setStorageJob] = useState(false);
   const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
-  const [hoverCard, setHoverCard] = useState<number | null>(null);
-  const [samples, setSamples] = useState<Record<number, number[]>>({});
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
   const [smartModels, setSmartModels] = useState(false);
@@ -1234,7 +1232,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   useEffect(() => {
     const el = root.current;
     if (!frozen || !el) return;
-    setHoverCard(null);
+    setHoveredCard(null);
     const paused = [...el.querySelectorAll('video')].filter((v) => !v.paused && !v.dataset.gated);
     paused.forEach((v) => v.pause());
     return () => paused.forEach((v) => { if (v.isConnected) v.play().catch(() => {}); });
@@ -2064,20 +2062,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // Living folder cards: hovering a card cycles through a few items inside
   // (the counter lives in the hovered card's FolderCover, not here).
   const cardIndex = useMemo(() => new Map(cards.map((c, i) => [c.id, i])), [cards]);
-  useEffect(() => {
-    if (hoverCard == null) return;
-    const id = hoverCard;
-    const t = setTimeout(() => {
-      if (!samples[id]) api.folderSamples(id, 8).then((v) => setSamples((m) => ({ ...m, [id]: v }))).catch(() => {});
-    }, 200);
-    return () => clearTimeout(t);
-  }, [hoverCard]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const coverView = (f: FolderCard) => {
     const per = Math.max(1, cols - 1);
     const at = (cardIndex.get(f.id) ?? 0) % per;
     const edge = `${at === 0 ? ' edge-l' : ''}${at === per - 1 ? ' edge-r' : ''}`;
-    return <FolderCover f={f} hovered={hoverCard === f.id} samples={samples[f.id]} preview={preview} whole={!!cfg.wholeOnHover} edge={edge} />;
+    return <FolderCover f={f} preview={preview} whole={!!cfg.wholeOnHover} edge={edge} />;
   };
 
   // ---- the top bar: your buttons in your order (right-click → Customise top bar) ----------
@@ -2601,7 +2591,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                   onClick={(e) => { if (!(e.target as HTMLElement).closest('.dropdown')) folderClick(e, f, cards, false); }}
                   onDoubleClick={(e) => { if (!(e.target as HTMLElement).closest('.dropdown')) openFolder(f.id); }}
                   style={f.color ? { ['--fcolor' as string]: f.color } : undefined}
-                  onPointerEnter={() => setHoverCard(f.id)} onPointerLeave={() => setHoverCard((h) => (h === f.id ? null : h))}>
+                  onPointerEnter={() => setHoveredCard(f.id)} onPointerLeave={() => leaveCard(f.id)}>
                   <button type="button" className={`fcover${f.coverKind === 'pdf' || f.coverKind === 'text' ? ' doc' : ''}${f.color ? ' tinted' : ''}`}
                     onPointerDown={(e) => startFolderDrag(e, f)} {...middle(f)} aria-label={f.name}
                     title="Click to select · double-click (or Enter) to open · Ctrl/Shift + click to select several · middle-click: new tab · Shift + middle-click to play · drag onto a folder to move">
@@ -3233,9 +3223,12 @@ type CoverSource = 'here' | 'person' | 'all';
  * cover, a stack of three with the cover on top, or the cover alone. While hovered
  * it cycles through pictures from inside (its own counter: nothing else redraws).
  */
-function FolderCover({ f, hovered, samples: list, preview, whole, edge }: {
-  f: FolderCard; hovered: boolean; samples: number[] | undefined; preview: 'all' | 'hover' | 'off'; whole: boolean; edge: string;
+function FolderCover({ f, preview, whole, edge }: {
+  f: FolderCard; preview: 'all' | 'hover' | 'off'; whole: boolean; edge: string;
 }) {
+  // Hovering redraws only this card (CoverImg.tsx), not the library.
+  const hovered = useCardHovered(f.id);
+  const list = useFolderSamples(f.id, hovered);
   const cycle = useHoverCycle(hovered);
   // Person folders: a round cover centred on the face; hovering opens it
   // into the card's square, and holding there cycles pictures from inside.
