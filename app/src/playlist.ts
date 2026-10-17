@@ -1,17 +1,18 @@
 // Play order for the viewer, slideshows and multi-screen panels.
 //
-// Orders: name, date added, size, shuffle (each item once per round),
+// Orders: name, the picture's date (taken, else the file's date), date added, size, shuffle (each item once per round),
 // fully random, and weighted random (an item with weight 5 comes up about
 // five times as often as one with weight 1; weight 0 never comes up).
 
-export type Order = 'nameAsc' | 'nameDesc' | 'newest' | 'oldest' | 'largest' | 'shuffle' | 'random' | 'weighted';
+export type Order = 'nameAsc' | 'nameDesc' | 'newest' | 'oldest' | 'added' | 'largest' | 'shuffle' | 'random' | 'weighted';
 export type Repeat = 'off' | 'all' | 'one';
 
 export const ORDERS: { id: Order; label: string; hint?: string }[] = [
   { id: 'nameAsc', label: 'Name A–Z' },
   { id: 'nameDesc', label: 'Name Z–A' },
-  { id: 'newest', label: 'Date added, newest' },
-  { id: 'oldest', label: 'Date added, oldest' },
+  { id: 'newest', label: 'Date, newest', hint: 'taken, else the file’s date' },
+  { id: 'oldest', label: 'Date, oldest' },
+  { id: 'added', label: 'Recently added' },
   { id: 'largest', label: 'Size, largest' },
   { id: 'shuffle', label: 'Shuffle', hint: 'each once' },
   { id: 'random', label: 'Fully random', hint: 'repeats allowed' },
@@ -22,6 +23,8 @@ export interface Entry {
   key: string;
   name: string;
   added: number;
+  /** The picture's own date (taken, else the file's date, else when it was added). */
+  date?: number;
   size: number;
   /** Missing or invalid weights count as 1. */
   weight?: number;
@@ -44,9 +47,11 @@ export function sorted<T extends Entry>(entries: T[], order: Order): T[] {
     case 'nameDesc':
       return a.sort((x, y) => collator.compare(y.name, x.name));
     case 'newest':
-      return a.sort((x, y) => y.added - x.added || collator.compare(x.name, y.name));
+      return a.sort((x, y) => (y.date ?? y.added) - (x.date ?? x.added) || collator.compare(x.name, y.name));
     case 'oldest':
-      return a.sort((x, y) => x.added - y.added || collator.compare(x.name, y.name));
+      return a.sort((x, y) => (x.date ?? x.added) - (y.date ?? y.added) || collator.compare(x.name, y.name));
+    case 'added':
+      return a.sort((x, y) => y.added - x.added || collator.compare(x.name, y.name));
     case 'largest':
       return a.sort((x, y) => y.size - x.size);
     default:

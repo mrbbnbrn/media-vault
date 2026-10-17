@@ -590,6 +590,9 @@ export interface Crumb {
 }
 
 export interface FolderCard {
+  /** The newest / oldest picture date inside, subfolders included (seconds; 0 = empty). */
+  newest?: number;
+  oldest?: number;
   id: number;
   name: string;
   parentId: number | null;

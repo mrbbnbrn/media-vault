@@ -8,8 +8,8 @@ export const FOLDER_SORTS: { id: FolderSort; label: string; short: string; hint?
   { id: 'own', label: 'Your own order', short: 'Own order', hint: 'drag to arrange' },
   { id: 'nameAsc', label: 'Name A–Z', short: 'A–Z' },
   { id: 'nameDesc', label: 'Name Z–A', short: 'Z–A' },
-  { id: 'newest', label: 'Newest first', short: 'Newest' },
-  { id: 'oldest', label: 'Oldest first', short: 'Oldest' },
+  { id: 'newest', label: 'Newest first', short: 'Newest', hint: 'by the pictures inside' },
+  { id: 'oldest', label: 'Oldest first', short: 'Oldest', hint: 'by the pictures inside' },
   { id: 'opened', label: 'Recently opened', short: 'Recent' },
   { id: 'items', label: 'Most items', short: 'Most items' },
   { id: 'size', label: 'Largest size', short: 'Largest' },
@@ -25,6 +25,9 @@ export interface SortableFolder {
   items: number;
   /** Seconds. */
   createdAt?: number;
+  /** The newest / oldest picture date inside (seconds; 0 or missing = empty). */
+  newest?: number;
+  oldest?: number;
   bytes?: number;
 }
 
@@ -44,10 +47,11 @@ export function folderComparator(sort: FolderSort, opened: Opened = {}): ((a: So
       return byName;
     case 'nameDesc':
       return (a, b) => byName(b, a);
+    // By the pictures inside (empty folders last, newest made first).
     case 'newest':
-      return (a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || b.id - a.id;
+      return (a, b) => (b.newest || 0) - (a.newest || 0) || (b.createdAt ?? 0) - (a.createdAt ?? 0) || b.id - a.id;
     case 'oldest':
-      return (a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id - b.id;
+      return (a, b) => (a.oldest || Infinity) - (b.oldest || Infinity) || (a.createdAt ?? 0) - (b.createdAt ?? 0) || a.id - b.id;
     case 'opened':
       // Never opened ones go last, by name.
       return (a, b) => (opened[b.id] ?? 0) - (opened[a.id] ?? 0) || byName(a, b);

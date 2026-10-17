@@ -33,6 +33,7 @@ export function fromItem(i: Item): PlayItem {
     key: `v${i.id}`,
     name: i.name,
     added: i.importedAt,
+    date: i.takenAt,
     size: i.size,
     weight: i.weight,
     kind: i.kind,

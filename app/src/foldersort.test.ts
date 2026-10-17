@@ -57,3 +57,12 @@ describe('folder sorting', () => {
     expect(o).toEqual({ 2: now - day, 3: now });
   });
 });
+
+describe('newest / oldest go by the pictures inside', () => {
+  it('sorts by the newest and oldest picture, empty folders last', () => {
+    const f = (id: number, newest: number, oldest: number, createdAt = 100) => ({ id, name: `f${id}`, parentId: null, items: newest ? 1 : 0, createdAt, newest, oldest });
+    const list = [f(1, 500, 10), f(2, 900, 300), f(3, 0, 0, 999), f(4, 700, 5)];
+    expect(sortFolders(list, 'newest').map((x) => x.id)).toEqual([2, 4, 1, 3]);
+    expect(sortFolders(list, 'oldest').map((x) => x.id)).toEqual([4, 1, 2, 3]);
+  });
+});

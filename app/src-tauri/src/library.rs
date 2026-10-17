@@ -144,6 +144,10 @@ pub struct FolderCard {
     pub created_at: i64,
     /// Size of everything inside, subfolders included (bytes).
     pub bytes: i64,
+    /// The newest and oldest picture date inside, subfolders included (seconds:
+    /// date taken, else the file's date, else when it was added; 0 = empty).
+    pub newest: i64,
+    pub oldest: i64,
     /// Person folders: the face in the cover picture ([x, y, w, h] as parts of
     /// its width and height), so the round cover can be centred on it.
     pub cover_face: Option<[f32; 4]>,
@@ -222,6 +226,20 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             direct_bytes.insert(f, bytes);
         }
     }
+    // The newest and oldest item date of each folder's own items (sorting folders by date).
+    let mut direct_dates: HashMap<i64, (i64, i64)> = HashMap::new();
+    {
+        let mut st = conn
+            .prepare(
+                "SELECT folder_id, MAX(d), MIN(d) FROM (SELECT folder_id, COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at) AS d \
+                 FROM media WHERE deleted_at IS NULL AND folder_id IS NOT NULL) GROUP BY folder_id",
+            )
+            .map_err(e)?;
+        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
+            let (f, hi, lo) = row.map_err(e)?;
+            direct_dates.insert(f, (hi, lo));
+        }
+    }
     // A few pictures per folder for stacked cards (pictures first); the
     // first is the folder's cover unless one was chosen. One quick look-up
     // per folder (index media_samples) instead of sorting the whole library.
@@ -296,9 +314,22 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let mut total: HashMap<i64, i64> = HashMap::new();
     let mut total_bytes: HashMap<i64, i64> = HashMap::new();
     let mut cover_below: HashMap<i64, i64> = HashMap::new();
+    let mut dates: HashMap<i64, (i64, i64)> = HashMap::new();
     for (id, _) in order.iter().rev() {
         let mut t = *direct.get(id).unwrap_or(&0);
         let mut b = *direct_bytes.get(id).unwrap_or(&0);
+        let mut dt = direct_dates.get(id).copied();
+        for k in children.get(&Some(*id)).map(|v| v.as_slice()).unwrap_or(&[]) {
+            if let Some((hi, lo)) = dates.get(k).copied() {
+                dt = Some(match dt {
+                    Some((h, l)) => (h.max(hi), l.min(lo)),
+                    None => (hi, lo),
+                });
+            }
+        }
+        if let Some(d) = dt {
+            dates.insert(*id, d);
+        }
         let mut cov = first_thumb.get(id).copied();
         for k in children
             .get(&Some(*id))
@@ -381,6 +412,8 @@ pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
                 note: r.note.clone(),
                 created_at: r.created_at,
                 bytes: total_bytes.get(&id).copied().unwrap_or(0),
+                newest: dates.get(&id).map(|d| d.0).unwrap_or(0),
+                oldest: dates.get(&id).map(|d| d.1).unwrap_or(0),
             }
         })
         .collect())

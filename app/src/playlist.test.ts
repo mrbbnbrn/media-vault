@@ -158,3 +158,13 @@ describe('peekBack', () => {
     expect(p.prev()!.key).toBe(second);
   });
 });
+
+describe('date sorts use the picture date; Recently added uses when it was added', () => {
+  it('orders by date taken, and by date added for "added"', () => {
+    const e = (key: string, added: number, date: number) => ({ key, name: key, added, date, size: 1 });
+    const list = [e('a', 100, 5), e('b', 100, 9), e('c', 200, 1)];
+    expect(sorted(list, 'newest').map((x) => x.key)).toEqual(['b', 'a', 'c']);
+    expect(sorted(list, 'oldest').map((x) => x.key)).toEqual(['c', 'a', 'b']);
+    expect(sorted(list, 'added').map((x) => x.key)).toEqual(['c', 'a', 'b']);
+  });
+});

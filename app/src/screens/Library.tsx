@@ -153,6 +153,7 @@ type Dialog =
 const SORTS: { id: Order; label: string }[] = [
   { id: 'newest', label: 'Newest first' },
   { id: 'oldest', label: 'Oldest first' },
+  { id: 'added', label: 'Recently added' },
   { id: 'nameAsc', label: 'Name A–Z' },
   { id: 'nameDesc', label: 'Name Z–A' },
   { id: 'largest', label: 'Largest first' },
@@ -161,7 +162,8 @@ const SORTS: { id: Order; label: string }[] = [
 /** What the minimap preview says at an item: its month when sorted by date, its first letter when by name. */
 const monthFmt = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
 function minimapLabel(sort: Order | null): ((it: Item) => string | null) | undefined {
-  if (sort === 'newest' || sort === 'oldest') return (it) => `Added ${monthFmt.format(new Date(it.importedAt * 1000))}`;
+  if (sort === 'newest' || sort === 'oldest') return (it) => monthFmt.format(new Date(it.takenAt * 1000));
+  if (sort === 'added') return (it) => `Added ${monthFmt.format(new Date(it.importedAt * 1000))}`;
   if (sort === 'nameAsc' || sort === 'nameDesc') return (it) => {
     const c = it.name.trim().charAt(0).toLocaleUpperCase();
     return !c ? null : /\d/.test(c) ? '0–9' : c;
@@ -981,7 +983,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
     }
     if (inTrash || smart || view.kind === 'similar') return k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt }));
-    return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt })), sort);
+    return sorted(k.map((i) => ({ ...i, key: String(i.id), added: i.importedAt, date: i.takenAt })), sort);
   }, [items, kind, sort, timeline, inTrash, smart, view.kind]);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
   // Faces of the items shown, for face boxes and face-aware tiles.
