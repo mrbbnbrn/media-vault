@@ -24,7 +24,8 @@ fn all_bytes(dir: &Path) -> Vec<u8> {
     for e in fs::read_dir(dir).unwrap().flatten() {
         if e.file_type().unwrap().is_dir() {
             out.extend(all_bytes(&e.path()));
-        } else {
+        } else if e.file_name() != ".lock" {
+            // (.lock is locked while the vault is open: Windows can't read it)
             out.extend(fs::read(e.path()).unwrap());
         }
     }
