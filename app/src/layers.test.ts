@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { DepthMap } from './api';
+import type { DepthMap, SubjectMask } from './api';
 import { mapBytes, parseDepth } from './api';
 import {
   AHEAD_CAP, aheadCount, bgDepthNear, boxBlur, distanceTo, edgesStrength, fillDepth, fillRgba, holeMask,
-  pushPull, refineEdges, resample,
+  pushPull, refineEdges, resample, subjectColours, subjectOwnDepth,
 } from './layers';
 import { pickAhead } from './depth';
 
@@ -183,5 +183,47 @@ describe('saved maps', () => {
   it('saves maps in the shape depth_estimate sends them', () => {
     const m = { w: 3, h: 2, data: new Uint8Array([1, 2, 3, 4, 5, 6]) };
     expect(parseDepth(mapBytes(m))).toEqual(m);
+  });
+});
+
+describe('the subject as its own layer', () => {
+  // A 40 × 40 picture: a subject square 10..29 on a background; the depth map blurs across its rim.
+  const W = 40;
+  const inSq = (x: number, y: number) => x >= 10 && x < 30 && y >= 10 && y < 30;
+  const mask: SubjectMask = { w: W, h: W, data: Uint8Array.from({ length: W * W }, (_, i) => (inSq(i % W, Math.floor(i / W)) ? 255 : 0)) };
+
+  it('the depth at the rim is the subject’s own, not the background’s blurred in', () => {
+    const depth: DepthMap = {
+      w: W, h: W,
+      data: Uint8Array.from({ length: W * W }, (_, i) => {
+        const x = i % W;
+        const y = Math.floor(i / W);
+        // Subject at 200, background at 40, and the rim pixel (one in from the edge) half way.
+        if (!inSq(x, y)) return 40;
+        const rim = x === 10 || x === 29 || y === 10 || y === 29;
+        return rim ? 120 : 200;
+      }),
+    };
+    const own = subjectOwnDepth(depth, mask);
+    expect(own.data[10 * W + 10]).toBeGreaterThan(190); // the rim
+    expect(own.data[20 * W + 20]).toBe(200); // inside unchanged
+    expect(own.data[20 * W + 5]).toBeGreaterThan(150); // carried out past the rim
+  });
+
+  it('the soft rim takes the subject’s colour, the solid inside keeps the picture', () => {
+    const soft: SubjectMask = { w: W, h: W, data: Uint8Array.from(mask.data, (v, i) => (v && (i % W === 10) ? 128 : v)) };
+    const rgba = new Uint8Array(W * W * 4);
+    for (let i = 0; i < W * W; i++) {
+      const x = i % W;
+      const y = Math.floor(i / W);
+      // Red subject, white background; the soft rim column mixes both (pink).
+      const c = !inSq(x, y) ? [255, 255, 255] : x === 10 ? [255, 128, 128] : [200, 0, 0];
+      rgba.set([...c, 255], i * 4);
+    }
+    const out = subjectColours(rgba, soft.data, W, W);
+    const at = (x: number, y: number) => [out[(y * W + x) * 3], out[(y * W + x) * 3 + 1], out[(y * W + x) * 3 + 2]];
+    expect(at(20, 20)).toEqual([200, 0, 0]);
+    // The rim: red, not pink.
+    expect(at(10, 20)[1]).toBeLessThan(40);
   });
 });

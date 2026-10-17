@@ -11,7 +11,7 @@
 
 import { api, onLocked, type DepthMap, type SubjectMask } from './api';
 import { inpaintPack } from './inpaint';
-import { fillDepth, fillRgba, holeMask, refineEdges, resample } from './layers';
+import { fillDepth, fillRgba, holeMask, refineEdges, resample, subjectColours, subjectOwnDepth } from './layers';
 
 const REFINED_KEEP = 8;
 const PLATES_KEEP = 4;
@@ -22,9 +22,11 @@ const SIMPLE_SIDE = 256;
 
 const refined = new Map<string, DepthMap>();
 const plates = new Map<string, Promise<Plate | null>>();
+const fores = new Map<string, Promise<Plate | null>>();
 void onLocked(() => {
   refined.clear();
   plates.clear();
+  fores.clear();
 }).catch(() => {});
 
 function keep<T>(m: Map<string, T>, key: string, v: T, max: number) {
@@ -151,8 +153,11 @@ async function makePlate(r: PlateRequest): Promise<Plate | null> {
   big.ctx.drawImage(fill, 0, 0, w, h);
   const F = big.ctx.getImageData(0, 0, w, h).data;
   const hf = resample(hole, r.mask.w, r.mask.h, w, h);
-  // The depth: the subject area filled with the background's depth around it.
-  const pd = fillDepth(r.depth, resample(hole, r.mask.w, r.mask.h, r.depth.w, r.depth.h));
+  // The depth: the subject area filled with the background's depth around it. A wider area than the
+  // colour's: the depth model blurs the subject's depth a little way out into the background, which
+  // would otherwise make the background right next to the subject swim along with it.
+  const depthHole = holeMask(r.mask, side * 0.015, side * 0.006);
+  const pd = fillDepth(r.depth, resample(depthHole, r.mask.w, r.mask.h, r.depth.w, r.depth.h));
   const df = resample(pd.data, pd.w, pd.h, w, h);
   const data = new Uint8Array(w * h * 4);
   for (let i = 0; i < w * h; i++) {
@@ -164,6 +169,54 @@ async function makePlate(r: PlateRequest): Promise<Plate | null> {
     data[j + 3] = df[i];
   }
   return { w, h, data, model: used };
+}
+
+/**
+ * The subject as its own layer (Lift-off, Layered 3D, 3D only on the subject): RGBA at
+ * the plate's size, the colour with its soft rim cleaned (layers.ts subjectColours),
+ * alpha = the subject's own depth carried out past its rim (subjectOwnDepth). Drawn with
+ * the outline as its transparency, so it moves as one clean piece at its own depth.
+ */
+export function foreFor(key: string, r: Omit<PlateRequest, 'model'>): Promise<Plate | null> {
+  const known = fores.get(key);
+  if (known) {
+    keep(fores, key, known, PLATES_KEEP);
+    return known;
+  }
+  const p = makeFore(r).catch(() => null);
+  keep(fores, key, p, PLATES_KEEP);
+  void p.then((x) => {
+    if (!x && fores.get(key) === p) fores.delete(key);
+  });
+  return p;
+}
+
+async function makeFore(r: Omit<PlateRequest, 'model'>): Promise<Plate | null> {
+  const k = Math.min(1, PLATE_MAX / Math.max(r.w, r.h));
+  const w = Math.max(1, Math.round(r.w * k));
+  const h = Math.max(1, Math.round(r.h * k));
+  const res = await fetch(r.src);
+  if (!res.ok) return null;
+  const bmp = await createImageBitmap(await res.blob(), { imageOrientation: 'from-image', resizeWidth: w, resizeHeight: h, resizeQuality: 'high' } as ImageBitmapOptions);
+  const pic = canvas2d(w, h);
+  try {
+    pic.ctx.drawImage(bmp, 0, 0);
+  } finally {
+    bmp.close();
+  }
+  const orig = pic.ctx.getImageData(0, 0, w, h).data;
+  const m = resample(r.mask.data, r.mask.w, r.mask.h, w, h);
+  const rgb = subjectColours(orig, m, w, h);
+  const own = subjectOwnDepth(r.depth, r.mask);
+  const od = resample(own.data, own.w, own.h, w, h);
+  const data = new Uint8Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    data[i * 4] = rgb[i * 3];
+    data[i * 4 + 1] = rgb[i * 3 + 1];
+    data[i * 4 + 2] = rgb[i * 3 + 2];
+    data[i * 4 + 3] = Math.round(od[i]);
+  }
+  return { w, h, data, model: '' };
 }
 
 /**

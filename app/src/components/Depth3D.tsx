@@ -36,7 +36,7 @@ import {
   type SubjectStats,
 } from '../subject';
 import { bgDepthNear } from '../layers';
-import { peekRefined, plateFor, refinedDepth } from '../plate';
+import { foreFor, peekRefined, plateFor, refinedDepth } from '../plate';
 import { DepthModelChoice } from './DepthModels';
 import { InpaintModelChoice } from './InpaintModels';
 import { SavedMapsSection } from './SavedMaps';
@@ -159,6 +159,10 @@ uniform float uOwn;
 uniform sampler2D uPlate;
 uniform float uLayer;
 uniform float uZBg;
+// The subject as its own layer (plate.ts foreFor): rgb = its colours with the rim cleaned, a = its own
+// depth carried out past its rim; on once made (until then the picture and the depth map are used).
+uniform sampler2D uFore;
+uniform float uForeOn;
 const int N = ${STEPS};
 vec3 sharpen(vec3 c, vec3 n) {
   return clamp(c * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
@@ -244,10 +248,20 @@ void main() {
     vec2 ps = p - k * (zs - uPivot);
     vec2 s = unmove(ps);
     // Every part of the subject moves with its own depth (it stays a 3D shape, not a flat sticker).
-    for (int i = 0; i < 3; i++) {
-      zs = mix(uZSubj, texture2D(uDepth, clamp(s, 0.0, 1.0)).r, mask(s)) + lz;
-      ps = p - k * (zs - uPivot);
-      s = unmove(ps);
+    // Its own layer's depth is smooth right out past its rim, so this settles everywhere, edges too
+    // (the depth map's rim holds some of the background's depth: the edge used to swim and get cut off).
+    if (uForeOn > 0.0) {
+      for (int i = 0; i < 4; i++) {
+        zs = texture2D(uFore, clamp(s, 0.0, 1.0)).a + lz;
+        ps = p - k * (zs - uPivot);
+        s = unmove(ps);
+      }
+    } else {
+      for (int i = 0; i < 3; i++) {
+        zs = mix(uZSubj, texture2D(uDepth, clamp(s, 0.0, 1.0)).r, mask(s)) + lz;
+        ps = p - k * (zs - uPivot);
+        s = unmove(ps);
+      }
     }
     float m = mask(s);
     // Drawn with a slightly grown outline (the most of the outline nearby), so its old edge never peeks out.
@@ -259,7 +273,8 @@ void main() {
         g = max(g, max(mask(s + dir), mask(s + dir * 0.5)));
       }
     }
-    vec3 sc = pic(clamp(s, 0.0, 1.0));
+    // Its own layer: its cleaned colours (no fringe of the old background at the rim).
+    vec3 sc = uForeOn > 0.0 ? texture2D(uFore, clamp(s, 0.0, 1.0)).rgb : pic(clamp(s, 0.0, 1.0));
     vec3 o = mix(c, sc, g);
     if (uShadow > 0.0) {
       // A soft shadow down and to the right of the lifted subject, on the background only.
@@ -281,9 +296,10 @@ interface Scene {
   depth: WebGLTexture;
   mask: WebGLTexture;
   plate: WebGLTexture;
+  fore: WebGLTexture;
   u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'mask' | 'subj' | 'asp' | 'cen' | 'lift' | 'bot' | 'rot'
     | 'breath' | 'grow' | 'shadow' | 'shOff' | 'shBlur' | 'zSubj'
-    | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg', WebGLUniformLocation | null>;
+    | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg' | 'fore' | 'foreOn', WebGLUniformLocation | null>;
 }
 
 /**
@@ -373,6 +389,16 @@ function uploadPlate(s: Scene, p: { w: number; h: number; data: Uint8Array }) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, p.w, p.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, p.data);
 }
 
+/** The subject's own layer (RGBA: its cleaned colours, alpha = its own depth). */
+function uploadFore(s: Scene, p: { w: number; h: number; data: Uint8Array }) {
+  const { gl } = s;
+  gl.activeTexture(gl.TEXTURE4);
+  gl.bindTexture(gl.TEXTURE_2D, s.fore);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, p.w, p.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, p.data);
+}
+
 /** A depth map into the depth texture. */
 function uploadDepth(s: Scene, map: DepthMap) {
   const { gl } = s;
@@ -438,6 +464,9 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.activeTexture(gl.TEXTURE3);
   const plate = texture(gl);
   if (!plate) return null;
+  gl.activeTexture(gl.TEXTURE4);
+  const fore = texture(gl);
+  if (!fore) return null;
   const u = {
     shift: gl.getUniformLocation(prog, 'uShift'),
     dolly: gl.getUniformLocation(prog, 'uDolly'),
@@ -466,19 +495,24 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     plate: gl.getUniformLocation(prog, 'uPlate'),
     layer: gl.getUniformLocation(prog, 'uLayer'),
     zBg: gl.getUniformLocation(prog, 'uZBg'),
+    fore: gl.getUniformLocation(prog, 'uFore'),
+    foreOn: gl.getUniformLocation(prog, 'uForeOn'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
   gl.uniform1i(u.mask, 2);
   gl.uniform1i(u.plate, 3);
+  gl.uniform1i(u.fore, 4);
+  gl.uniform1f(u.foreOn, 0);
   gl.uniform1f(u.subj, 0);
   gl.uniform1f(u.layer, 0);
   gl.uniform1f(u.bgStill, 0);
   gl.uniform1f(u.own, 0);
   gl.clearColor(0, 0, 0, 0);
-  const s: Scene = { gl, prog, buf, img, depth, mask, plate, u };
+  const s: Scene = { gl, prog, buf, img, depth, mask, plate, fore, u };
   uploadMask(s, { w: 1, h: 1, data: new Uint8Array([0]) });
   uploadPlate(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
+  uploadFore(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
   return s;
 }
 
@@ -488,6 +522,7 @@ function dropScene(s: Scene) {
   gl.deleteTexture(s.depth);
   gl.deleteTexture(s.mask);
   gl.deleteTexture(s.plate);
+  gl.deleteTexture(s.fore);
   gl.deleteBuffer(s.buf);
   gl.deleteProgram(s.prog);
   gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -783,10 +818,12 @@ export function Depth3D(props: Props) {
       let shownDepth: DepthMap = map;
       let refining = '';
       let plate: { key: string; ready: boolean } | null = null;
+      let fore: { key: string; ready: boolean } | null = null;
       const srcNow = propsRef.current.src;
       const keepLift = lifted.src === srcNow && performance.now() - lifted.at < 600;
       const liftF = newFade(0);
       let liftAmt = 1;
+      let instantLift = false;
       const frame = () => {
         raf = 0;
         if (!alive) return;
@@ -812,7 +849,8 @@ export function Depth3D(props: Props) {
           shownMask = mk;
           zSubj = subjectDepth(map, mk.mask) ?? pivot;
           zBg = bgDepthNear(map, mk.mask) ?? Math.min(zSubj, pivot);
-          if (keepLift && (p.subject?.lift ?? 0) > 0) Object.assign(liftF, newFade(1));
+          // (Lifted on the picture before too: lifted at once, as soon as its clean layers are made.)
+          if (keepLift && (p.subject?.lift ?? 0) > 0) instantLift = true;
         }
         const lay = stillPic ? p.layers : undefined;
         // Sharper depth edges: the depth map made to follow the outline (worked out once, kept).
@@ -838,13 +876,32 @@ export function Depth3D(props: Props) {
           uploadDepth(s, wantDepth);
           shownDepth = wantDepth;
         }
-        // Layered 3D: the background with the subject filled in (made once in the background; until then, as before).
-        const layerWanted = !!mk && !!lay?.layered;
-        const plateKey = layerWanted ? `${depthId}|${(wantDepth === map ? 0 : edgeK).toFixed(2)}|${lay!.layered!.model}|${picW}x${picH}` : '';
+        // Whenever the subject is drawn as its own layer (Layered 3D, Lift-off, 3D only on the subject):
+        // the background with the subject filled in (Layered 3D's fill, else Simple), so the subject's old
+        // place never shows (no doubled edge, no outline), and the subject's own layer (clean rim, its own
+        // depth). Both are made once per picture in the background; until then, as before.
+        const liftWanted = !!p.subject && p.subject.lift > 0;
+        const layerWanted = !!mk && (!!lay?.layered || liftWanted || !!lay?.subjectOnly);
+        const fillModel = lay?.layered?.model ?? '';
+        const plateKey = layerWanted ? `${depthId}|${(wantDepth === map ? 0 : edgeK).toFixed(2)}|${fillModel}|${picW}x${picH}` : '';
+        if (layerWanted && fore?.key !== plateKey) {
+          const key = plateKey;
+          fore = { key, ready: false };
+          void foreFor(key, { src: p.src, w: picW, h: picH, mask: mk!.mask, depth: wantDepth }).then((fl) => {
+            if (!alive || !fl || fore?.key !== key || s.gl.isContextLost()) return;
+            try {
+              uploadFore(s, fl);
+              fore.ready = true;
+            } catch {
+              return;
+            }
+            kick.current();
+          });
+        }
         if (layerWanted && plate?.key !== plateKey) {
           const key = plateKey;
           plate = { key, ready: false };
-          void plateFor(key, { src: p.src, w: picW, h: picH, mask: mk!.mask, depth: wantDepth, model: lay!.layered!.model }).then((pl) => {
+          void plateFor(key, { src: p.src, w: picW, h: picH, mask: mk!.mask, depth: wantDepth, model: fillModel }).then((pl) => {
             if (!alive || !pl || plate?.key !== key || s.gl.isContextLost()) return;
             try {
               uploadPlate(s, pl);
@@ -856,6 +913,9 @@ export function Depth3D(props: Props) {
           });
         }
         const layered = layerWanted && !!plate?.ready && plate.key === plateKey;
+        const foreOn = layerWanted && !!fore?.ready && fore.key === plateKey;
+        // Both made: the subject's own layer over the filled background (else as before).
+        const clean = layered && foreOn;
         // 3D only on the subject: the background stays still and the subject moves against the background's depth.
         const bgStill = !!mk && !!lay?.subjectOnly;
         const pv = bgStill ? zBg : pivot;
@@ -889,6 +949,7 @@ export function Depth3D(props: Props) {
         gl.uniform2f(s.u.px, 1 / Math.max(1, vw), 1 / Math.max(1, vh));
         gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
         gl.uniform1f(s.u.layer, layered ? 1 : 0);
+        gl.uniform1f(s.u.foreOn, clean ? 1 : 0);
         gl.uniform1f(s.u.bgStill, bgStill ? 1 : 0);
         gl.uniform1f(s.u.own, bgStill || layered ? 1 : 0);
         // Subject effects (still pictures only): Lift-off on top of the 3D picture.
@@ -896,7 +957,12 @@ export function Depth3D(props: Props) {
         if (stillPic) {
           const sj = p.subject;
           if (sj && sj.lift > 0) liftAmt = sj.lift;
-          fadeTo(liftF, mk && sj && sj.lift > 0 ? 1 : 0, t);
+          // Lift-off starts once its clean layers are made (a moment after the outline), so it never shows a doubled edge.
+          if (clean && instantLift) {
+            instantLift = false;
+            if (sj && sj.lift > 0) Object.assign(liftF, newFade(1));
+          }
+          fadeTo(liftF, mk && sj && sj.lift > 0 && clean ? 1 : 0, t);
           const lv = fadeAt(liftF, t);
           if (lv >= 1) {
             lifted.src = p.src;

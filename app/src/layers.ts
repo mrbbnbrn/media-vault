@@ -371,3 +371,88 @@ export function aheadCount(stay: number | null | undefined): number {
   if (stay >= 1) return Math.min(AHEAD_CAP, 4);
   return AHEAD_CAP;
 }
+
+// ---- the subject drawn as its own layer (Lift-off, Layered 3D, 3D only on the subject) -------------
+//
+// Depth maps blur across the outline (the subject's rim gets some of the
+// background's depth) and the outline's soft rim holds some of the background's
+// colour. Moved on its own, such a rim slides at the wrong depth (the edge seems
+// to swim and get cut off as the picture moves) and shows a light or dark fringe.
+// So the layer gets its own depth and colours: both taken from well inside the
+// outline and carried out to (and past) the rim.
+
+/** The subject's own depth: from well inside the outline, carried smoothly out past its rim. */
+export function subjectOwnDepth(depth: DepthMap, mask: SubjectMask): DepthMap {
+  const { w, h } = depth;
+  const n = w * h;
+  const m = resample(mask.data, mask.w, mask.h, w, h);
+  const outside = new Uint8Array(n);
+  for (let i = 0; i < n; i++) outside[i] = m[i] < 128 ? 1 : 0;
+  const d = distanceTo(outside, w, h);
+  // The depth model's blur reaches a couple of its pixels in from the outline.
+  const inset = Math.max(1.5, Math.min(w, h) * 0.012);
+  const weight = new Float32Array(n);
+  let any = 0;
+  for (let i = 0; i < n; i++) {
+    weight[i] = m[i] >= 128 && d[i] > inset ? 1 : 0;
+    any += weight[i];
+  }
+  // A thin subject with no inside that far in: the whole of it.
+  if (!any) for (let i = 0; i < n; i++) weight[i] = m[i] >= 128 ? 1 : 0;
+  const f = pushPull(depth.data, weight, w, h);
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.round(Math.min(255, Math.max(0, f[i])));
+  return { w, h, data: out };
+}
+
+/**
+ * The subject's colours with its rim cleaned: where the outline is soft, the colour
+ * comes from the solid subject next to it (not the background mixed into the rim).
+ * `rgba` and `m` (the outline, 0–255) are `w` × `h`; the carrying-out is done on a
+ * copy at most `side` big. Returns RGB per pixel (3 bytes each).
+ */
+export function subjectColours(rgba: ArrayLike<number>, m: ArrayLike<number>, w: number, h: number, side = 640): Uint8Array {
+  const k = Math.min(1, side / Math.max(w, h));
+  const sw = Math.max(1, Math.round(w * k));
+  const sh = Math.max(1, Math.round(h * k));
+  const n = w * h;
+  const sn = sw * sh;
+  // Solid subject (at the small size): what is carried out.
+  const ms = resample(m, w, h, sw, sh);
+  const chan = (c: number) => {
+    const v = new Float32Array(n);
+    for (let i = 0; i < n; i++) v[i] = rgba[i * 4 + c];
+    return resample(v, w, h, sw, sh);
+  };
+  const r = chan(0);
+  const g = chan(1);
+  const b = chan(2);
+  const vals = new Float32Array(sn * 3);
+  const weight = new Float32Array(sn);
+  for (let i = 0; i < sn; i++) {
+    vals[i * 3] = r[i];
+    vals[i * 3 + 1] = g[i];
+    vals[i * 3 + 2] = b[i];
+    weight[i] = ms[i] >= 245 ? 1 : 0;
+  }
+  // A soft outline with no solid part: the half-way line instead.
+  if (!weight.some((x) => x > 0)) for (let i = 0; i < sn; i++) weight[i] = ms[i] >= 128 ? 1 : 0;
+  const f = pushPull(vals, weight, sw, sh, 3);
+  const up = (c: number) => {
+    const v = new Float32Array(sn);
+    for (let i = 0; i < sn; i++) v[i] = f[i * 3 + c];
+    return resample(v, sw, sh, w, h);
+  };
+  const er = up(0);
+  const eg = up(1);
+  const eb = up(2);
+  const out = new Uint8Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    // Solid: the picture itself (full detail); the soft rim and outside: the carried-out colour.
+    const t = clamp01((m[i] - 215) / 35);
+    out[i * 3] = Math.round(er[i] + (rgba[i * 4] - er[i]) * t);
+    out[i * 3 + 1] = Math.round(eg[i] + (rgba[i * 4 + 1] - eg[i]) * t);
+    out[i * 3 + 2] = Math.round(eb[i] + (rgba[i * 4 + 2] - eb[i]) * t);
+  }
+  return out;
+}
