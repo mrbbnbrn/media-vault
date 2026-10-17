@@ -46,8 +46,12 @@ impl<T: Send + 'static> ModelSlot<T> {
         }
     }
 
-    /// A model is in the slot (and the slot isn't busy).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// When it was last used (None once freed by the idle timer).
+    pub fn last_used(&self) -> Option<Instant> {
+        *self.last_use.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A model is in the slot (or the slot is busy).
     pub fn is_loaded(&self) -> bool {
         self.model.try_lock().map(|m| m.is_some()).unwrap_or(true)
     }

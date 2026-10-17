@@ -423,9 +423,13 @@ pub fn unload() {
 }
 
 /// A background fill model is loaded now.
-#[cfg(test)]
 pub fn loaded() -> bool {
     MODEL.is_loaded()
+}
+
+/// When the model was last used.
+pub fn last_used() -> Option<Instant> {
+    MODEL.last_used()
 }
 
 /// Run `f` with this model (on the graphics card when possible; a failure
@@ -449,16 +453,18 @@ fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded
         *guard = None;
     }
     *loaded_ms = 0.0;
+    // Keep what fits on the graphics card: free the others first if this one wouldn't.
+    let (before, fit_note) = if try_gpu { gpuroom::fit(Kind::Fill, &key, guard.is_some()) } else { (None, String::new()) };
     let on_cpu = guard.as_ref().is_some_and(|l| !l.gpu);
     let order: &[Device] = if on_cpu { &[Device::Cpu] } else { gpuroom::attempts(try_gpu) };
-    let mut note = String::new();
+    let mut note = fit_note;
     let mut last_err = String::from("Background fill couldn't run.");
     let mut load_failed = false;
     for &dev in order {
         if dev == Device::GpuAfterRoom {
             // Not enough room on the graphics card with the other models loaded: free them, try again.
             gpuroom::make_room(Kind::Fill);
-            note = "made room on the graphics card".into();
+            note = if note.is_empty() { "made room on the graphics card".into() } else { format!("{note}; made room on the graphics card") };
         }
         if guard.is_none() {
             let start = Instant::now();
@@ -480,14 +486,21 @@ fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded
         let run = Instant::now();
         match f(loaded) {
             Ok(v) => {
+                let ran = run.elapsed();
                 LAST_DEVICE.lock().unwrap().insert(key.clone(), gpu);
+                let mut card = None;
                 if gpu {
                     gpuroom::on_gpu(&key);
+                    let (n, c) = gpuroom::after(Kind::Fill, &key, None, *loaded_ms > 0.0, before, ran);
+                    card = c;
+                    if !n.is_empty() {
+                        note = if note.is_empty() { n } else { format!("{note}; {n}") };
+                    }
                 } else if try_gpu {
                     gpuroom::fell_back(&key);
                     note = if note.is_empty() { "on the processor (the graphics card failed)".into() } else { format!("{note}; on the processor") };
                 }
-                gpuroom::log(Kind::Fill, &key, gpu, wait, *loaded_ms, run.elapsed(), &note);
+                gpuroom::log(Kind::Fill, &key, gpu, wait, *loaded_ms, ran, &note, card);
                 return Ok(v);
             }
             Err(e) => {
@@ -499,6 +512,7 @@ fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded
     if load_failed {
         BROKEN.lock().unwrap().insert(key.clone(), last_err.clone());
     }
+    gpuroom::log(Kind::Fill, &key, false, wait, *loaded_ms, Duration::ZERO, &format!("didn't run: {last_err}"), gpuroom::card_memory());
     Err(last_err)
 }
 

@@ -567,9 +567,13 @@ pub fn unload() {
 }
 
 /// A model of this kind is loaded now.
-#[cfg(test)]
 pub fn loaded() -> bool {
     MODEL.is_loaded()
+}
+
+/// When the model was last used.
+pub fn last_used() -> Option<Instant> {
+    MODEL.last_used()
 }
 
 /// The key a pack and detail are loaded under (fixed-size models ignore the detail).
@@ -611,9 +615,11 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
         *guard = None;
     }
     *loaded_ms = 0.0;
+    // Keep what fits on the graphics card: free the others first if this one wouldn't.
+    let (before, fit_note) = if try_gpu { gpuroom::fit(Kind::Depth, &id, guard.is_some()) } else { (None, String::new()) };
     let on_cpu = guard.as_ref().is_some_and(|l| !l.gpu);
     let order: &[Device] = if on_cpu { &[Device::Cpu] } else { gpuroom::attempts(try_gpu) };
-    let mut note = String::new();
+    let mut note = fit_note;
     let mut last_err = String::from("3D photos couldn't run.");
     let mut load_failed = false;
     for &dev in order {
@@ -623,7 +629,7 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
         if dev == Device::GpuAfterRoom {
             // Not enough room on the graphics card with the other models loaded: free them, try again.
             gpuroom::make_room(Kind::Depth);
-            note = "made room on the graphics card".into();
+            note = if note.is_empty() { "made room on the graphics card".into() } else { format!("{note}; made room on the graphics card") };
         }
         if guard.is_none() {
             let start = Instant::now();
@@ -646,14 +652,21 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
         let run = Instant::now();
         match f(loaded) {
             Ok(v) => {
+                let ran = run.elapsed();
                 LAST_DEVICE.lock().unwrap().insert(id.clone(), gpu);
+                let mut card = None;
                 if gpu {
                     gpuroom::on_gpu(&id);
+                    let (n, c) = gpuroom::after(Kind::Depth, &id, Some(format!("{id}@{side}").as_str()), *loaded_ms > 0.0, before, ran);
+                    card = c;
+                    if !n.is_empty() {
+                        note = if note.is_empty() { n } else { format!("{note}; {n}") };
+                    }
                 } else if try_gpu {
                     gpuroom::fell_back(&id);
                     note = if note.is_empty() { "on the processor (the graphics card failed)".into() } else { format!("{note}; on the processor") };
                 }
-                gpuroom::log(Kind::Depth, &id, gpu, wait, *loaded_ms, run.elapsed(), &note);
+                gpuroom::log(Kind::Depth, &id, gpu, wait, *loaded_ms, ran, &note, card);
                 return Ok(v);
             }
             Err(e) => {
@@ -668,6 +681,7 @@ fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn F
     if load_failed {
         BROKEN.lock().unwrap().insert(id.clone(), last_err.clone());
     }
+    gpuroom::log(Kind::Depth, &id, false, wait, *loaded_ms, Duration::ZERO, &format!("didn't run: {last_err}"), gpuroom::card_memory());
     Err(last_err)
 }
 

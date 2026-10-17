@@ -307,7 +307,11 @@ export interface ModelRun {
   runMs: number;
   note: string;
   at: number;
+  /** The app's use of the graphics card's memory after the run, and what Windows lets it use (MB). */
+  cardUsedMb?: number | null;
+  cardBudgetMb?: number | null;
 }
+const gb = (mb: number) => (mb / 1024).toFixed(1);
 let modelLog: () => Promise<ModelRun[]> = async () => [];
 /** Set by App (perf.ts imports nothing). */
 export function setModelLogSource(f: () => Promise<ModelRun[]>) {
@@ -320,8 +324,9 @@ export async function fullReport(): Promise<string> {
   const runs = await modelLog().catch(() => [] as ModelRun[]);
   if (!runs.length) return base;
   const lines = ['', '## 3D model runs (device · waited · loaded · ran)'];
-  for (const r of runs.slice(-40)) {
-    lines.push(`${new Date(r.at).toLocaleTimeString()}  ${r.kind} ${r.model} on ${r.device === 'gpu' ? 'graphics card' : 'PROCESSOR'} · waited ${Math.round(r.waitMs)} ms · loaded ${Math.round(r.loadMs)} ms · ran ${Math.round(r.runMs)} ms${r.note ? ` · ${r.note}` : ''}`);
+  for (const r of runs) {
+    const card = r.cardUsedMb != null && r.cardBudgetMb ? ` · card memory ${gb(r.cardUsedMb)} of ${gb(r.cardBudgetMb)} GB` : '';
+    lines.push(`${new Date(r.at).toLocaleTimeString()}  ${r.kind} ${r.model} on ${r.device === 'gpu' ? 'graphics card' : 'PROCESSOR'} · waited ${Math.round(r.waitMs)} ms · loaded ${Math.round(r.loadMs)} ms · ran ${Math.round(r.runMs)} ms${card}${r.note ? ` · ${r.note}` : ''}`);
   }
   return base + '\n' + lines.join('\n');
 }
