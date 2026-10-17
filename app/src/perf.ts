@@ -295,3 +295,33 @@ function graphicsName(): string {
     return 'unknown';
   }
 }
+
+// ---- the 3D models' runs (the backend's log: gpuroom.rs) --------------------------------------------
+
+export interface ModelRun {
+  kind: string;
+  model: string;
+  device: 'gpu' | 'cpu';
+  waitMs: number;
+  loadMs: number;
+  runMs: number;
+  note: string;
+  at: number;
+}
+let modelLog: () => Promise<ModelRun[]> = async () => [];
+/** Set by App (perf.ts imports nothing). */
+export function setModelLogSource(f: () => Promise<ModelRun[]>) {
+  modelLog = f;
+}
+
+/** The report with the 3D models' last runs added (on which device, waiting, loading, running). */
+export async function fullReport(): Promise<string> {
+  const base = perfReport();
+  const runs = await modelLog().catch(() => [] as ModelRun[]);
+  if (!runs.length) return base;
+  const lines = ['', '## 3D model runs (device · waited · loaded · ran)'];
+  for (const r of runs.slice(-40)) {
+    lines.push(`${new Date(r.at).toLocaleTimeString()}  ${r.kind} ${r.model} on ${r.device === 'gpu' ? 'graphics card' : 'PROCESSOR'} · waited ${Math.round(r.waitMs)} ms · loaded ${Math.round(r.loadMs)} ms · ran ${Math.round(r.runMs)} ms${r.note ? ` · ${r.note}` : ''}`);
+  }
+  return base + '\n' + lines.join('\n');
+}

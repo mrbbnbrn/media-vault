@@ -825,6 +825,8 @@ export function takeLogin(): LoginInfo | null {
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export const api = {
+  /** The 3D models' last runs: device, waiting, loading and running times (gpuroom.rs; the timing panel's report). */
+  modelsLog: () => call<import('./perf').ModelRun[]>('models_log'),
   /** The user is using the window (or a video plays): the backend's background loops wait between items (bgpace.ts). */
   setUserBusy: (busy: boolean, video: boolean) => call<void>('set_user_busy', { busy, video }),
   getState: () => call<AppState>('get_state'),

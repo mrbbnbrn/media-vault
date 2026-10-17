@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { continueIfNeeded, listenForEncryption } from './encryptionjob';
-import { api, onEvent, onLocked, type AppState, type LockReason } from './api';
+import { api, inTauri, onEvent, onLocked, type AppState, type LockReason } from './api';
+const inTauriNow = () => inTauri;
 import { applyAccent } from './theme';
 import { setPrefsConfig } from './prefs';
 import { applyLook, setZoom, zoomKey } from './look';
 import { clearUndo } from './undo';
 import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
-import { beginStep, clearPerf, setPerfJobs, startPerfObservers } from './perf';
+import { beginStep, clearPerf, setModelLogSource, setPerfJobs, startPerfObservers } from './perf';
 import { jobList } from './jobs';
 import { clearFolderSamples } from './components/CoverImg';
 import { Start } from './screens/Start';
@@ -46,6 +47,7 @@ const PerfPanel = lazyPart(() => import('./components/PerfPanel').then((m) => m.
 
 startPerfObservers();
 setPerfJobs(() => jobList().filter((j) => !j.endedAt).map((j) => j.label));
+setModelLogSource(() => (inTauriNow() ? api.modelsLog() : Promise.resolve([])));
 
 export type Screen =
   | { name: 'start'; select?: string }

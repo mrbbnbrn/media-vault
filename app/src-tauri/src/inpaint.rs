@@ -433,48 +433,73 @@ pub fn loaded() -> bool {
 /// kept; the depth and subject outline models stay as they are.
 /// `loaded_ms` is set to how long loading took (0 when it was loaded already).
 fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
+    use crate::gpuroom::{self, Device, Kind};
     let try_gpu = cfg!(windows) && pack.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
     let key = pack.manifest.id.clone();
+    // One model on the graphics card at a time (gpuroom.rs).
+    let waited = Instant::now();
+    let _turn = gpuroom::turn();
+    let wait = waited.elapsed();
     let mut guard = MODEL.lock();
     if guard.as_ref().is_some_and(|l| l.key != key) {
         *guard = None; // the other fill model: free it first
     }
+    // On the processor since a fall-back: the graphics card again now and then.
+    if try_gpu && guard.as_ref().is_some_and(|l| !l.gpu) && gpuroom::retry_gpu_due(&key) {
+        *guard = None;
+    }
     *loaded_ms = 0.0;
-    for attempt in 0..2 {
+    let on_cpu = guard.as_ref().is_some_and(|l| !l.gpu);
+    let order: &[Device] = if on_cpu { &[Device::Cpu] } else { gpuroom::attempts(try_gpu) };
+    let mut note = String::new();
+    let mut last_err = String::from("Background fill couldn't run.");
+    let mut load_failed = false;
+    for &dev in order {
+        if dev == Device::GpuAfterRoom {
+            // Not enough room on the graphics card with the other models loaded: free them, try again.
+            gpuroom::make_room(Kind::Fill);
+            note = "made room on the graphics card".into();
+        }
         if guard.is_none() {
-            let first = attempt == 0 && try_gpu;
             let start = Instant::now();
-            let loaded = match load(pack, first) {
-                Ok(l) => Ok(l),
-                Err(_) if first => load(pack, false),
-                Err(e) => Err(e),
-            };
-            match loaded {
+            match load(pack, dev.gpu()) {
                 Ok(l) => {
                     *loaded_ms += start.elapsed().as_secs_f64() * 1000.0;
                     *guard = Some(l);
                 }
                 Err(e) => {
-                    BROKEN.lock().unwrap().insert(pack.manifest.id.clone(), e.clone());
-                    return Err(e);
+                    last_err = e;
+                    load_failed = true;
+                    continue;
                 }
             }
         }
+        load_failed = false;
         let loaded = guard.as_mut().expect("loaded above");
         let gpu = loaded.gpu;
+        let run = Instant::now();
         match f(loaded) {
             Ok(v) => {
-                LAST_DEVICE.lock().unwrap().insert(pack.manifest.id.clone(), gpu);
+                LAST_DEVICE.lock().unwrap().insert(key.clone(), gpu);
+                if gpu {
+                    gpuroom::on_gpu(&key);
+                } else if try_gpu {
+                    gpuroom::fell_back(&key);
+                    note = if note.is_empty() { "on the processor (the graphics card failed)".into() } else { format!("{note}; on the processor") };
+                }
+                gpuroom::log(Kind::Fill, &key, gpu, wait, *loaded_ms, run.elapsed(), &note);
                 return Ok(v);
             }
-            Err(_) if gpu && attempt == 0 => {
-                *guard = None; // next round: the processor
-                continue;
+            Err(e) => {
+                *guard = None;
+                last_err = e;
             }
-            Err(e) => return Err(e),
         }
     }
-    Err("Background fill couldn't run.".into())
+    if load_failed {
+        BROKEN.lock().unwrap().insert(key.clone(), last_err.clone());
+    }
+    Err(last_err)
 }
 
 // ---- the maths (no model needed) --------------------------------------------------------------

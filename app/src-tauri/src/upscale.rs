@@ -174,6 +174,10 @@ pub(crate) fn open_session(env: &ort::environment::Environment, path: &Path, gpu
     let err = |e: &dyn std::fmt::Display| format!("The upscaler couldn't load its model ({e}).");
     let mut b = ort::session::Session::builder(env).map_err(|e| err(&e))?;
     if !gpu {
+        // On the processor: half the cores (its threads run at normal priority; the window and
+        // videos keep the rest).
+        let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+        b = b.with_intra_threads((cores / 2).max(1)).map_err(|e| err(&e))?;
         b = b.with_execution_providers([ort::ep::CPU::default().build()]).map_err(|e| err(&e))?;
     } else {
         // DirectML wants these two off.
@@ -248,6 +252,13 @@ fn run_planar(session: &mut ort::session::Session, data: Vec<f32>, side: usize) 
 /// Free the models' memory (when the viewer closes).
 pub fn unload() {
     *MODELS.lock().unwrap() = None;
+}
+
+/// Free the models unless they are running right now (making room for another model: gpuroom.rs).
+pub fn unload_if_idle() {
+    if let Ok(mut m) = MODELS.try_lock() {
+        *m = None;
+    }
 }
 
 // ---- results kept in memory ---------------------------------------------------------------

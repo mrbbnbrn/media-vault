@@ -4,7 +4,7 @@
 // all on the clipboard as text.
 
 import { useEffect, useState, useSyncExternalStore } from 'react';
-import { callStats, clearPerf, eventRates, onPerfChange, perfEntries, perfReport, perfVersion, type PerfKind } from '../perf';
+import { callStats, clearPerf, eventRates, fullReport, onPerfChange, perfEntries, perfVersion, type PerfKind } from '../perf';
 
 const TABS: { id: PerfKind | 'calls'; label: string; hint: string }[] = [
   { id: 'step', label: 'Steps', hint: 'Unlocking, opening a folder, its first thumbnails, opening a picture' },
@@ -32,7 +32,7 @@ export function PerfPanel({ onClose }: { onClose: () => void }) {
   const calls = tab === 'calls' ? callStats().sort((a, b) => b.totalMs - a.totalMs).slice(0, 30) : [];
   const rates = tab === 'calls' ? eventRates().slice(0, 12) : [];
   const copy = () => {
-    navigator.clipboard.writeText(perfReport()).then(() => {
+    fullReport().then((text) => navigator.clipboard.writeText(text)).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
     }).catch(() => {});
