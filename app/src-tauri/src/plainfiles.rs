@@ -195,7 +195,7 @@ fn cname_matches_number(cname: &str, name: &str) -> bool {
 
 /// Put every file where it belongs now. How many moved.
 pub fn arrange(s: &Session) -> Result<usize, String> {
-    let Ok(_one) = RUNNING.try_lock() else { return Ok(0) };
+    let _one = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
     {
         let v = s.vault();
         if !(v.header().is_plain() || v.conversion() == Some("plain")) {
