@@ -26,7 +26,7 @@ import { startThumbnailer } from './media';
 import { resetGrid, whenGridShown } from './firstgrid';
 import { startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
-import { setNativeOptions, startNativeAnalyser } from './ml/native';
+import { setNativeOptions, setSmartPauser, startNativeAnalyser } from './ml/native';
 import { startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
 import type { PlayItem } from './media';
@@ -241,13 +241,19 @@ export function App() {
   // Faces are found only in what the user asked to scan; pictures are analysed
   // for smart search whenever its models are there (full package).
   useEffect(() => (open ? whenGridShown(startFaceScanner) : undefined), [open]);
-  const smartIndex = open && app?.config.smartIndex !== false;
+  // Smart search can be off altogether, or its analysing paused (Settings → Faces & smart search).
+  const smartIndex = open && app?.config.smartIndex !== false && app?.config.smartEnabled !== false;
   useEffect(() => (smartIndex ? whenGridShown(startClipIndexer) : undefined), [smartIndex]);
   // The app's own analysis pass: thumbnails, fingerprints, smart search and
   // faces of the pictures it reads, each decoded once (the loops above and
   // below only do the rest).
   useEffect(() => (open ? whenGridShown(() => startNativeAnalyser(smartIndex)) : undefined), [open]);
   useEffect(() => setNativeOptions({ smart: smartIndex }), [smartIndex]);
+  // "Pause" on the analysis in the jobs ring pauses smart-search analysing (resume in Settings).
+  useEffect(() => setSmartPauser(() => {
+    const c = lookConfig.current;
+    if (c) void api.saveConfig({ ...c, smartIndex: false }).then(() => refreshRef.current?.()).catch(() => {});
+  }), []);
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
   useEffect(() => (makePreviews ? whenGridShown(startPreviewMaker) : undefined), [makePreviews]);

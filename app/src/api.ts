@@ -158,6 +158,8 @@ export interface AppConfig {
   poorFaces?: PoorFaceSettings;
   /** After deleting for good, the space deleted files leave in the packs is reclaimed in the background. */
   autoReclaim?: boolean;
+  /** Smart search at all (off: no ✦ button, nothing analysed for it). */
+  smartEnabled?: boolean;
 }
 
 // ---- poor faces (begin) ----

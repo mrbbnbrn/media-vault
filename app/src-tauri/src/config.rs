@@ -264,6 +264,8 @@ pub struct AppConfig {
     /// deleted files leave inside the pack files is reclaimed in the
     /// background, so nothing of them is left in the vault folder.
     pub auto_reclaim: bool,
+    /// Smart search at all (off: no ✦ button, nothing analysed for it, its models never load).
+    pub smart_enabled: bool,
 }
 
 // ---- poor faces settings (begin) ----
@@ -363,6 +365,7 @@ impl Default for AppConfig {
             last_vault: None,
             poor_faces: PoorFaceSettings::default(),
             auto_reclaim: true,
+            smart_enabled: true,
         }
     }
 }

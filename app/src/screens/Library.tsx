@@ -372,7 +372,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [cycle, setCycle] = useState(0);
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
-  const [smartOk, setSmartOk] = useState(false);
+  const [smartModels, setSmartModels] = useState(false);
+  // Smart search can be turned off altogether (Settings): then it's as if its models weren't there.
+  const smartOk = smartModels && cfg.smartEnabled !== false;
   const smartOn = smartOk && !!cfg.smartSearch;
   // "Find similar" uses smart search when it is on (only that view reloads when it changes).
   const similarSmart = view.kind === 'similar' && smartOn;
@@ -542,7 +544,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, []);
   // Smart search: are the models there, and how far is the analysis?
   useEffect(() => {
-    smartAvailable().then(setSmartOk);
+    smartAvailable().then(setSmartModels);
     const upd = () => api.clipStatus().then(setClip).catch(() => {});
     upd();
     return onClipProgress(upd);
@@ -2093,12 +2095,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           }}
           smart={smartOk && !!cfg.smartSearch} smartQuery={smart ? view.q : ''}
           onSmart={(q) => setView(q ? { kind: 'smart', q } : { kind: 'folders' })} />
-        <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
+        {cfg.smartEnabled !== false && <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
           disabled={!smartOk} aria-label="Smart search"
           title={!smartOk ? 'Smart search needs the full package (with the “models” folder next to the app)'
             : cfg.smartSearch ? 'Smart search is on: describe what you are looking for, in any language. Click to turn off.'
             : 'Smart search: find pictures by describing them (“beach at sunset”, “kırmızı araba”). Click to turn on.'}
-          onClick={() => saveCfg({ smartSearch: !cfg.smartSearch })}><SparkleIcon /></button>
+          onClick={() => saveCfg({ smartSearch: !cfg.smartSearch })}><SparkleIcon /></button>}
         <nav className={`row topbar${topEdit ? ' editing' : ''}`} style={{ gap: 8 }}>
           {topOrder.map((k) => {
             const b = topButtons[k];

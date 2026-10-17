@@ -23,9 +23,15 @@ export function setNativeOptions(o: Partial<typeof options>) {
   if (running) api.analyseStart(options).catch(() => {});
 }
 
-/** The ring's wording for what is left. */
-export function analyseLabel(st: Pick<AnalyseStatus, 'facesLeft'>): string {
-  return st.facesLeft > 0 ? 'Analysing pictures and faces' : 'Analysing pictures';
+/** The ring's wording for what is left (without smart search it's only thumbnails and fingerprints). */
+export function analyseLabel(st: Pick<AnalyseStatus, 'facesLeft'>, smart = true): string {
+  return st.facesLeft > 0 ? (smart ? 'Analysing pictures and faces' : 'Scanning faces') : smart ? 'Analysing pictures' : 'Preparing thumbnails';
+}
+
+let smartPauser: (() => void) | null = null;
+/** What "Pause" does for smart-search analysing (App: turns it off in the settings; resumed there). */
+export function setSmartPauser(f: () => void) {
+  smartPauser = f;
 }
 
 /** Runs while a vault is open; stops itself when it locks. */
@@ -73,13 +79,14 @@ export function startNativeAnalyser(smart: boolean): () => void {
       const prev = last;
       last = st;
       if (st.left > 0) {
-        const label = analyseLabel(st);
+        const label = analyseLabel(st, options.smart);
         if (!active) {
           active = true;
           base = st.done;
           beginJob({
             id: JOB, label, unit: 'items', total: st.left, long: st.facesLeft > 0, quiet: st.facesLeft === 0,
-            cancel: st.facesLeft > 0 ? () => setFaceScanPaused(true) : undefined, cancelLabel: 'Pause faces',
+            cancel: st.facesLeft > 0 ? () => setFaceScanPaused(true) : options.smart ? () => smartPauser?.() : undefined,
+            cancelLabel: st.facesLeft > 0 ? 'Pause faces' : 'Pause',
           });
         } else {
           updateJob(JOB, { done: st.done - base, total: st.done - base + st.left, label });

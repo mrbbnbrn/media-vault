@@ -261,7 +261,7 @@ export function Settings({ nav }: { nav: Nav }) {
           {section === 'vault' && <VaultSection nav={nav} />}
           {section === 'storage' && <StorageSection cfg={cfg} update={update} />}
           {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
-          {section === 'smart' && <SmartSection viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
+          {section === 'smart' && <SmartSection cfg={cfg} update={update} viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (
             <section className="section">
               <h2>Media Vault 0.1.0</h2>
@@ -613,12 +613,10 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
         </div>
         <button type="button" className="btn" disabled={!data?.faces} onClick={() => setDataConfirm('faces')}>Delete</button>
       </div>
-      <Toggle title="Analyse pictures for smart search" on={cfg.smartIndex !== false} set={(v) => update({ ...cfg, smartIndex: v })}
-        desc="Done in the background when the smart-search models are installed. Turn off first if you delete the data and want it to stay deleted." />
       <div className="setting">
         <div className="text">
           <span className="title">Delete smart-search data</span>
-          <span className="desc">{cfg.smartIndex !== false ? 'It is made again in the background while analysing is on.' : 'Smart search finds nothing until pictures are analysed again.'}</span>
+          <span className="desc">{cfg.smartIndex !== false && cfg.smartEnabled !== false ? 'It is made again in the background while analysing is on (pause it or turn smart search off in Faces & smart search to keep it deleted).' : 'Smart search finds nothing until pictures are analysed again.'}</span>
         </div>
         <button type="button" className="btn" disabled={!data?.clipItems} onClick={() => setDataConfirm('clip')}>Delete</button>
       </div>
@@ -754,7 +752,10 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
   );
 }
 
-function SmartSection(props: { poor?: React.ReactNode; viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
+function SmartSection(props: { cfg: AppConfig; update: (c: AppConfig) => Promise<void>; poor?: React.ReactNode; viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
+  const { cfg, update } = props;
+  const enabled = cfg.smartEnabled !== false;
+  const analysing = cfg.smartIndex !== false;
   const [clip, setClip] = useState<ClipStatus | null>(null);
   const [models, setModels] = useState<boolean | null>(null);
   const [engine, setEngine] = useState<SmartEngine | null>(null);
@@ -775,16 +776,34 @@ function SmartSection(props: { poor?: React.ReactNode; viewer: ViewerSettings; s
 
       <section className="section">
         <h2>Smart search</h2>
-        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        <Toggle title="Smart search" on={enabled} set={(v) => update({ ...cfg, smartEnabled: v })}
+          desc={enabled ? 'Search by describing what’s in the pictures. Turn off to remove the ✦ button and stop analysing pictures for it (what’s analysed so far is kept unless you delete it in Storage & backups).' : 'Off: no ✦ button, nothing is analysed for it and its models aren’t loaded. Turn it on again any time.'} />
+        {enabled && (
+          <div className="setting">
+            <div className="text">
+              <span className="title">{analysing ? 'Analysing new pictures' : 'Analysing is paused'}</span>
+              <span className="desc">
+                {analysing
+                  ? 'New pictures and videos are analysed in the background (also pausable from the background-jobs ring).'
+                  : 'New pictures aren’t analysed until you resume; smart search only finds what was analysed before.'}
+                {clip && clip.total > clip.done ? ` ${(clip.total - clip.done).toLocaleString()} not analysed yet.` : ''}
+              </span>
+            </div>
+            <button type="button" className={analysing ? 'btn' : 'btn btn-primary'} onClick={() => update({ ...cfg, smartIndex: !analysing })}>
+              {analysing ? 'Pause' : 'Resume'}
+            </button>
+          </div>
+        )}
+        {enabled && <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
           Turn it on with the ✦ button next to the search box, then describe what you're looking for — “dog on the beach”,
           “kırmızı elbise”, “Geburtstagstorte”. Works in 50+ languages, fully offline. Pictures and videos are analysed in the
           background (using their thumbnails); the results stay inside the encrypted vault.
-        </p>
-        {models === false && <div className="notice">This copy of the app doesn't include the smart-search models. Use the full package (it has a “models” folder next to MediaVault.exe).</div>}
-        {models && engine && !engine.native && (
+        </p>}
+        {enabled && models === false && <div className="notice">This copy of the app doesn't include the smart-search models. Use the full package (it has a “models” folder next to MediaVault.exe).</div>}
+        {enabled && models && engine && !engine.native && (
           <div className="info">Analysing runs in the browser engine, which is slow. The newer models download (“models-v2” on the Releases page) adds the engine that uses your graphics card: unzip it over your MediaVault folder.</div>
         )}
-        {models && clip && (
+        {enabled && models && clip && (
           <div className="stats" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 0 }}>
             <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Analysed</span><b>{clip.done.toLocaleString()} / {clip.total.toLocaleString()}</b></div>
             {runsOn && <div className="stat" title={engine?.problem ?? undefined}><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{runsOn}</b></div>}
