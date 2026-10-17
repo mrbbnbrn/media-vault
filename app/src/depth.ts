@@ -17,6 +17,7 @@
 import { api, onLocked, type DepthDetail, type DepthInfo, type DepthMap, type ViewerSettings } from './api';
 import { viewerPrefs } from './prefs';
 import { savedId, savedOr } from './derived';
+import { pixelsOffThread } from './picturecache';
 
 /** The Fast model's input size, and the size used until the chosen model has said its own. */
 export const DEPTH_SIDE = 518;
@@ -297,22 +298,12 @@ export function setDepthCompute(f: Compute | null) {
 
 async function computeReal(src: string, s: DepthSetup): Promise<DepthMap | null> {
   const side = s.side;
-  const r = await fetch(src);
-  if (!r.ok) return null;
-  const blob = await r.blob();
-  // Straight to the model's size (square; the map is stretched back over the picture).
-  const opts = { imageOrientation: 'from-image', resizeWidth: side, resizeHeight: side, resizeQuality: 'high' } as ImageBitmapOptions;
-  const bmp = await createImageBitmap(blob, opts);
-  try {
-    const c = new OffscreenCanvas(side, side);
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.drawImage(bmp, 0, 0);
-    const px = ctx.getImageData(0, 0, side, side).data;
-    return await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail, soft: s.soft ?? 1 }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
-  } finally {
-    bmp.close();
-  }
+  // Straight to the model's size (square; the map is stretched back over the picture),
+  // decoded and resized in the worker (picturecache.ts): the window doesn't freeze.
+  const got = await pixelsOffThread(src, side, side);
+  if (!got) return null;
+  const px = got.data;
+  return await api.depthEstimate({ width: side, height: side, model: s.model, detail: s.detail, soft: s.soft ?? 1 }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
 }
 
 // ---- moving pictures: GIFs, animated WebP/PNG (one depth map per frame) ------------------------

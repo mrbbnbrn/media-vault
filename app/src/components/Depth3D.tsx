@@ -41,6 +41,7 @@ import { DepthModelChoice } from './DepthModels';
 import { InpaintModelChoice } from './InpaintModels';
 import { SavedMapsSection } from './SavedMaps';
 import { SubjectModelChoice } from './SubjectModels';
+import { bitmapOffThread } from '../picturecache';
 
 interface Props {
   src: string;
@@ -664,10 +665,8 @@ export function Depth3D(props: Props) {
           : propsRef.current.depth === false && subjWanted() ? Promise.resolve(flatDepth()) : depthOf(propsRef.current.src, true);
       const [got, bmp] = await Promise.all([
         depthNow,
-        vid ? Promise.resolve(null) : fetch(propsRef.current.src)
-          .then((r) => (r.ok ? r.blob() : Promise.reject(new Error(String(r.status)))))
-          .then((b) => createImageBitmap(b, { imageOrientation: 'from-image', resizeWidth: Math.max(1, Math.round(nw * k)), resizeHeight: Math.max(1, Math.round(nh * k)), resizeQuality: 'high' } as ImageBitmapOptions))
-          .catch(() => null),
+        // Decoded and resized in the worker (a high-quality resize here froze the window for up to a second).
+        vid ? Promise.resolve(null) : bitmapOffThread(propsRef.current.src, Math.max(1, Math.round(nw * k)), Math.max(1, Math.round(nh * k))),
       ]);
       picture = bmp;
       if (!alive) return;

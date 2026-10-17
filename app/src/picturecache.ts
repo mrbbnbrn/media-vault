@@ -182,17 +182,18 @@ export function screenBox(): { w: number; h: number } {
 
 let worker: Worker | null | undefined;
 let jobId = 0;
-const jobs = new Map<number, { ok: (r: { bmp: ImageBitmap; bytes: ArrayBuffer }) => void; fail: (e: Error) => void }>();
+type Decoded = { bmp?: ImageBitmap; data?: ArrayBuffer; w?: number; h?: number; bytes: ArrayBuffer };
+const jobs = new Map<number, { ok: (r: Decoded) => void; fail: (e: Error) => void }>();
 
 function decoder(): Worker | null {
   if (worker !== undefined) return worker;
   try {
     worker = new Worker(new URL('./decodeworker.ts', import.meta.url), { type: 'module' });
-    worker.onmessage = (e: MessageEvent<{ id: number; bmp?: ImageBitmap; bytes: ArrayBuffer; error?: string }>) => {
+    worker.onmessage = (e: MessageEvent<Decoded & { id: number; error?: string }>) => {
       const j = jobs.get(e.data.id);
       jobs.delete(e.data.id);
       if (!j) return e.data.bmp?.close();
-      if (e.data.bmp) j.ok({ bmp: e.data.bmp, bytes: e.data.bytes });
+      if (e.data.bmp || e.data.data) j.ok(e.data);
       else j.fail(Object.assign(new Error(e.data.error ?? 'decode failed'), { bytes: e.data.bytes }));
     };
     worker.onerror = () => {
@@ -218,11 +219,11 @@ async function bitmapOf(bytes: Uint8Array<ArrayBuffer>, resizeWidth?: number, re
   if (w) {
     const id = ++jobId;
     try {
-      const r = await new Promise<{ bmp: ImageBitmap; bytes: ArrayBuffer }>((ok, fail) => {
+      const r = await new Promise<Decoded>((ok, fail) => {
         jobs.set(id, { ok, fail });
         w.postMessage({ id, bytes: bytes.buffer, resizeWidth, resizeHeight }, [bytes.buffer]);
       });
-      return { bmp: r.bmp, bytes: new Uint8Array(r.bytes) };
+      return { bmp: r.bmp!, bytes: new Uint8Array(r.bytes) };
     } catch (e) {
       const back = (e as { bytes?: ArrayBuffer }).bytes;
       if (!back) throw e;
@@ -231,6 +232,55 @@ async function bitmapOf(bytes: Uint8Array<ArrayBuffer>, resizeWidth?: number, re
     }
   }
   return { bmp: await bitmapHere(bytes, resizeWidth, resizeHeight), bytes };
+}
+
+/**
+ * A picture's RGBA pixels at `w` × `h` (stretched to it), decoded, resized and read in
+ * the worker: the 3D models' input, the 3D layers. Nothing of it runs on the window's
+ * thread (a high-quality resize there froze the window for up to a second per photo).
+ */
+export async function pixelsOffThread(src: string, w: number, h: number): Promise<{ data: Uint8ClampedArray; w: number; h: number } | null> {
+  const bytes = await fetchBytes(src).catch(() => null);
+  if (!bytes) return null;
+  const wk = decoder();
+  if (wk) {
+    const id = ++jobId;
+    try {
+      const r = await new Promise<Decoded>((ok, fail) => {
+        jobs.set(id, { ok, fail });
+        wk.postMessage({ id, bytes: bytes.buffer, resizeWidth: w, resizeHeight: h, pixels: true }, [bytes.buffer]);
+      });
+      if (r.data) return { data: new Uint8ClampedArray(r.data), w: r.w!, h: r.h! };
+    } catch {
+      // Below, here.
+    }
+  }
+  try {
+    const again = bytes.buffer.byteLength ? bytes : await fetchBytes(src);
+    const bmp = await bitmapHere(again, w, h);
+    try {
+      const c = new OffscreenCanvas(bmp.width, bmp.height);
+      const ctx = c.getContext('2d', { willReadFrequently: true });
+      if (!ctx) return null;
+      ctx.drawImage(bmp, 0, 0);
+      return { data: ctx.getImageData(0, 0, bmp.width, bmp.height).data, w: bmp.width, h: bmp.height };
+    } finally {
+      bmp.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
+/** A picture decoded and resized to `w` × `h` in the worker (for drawing it, e.g. as a 3D texture). */
+export async function bitmapOffThread(src: string, w: number, h: number): Promise<ImageBitmap | null> {
+  const bytes = await fetchBytes(src).catch(() => null);
+  if (!bytes) return null;
+  try {
+    return (await bitmapOf(bytes, w, h)).bmp;
+  } catch {
+    return null;
+  }
 }
 
 async function bitmapHere(bytes: Uint8Array<ArrayBuffer>, resizeWidth?: number, resizeHeight?: number): Promise<ImageBitmap> {

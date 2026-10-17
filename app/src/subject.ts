@@ -18,6 +18,7 @@
 import { api, onLocked, type DepthMap, type SubjectInfo, type SubjectMask, type ViewerSettings } from './api';
 import { viewerPrefs } from './prefs';
 import { savedId, savedOr } from './derived';
+import { pixelsOffThread } from './picturecache';
 
 /** The size used until the chosen model has said its own. */
 export const SUBJECT_SIDE = 1024;
@@ -262,21 +263,11 @@ export function setSubjectSetupForTests(s: SubjectSetup | null) {
 
 async function computeReal(src: string, s: SubjectSetup): Promise<SubjectMask | null> {
   const side = s.side;
-  const r = await fetch(src);
-  if (!r.ok) return null;
-  const blob = await r.blob();
-  const opts = { imageOrientation: 'from-image', resizeWidth: side, resizeHeight: side, resizeQuality: 'high' } as ImageBitmapOptions;
-  const bmp = await createImageBitmap(blob, opts);
-  try {
-    const c = new OffscreenCanvas(side, side);
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.drawImage(bmp, 0, 0);
-    const px = ctx.getImageData(0, 0, side, side).data;
-    return await api.subjectEstimate({ width: side, height: side, model: s.model }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
-  } finally {
-    bmp.close();
-  }
+  // Decoded and resized in the worker (picturecache.ts): the window doesn't freeze.
+  const got = await pixelsOffThread(src, side, side);
+  if (!got) return null;
+  const px = got.data;
+  return await api.subjectEstimate({ width: side, height: side, model: s.model }, new Uint8Array(px.buffer, px.byteOffset, px.byteLength));
 }
 
 // ---- speed tests (remembered for this session only) ------------------------------------------

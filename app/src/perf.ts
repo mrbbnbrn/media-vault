@@ -256,6 +256,7 @@ export function perfReport(): string {
   const when = (t: number) => new Date(t).toLocaleTimeString();
   lines.push(`Media Vault timing report — ${new Date().toLocaleString()}`);
   lines.push(`Screen ${screen.width}×${screen.height} @${devicePixelRatio}x, ${navigator.hardwareConcurrency} cores`);
+  lines.push(`Drawing with: ${graphicsName()}`);
   const group = (k: PerfKind, title: string) => {
     const list = entries.filter((e) => e.kind === k);
     if (!list.length) return;
@@ -279,4 +280,18 @@ export function perfReport(): string {
     for (const e of ev) lines.push(`${e.name}: ${e.perSec.toFixed(1)}/s`);
   }
   return lines.join('\n');
+}
+
+/** Which graphics the window draws with (a software fallback would make 3D slow). */
+function graphicsName(): string {
+  try {
+    const gl = document.createElement('canvas').getContext('webgl');
+    if (!gl) return 'no WebGL';
+    const ext = gl.getExtension('WEBGL_debug_renderer_info');
+    const name = String(ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER));
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return name;
+  } catch {
+    return 'unknown';
+  }
 }

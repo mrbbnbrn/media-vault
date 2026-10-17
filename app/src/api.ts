@@ -2131,7 +2131,16 @@ export function parseDepth(buf: ArrayBuffer | Uint8Array): DepthMap {
   return { w, h, data: b.slice(8) };
 }
 
+/** (Timed for the timing panel: the 3D models share the graphics card with the window.) */
 async function depthEstimate(request: DepthRequest, rgba: Uint8Array): Promise<DepthMap> {
+  const t0 = performance.now();
+  try {
+    return await depthEstimateNow(request, rgba);
+  } finally {
+    noteCall('depth_estimate', performance.now() - t0);
+  }
+}
+async function depthEstimateNow(request: DepthRequest, rgba: Uint8Array): Promise<DepthMap> {
   if (!inTauri) return mockDepth(request.width, request.height, rgba);
   try {
     return parseDepth(await invoke<ArrayBuffer>('depth_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
@@ -2213,7 +2222,16 @@ export function parseSubject(buf: ArrayBuffer | Uint8Array): SubjectMask {
   }
 }
 
+/** (Timed for the timing panel: the 3D models share the graphics card with the window.) */
 async function subjectEstimate(request: SubjectRequest, rgba: Uint8Array): Promise<SubjectMask> {
+  const t0 = performance.now();
+  try {
+    return await subjectEstimateNow(request, rgba);
+  } finally {
+    noteCall('subject_estimate', performance.now() - t0);
+  }
+}
+async function subjectEstimateNow(request: SubjectRequest, rgba: Uint8Array): Promise<SubjectMask> {
   if (!inTauri) return mockSubject(request.width, request.height, rgba);
   try {
     return parseSubject(await invoke<ArrayBuffer>('subject_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
@@ -2356,7 +2374,16 @@ export function parseRgba(buf: ArrayBuffer | Uint8Array): Rgba {
   return { w, h, data: b.slice(8) };
 }
 
+/** (Timed for the timing panel: the 3D models share the graphics card with the window.) */
 async function inpaintEstimate(request: InpaintRequest, rgba: Uint8Array, mask: Uint8Array): Promise<Rgba> {
+  const t0 = performance.now();
+  try {
+    return await inpaintEstimateNow(request, rgba, mask);
+  } finally {
+    noteCall('inpaint_estimate', performance.now() - t0);
+  }
+}
+async function inpaintEstimateNow(request: InpaintRequest, rgba: Uint8Array, mask: Uint8Array): Promise<Rgba> {
   const both = new Uint8Array(rgba.length + mask.length);
   both.set(rgba, 0);
   both.set(mask, rgba.length);
