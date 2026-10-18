@@ -1532,12 +1532,19 @@ mod tests {
         FaceIn { frame_ms: 0, x, y: 0.12, w: 0.15, h: 0.2, score: 0.9, descriptor: v, ..Default::default() }
     }
 
+    /// The analysis keeps one cache for the whole app (CACHE): tests that use it take turns.
+    static SERIAL: Mutex<()> = Mutex::new(());
+    fn serial() -> std::sync::MutexGuard<'static, ()> {
+        SERIAL.lock().unwrap_or_else(|x| x.into_inner())
+    }
+
     fn lib(c: Connection) -> Mutex<Connection> {
         Mutex::new(c)
     }
 
     #[test]
     fn old_model_learns_suggests_and_groups_strangers() {
+        let _serial = serial();
         let l = lib(db::create_empty().unwrap());
         let (ayse, mehmet, a1, m1, both);
         {
@@ -1613,6 +1620,7 @@ mod tests {
 
     #[test]
     fn new_model_names_automatically_and_finds_the_folder_owner() {
+        let _serial = serial();
         let l = lib(db::create_empty().unwrap());
         let (baran, elsewhere, group);
         {
@@ -1689,6 +1697,7 @@ mod tests {
 
     #[test]
     fn who_is_it_lists_the_likeliest_person_first() {
+        let _serial = serial();
         let c = db::create_empty().unwrap();
         let ayse = library::create_folder(&c, None, "Ayşe").unwrap();
         let baran = library::create_folder(&c, None, "Baran").unwrap();
@@ -1719,6 +1728,7 @@ mod tests {
 
     #[test]
     fn reset_forgets_every_face_and_scans_again() {
+        let _serial = serial();
         let l = lib(db::create_empty().unwrap());
         let c = l.conn();
         let p = library::create_folder(&c, None, "P").unwrap();
@@ -1749,6 +1759,7 @@ mod tests {
 
     #[test]
     fn upgrading_to_the_new_model_keeps_answers() {
+        let _serial = serial();
         let l = lib(db::create_empty().unwrap());
         let c = l.conn();
         let p = library::create_folder(&c, None, "P").unwrap();
@@ -1793,6 +1804,7 @@ mod tests {
 
     #[test]
     fn merging_people_and_sorting_after_an_import() {
+        let _serial = serial();
         let l = lib(db::create_empty().unwrap());
         let (a, b, news);
         {
@@ -1958,6 +1970,7 @@ mod tests {
 
     #[test]
     fn poor_faces_are_never_named_or_learned_from_unless_you_name_them() {
+        let _serial = serial();
         use crate::poorfaces::{PoorRule, set_test_rule};
         let strict = PoorRule { min_px: 40.0, min_sharp: 5.0, max_turn: 60.0 };
         set_test_rule(Some(strict));
@@ -2055,6 +2068,7 @@ mod tests {
 
     #[test]
     fn saving_keeps_poor_face_measures_in_the_items_own_pixels() {
+        let _serial = serial();
         let c = db::create_empty().unwrap();
         let m = add(&c, None);
         c.execute("UPDATE media SET height = 2000 WHERE id = ?", [m]).unwrap();
@@ -2075,6 +2089,7 @@ mod tests {
 
     #[test]
     fn confidence_scale() {
+        let _serial = serial();
         assert_eq!(confidence(ARCFACE, fg::ARCFACE.maybe), 40);
         assert_eq!(confidence(ARCFACE, fg::ARCFACE.auto.unwrap()), 90);
         assert!(confidence(ARCFACE, fg::ARCFACE.sure) > 60);
