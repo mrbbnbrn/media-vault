@@ -137,7 +137,8 @@ pub fn window_faces(conn: &Connection, limit: i64) -> R<Vec<faces::ScanTask>> {
         return faces::needed(conn, limit);
     }
     conn.prepare(&format!(
-        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL AND NOT {} ORDER BY {}id LIMIT ?",
+        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND NOT {} ORDER BY {}id LIMIT ?",
+        faces::off_sql(),
         here_sql(),
         crate::focus::order()
     ))
@@ -164,23 +165,25 @@ struct Task {
 }
 
 fn where_sql(here: &str) -> String {
+    let off = faces::off_sql();
     format!(
         "((thumb_object_id IS NULL AND {here}) \
          OR (IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} AND (phash_state = 0 OR (?1 AND clip_state = 0))) \
          OR (thumb_object_id = '' AND ?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}) \
-         OR (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}))"
+         OR (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}))"
     )
 }
 
 fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<Vec<Task>> {
     let here = here_sql();
+    let off = faces::off_sql();
     let ids = only.map(|ids| format!(" AND id IN ({})", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
     let sql = format!(
         "SELECT id, kind, object_id, thumb_object_id, preview_object_id, \
            (thumb_object_id IS NULL AND {here}), \
            (phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
            (?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
-           (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}) \
+           (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}) \
          FROM media WHERE {}{ids} ORDER BY {}id DESC LIMIT ?3",
         where_sql(&here),
         crate::focus::order()
@@ -572,7 +575,7 @@ fn status(s: &Session) -> R<AnalyseStatus> {
     let db = s.db();
     let left = if running() { left(&db, c)? } else { 0 };
     let faces_left = if running() && c.faces {
-        db.query_row(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL AND {}", here_sql()), [], |r| r.get(0)).map_err(e)?
+        db.query_row(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND {}", faces::off_sql(), here_sql()), [], |r| r.get(0)).map_err(e)?
     } else {
         0
     };

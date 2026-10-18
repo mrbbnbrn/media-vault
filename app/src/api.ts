@@ -1074,6 +1074,14 @@ export const api = {
   facesOf: (media: number, hidden = false) => call<FaceBox[]>('faces_of', { media, hidden }),
   /** "Reset and re-scan": forget every face in these items and look again. */
   facesReset: (media: number[]) => call<number>('faces_reset', { media }),
+  /** "Disable / Enable face search for this folder" (and its subfolders). Returns how many items left / joined the scan queue. */
+  facesFolderOff: (folder: number, off: boolean) => call<number>('faces_folder_off', { folder, off }),
+  /** The folders where face search was turned off. */
+  facesOffFolders: () => call<number[]>('faces_off_folders'),
+  /** "Stop face search": everything waiting to be scanned leaves the queue. Returns how many. */
+  facesStop: () => call<number>('faces_stop'),
+  /** "Delete face data…" for a folder and its subfolders. Returns how many faces went. */
+  facesDeleteFolder: (folder: number) => call<number>('faces_delete_folder', { folder }),
   /** "Who is it?": [person folder, how likely 0–99], most likely first. */
   facesMatches: (face: number) => call<[number, number][]>('faces_matches', { face }),
   facesOfMany: (media: number[]) => call<[number, FaceBox[]][]>('faces_of_many', { media }),
@@ -1865,6 +1873,12 @@ const mock = {
         return false;
       case 'folder_view':
         return { folder: null, subfolders: [], items: [] };
+      case 'faces_off_folders':
+        return [];
+      case 'faces_folder_off':
+      case 'faces_stop':
+      case 'faces_delete_folder':
+        return 0;
       default:
         return;
     }

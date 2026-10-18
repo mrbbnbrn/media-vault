@@ -1827,6 +1827,32 @@ async fn faces_queue(state: State<'_, Shared>, request: faces::ScanRequest) -> R
     edit_db(state.inner(), move |c| faces::queue(c, &request)).await
 }
 
+/// "Disable / Enable face search for this folder" (folder right-click).
+#[tauri::command]
+async fn faces_folder_off(state: State<'_, Shared>, folder: i64, off: bool) -> Result<usize, String> {
+    let n = edit_db(state.inner(), move |c| faces::set_folder_off(c, folder, off)).await?;
+    analyse::kick();
+    Ok(n)
+}
+
+/// The folders where face search was turned off (for the folder menus).
+#[tauri::command]
+async fn faces_off_folders(state: State<'_, Shared>) -> Result<Vec<i64>, String> {
+    read_db(state.inner(), faces::off_folders).await
+}
+
+/// "Stop face search": everything waiting leaves the queue.
+#[tauri::command]
+async fn faces_stop(state: State<'_, Shared>) -> Result<usize, String> {
+    edit_db(state.inner(), faces::stop).await
+}
+
+/// "Delete face data…" for a folder and everything inside it.
+#[tauri::command]
+async fn faces_delete_folder(state: State<'_, Shared>, folder: i64) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::delete_folder_faces(c, folder)).await
+}
+
 #[tauri::command]
 async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces::ScanTask>, String> {
     // Pictures the native analysis pass reads are left to it (analyse.rs).
@@ -2660,6 +2686,10 @@ pub fn run() {
             faces_new_person,
             faces_of,
             faces_reset,
+            faces_folder_off,
+            faces_off_folders,
+            faces_stop,
+            faces_delete_folder,
             faces_matches,
             faces_unsure,
             faces_of_many,

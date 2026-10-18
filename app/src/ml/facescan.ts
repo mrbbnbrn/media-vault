@@ -151,6 +151,16 @@ export function kickFaceScanner() {
   api.analyseKick().catch(() => {});
 }
 
+/** "Stop face search": the queue empties (faces found stay), the scanners rest. Returns how many left the queue. */
+export async function stopFaceSearch(): Promise<number> {
+  const n = await api.facesStop().catch(() => 0);
+  // Not paused: the next "Scan for faces" runs straight away.
+  paused = false;
+  pauseListeners.forEach((l) => l(false));
+  listeners.forEach((l) => l());
+  return n;
+}
+
 export function setFaceScanPaused(p: boolean) {
   paused = p;
   pauseListeners.forEach((l) => l(p));
@@ -194,11 +204,11 @@ export function startFaceScanner(): () => void {
     label: 'Scanning faces',
     long: true,
     left: () => api.facesNeeded(1000).then((t) => t.length),
+    // Stop: everything waiting leaves the queue ("Scan for faces" starts it again; People also has Pause).
     cancel: () => {
-      setFaceScanPaused(true);
-      listeners.forEach((l) => l());
+      void stopFaceSearch();
     },
-    cancelLabel: 'Pause',
+    cancelLabel: 'Stop',
     summary: (n) => `Face scan finished: ${n.toLocaleString()} ${n === 1 ? 'item' : 'items'} scanned`,
   });
   (async () => {

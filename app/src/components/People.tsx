@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
-import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused } from '../ml/facescan';
+import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
 import { openSortAll } from '../facesort';
 import { groupLabel, photos, ticks } from '../peoplelogic';
 import { plural } from '../undo';
@@ -139,6 +139,12 @@ export function PeopleView(props: {
           {st && st.queued > 0 && !noPack && (
             <button type="button" className="btn btn-sm" onClick={() => { setFaceScanPaused(!paused); setPaused(!paused); }}>
               {paused ? 'Resume scanning' : 'Pause scanning'}
+            </button>
+          )}
+          {st && st.queued > 0 && (
+            <button type="button" className="btn btn-sm" title="Everything waiting leaves the scan queue (faces already found stay). Scan for faces starts it again."
+              onClick={async () => { const n = await stopFaceSearch(); setPaused(false); setMsg(n ? `Face search stopped: ${plural(n, 'item')} won't be scanned.` : 'Face search stopped.'); load(); }}>
+              Stop face search
             </button>
           )}
           <button type="button" className="btn btn-sm" title="Go through every recognised person and move (or free-copy) their photos into their folder — you choose, person by person"

@@ -9,7 +9,7 @@
 import { api, inTauri, onEvent, type AnalyseStatus } from '../api';
 import { beginJob, endJob, updateJob } from '../jobs';
 import { thumbMade } from '../media';
-import { faceScanPaused, noteFaceProgress, onFaceScanPaused, setFaceScanPaused } from './facescan';
+import { faceScanPaused, noteFaceProgress, onFaceScanPaused, stopFaceSearch } from './facescan';
 import { noteClipProgress } from './smart';
 import { noteFingerprintProgress } from '../fingerprint';
 import { userBusy } from '../calm';
@@ -86,8 +86,8 @@ export function startNativeAnalyser(smart: boolean): () => void {
           base = st.done;
           beginJob({
             id: JOB, label, unit: 'items', total: st.left, long: st.facesLeft > 0, quiet: st.facesLeft === 0,
-            cancel: st.facesLeft > 0 ? () => setFaceScanPaused(true) : options.smart ? () => smartPauser?.() : undefined,
-            cancelLabel: st.facesLeft > 0 ? 'Pause faces' : 'Pause',
+            cancel: st.facesLeft > 0 ? () => void stopFaceSearch() : options.smart ? () => smartPauser?.() : undefined,
+            cancelLabel: st.facesLeft > 0 ? 'Stop face search' : 'Pause',
           });
         } else {
           updateJob(JOB, { done: st.done - base, total: st.done - base + st.left, label });

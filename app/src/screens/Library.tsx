@@ -37,7 +37,7 @@ import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { ActivityRing } from '../components/ActivityRing';
 import { CoverImg, leaveCard, setHoveredCard, useCardHovered, useFolderSamples, useHoverCycle } from '../components/CoverImg';
-import { kickFaceScanner } from '../ml/facescan';
+import { kickFaceScanner, noteFaceProgress } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
 import { useTaskPart } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
@@ -120,6 +120,7 @@ type Dialog =
   | { t: 'newFolder'; parent: number | null }
   | { t: 'moveFolder'; folder: FolderCard }
   | { t: 'deleteFolder'; folder: FolderCard }
+  | { t: 'delFaces'; folder: FolderCard }
   | { t: 'folderTag'; folder: FolderCard }
   | { t: 'look'; folder: FolderCard }
   | { t: 'moveItems'; ids: number[] }
@@ -362,6 +363,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [banner, reloadBanner] = useFolderBanner(view.kind === 'folder' ? folder : null);
   // Choosing what the banner shows (the item being repositioned).
   const [bannerEditOf, setBannerEditOf] = useState<number | null>(null);
+  // Folders where face search was turned off (their subfolders too; faces.rs).
+  const [facesOff, setFacesOff] = useState<Set<number>>(() => new Set());
+  useEffect(() => {
+    api.facesOffFolders().then((l) => setFacesOff(new Set(l))).catch(() => {});
+  }, []);
   const bannerEdit = banner != null && bannerEditOf === banner.media;
   useEffect(() => setBannerEditOf(null), [view]);
   const showBanner = view.kind === 'folder' && !!banner && !!folder && banner.folder === folder.id;
@@ -1348,7 +1354,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ...(banner?.folder === f.id ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
-    { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+    ...(facesOff.has(f.id)
+      ? [{ label: 'Enable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, false) }]
+      : [
+          { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
+          { label: 'Disable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, true) },
+        ]),
+    { label: 'Delete face data…', hint: 'faces found in here', onSelect: () => setDialog({ t: 'delFaces', folder: f }) },
     { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { folder: f.id, label: `“${f.name}”` }) },
     { label: 'Separate pictures without faces…', hint: 'move them to a folder', onSelect: () => setDialog({ t: 'separate', folder: { id: f.id, name: f.name } }) },
     ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
@@ -1384,6 +1396,37 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       if (n) setNote({ text: `Scanning ${plural(n, 'item')} in “${f.name}” for faces. See People.`, at: 0 });
     }
   });
+  const setFaceSearch = (f: FolderCard, off: boolean) => act(async () => {
+    const n = await api.facesFolderOff(f.id, off);
+    setFacesOff((cur) => {
+      const next = new Set(cur);
+      if (off) next.add(f.id);
+      else next.delete(f.id);
+      return next;
+    });
+    if (!off) kickFaceScanner();
+    const label = off
+      ? `Face search is off for “${f.name}”${n ? ` (${plural(n, 'item')} left the scan queue)` : ''}`
+      : `Face search is on again for “${f.name}”${n ? ` · scanning ${plural(n, 'item')}` : ''}`;
+    did(label, async () => {
+      await api.facesFolderOff(f.id, !off);
+      setFacesOff((cur) => {
+        const next = new Set(cur);
+        if (off) next.delete(f.id);
+        else next.add(f.id);
+        return next;
+      });
+    });
+  });
+  const deleteFaceData = async (f: FolderCard) => {
+    try {
+      const n = await api.facesDeleteFolder(f.id);
+      noteFaceProgress();
+      setNote({ text: n ? `Deleted ${plural(n, 'face')} found in “${f.name}”` : `No faces had been found in “${f.name}”`, at: 0 });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
   const scanFaces = async (req: { ids?: number[]; folder?: number }, what: string) => {
     try {
       const n = await api.facesQueue(req);
@@ -2748,6 +2791,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onConfirm={() => trashFolder(dialog.folder)}>
           The folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside go to the trash.
           You can restore them from there for 30 days, or press Ctrl+Z right away. Your original files outside the vault are not touched.
+        </ConfirmDialog>
+      )}
+      {dialog?.t === 'delFaces' && (
+        <ConfirmDialog title={`Delete face data in “${dialog.folder.name}”?`} confirm="Delete face data" danger onClose={() => setDialog(null)}
+          onConfirm={() => deleteFaceData(dialog.folder)}>
+          Every face found in the items of this folder and its subfolders is forgotten, with the names given to them.
+          The pictures and videos themselves don't change, and people found elsewhere stay.
+          {facesOff.has(dialog.folder.id) ? ' Face search stays off here.' : ' They are scanned again only if you choose "Scan for faces" (or turn face search off here so they never are).'}
         </ConfirmDialog>
       )}
       {dialog?.t === 'forever' && (

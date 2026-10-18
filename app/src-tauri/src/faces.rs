@@ -123,7 +123,9 @@ pub fn queue(conn: &Connection, req: &ScanRequest) -> R<usize> {
         n += tx.execute(sql, [id]).map_err(e)?;
     }
     tx.commit().map_err(e)?;
-    Ok(n)
+    // Not in folders where face search is off.
+    let dropped = dequeue_off(conn)?;
+    Ok(n.saturating_sub(dropped))
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -135,7 +137,7 @@ pub struct ScanTask {
 }
 
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ScanTask>> {
-    conn.prepare(&format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL ORDER BY {}id LIMIT ?", crate::focus::order()))
+    conn.prepare(&format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} ORDER BY {}id LIMIT ?", off_sql(), crate::focus::order()))
         .map_err(e)?
         .query_map([limit], |r| Ok(ScanTask { id: r.get(0)?, kind: r.get(1)?, duration_ms: r.get(2)? }))
         .map_err(e)?
@@ -155,7 +157,7 @@ pub struct ScanStatus {
 pub fn status(conn: &Connection) -> R<ScanStatus> {
     let one = |sql: &str| -> R<i64> { conn.query_row(sql, [], |r| r.get(0)).map_err(e) };
     Ok(ScanStatus {
-        queued: one("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL")?,
+        queued: one(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}", off_sql()))?,
         scanned: one("SELECT COUNT(*) FROM media WHERE faces_state = 1 AND deleted_at IS NULL")?,
         faces: one("SELECT COUNT(*) FROM faces f JOIN media m ON m.id = f.media_id WHERE m.deleted_at IS NULL")?,
         failed: one("SELECT COUNT(*) FROM media WHERE faces_state = -1 AND deleted_at IS NULL")?,
@@ -456,6 +458,7 @@ pub fn keep_graphs(lib: &dyn Lib) {
 /// Work out who is who in the background after unlocking (the graphs are
 /// read from the library), so the People page is ready when it is opened.
 pub fn warm(lib: &dyn Lib) -> R<()> {
+    refresh_off(&lib.conn())?;
     analyse_all(lib).map(|_| ())
 }
 
@@ -464,6 +467,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 /// Forget everything kept in memory (the vault locked).
 pub fn forget_cache() {
     *CACHE.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()).clear();
 }
 
 /// Everything the analysis needs from the library (no fingerprints).
@@ -1177,6 +1181,136 @@ pub fn not_same(conn: &Connection, a: i64, b: i64) -> R<()> {
     Ok(())
 }
 
+// ---- face search off for some folders ------------------------------------------------------
+
+/// Folders where face search is off ("Disable face search for this folder"),
+/// kept as a list of folder ids in the library's settings (no new columns).
+/// Everything inside them, subfolders too, is never scanned for faces.
+const OFF_KEY: &str = "faces_off_folders";
+
+/// " AND IFNULL(folder_id, -1) NOT IN (…)" for queries of what to scan
+/// (empty when face search is on everywhere). Kept up to date by `refresh_off`.
+static OFF_SQL: Mutex<String> = Mutex::new(String::new());
+
+pub fn off_sql() -> String {
+    OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()).clone()
+}
+
+/// The folders where face search was turned off (not their subfolders).
+pub fn off_folders(conn: &Connection) -> R<Vec<i64>> {
+    let raw: Option<String> = conn
+        .query_row("SELECT value FROM settings WHERE key = ?", [OFF_KEY], |r| r.get(0))
+        .optional()
+        .map_err(e)?;
+    Ok(raw.and_then(|j| serde_json::from_str::<Vec<i64>>(&j).ok()).unwrap_or_default())
+}
+
+/// Those folders and everything inside them.
+fn off_tree(conn: &Connection) -> R<Vec<i64>> {
+    let roots = off_folders(conn)?;
+    if roots.is_empty() {
+        return Ok(Vec::new());
+    }
+    library::descendants(conn, &roots)
+}
+
+/// Work out `off_sql` again (after a change, at unlock, before queueing).
+pub fn refresh_off(conn: &Connection) -> R<()> {
+    let tree = off_tree(conn)?;
+    let sql = if tree.is_empty() {
+        String::new()
+    } else {
+        format!(" AND IFNULL(folder_id, -1) NOT IN ({})", tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))
+    };
+    *OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()) = sql;
+    Ok(())
+}
+
+/// Items waiting in the scan queue that are inside a folder with face search
+/// off leave the queue (as if never asked). Returns how many.
+fn dequeue_off(conn: &Connection) -> R<usize> {
+    refresh_off(conn)?;
+    let tree = off_tree(conn)?;
+    if tree.is_empty() {
+        return Ok(0);
+    }
+    let list = tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    conn.execute(&format!("UPDATE media SET faces_state = 0 WHERE faces_state = 2 AND folder_id IN ({list})"), []).map_err(e)
+}
+
+/// "Disable / Enable face search for this folder". Turning it off takes the
+/// folder's items out of the scan queue (faces already found stay; "Delete
+/// face data…" removes them). Turning it on again puts the items not scanned
+/// yet in the queue, when face search is in use at all. Returns how many items
+/// left or joined the queue.
+pub fn set_folder_off(conn: &Connection, folder: i64, off: bool) -> R<usize> {
+    let mut list = off_folders(conn)?;
+    list.retain(|&f| f != folder);
+    if off {
+        list.push(folder);
+    }
+    list.sort_unstable();
+    conn.execute(
+        "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        params![OFF_KEY, serde_json::to_string(&list).map_err(|x| x.to_string())?],
+    )
+    .map_err(e)?;
+    if off {
+        return dequeue_off(conn);
+    }
+    refresh_off(conn)?;
+    let in_use: i64 = conn.query_row("SELECT COUNT(*) FROM media WHERE faces_state <> 0", [], |r| r.get(0)).map_err(e)?;
+    if in_use == 0 {
+        return Ok(0);
+    }
+    let inside = library::descendants(conn, &[folder])?;
+    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    conn.execute(
+        &format!(
+            "UPDATE media SET faces_state = 2 WHERE faces_state = 0 AND deleted_at IS NULL AND kind IN ('image', 'gif', 'video') AND folder_id IN ({marks}){}",
+            off_sql()
+        ),
+        [],
+    )
+    .map_err(e)
+}
+
+/// Whether face search is off for this folder (itself, or a folder it is inside).
+#[cfg(test)]
+fn folder_off(conn: &Connection, folder: i64) -> R<bool> {
+    Ok(off_tree(conn)?.contains(&folder))
+}
+
+/// "Stop face search": everything waiting to be scanned leaves the queue
+/// ("Scan for faces" puts it back). Faces already found stay. Returns how many.
+pub fn stop(conn: &Connection) -> R<usize> {
+    conn.execute("UPDATE media SET faces_state = 0 WHERE faces_state = 2", []).map_err(e)
+}
+
+/// "Delete face data…" for a folder and everything inside it: every face found
+/// in its items goes, with the names given to them and the answers about them
+/// ("not this person", "not the same"); the items count as never scanned. The
+/// pictures themselves don't change. Returns how many faces were deleted.
+pub fn delete_folder_faces(conn: &Connection, folder: i64) -> R<usize> {
+    let inside = library::descendants(conn, &[folder])?;
+    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let items = format!("SELECT id FROM media WHERE folder_id IN ({marks})");
+    let tx = conn.unchecked_transaction().map_err(e)?;
+    tx.execute(&format!("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id IN ({items}))"), []).map_err(e)?;
+    tx.execute(
+        &format!(
+            "DELETE FROM face_not_same WHERE a IN (SELECT id FROM faces WHERE media_id IN ({items})) OR b IN (SELECT id FROM faces WHERE media_id IN ({items}))"
+        ),
+        [],
+    )
+    .map_err(e)?;
+    let n = tx.execute(&format!("DELETE FROM faces WHERE media_id IN ({items})"), []).map_err(e)?;
+    tx.execute(&format!("UPDATE media SET faces_state = 0 WHERE id IN ({items})"), []).map_err(e)?;
+    tx.commit().map_err(e)?;
+    *CACHE.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    Ok(n)
+}
+
 // ---- after an import --------------------------------------------------------------------------
 
 /// Items imported since `since` (seconds): queued for face scanning when
@@ -1198,6 +1332,7 @@ pub fn after_import(conn: &Connection, since: i64) -> R<Vec<i64>> {
         tx.execute("UPDATE media SET faces_state = 2 WHERE id = ? AND faces_state = 0", [id]).map_err(e)?;
     }
     tx.commit().map_err(e)?;
+    dequeue_off(conn)?;
     Ok(ids)
 }
 
@@ -1364,6 +1499,7 @@ pub fn reset(conn: &Connection, media: &[i64]) -> R<usize> {
         tx.execute("UPDATE media SET faces_state = 2 WHERE id = ? AND kind IN ('image', 'gif', 'video')", [m]).map_err(e)?;
     }
     tx.commit().map_err(e)?;
+    dequeue_off(conn)?;
     Ok(n)
 }
 
@@ -2097,4 +2233,43 @@ mod tests {
         assert_eq!(confidence(FACEAPI, 1.0 - 0.55), 40);
         assert!((box_iou([0.0, 0.0, 0.5, 0.5], [0.25, 0.0, 0.5, 0.5]) - 1.0 / 3.0).abs() < 1e-6);
     }
+
+    #[test]
+    fn face_search_off_for_a_folder_stop_and_delete() {
+        let _serial = serial();
+        let l = lib(db::create_empty().unwrap());
+        let c = l.conn();
+        let top = library::create_folder(&c, None, "Trip").unwrap();
+        let inner = library::create_folder(&c, Some(top), "Day 1").unwrap();
+        let other = library::create_folder(&c, None, "Other").unwrap();
+        let a = add(&c, Some(inner));
+        let b = add(&c, Some(other));
+        save(&c, b, &[arc(0, 1, 0.2)], ARCFACE).unwrap();
+        // Face search in use; the trip is queued.
+        assert_eq!(queue(&c, &ScanRequest { folder: Some(top), ..Default::default() }).unwrap(), 1);
+        // Off for the trip: its items leave the queue, and can't be queued again.
+        assert_eq!(set_folder_off(&c, top, true).unwrap(), 1);
+        assert!(folder_off(&c, inner).unwrap(), "subfolders too");
+        assert_eq!(off_folders(&c).unwrap(), vec![top]);
+        assert_eq!(queue(&c, &ScanRequest { all: true, ..Default::default() }).unwrap(), 0);
+        assert!(needed(&c, 10).unwrap().is_empty());
+        assert_eq!(status_queued(&c), 0);
+        // On again: queued.
+        assert_eq!(set_folder_off(&c, top, false).unwrap(), 1);
+        assert_eq!(needed(&c, 10).unwrap().iter().map(|t| t.id).collect::<Vec<_>>(), vec![a]);
+        // Stop: the queue empties; faces found stay.
+        assert_eq!(stop(&c).unwrap(), 1);
+        assert!(needed(&c, 10).unwrap().is_empty());
+        let faces_of_b: i64 = c.query_row("SELECT COUNT(*) FROM faces WHERE media_id = ?", [b], |r| r.get(0)).unwrap();
+        assert_eq!(faces_of_b, 1);
+        // Delete face data for "Other": its faces go, the item counts as never scanned.
+        assert_eq!(delete_folder_faces(&c, other).unwrap(), 1);
+        let st: i64 = c.query_row("SELECT faces_state FROM media WHERE id = ?", [b], |r| r.get(0)).unwrap();
+        assert_eq!(st, 0);
+    }
+
+    fn status_queued(c: &Connection) -> i64 {
+        c.query_row(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}", off_sql()), [], |r| r.get(0)).unwrap()
+    }
+
 }
