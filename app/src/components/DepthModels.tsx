@@ -5,6 +5,7 @@
 // you can see what your PC manages.
 
 import { useEffect, useState } from 'react';
+import { FitWarning, useModelFit } from './ModelFit';
 import { api, type DepthDetail, type DepthInfo, type DepthModel, type ViewerSettings } from '../api';
 import { DEPTH_ZIPS, depthChoice, depthPack, lastSpeed, speedText, testSpeed, type SpeedResult } from '../depth';
 import { saveViewerPrefs, useViewerPrefs } from '../prefs';
@@ -30,6 +31,7 @@ export function DepthModelChoice(props: { value?: ViewerSettings; onChange?: (pa
   const shared = useViewerPrefs();
   const choice = depthChoice(props.value ?? shared);
   const save = props.onChange ?? ((p: Partial<ViewerSettings>) => void saveViewerPrefs(p));
+  const fit = useModelFit();
   const speedTests = !!props.speedTests;
   const [models, setModels] = useState<DepthModel[] | null>(null);
   const [inUse, setInUse] = useState<DepthInfo | null>(null);
@@ -103,6 +105,7 @@ export function DepthModelChoice(props: { value?: ViewerSettings; onChange?: (pa
                 ) : m.problem ? (
                   <span className="depth-model-problem">{m.problem}</span>
                 ) : null}
+                {ok && <FitWarning fit={fit} model={m.id} show={choice.model === m.id || (!choice.model && inUse?.model === m.id)} />}
                 {fellBack && <span className="depth-model-problem">Can't be used right now, so {current?.name ?? 'another model'} is used instead.</span>}
                 {speedTests && ok && (speed || speedErr[m.id]) && (
                   <span className={speedErr[m.id] ? 'depth-model-problem' : 'depth-model-speed'}>

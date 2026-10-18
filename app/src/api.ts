@@ -822,11 +822,22 @@ export function takeLogin(): LoginInfo | null {
   return l;
 }
 
+/** One 3D model's room on the graphics card (MB). */
+export interface ModelFit {
+  model: string;
+  needMb: number;
+  cardMb: number;
+  fits: boolean;
+}
+
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
 export const api = {
   /** The 3D models' last runs: device, waiting, loading and running times (gpuroom.rs; the timing panel's report). */
   modelsLog: () => call<import('./perf').ModelRun[]>('models_log'),
+  /** How much of the graphics card each 3D model took when it ran on this PC (gpuroom.rs). Preview: Best outlines too big. */
+  modelsFit: (): Promise<ModelFit[]> =>
+    inTauri ? call<ModelFit[]>('models_fit') : Promise.resolve([{ model: 'birefnet', needMb: 10650, cardMb: 6860, fits: false }, { model: 'da3-mono-large', needMb: 2460, cardMb: 6860, fits: true }]),
   /** The user is using the window (or a video plays): the backend's background loops wait between items (bgpace.ts). */
   setUserBusy: (busy: boolean, video: boolean) => call<void>('set_user_busy', { busy, video }),
   getState: () => call<AppState>('get_state'),

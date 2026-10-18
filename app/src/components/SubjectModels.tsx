@@ -4,6 +4,7 @@
 // with the download they come in, and in Settings a speed test per model.
 
 import { useEffect, useState } from 'react';
+import { FitWarning, useModelFit } from './ModelFit';
 import { api, type SubjectInfo, type SubjectModel, type ViewerSettings } from '../api';
 import { speedText } from '../depth';
 import { lastSubjectSpeed, SUBJECT_ZIPS, subjectChoice, subjectPack, testSubjectSpeed } from '../subject';
@@ -24,6 +25,7 @@ export function SubjectModelChoice(props: { value?: ViewerSettings; onChange?: (
   const shared = useViewerPrefs();
   const choice = subjectChoice(props.value ?? shared);
   const save = props.onChange ?? ((p: Partial<ViewerSettings>) => void saveViewerPrefs(p));
+  const fit = useModelFit();
   const speedTests = !!props.speedTests;
   const [models, setModels] = useState<SubjectModel[] | null>(null);
   const [inUse, setInUse] = useState<SubjectInfo | null>(null);
@@ -92,6 +94,7 @@ export function SubjectModelChoice(props: { value?: ViewerSettings; onChange?: (
                 ) : m.problem ? (
                   <span className="depth-model-problem">{m.problem}</span>
                 ) : null}
+                {ok && <FitWarning fit={fit} model={m.id} show={choice === m.id || (choice === '' && inUse?.model === m.id)} />}
                 {fellBack && <span className="depth-model-problem">Can't be used right now, so {current?.name ?? 'another model'} is used instead.</span>}
                 {speedTests && ok && (speed || speedErr[m.id]) && (
                   <span className={speedErr[m.id] ? 'depth-model-problem' : 'depth-model-speed'}>{speedErr[m.id] || (speed && speedText(speed))}</span>

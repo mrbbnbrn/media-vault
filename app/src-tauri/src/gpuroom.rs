@@ -105,8 +105,119 @@ pub fn card_memory() -> Option<(u64, u64)> {
 const UNMEASURED_NEED: u64 = 2 << 30;
 /// Use at most this share of what Windows lets the app use.
 const FULL: f64 = 0.95;
-/// What each model took on the card when it loaded and first ran (bytes).
+/// What each model took on the card when it loaded and first ran (bytes; the
+/// largest seen), kept on this PC (`gpu-fit.json` next to the settings: model
+/// names and sizes only) so the 3D settings can warn before the first run.
 static FOOTPRINT: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
+/// The last budget Windows gave the app on the card (bytes).
+static LAST_BUDGET: Mutex<u64> = Mutex::new(0);
+static STORE: Mutex<Option<std::path::PathBuf>> = Mutex::new(None);
+/// The model each kind ran last (what is loaded when the kind is loaded).
+static LAST_MODEL: Mutex<[Option<String>; 3]> = Mutex::new([None, None, None]);
+
+#[derive(Debug, Default, Clone, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Stored {
+    budget_mb: u64,
+    models: BTreeMap<String, u64>,
+}
+
+/// At start: where the sizes are kept, and the ones measured before.
+pub fn load_store(config_dir: &std::path::Path) {
+    let path = config_dir.join("gpu-fit.json");
+    if let Some(st) = std::fs::read(&path).ok().and_then(|b| serde_json::from_slice::<Stored>(&b).ok()) {
+        let mut f = FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner());
+        for (k, mb) in st.models {
+            f.insert(k, mb << 20);
+        }
+        *LAST_BUDGET.lock().unwrap_or_else(|e| e.into_inner()) = st.budget_mb << 20;
+    }
+    *STORE.lock().unwrap_or_else(|e| e.into_inner()) = Some(path);
+}
+
+fn save_store() {
+    let Some(path) = STORE.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
+    let st = Stored {
+        budget_mb: *LAST_BUDGET.lock().unwrap_or_else(|e| e.into_inner()) >> 20,
+        models: FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner()).iter().map(|(k, v)| (k.clone(), v >> 20)).collect(),
+    };
+    if let Ok(b) = serde_json::to_vec_pretty(&st) {
+        let _ = std::fs::write(path, b);
+    }
+}
+
+fn budget_now() -> Option<u64> {
+    let b = *LAST_BUDGET.lock().unwrap_or_else(|e| e.into_inner());
+    (b > 0).then_some(b)
+}
+
+fn note_budget(card: Option<(u64, u64)>) {
+    if let Some((_, b)) = card {
+        let mut last = LAST_BUDGET.lock().unwrap_or_else(|e| e.into_inner());
+        let changed = (*last >> 26) != (b >> 26); // (saved again when it moves by 64 MB or more)
+        *last = b;
+        drop(last);
+        if changed {
+            save_store();
+        }
+    }
+}
+
+/// This model needs more of the card than Windows lets the app use, even on its own:
+/// it runs anyway (slower), and isn't freed for the others or they for it (reloading costs more).
+pub fn too_big(model: &str) -> bool {
+    let need = FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner()).get(model).copied();
+    match (need, budget_now()) {
+        (Some(n), Some(b)) => !fits(0, n, b),
+        _ => false,
+    }
+}
+
+fn idx(k: Kind) -> usize {
+    match k {
+        Kind::Depth => 0,
+        Kind::Subject => 1,
+        Kind::Fill => 2,
+    }
+}
+
+/// A model of this kind ran (it is what's loaded for the kind now).
+fn ran(k: Kind, model: &str) {
+    LAST_MODEL.lock().unwrap_or_else(|e| e.into_inner())[idx(k)] = Some(model.to_string());
+}
+
+fn loaded_too_big(k: Kind) -> bool {
+    LAST_MODEL.lock().unwrap_or_else(|e| e.into_inner())[idx(k)].clone().is_some_and(|m| too_big(&m))
+}
+
+/// Another kind's model that doesn't fit on its own is loaded: the card is over
+/// anyway, and freeing the small ones would only make them load again.
+fn big_one_loaded(keep: Kind) -> bool {
+    KINDS.into_iter().any(|k| k != keep && loaded(k) && loaded_too_big(k))
+}
+
+/// One model's room on the card, for the 3D settings.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Fit {
+    pub model: String,
+    /// What it took on the card (MB).
+    pub need_mb: u64,
+    /// What Windows lets the app use on the card (MB).
+    pub card_mb: u64,
+    pub fits: bool,
+}
+
+#[tauri::command]
+pub fn models_fit() -> Vec<Fit> {
+    let Some(b) = budget_now() else { return Vec::new() };
+    FOOTPRINT
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .map(|(m, &n)| Fit { model: m.clone(), need_mb: n >> 20, card_mb: b >> 20, fits: fits(0, n, b) })
+        .collect()
+}
 /// Each model's quickest run on the card here (ms), by model and size.
 static BEST_MS: Mutex<BTreeMap<String, f64>> = Mutex::new(BTreeMap::new());
 
@@ -138,7 +249,7 @@ fn unload(k: Kind) {
 
 /// The other kinds' loaded models, least recently used first.
 fn others_loaded(keep: Kind) -> Vec<Kind> {
-    let mut v: Vec<Kind> = KINDS.into_iter().filter(|&k| k != keep && loaded(k)).collect();
+    let mut v: Vec<Kind> = KINDS.into_iter().filter(|&k| k != keep && loaded(k) && !loaded_too_big(k)).collect();
     v.sort_by_key(|&k| last_used(k));
     v
 }
@@ -161,8 +272,10 @@ pub fn far_slower(ms: f64, best: f64) -> bool {
 /// with the others, free them, the least recently used first, until it does.
 /// Returns the card's memory before loading and a note for the log.
 pub fn fit(keep: Kind, model: &str, is_loaded: bool) -> (Option<u64>, String) {
-    let Some((mut used, budget)) = card_memory() else { return (None, String::new()) };
-    if is_loaded {
+    let card = card_memory();
+    note_budget(card);
+    let Some((mut used, budget)) = card else { return (None, String::new()) };
+    if is_loaded || too_big(model) || big_one_loaded(keep) {
         return (Some(used), String::new());
     }
     let need = FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner()).get(model).copied().unwrap_or(UNMEASURED_NEED);
@@ -186,11 +299,20 @@ pub fn fit(keep: Kind, model: &str, is_loaded: bool) -> (Option<u64>, String) {
 /// size (None when the size changes from run to run). Returns a note and the
 /// card's memory for the log.
 pub fn after(keep: Kind, model: &str, size_key: Option<&str>, fresh: bool, before: Option<u64>, run: Duration) -> (String, Option<(u64, u64)>) {
+    ran(keep, model);
     let mut card = card_memory();
+    note_budget(card);
     if let (true, Some(b), Some((u, _))) = (fresh, before, card)
         && u > b
     {
-        FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner()).insert(model.to_string(), u - b);
+        let mut f = FOOTPRINT.lock().unwrap_or_else(|e| e.into_inner());
+        let old = f.get(model).copied().unwrap_or(0);
+        // (Measured while others spilled over it can come out small: the largest is kept.)
+        if u - b > old + (64 << 20) || (old == 0 && u > b) {
+            f.insert(model.to_string(), (u - b).max(old));
+            drop(f);
+            save_store();
+        }
     }
     let ms = run.as_secs_f64() * 1000.0;
     let mut slow = false;
@@ -209,6 +331,12 @@ pub fn after(keep: Kind, model: &str, size_key: Option<&str>, fresh: bool, befor
     let full = card.is_some_and(|(u, b)| !fits(u, 0, b));
     if !(full || slow) {
         return (String::new(), card);
+    }
+    if too_big(model) {
+        return ("too big for the graphics card on its own: runs slower".into(), card);
+    }
+    if big_one_loaded(keep) {
+        return ("slower: a model too big for the graphics card is loaded".into(), card);
     }
     let others = others_loaded(keep);
     if others.is_empty() {
@@ -322,6 +450,7 @@ pub fn models_log() -> Vec<Run> {
 /// The vault locked: forget the log and the fall-backs.
 pub fn reset() {
     LOG.lock().unwrap_or_else(|e| e.into_inner()).clear();
+    *LAST_MODEL.lock().unwrap_or_else(|e| e.into_inner()) = [None, None, None];
     BEST_MS.lock().unwrap_or_else(|e| e.into_inner()).clear();
     ON_CPU_SINCE.lock().unwrap_or_else(|e| e.into_inner()).clear();
 }
@@ -363,6 +492,24 @@ mod tests {
         assert_eq!(BEST_MS.lock().unwrap().get("t-model@1").copied(), Some(200.0));
         after(Kind::Fill, "t-model", Some("t-model@1"), false, None, Duration::from_millis(5000));
         assert_eq!(BEST_MS.lock().unwrap().get("t-model@1").copied(), Some(200.0), "a slow run isn't the best");
+    }
+
+    #[test]
+    fn too_big_on_its_own() {
+        let gb = 1u64 << 30;
+        *LAST_BUDGET.lock().unwrap() = 7 * gb;
+        FOOTPRINT.lock().unwrap().insert("t-huge".into(), 10 * gb + gb / 2);
+        FOOTPRINT.lock().unwrap().insert("t-small".into(), gb);
+        assert!(too_big("t-huge"));
+        assert!(!too_big("t-small"));
+        assert!(!too_big("t-unknown"));
+        let f = models_fit();
+        assert!(f.iter().any(|x| x.model == "t-huge" && !x.fits && x.need_mb == 10752 && x.card_mb == 7168));
+        // A too-big model is never freed for the others.
+        ran(Kind::Subject, "t-huge");
+        assert!(loaded_too_big(Kind::Subject));
+        ran(Kind::Subject, "t-small");
+        assert!(!loaded_too_big(Kind::Subject));
     }
 
     #[test]

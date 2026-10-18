@@ -2413,6 +2413,7 @@ async fn vault_growth(state: State<'_, Shared>) -> Result<growth::Growth, String
 pub fn run() {
     let config_dir = config::config_dir();
     let cfg = config::load(&config_dir);
+    gpuroom::load_store(&config_dir);
     poorfaces::set_rule(&cfg.poor_faces);
     let engine = engine::prepare(&config_dir, cfg.builtin_engine);
     let inner: Shared = Arc::new(Inner {
@@ -2540,6 +2541,7 @@ pub fn run() {
             report_activity,
             userbusy::set_user_busy,
             gpuroom::models_log,
+            gpuroom::models_fit,
             library_folders,
             library_page,
             move_folders,

@@ -4,6 +4,7 @@
 // the download they come in), and in Settings a speed test per model.
 
 import { useEffect, useState } from 'react';
+import { FitWarning, useModelFit } from './ModelFit';
 import { api, type InpaintModel, type ViewerSettings } from '../api';
 import { speedText } from '../depth';
 import { INPAINT_ZIPS, inpaintChoice, inpaintPack, lastInpaintSpeed, testInpaintSpeed } from '../inpaint';
@@ -24,6 +25,7 @@ export function InpaintModelChoice(props: { value?: ViewerSettings; onChange?: (
   const shared = useViewerPrefs();
   const choice = inpaintChoice(props.value ?? shared);
   const save = props.onChange ?? ((p: Partial<ViewerSettings>) => void saveViewerPrefs(p));
+  const fit = useModelFit();
   const [models, setModels] = useState<InpaintModel[] | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [err, setErr] = useState<Record<string, string>>({});
@@ -75,6 +77,7 @@ export function InpaintModelChoice(props: { value?: ViewerSettings; onChange?: (
                 ) : m.problem ? (
                   <span className="depth-model-problem">{m.problem}</span>
                 ) : null}
+                {ok && <FitWarning fit={fit} model={m.id} show={choice === m.id} />}
                 {props.speedTests && ok && (speed || err[m.id]) && (
                   <span className={err[m.id] ? 'depth-model-problem' : 'depth-model-speed'}>{err[m.id] || (speed && speedText(speed))}</span>
                 )}
