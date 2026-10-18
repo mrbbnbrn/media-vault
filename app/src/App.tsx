@@ -1,3 +1,4 @@
+import { watchWindowErrors } from './diagwatch';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { continueIfNeeded, listenForEncryption } from './encryptionjob';
 import { api, inTauri, onEvent, onLocked, type AppState, type LockReason } from './api';
@@ -46,6 +47,7 @@ const MultiScreen = lazyPart(() => import('./screens/MultiScreen').then((m) => m
 const PerfPanel = lazyPart(() => import('./components/PerfPanel').then((m) => m.PerfPanel));
 
 startPerfObservers();
+watchWindowErrors();
 void api.diagNote(`loaded · ${window.innerWidth}×${window.innerHeight} @${window.devicePixelRatio}x`);
 setPerfJobs(() => jobList().filter((j) => !j.endedAt).map((j) => j.label));
 setModelLogSource(() => (inTauriNow() ? api.modelsLog() : Promise.resolve([])));

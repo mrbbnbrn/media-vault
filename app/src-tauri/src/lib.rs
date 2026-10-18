@@ -2523,6 +2523,7 @@ pub fn run() {
             windowstate::on_event(window, event, &dir);
             // Closing the window: save the library first.
             if let WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed = event {
+                diaglog::note(&format!("window '{}': {}", window.label(), if matches!(event, WindowEvent::Destroyed) { "destroyed" } else { "closing" }));
                 let inner = window.app_handle().state::<Shared>().inner().clone();
                 let open = inner.session.lock().unwrap().clone();
                 if let Some(s) = open

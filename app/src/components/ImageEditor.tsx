@@ -16,6 +16,7 @@ import { saveWay, type Quarter } from '../rotation';
 import { pushUndo } from '../undo';
 import { CloseIcon, FlipIcon, RotateIcon } from './Icons';
 import { useLayer } from '../keylayers';
+import { diagWatch } from '../diagwatch';
 
 /** Biggest picture the window can draw in one piece. */
 const MAX_SIDE = 16384;
@@ -251,6 +252,7 @@ export function ImageEditor(props: {
       props.onMessage(saved.reused ? `“${name}” was already in this folder` : `Saved “${name}” next to the original · Ctrl+Z undoes it`);
       props.onClose();
       void api.diagNote('editor save: editor closed');
+      diagWatch('after save');
     } catch (e) {
       void api.diagNote(`editor save: failed · ${e instanceof Error ? e.message : String(e)}`);
       props.onMessage(`Couldn't save the copy: ${e instanceof Error ? e.message : String(e)}`);

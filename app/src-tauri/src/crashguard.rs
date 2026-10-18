@@ -12,11 +12,15 @@
 #[cfg(windows)]
 pub fn watch(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
     let app = app.clone();
+    crate::diaglog::note(&format!("window '{}': watching its processes", win.label()));
     let _ = win.with_webview(move |wv| unsafe {
         use webview2_com::Microsoft::Web::WebView2::Win32::*;
         use webview2_com::ProcessFailedEventHandler;
         use windows::core::Interface;
-        let Ok(core) = wv.controller().CoreWebView2() else { return };
+        let Ok(core) = wv.controller().CoreWebView2() else {
+            crate::diaglog::note("couldn't watch the window's processes: no WebView2 yet");
+            return;
+        };
         let handler = ProcessFailedEventHandler::create(Box::new(move |sender, args| {
             let (Some(sender), Some(args)) = (sender, args) else { return Ok(()) };
             let mut kind = COREWEBVIEW2_PROCESS_FAILED_KIND::default();
@@ -68,7 +72,10 @@ pub fn watch(app: &tauri::AppHandle, win: &tauri::WebviewWindow) {
             Ok(())
         }));
         let mut token = 0i64;
-        let _ = core.add_ProcessFailed(&handler, &mut token);
+        match core.add_ProcessFailed(&handler, &mut token) {
+            Ok(()) => crate::diaglog::note("watching the window's processes"),
+            Err(e) => crate::diaglog::note(&format!("couldn't watch the window's processes: {e}")),
+        }
     });
 }
 
