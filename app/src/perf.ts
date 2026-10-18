@@ -325,6 +325,11 @@ export async function fullReport(): Promise<string> {
   if (!runs.length) return base;
   const lines = ['', '## 3D model runs (device · waited · loaded · ran)'];
   for (const r of runs) {
+    if (r.kind === 'window') {
+      const card = r.cardUsedMb != null && r.cardBudgetMb ? ` · card memory ${gb(r.cardUsedMb)} of ${gb(r.cardBudgetMb)} GB` : '';
+      lines.push(`${new Date(r.at).toLocaleTimeString()}  THE WINDOW FAILED: ${r.model}${card}${r.note ? ` · ${r.note}` : ''}`);
+      continue;
+    }
     const card = r.cardUsedMb != null && r.cardBudgetMb ? ` · card memory ${gb(r.cardUsedMb)} of ${gb(r.cardBudgetMb)} GB` : '';
     lines.push(`${new Date(r.at).toLocaleTimeString()}  ${r.kind} ${r.model} on ${r.device === 'gpu' ? 'graphics card' : 'PROCESSOR'} · waited ${Math.round(r.waitMs)} ms · loaded ${Math.round(r.loadMs)} ms · ran ${Math.round(r.runMs)} ms${card}${r.note ? ` · ${r.note}` : ''}`);
   }

@@ -76,6 +76,8 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_WindowsAndMessaging",
 ] }
 windows-core = "0.62.2"
+# The window's own processes ending (crashguard.rs): the same version wry uses.
+webview2-com = "0.39.1"
 
 [dev-dependencies]
 tempfile = "3.27.0"

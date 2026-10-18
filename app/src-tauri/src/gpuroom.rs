@@ -395,6 +395,45 @@ impl Device {
     }
 }
 
+/// Free every 3D model (and the upscaler) that isn't running right now.
+pub fn free_idle() {
+    for k in KINDS {
+        unload(k);
+    }
+    crate::upscale::unload_if_idle();
+}
+
+/// Face recognition and smart search load their models on the card too (they
+/// are small). Before they load: if they wouldn't fit beside the 3D models,
+/// free the 3D models that aren't running (they load again when wanted).
+pub fn room_for_other(need: u64) {
+    let Some((used, budget)) = card_memory() else { return };
+    if !fits(used, need, budget) {
+        free_idle();
+    }
+}
+
+/// The window's own processes ended (crashguard.rs): into the log, with the card's memory.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn note_window(what: &str, why: &str) {
+    let card = card_memory();
+    let note = if why.is_empty() { "the window was loaded again".to_string() } else { format!("{why}; the window was loaded again") };
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0);
+    let mut l = LOG.lock().unwrap_or_else(|e| e.into_inner());
+    l.push_back(Run {
+        kind: "window",
+        model: what.to_string(),
+        device: "gpu",
+        wait_ms: 0.0,
+        load_ms: 0.0,
+        run_ms: 0.0,
+        note,
+        at,
+        card_used_mb: card.map(|c| c.0 >> 20),
+        card_budget_mb: card.map(|c| c.1 >> 20),
+    });
+}
+
 // ---- the log (timing panel) -----------------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]

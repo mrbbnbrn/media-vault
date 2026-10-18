@@ -170,6 +170,9 @@ fn with_models<T>(f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result
     for attempt in 0..2 {
         if guard.is_none() {
             let first = if attempt == 0 { try_gpu } else { false };
+            if first {
+                crate::gpuroom::room_for_other(1 << 30); // room beside the 3D models first
+            }
             match load(&dir, first) {
                 Ok(l) => *guard = Some(l),
                 Err(_) if first => match load(&dir, false) {

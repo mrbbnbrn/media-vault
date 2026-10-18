@@ -84,6 +84,15 @@ export function ImageEditor(props: {
     };
   }, [item.src]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The editor draws the picture at full size: give the graphics card's memory
+  // the 3D models hold back first (they load again when 3D is next needed).
+  useEffect(() => {
+    void api.depthForget().catch(() => {});
+    void api.subjectForget().catch(() => {});
+    void api.inpaintForget().catch(() => {});
+    void api.upscaleForget().catch(() => {});
+  }, []);
+
   useLayoutEffect(() => {
     const el = areaRef.current;
     if (!el) return;

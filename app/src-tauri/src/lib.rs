@@ -71,6 +71,7 @@ mod sketch;
 mod storage;
 mod throttle;
 mod userbusy; // background work waits while you use the window
+mod crashguard; // the window's processes ending (a black window): load the page again
 mod gpuroom; // the 3D models share the graphics card: one at a time, make room, back to the card
 // Thumbnail pages: a folder's thumbnails in a few encrypted objects (derived, a cache).
 mod thumbpages;
@@ -2495,6 +2496,9 @@ pub fn run() {
                 });
             }
             start_watcher(app.handle().clone(), inner.clone());
+            for (_, w) in app.webview_windows() {
+                crashguard::watch(&w);
+            }
             let block = inner.config.lock().unwrap().block_capture;
             nocapture::apply_all(app.handle(), block);
             Ok(())

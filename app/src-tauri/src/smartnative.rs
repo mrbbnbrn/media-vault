@@ -119,6 +119,7 @@ fn open(gpu: bool) -> Result<ort::session::Session, String> {
     if gpu {
         b = b.with_memory_pattern(false).map_err(|e| err(&e))?;
         b = b.with_parallel_execution(false).map_err(|e| err(&e))?;
+        crate::gpuroom::room_for_other(1 << 30); // room beside the 3D models first
         b = b.with_execution_providers([ort::ep::DirectML::default().build().error_on_failure()]).map_err(|e| err(&e))?;
     } else {
         // Half the cores: its own threads run at normal priority (they don't take the
