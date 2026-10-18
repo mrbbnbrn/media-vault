@@ -7,6 +7,7 @@
 
 import { api } from './api';
 import { layerNames } from './keylayers';
+import { errorText } from './components/ErrorBoundary';
 
 let watching = 0;
 
@@ -43,10 +44,10 @@ function noteError(what: string) {
   sent = sent.filter((t) => now - t < 60_000);
   if (sent.length >= 10) return;
   sent.push(now);
-  void api.diagNote(`error: ${what.slice(0, 300)}`);
+  void api.diagNote(`error: ${what.slice(0, 900)}`);
 }
 
 export function watchWindowErrors() {
-  window.addEventListener('error', (e) => noteError(`${e.message} @${(e.filename ?? '').split('/').pop()}:${e.lineno}`));
-  window.addEventListener('unhandledrejection', (e) => noteError(`unhandled: ${e.reason instanceof Error ? e.reason.message : String(e.reason)}`));
+  window.addEventListener('error', (e) => noteError(`${e.message} @${(e.filename ?? '').split('/').pop()}:${e.lineno}:${e.colno} | ${errorText(e.error)}`));
+  window.addEventListener('unhandledrejection', (e) => noteError(`unhandled: ${errorText(e.reason)}`));
 }

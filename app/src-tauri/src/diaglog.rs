@@ -29,11 +29,11 @@ pub fn init(config_dir: &std::path::Path) {
     note(&format!("=== app started · version {} · clock {secs} (seconds since 1970, UTC)", env!("CARGO_PKG_VERSION")));
 }
 
-/// One line: seconds since the app started, then the text (one line, at most 400 characters).
+/// One line: seconds since the app started, then the text (one line, at most 1200 characters).
 pub fn note(text: &str) {
     let Some(path) = PATH.lock().unwrap_or_else(|e| e.into_inner()).clone() else { return };
     let t = START.lock().unwrap_or_else(|e| e.into_inner()).map(|s| s.elapsed().as_secs_f64()).unwrap_or(0.0);
-    let one: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).take(400).collect();
+    let one: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).take(1200).collect();
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
         let _ = writeln!(f, "{t:>10.3}s  {one}");
         let _ = f.sync_data();

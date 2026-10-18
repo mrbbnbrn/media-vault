@@ -1,4 +1,5 @@
 import { watchWindowErrors } from './diagwatch';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { continueIfNeeded, listenForEncryption } from './encryptionjob';
 import { api, inTauri, onEvent, onLocked, type AppState, type LockReason } from './api';
@@ -363,6 +364,11 @@ export function App() {
       {screen.name === 'settings' && <Settings nav={nav} />}
       {viewerRoute && (
         <MiniFrame key={viewerId} mini={isMini} onExpand={expandMini}>
+          <ErrorBoundary name="the viewer" onError={() => {
+            // The viewer failed while drawing: back to where it was opened from.
+            setMini(null);
+            setScreen(app.session ? { name: 'library' } : { name: 'start' });
+          }}>
           <Viewer nav={nav} items={viewerRoute.items} startKey={viewerRoute.startKey} title={viewerRoute.title} auto={viewerRoute.auto} order={viewerRoute.order}
             fromRect={viewerRoute.fromRect} kenBurns={viewerRoute.kenBurns} titleCard={viewerRoute.titleCard} speedRound={viewerRoute.speedRound}
             person={viewerRoute.person}
@@ -404,6 +410,7 @@ export function App() {
             } : undefined}
             onExpand={expandMini}
             onCloseMini={() => setMini(null)} />
+          </ErrorBoundary>
         </MiniFrame>
       )}
       {screen.name === 'multi' && app.session && (
