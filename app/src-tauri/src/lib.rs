@@ -71,6 +71,7 @@ mod sketch;
 mod storage;
 mod throttle;
 mod userbusy; // background work waits while you use the window
+mod diaglog; // diagnostics.log: steps and sizes only, written straight to disk
 mod crashguard; // the window's processes ending (a black window): load the page again
 mod gpuroom; // the 3D models share the graphics card: one at a time, make room, back to the card
 // Thumbnail pages: a folder's thumbnails in a few encrypted objects (derived, a cache).
@@ -2379,6 +2380,18 @@ fn start_watcher(app: AppHandle, inner: Shared) {
     });
 }
 
+/// Save the open library now (the window is closing or has died).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn save_open(app: &AppHandle) {
+    let inner = app.state::<Shared>().inner().clone();
+    let open = inner.session.lock().unwrap().clone();
+    if let Some(s) = open
+        && s.is_dirty()
+    {
+        let _ = s.save();
+    }
+}
+
 // ---- background jobs, vault growth ------------------------------------------------------
 
 /// Thumbnails and preview clips still to make (for the background-jobs ring).
@@ -2414,6 +2427,7 @@ async fn vault_growth(state: State<'_, Shared>) -> Result<growth::Growth, String
 pub fn run() {
     let config_dir = config::config_dir();
     let cfg = config::load(&config_dir);
+    diaglog::init(&config_dir);
     gpuroom::load_store(&config_dir);
     poorfaces::set_rule(&cfg.poor_faces);
     let engine = engine::prepare(&config_dir, cfg.builtin_engine);
@@ -2497,7 +2511,7 @@ pub fn run() {
             }
             start_watcher(app.handle().clone(), inner.clone());
             for (_, w) in app.webview_windows() {
-                crashguard::watch(&w);
+                crashguard::watch(app.handle(), &w);
             }
             let block = inner.config.lock().unwrap().block_capture;
             nocapture::apply_all(app.handle(), block);
@@ -2546,6 +2560,7 @@ pub fn run() {
             userbusy::set_user_busy,
             gpuroom::models_log,
             gpuroom::models_fit,
+            diaglog::diag_note,
             library_folders,
             library_page,
             move_folders,

@@ -46,6 +46,7 @@ const MultiScreen = lazyPart(() => import('./screens/MultiScreen').then((m) => m
 const PerfPanel = lazyPart(() => import('./components/PerfPanel').then((m) => m.PerfPanel));
 
 startPerfObservers();
+void api.diagNote(`loaded · ${window.innerWidth}×${window.innerHeight} @${window.devicePixelRatio}x`);
 setPerfJobs(() => jobList().filter((j) => !j.endedAt).map((j) => j.label));
 setModelLogSource(() => (inTauriNow() ? api.modelsLog() : Promise.resolve([])));
 

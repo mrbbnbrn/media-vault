@@ -207,6 +207,9 @@ export function ImageEditor(props: {
       return;
     }
     setBusy('Saving a copy…');
+    // Each step goes into diagnostics.log first (sizes only), so if the window dies we know where.
+    const ext0 = (item.name.match(/\.([^.]+)$/)?.[1] ?? '').toLowerCase();
+    await api.diagNote(`editor save: start · picture ${W}×${H} (${pic.full.width}×${pic.full.height} decoded) · out ${out.w}×${out.h} · .${ext0} · turn ${edit.quarter ?? 0} · angle ${edit.angle ?? 0} · adjust ${hasAdjust(edit.adjust)}`);
     let c: HTMLCanvasElement | null = document.createElement('canvas');
     try {
       c.width = out.w;
@@ -216,8 +219,10 @@ export function ImageEditor(props: {
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
       ctx.setTransform(...editMatrix(W, H, edit));
+      await api.diagNote('editor save: canvas made, drawing');
       ctx.drawImage(pic.full, 0, 0);
       ctx.setTransform(1, 0, 0, 1, 0, 0);
+      await api.diagNote('editor save: drawn');
       const ext = (item.name.match(/\.([^.]+)$/)?.[1] ?? '').toLowerCase();
       const jpeg = ext === 'jpg' || ext === 'jpeg';
       let seeThrough = false;
@@ -230,10 +235,13 @@ export function ImageEditor(props: {
         ctx.putImageData(d, 0, 0);
       }
       const fmt = savedFormat(item.name, seeThrough);
+      await api.diagNote(`editor save: encoding ${fmt.mime}`);
       const blob = await new Promise<Blob | null>((res) => c!.toBlob(res, fmt.mime, fmt.quality));
       if (!blob) throw new Error("the window couldn't make the picture file");
+      await api.diagNote(`editor save: encoded ${blob.size} bytes, sending`);
       const name = editedName(item.name, fmt.ext);
       const saved = await api.addCopyBytes(item.itemId, name, new Uint8Array(await blob.arrayBuffer()), out.w, out.h);
+      await api.diagNote(`editor save: saved (${saved.reused ? 'already there' : 'new item'})`);
       if (!saved.reused) {
         pushUndo(`Saved “${name}”`, () => api.deleteItems([saved.id]));
         props.onSaved?.();
@@ -242,7 +250,9 @@ export function ImageEditor(props: {
       noteItemsChanged();
       props.onMessage(saved.reused ? `“${name}” was already in this folder` : `Saved “${name}” next to the original · Ctrl+Z undoes it`);
       props.onClose();
+      void api.diagNote('editor save: editor closed');
     } catch (e) {
+      void api.diagNote(`editor save: failed · ${e instanceof Error ? e.message : String(e)}`);
       props.onMessage(`Couldn't save the copy: ${e instanceof Error ? e.message : String(e)}`);
       setBusy(null);
     } finally {

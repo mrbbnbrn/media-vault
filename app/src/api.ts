@@ -835,6 +835,8 @@ export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in
 export const api = {
   /** The 3D models' last runs: device, waiting, loading and running times (gpuroom.rs; the timing panel's report). */
   modelsLog: () => call<import('./perf').ModelRun[]>('models_log'),
+  /** A step into diagnostics.log on this PC (steps and sizes only, never names; diaglog.rs). */
+  diagNote: (text: string): Promise<void> => (inTauri ? call<void>('diag_note', { text }).catch(() => {}) : Promise.resolve()),
   /** How much of the graphics card each 3D model took when it ran on this PC (gpuroom.rs). Preview: Best outlines too big. */
   modelsFit: (): Promise<ModelFit[]> =>
     inTauri ? call<ModelFit[]>('models_fit') : Promise.resolve([{ model: 'birefnet', needMb: 10650, cardMb: 6860, fits: false }, { model: 'da3-mono-large', needMb: 2460, cardMb: 6860, fits: true }]),
