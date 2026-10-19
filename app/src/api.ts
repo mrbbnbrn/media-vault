@@ -2455,7 +2455,8 @@ async function mockInpaint(r: InpaintRequest, rgba: Uint8Array, mask: Uint8Array
 
 // ---- saved depth maps and outlines (pictures only) -----------------------------------------------
 
-export type DerivedKind = 'depth' | 'outline';
+/** Saved 3D data: depth maps and outlines, and the 3D layers made from them (plate.ts). */
+export type DerivedKind = 'depth' | 'outline' | 'plate' | 'fore';
 
 /** What is saved for some pictures, for one kind and model (the model's name carries its settings). */
 export interface DerivedGroup {
@@ -2479,6 +2480,9 @@ export interface DerivedStats {
   depthBytes: number;
   outlineCount: number;
   outlineBytes: number;
+  /** Saved 3D layers (background plates and subject layers). */
+  layerCount?: number;
+  layerBytes?: number;
 }
 
 /** Preview: saved maps live in memory for the session. */

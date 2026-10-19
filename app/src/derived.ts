@@ -55,6 +55,14 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     const [, model, side] = o;
     return { name: names.get(model) ?? model, detail: Number(side) === 1024 ? '' : `${side} px` };
   }
+  // 3D layers: depth tag _ outline tag _ e<edges> [_ fill] (plate.ts layerTags).
+  const l = /^(.+?)@(\d+)~[\d.]+_(.+?)@\d+_e([\d.]+)(?:_(.+))?$/.exec(tag);
+  if ((kind === 'plate' || kind === 'fore') && l) {
+    const [, depth, , outline, edges, fill] = l;
+    const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
+    const parts = [`outline ${names.get(outline) ?? outline}`, Number(edges) > 0 ? 'sharper edges' : '', fill ? fills[fill] ?? fill : ''].filter(Boolean);
+    return { name: names.get(depth) ?? depth, detail: parts.join(' · ') };
+  }
   return { name: tag, detail: '' };
 }
 

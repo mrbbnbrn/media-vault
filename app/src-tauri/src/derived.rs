@@ -20,8 +20,13 @@ use zeroize::Zeroizing;
 
 use crate::session::Session;
 
-/// The kinds of saved map.
-pub const KINDS: [&str; 2] = ["depth", "outline"];
+/// The kinds of saved map: depth maps and outlines (one byte per pixel), and
+/// the 3D picture layers made from them (plate.ts): Layered 3D's background
+/// plate ("plate") and the subject's own layer ("fore"), kept as what differs
+/// from the picture itself, packed (layerpack.ts; starts with "MVL1").
+pub const KINDS: [&str; 4] = ["depth", "outline", "plate", "fore"];
+/// A packed layer at most (a 1600 px plate is a few MB at worst).
+const MAX_LAYER: usize = 64 << 20;
 /// Biggest map accepted (the estimate commands give at most 2048 × 2048).
 const MAX_SIDE: u32 = 4096;
 
@@ -30,18 +35,31 @@ fn e(err: rusqlite::Error) -> String {
 }
 
 fn check_kind(kind: &str) -> Result<(), String> {
-    if KINDS.contains(&kind) { Ok(()) } else { Err("Only depth maps and outlines can be saved.".into()) }
+    if KINDS.contains(&kind) { Ok(()) } else { Err("Only depth maps, outlines and 3D layers can be saved.".into()) }
 }
 
 /// A model id as the packs use them: a short name of a-z, 0-9 and "-".
 fn check_model(model: &str) -> Result<(), String> {
-    // As the window names them: model, size and softness, e.g. `da3-mono-large@518~0.5`.
-    let ok = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '@' | '~' | '.');
-    if !model.is_empty() && model.len() <= 64 && model.chars().all(ok) {
+    // As the window names them: model, size and softness, e.g. `da3-mono-large@518~0.5`;
+    // layers join what they were made from with "_" (`…@518~1_birefnet@1024_e0.70_lama`).
+    let ok = |c: char| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '-' | '@' | '~' | '.' | '_');
+    if !model.is_empty() && model.len() <= 160 && model.chars().all(ok) {
         Ok(())
     } else {
         Err("That isn't a model name.".into())
     }
+}
+
+/// What is saved, by kind: a map (as the estimate commands give it) or a packed layer.
+fn check_data(kind: &str, bytes: &[u8]) -> Result<(), String> {
+    if kind == "plate" || kind == "fore" {
+        return if bytes.len() >= 16 && bytes.len() <= MAX_LAYER && bytes.starts_with(b"MVL1") {
+            Ok(())
+        } else {
+            Err("The 3D layer didn't arrive whole.".into())
+        };
+    }
+    check_map(bytes)
 }
 
 /// The map as the estimate commands give it: 8 bytes of size, then one byte per pixel.
@@ -74,7 +92,7 @@ fn now_ms() -> i64 {
 pub fn put(s: &Session, item: i64, kind: &str, model: &str, bytes: &[u8]) -> Result<(), String> {
     check_kind(kind)?;
     check_model(model)?;
-    check_map(bytes)?;
+    check_data(kind, bytes)?;
     picture_source(&s.db(), item)?;
     let (oid, _) = s.vault().add_object(ObjectKind::Thumbnail, bytes).map_err(|x| x.to_string())?;
     let stored = (|| -> Result<Option<String>, String> {
@@ -126,7 +144,7 @@ pub fn get(s: &Session, item: i64, kind: &str, model: &str) -> Result<Option<Zer
         return Ok(None);
     };
     // A map that can't be read (damaged) counts as not saved: it is simply made again.
-    Ok(s.vault().read_object(ObjectKind::Thumbnail, &id).ok().filter(|b| check_map(b).is_ok()))
+    Ok(s.vault().read_object(ObjectKind::Thumbnail, &id).ok().filter(|b| check_data(kind, b).is_ok()))
 }
 
 /// Remove every saved map (of one kind, or all); how many there were.
@@ -308,6 +326,9 @@ pub struct DerivedStats {
     pub depth_bytes: u64,
     pub outline_count: u64,
     pub outline_bytes: u64,
+    /// The 3D layers (background plates and subject layers together).
+    pub layer_count: u64,
+    pub layer_bytes: u64,
 }
 
 pub fn stats(conn: &Connection) -> Result<DerivedStats, String> {
@@ -319,6 +340,10 @@ pub fn stats(conn: &Connection) -> Result<DerivedStats, String> {
         match kind.as_str() {
             "depth" => (out.depth_count, out.depth_bytes) = (n as u64, bytes as u64),
             "outline" => (out.outline_count, out.outline_bytes) = (n as u64, bytes as u64),
+            "plate" | "fore" => {
+                out.layer_count += n as u64;
+                out.layer_bytes += bytes as u64;
+            }
             _ => {}
         }
     }
@@ -455,7 +480,7 @@ mod tests {
         assert_eq!(thumbs(&s), 4);
         assert_eq!(
             stats(&s.db()).unwrap(),
-            DerivedStats { depth_count: 3, depth_bytes: (8 + 12) + (8 + 4) + (8 + 1), outline_count: 1, outline_bytes: 8 + 25 }
+            DerivedStats { depth_count: 3, depth_bytes: (8 + 12) + (8 + 4) + (8 + 1), outline_count: 1, outline_bytes: 8 + 25, layer_count: 0, layer_bytes: 0 }
         );
         let j = serde_json::to_value(stats(&s.db()).unwrap()).unwrap();
         for k in ["depthCount", "depthBytes", "outlineCount", "outlineBytes"] {
@@ -515,7 +540,7 @@ mod tests {
         assert_eq!(have(&s.db(), "depth", "da3-mono-large@518~0.5").unwrap(), vec![a]);
         assert_eq!(have(&s.db(), "outline", "birefnet-lite@1024").unwrap(), vec![a]);
         assert!(have(&s.db(), "depth", "v2-small@518~1").unwrap().is_empty());
-        for bad in ["", "a/b", "a\\b", "A", "x y", &"a".repeat(65)] {
+        for bad in ["", "a/b", "a\\b", "A", "x y", &"a".repeat(161)] {
             assert!(put(&s, a, "depth", bad, &map(2, 2, 1)).is_err(), "{bad:?}");
         }
         assert_eq!(stats(&s.db()).unwrap().depth_count, 2);
@@ -630,5 +655,14 @@ mod tests {
         crate::import::remove_objects(&s, &o);
         assert_eq!((stats(&s.db()).unwrap().depth_count, thumbs(&s)), (1, 2));
         assert!(get(&s, c, "outline", "birefnet").unwrap().is_some(), "the item not deleted keeps its maps");
+    }
+
+    #[test]
+    fn layers_are_kept_packed() {
+        assert!(check_data("plate", b"MVL1\x01\0\0\0\x01\0\0\0\0\0\0\0rest").is_ok());
+        assert!(check_data("fore", b"nope, not packed").is_err());
+        assert!(check_data("depth", b"MVL1\x01\0\0\0\x01\0\0\0\0\0\0\0").is_err(), "a map is one byte per pixel");
+        assert!(check_model("da3-mono-large@518~1_birefnet@1024_e0.70_lama").is_ok());
+        assert!(check_kind("plate").is_ok() && check_kind("fore").is_ok());
     }
 }

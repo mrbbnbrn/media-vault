@@ -36,7 +36,8 @@ import {
   type SubjectStats,
 } from '../subject';
 import { bgDepthNear } from '../layers';
-import { foreFor, peekRefined, plateFor, refinedDepth } from '../plate';
+import { foreFor, layerTags, peekRefined, plateFor, refinedDepth } from '../plate';
+import { savedId } from '../derived';
 import { DepthModelChoice } from './DepthModels';
 import { InpaintModelChoice } from './InpaintModels';
 import { SavedMapsSection } from './SavedMaps';
@@ -675,6 +676,8 @@ export function Depth3D(props: Props) {
       const picH = bmp?.height ?? 1;
       // No depth map but a subject effect is on: a flat one, so the effects still work.
       const map = got ?? (subjWanted() ? flatDepth() : null);
+      // A real depth map of a still picture in the vault: its 3D layers can be saved and used again.
+      const realDepth = stillPic && !!got && propsRef.current.depth !== false && got.w > 1;
       if (!map || (!bmp && !vid)) return give(false);
       const byMouse = !!propsRef.current.mouse;
       scene = surface.scene;
@@ -858,10 +861,15 @@ export function Depth3D(props: Props) {
         const depthId = `${p.src}|${ds ? depthTag(ds) : 'flat'}|${map.w}x${map.h}|${p.subjectModel ?? ''}`;
         // (Worked out just after this frame, so the picture never waits for it; the plain map shows until then.)
         let wantDepth = map;
+        let refinedReady = false;
+        // The picture layers need the final map: worked out now (a small map, once per picture).
+        const layersNeedIt = !!mk && (!!p.layers?.layered || (!!p.subject && p.subject.lift > 0) || !!p.layers?.subjectOnly);
         if (mk && edgeK > 0) {
-          const known = peekRefined(depthId, edgeK);
-          if (known) wantDepth = known;
-          else if (refining !== `${depthId}|${edgeK}`) {
+          const known = peekRefined(depthId, edgeK) ?? (layersNeedIt ? refinedDepth(depthId, map, mk.mask, edgeK) : undefined);
+          if (known) {
+            wantDepth = known;
+            refinedReady = true;
+          } else if (refining !== `${depthId}|${edgeK}`) {
             refining = `${depthId}|${edgeK}`;
             const mask = mk.mask;
             setTimeout(() => {
@@ -882,11 +890,19 @@ export function Depth3D(props: Props) {
         const liftWanted = !!p.subject && p.subject.lift > 0;
         const layerWanted = !!mk && (!!lay?.layered || liftWanted || !!lay?.subjectOnly);
         const fillModel = lay?.layered?.model ?? '';
-        const plateKey = layerWanted ? `${depthId}|${(wantDepth === map ? 0 : edgeK).toFixed(2)}|${fillModel}|${picW}x${picH}` : '';
-        if (layerWanted && fore?.key !== plateKey) {
+        // Asked for once the depth map is final (with sharper edges: once they are worked out), so
+        // nothing is made twice and the saved layers (made the same way) are found.
+        const depthFinal = edgeK === 0 || refinedReady;
+        const plateKey = layerWanted && depthFinal ? `${depthId}|${edgeK.toFixed(2)}|${fillModel}|${p.natural.w}x${p.natural.h}` : '';
+        // Made at the picture's own size (at most 1600 px: plate.ts), whatever size it's drawn at.
+        const layerSize = { w: p.natural.w || picW, h: p.natural.h || picH };
+        // Saved under the depth they were made with: the depth model's, or 'flat' (no 3D motion: the subject effects on a flat picture).
+        const vaultId = stillPic && p.subjectModel && (realDepth ? !!ds : map.w === 1) ? savedId(p.src) : null;
+        const tags = vaultId != null ? layerTags(realDepth && ds ? depthTag(ds) : 'flat', p.subjectModel!, edgeK, fillModel) : null;
+        if (plateKey && fore?.key !== plateKey) {
           const key = plateKey;
           fore = { key, ready: false };
-          void foreFor(key, { src: p.src, w: picW, h: picH, mask: mk!.mask, depth: wantDepth }).then((fl) => {
+          void foreFor(key, { src: p.src, ...layerSize, mask: mk!.mask, depth: wantDepth, save: tags && vaultId != null ? { id: vaultId, tag: tags.fore } : undefined }).then((fl) => {
             if (!alive || !fl || fore?.key !== key || s.gl.isContextLost()) return;
             try {
               uploadFore(s, fl);
@@ -897,10 +913,10 @@ export function Depth3D(props: Props) {
             kick.current();
           });
         }
-        if (layerWanted && plate?.key !== plateKey) {
+        if (plateKey && plate?.key !== plateKey) {
           const key = plateKey;
           plate = { key, ready: false };
-          void plateFor(key, { src: p.src, w: picW, h: picH, mask: mk!.mask, depth: wantDepth, model: fillModel }).then((pl) => {
+          void plateFor(key, { src: p.src, ...layerSize, mask: mk!.mask, depth: wantDepth, model: fillModel, save: tags && vaultId != null ? { id: vaultId, tag: tags.plate } : undefined }).then((pl) => {
             if (!alive || !pl || plate?.key !== key || s.gl.isContextLost()) return;
             try {
               uploadPlate(s, pl);
@@ -911,8 +927,8 @@ export function Depth3D(props: Props) {
             kick.current();
           });
         }
-        const layered = layerWanted && !!plate?.ready && plate.key === plateKey;
-        const foreOn = layerWanted && !!fore?.ready && fore.key === plateKey;
+        const layered = !!plateKey && !!plate?.ready && plate.key === plateKey;
+        const foreOn = !!plateKey && !!fore?.ready && fore.key === plateKey;
         // Both made: the subject's own layer over the filled background (else as before).
         const clean = layered && foreOn;
         // 3D only on the subject: the background stays still and the subject moves against the background's depth.

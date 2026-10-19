@@ -38,7 +38,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
     if (!job.running) load();
   }, [job.running]);
   const pictures = stats ? Math.max(stats.depthCount, stats.outlineCount) : 0;
-  const bytes = stats ? stats.depthBytes + stats.outlineBytes : 0;
+  const bytes = stats ? stats.depthBytes + stats.outlineBytes + (stats.layerBytes ?? 0) : 0;
   const clear = async () => {
     try {
       const n = await api.derivedClear();
@@ -53,7 +53,9 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>Saved depth maps and outlines</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
         Once a picture's depth or subject outline is worked out it's saved in the vault (encrypted), so it never has to
-        be worked out again. Pictures only. Preparing works them out for every installed depth and outline model. To prepare one folder or person, right-click it and
+        be worked out again. Pictures only. Preparing works them out for every installed depth and outline model, and also makes the
+        layers Lift-off and Layered 3D draw (the subject on its own and the filled-in background, for the models and fill chosen now),
+        so those start at once. To prepare one folder or person, right-click it and
         choose Prepare 3D data. It all runs in the background (see the ring at the bottom of the sidebar).
       </p>
       <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>

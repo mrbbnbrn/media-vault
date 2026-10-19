@@ -32,6 +32,8 @@ type Which = 'all' | 'noFaces' | 'noGood';
 const KIND_TITLE: Record<DerivedKind, string> = {
   depth: 'Depth maps (3D photos)',
   outline: 'Subject outlines (Lift-off and the subject effects)',
+  plate: 'Background fill (Layered 3D, Lift-off)',
+  fore: 'Subject layers (Lift-off, Layered 3D)',
 };
 
 const keyOf = (g: { kind: string; model: string }) => `${g.kind}|${g.model}`;

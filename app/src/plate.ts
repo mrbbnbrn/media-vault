@@ -1,5 +1,8 @@
 // The pieces made once per picture for the picture layers of 3D photos
-// (still pictures only), all in memory (dropped on lock), never on disk:
+// (still pictures only), kept in memory (dropped on lock); the plate and the
+// subject layer of pictures in the vault are also saved there (encrypted,
+// packed: layerpack.ts), so a picture prepared once (prepare.ts) or seen once
+// shows Lift-off and Layered 3D at once, without working anything out:
 //
 // - the depth map with sharper edges (layers.ts refineEdges), kept for a few pictures;
 // - Layered 3D's background plate: the picture with the subject filled in
@@ -10,6 +13,8 @@
 //   ("Save subject as PNG").
 
 import { api, onLocked, type DepthMap, type SubjectMask } from './api';
+import { savedChanged } from './derived';
+import { packedSize, packLayer, unpackLayer } from './layerpack';
 import { inpaintPack } from './inpaint';
 import { refineEdges } from './layers';
 import { pixelsOffThread } from './picturecache';
@@ -28,6 +33,13 @@ void onLocked(() => {
   plates.clear();
   fores.clear();
 }).catch(() => {});
+
+/** The saved ones were cleared (prepare again): the copies in memory go too. */
+export function forgetLayers() {
+  refined.clear();
+  plates.clear();
+  fores.clear();
+}
 
 function keep<T>(m: Map<string, T>, key: string, v: T, max: number) {
   m.delete(key);
@@ -71,6 +83,8 @@ export interface PlateRequest {
   depth: DepthMap;
   /** '' = Simple, else the fill model ('migan', 'lama'); one that can't be used falls back to Simple. */
   model: string;
+  /** A picture in the vault: its saved layer is used (and a new one saved) under this tag. `wait`: saved before it is given (preparing). */
+  save?: { id: number; tag: string; wait?: boolean };
 }
 
 /** The plate for this picture (made once per key, a few kept in memory). */
@@ -80,7 +94,7 @@ export function plateFor(key: string, r: PlateRequest): Promise<Plate | null> {
     keep(plates, key, known, PLATES_KEEP);
     return known;
   }
-  const p = makePlate(r).catch(() => null);
+  const p = savedOrMade('plate', r, () => makePlate(r), (x) => x.model === r.model).catch(() => null);
   keep(plates, key, p, PLATES_KEEP);
   void p.then((x) => {
     if (!x && plates.get(key) === p) plates.delete(key);
@@ -142,7 +156,9 @@ function layerWorker(): Worker | null {
 type LayerJob =
   | { op: 'plate'; orig: Uint8ClampedArray; w: number; h: number; mask: SubjectMask; depth: DepthMap; fill: { data: Uint8ClampedArray; w: number; h: number } | null }
   | { op: 'fore'; orig: Uint8ClampedArray; w: number; h: number; mask: SubjectMask; depth: DepthMap }
-  | { op: 'holeSquare'; mask: SubjectMask; side: number };
+  | { op: 'holeSquare'; mask: SubjectMask; side: number }
+  | { op: 'pack'; orig: Uint8ClampedArray; layer: Uint8Array; w: number; h: number }
+  | { op: 'unpack'; orig: Uint8ClampedArray; bytes: Uint8Array };
 
 /** Run a layer job in the worker (copies of the arrays go there), else here. */
 async function runLayerJob(j: LayerJob): Promise<Uint8Array> {
@@ -155,6 +171,16 @@ async function runLayerJob(j: LayerJob): Promise<Uint8Array> {
       const orig = j.orig.slice().buffer;
       msg.orig = orig;
       transfer.push(orig);
+      if (j.op === 'pack') {
+        const l = j.layer.slice().buffer;
+        msg.layer = l;
+        transfer.push(l);
+      }
+      if (j.op === 'unpack') {
+        const b = j.bytes.slice().buffer;
+        msg.bytes = b;
+        transfer.push(b);
+      }
       if (j.op === 'plate' && j.fill) {
         const f = j.fill.data.slice().buffer;
         msg.fill = { data: f, w: j.fill.w, h: j.fill.h };
@@ -170,9 +196,60 @@ async function runLayerJob(j: LayerJob): Promise<Uint8Array> {
       // Here instead.
     }
   }
+  if (j.op === 'pack') return packLayer(j.orig, j.layer, j.w, j.h);
+  if (j.op === 'unpack') return unpackLayer(j.orig, j.bytes);
   if (j.op === 'plate') return composePlate(j.orig, j.w, j.h, j.mask, j.depth, j.fill);
   if (j.op === 'fore') return composeFore(j.orig, j.w, j.h, j.mask, j.depth);
   return holeSquare(j.mask, j.side);
+}
+
+// ---- saved layers (pictures in the vault) -------------------------------------------------------
+
+/** The saved layer (read back onto the picture at its saved size), else made now and saved (when `fits`). */
+async function savedOrMade(kind: 'plate' | 'fore', r: { src: string; model?: string; save?: { id: number; tag: string; wait?: boolean } }, make: () => Promise<Plate | null>, fits: (made: Plate) => boolean): Promise<Plate | null> {
+  if (r.save) {
+    const got = await loadLayer(kind, r.src, r.save, r.model ?? '');
+    if (got) return got;
+  }
+  const made = await make();
+  if (made && r.save && fits(made)) {
+    const saving = saveLayer(kind, r.src, r.save, made);
+    if (r.save.wait) await saving;
+  }
+  return made;
+}
+
+async function loadLayer(kind: 'plate' | 'fore', src: string, save: { id: number; tag: string }, model: string): Promise<Plate | null> {
+  try {
+    const bytes = await api.derivedGet(save.id, kind, save.tag);
+    const size = bytes ? packedSize(bytes) : null;
+    if (!bytes || !size) return null;
+    const pic = await picturePixels(src, size.w, size.h);
+    if (!pic || pic.w !== size.w || pic.h !== size.h) return null;
+    const data = await runLayerJob({ op: 'unpack', orig: pic.data, bytes });
+    return { w: size.w, h: size.h, data, model };
+  } catch {
+    return null; // made again
+  }
+}
+
+/** Saves a layer just made (in the background; a failure only means it's made again next time). */
+export async function saveLayer(kind: 'plate' | 'fore', src: string, save: { id: number; tag: string }, made: Plate): Promise<void> {
+  try {
+    const pic = await picturePixels(src, made.w, made.h);
+    if (!pic || pic.w !== made.w || pic.h !== made.h) return;
+    const bytes = await runLayerJob({ op: 'pack', orig: pic.data, layer: made.data, w: made.w, h: made.h });
+    await api.derivedPut(save.id, kind, save.tag, bytes);
+    savedChanged();
+  } catch (e) {
+    console.warn(`Couldn't save the 3D layer (${kind}):`, e);
+  }
+}
+
+/** The tags saved layers go under: what they were made from (depth.ts depthTag, subject.ts subjectTag, edges, fill). */
+export function layerTags(depthTag: string, subjectTag: string, edges: number, fill: string): { fore: string; plate: string } {
+  const base = `${depthTag}_${subjectTag}_e${edges.toFixed(2)}`;
+  return { fore: base, plate: `${base}_${fill || 'simple'}` };
 }
 
 function plateSize(r: { w: number; h: number }) {
@@ -220,7 +297,7 @@ export function foreFor(key: string, r: Omit<PlateRequest, 'model'>): Promise<Pl
     keep(fores, key, known, PLATES_KEEP);
     return known;
   }
-  const p = makeFore(r).catch(() => null);
+  const p = savedOrMade('fore', r, () => makeFore(r), () => true).catch(() => null);
   keep(fores, key, p, PLATES_KEEP);
   void p.then((x) => {
     if (!x && fores.get(key) === p) fores.delete(key);

@@ -20,8 +20,12 @@ import { viewerPrefs } from './prefs';
 import { beginJob, endJob, updateJob } from './jobs';
 import { notePictures } from './derived';
 import { depthChoice, depthOf, depthPack, depthSetup, depthTag, edgesSetting, forgetDepth, knownDepth, setupOf, type DepthSetup } from './depth';
-import { forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
+import { flatDepth, forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
 import { giveWay } from './bgpace';
+import { foreFor, forgetLayers, layerTags, plateFor, refinedDepth } from './plate';
+import { edgesStrength } from './layers';
+import { inpaintChoice, inpaintPack } from './inpaint';
+import { bitmapOffThread } from './picturecache';
 
 /** No keyboard or mouse for this long counts as idle (ms). */
 export const IDLE_MS = 20000;
@@ -224,6 +228,67 @@ async function allPasses(): Promise<Pass[]> {
   return out;
 }
 
+// ---- the 3D layers (Lift-off, Layered 3D, 3D only on the subject) -----------------------------------
+
+/**
+ * What the viewer will draw with the settings in use now: its depth model, its outline model,
+ * sharper edges or not, and the background plate for Lift-off (Simple) and for Layered 3D (the
+ * chosen fill). Prepared with these, the layers are saved under the tags the viewer looks for
+ * (plate.ts layerTags), so the three options show at once. Null: no depth or outline model.
+ */
+interface LayerPlan {
+  subject: SubjectSetup;
+  edges: number;
+  fills: string[];
+  /** With the depth model's map (3D motion or the 3D mouse on), and on a flat one (the subject effects alone). */
+  variants: { depth: DepthSetup | null; fore: string; plates: string[] }[];
+}
+
+async function layerPlan(): Promise<LayerPlan | null> {
+  if (!depthSetup()) await depthPack().catch(() => null);
+  if (!subjectSetup()) await subjectPack().catch(() => null);
+  const depth = depthSetup();
+  const subject = subjectSetup();
+  if (!subject) return null;
+  const p = viewerPrefs();
+  const edges = p.depthEdges3d ? edgesStrength(p.depthEdgesStrength) : 0;
+  const chosen = inpaintChoice(p);
+  // A fill model that isn't installed would be Simple anyway (and asked for again every time).
+  const usable = chosen ? !!(await inpaintPack(chosen).catch(() => null))?.available : false;
+  const fills = usable ? ['', chosen] : [''];
+  const variants = [...(depth ? [depth] : []), null].map((d) => {
+    const tags = fills.map((f) => layerTags(d ? depthTag(d) : 'flat', subjectTag(subject), edges, f));
+    return { depth: d, fore: tags[0].fore, plates: tags.map((t) => t.plate) };
+  });
+  return { subject, edges, fills, variants };
+}
+
+/** All the tags a picture's layers are saved under (to see which pictures still need them). */
+function planTags(plan: LayerPlan): { kind: 'fore' | 'plate'; tag: string }[] {
+  return plan.variants.flatMap((v) => [{ kind: 'fore' as const, tag: v.fore }, ...v.plates.map((tag) => ({ kind: 'plate' as const, tag }))]);
+}
+
+/** One picture's layers, made (or found saved) and saved. */
+async function prepareLayers(x: { src: string; itemId: number }, plan: LayerPlan): Promise<void> {
+  const mask = await subjectOf(x.src, false, plan.subject);
+  if (!mask) return;
+  const bmp = await bitmapOffThread(x.src, 0, 0);
+  if (!bmp) return;
+  const size = { w: bmp.width, h: bmp.height };
+  bmp.close();
+  for (const v of plan.variants) {
+    const depth = v.depth ? await depthOf(x.src, false, v.depth) : flatDepth();
+    if (!depth) continue;
+    // The same keys the viewer uses for its sharper edges, so the same map comes out.
+    const base = `prep|${x.src}|${v.depth ? depthTag(v.depth) : 'flat'}|${subjectTag(plan.subject)}`;
+    const d = plan.edges > 0 ? refinedDepth(base, depth, mask, plan.edges) : depth;
+    await foreFor(`${base}|${plan.edges}|fore`, { src: x.src, ...size, mask, depth: d, save: { id: x.itemId, tag: v.fore, wait: true } });
+    for (let i = 0; i < plan.fills.length; i++) {
+      await plateFor(`${base}|${plan.edges}|${plan.fills[i]}`, { src: x.src, ...size, mask, depth: d, model: plan.fills[i], save: { id: x.itemId, tag: v.plates[i], wait: true } });
+    }
+  }
+}
+
 /** The request being worked on. */
 let running: PrepareRequest | null = null;
 
@@ -239,6 +304,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
       // The copies in memory would otherwise be used without being saved again.
       forgetDepth();
       forgetSubjects();
+      forgetLayers();
     }
     const passes = await allPasses();
     if (!passes.length) {
@@ -260,8 +326,16 @@ async function runOne(r: PrepareRequest): Promise<void> {
       const have = new Set(await api.derivedHave(p.kind, p.tag).catch(() => [] as number[]));
       return { p, todo: pics.filter((x) => !have.has(x.itemId)) };
     }));
-    const total = work.reduce((n, w) => n + w.todo.length, 0);
-    const already = pics.length * passes.length - total;
+    // The 3D layers for the settings in use now (after the maps they are made from).
+    const plan = await layerPlan();
+    let layerTodo: typeof pics = [];
+    if (plan) {
+      const haves = await Promise.all(planTags(plan).map((t) => api.derivedHave(t.kind, t.tag).catch(() => [] as number[])));
+      const sets = haves.map((h) => new Set(h));
+      layerTodo = pics.filter((x) => sets.some((st) => !st.has(x.itemId)));
+    }
+    const total = work.reduce((n, w) => n + w.todo.length, 0) + layerTodo.length;
+    const already = pics.length * passes.length - (total - layerTodo.length);
     const left = skipped ? ` (${skipped.toLocaleString()} without faces, or not scanned for faces yet, left out)` : '';
     set({ total, note: `${passes.length} ${passes.length === 1 ? 'model' : 'models'}, ${pics.length.toLocaleString()} ${pics.length === 1 ? 'picture' : 'pictures'}${r.onlyFaces ? ' with faces' : ''}${left}${already ? `, ${already.toLocaleString()} maps already saved` : ''}.` });
     updateJob(JOB, { total });
@@ -275,6 +349,17 @@ async function runOne(r: PrepareRequest): Promise<void> {
         if (stopAsked) break;
         if (p.kind === 'depth') await depthOf(x.src, false, p.setup);
         else await subjectOf(x.src, false, p.setup);
+        done += 1;
+        set({ done });
+        updateJob(JOB, { done });
+      }
+    }
+    if (layerTodo.length && plan && !stopAsked) {
+      updateJob(JOB, { detail: `${r.what} · Lift-off and Layered 3D layers` });
+      for (const x of layerTodo) {
+        await giveWay(() => stopAsked);
+        if (stopAsked) break;
+        await prepareLayers(x, plan).catch(() => {});
         done += 1;
         set({ done });
         updateJob(JOB, { done });
