@@ -651,9 +651,7 @@ fn commit(ctx: &mut Ctx, job: &FileJob, p: Prepared) {
     }
     let r = match p {
         Prepared::Failed(e) => Err(e),
-        Prepared::Big => File::open(&job.path)
-            .map_err(|e| e.to_string())
-            .and_then(|mut f| add_one(ctx, job.folder, &job.name, &mut f, job.mtime)),
+        Prepared::Big => add_big(ctx, job),
         Prepared::Ready(enc, head) => {
             if is_duplicate(ctx, job.folder, &enc.written().sha256_hex) {
                 // Never stored at all.
@@ -670,6 +668,31 @@ fn commit(ctx: &mut Ctx, job: &FileJob, p: Prepared) {
         }
     };
     record(ctx, &job.name, r);
+}
+
+/// A file too big for memory, streamed into the vault. Only when an item of
+/// exactly its size is already in the folder can it be a duplicate: then it
+/// is read once to compare first (reading it twice beats writing gigabytes
+/// into the vault just to remove them again).
+fn add_big(ctx: &mut Ctx, job: &FileJob) -> Result<Added, String> {
+    let same_size = ctx
+        .s
+        .db()
+        .prepare_cached("SELECT 1 FROM media WHERE size = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0) AND deleted_at IS NULL LIMIT 1")
+        .and_then(|mut st| st.exists(params![job.size as i64, job.folder]))
+        .unwrap_or(false);
+    if same_size {
+        let counted = AtomicU64::new(0);
+        let f = File::open(&job.path).map_err(|e| e.to_string())?;
+        let tap = Tap { inner: f, head: Vec::new(), bytes: &counted, cancel: ctx.cancel, s: ctx.s };
+        let (hash, _) = vault_core::stream::sha256_of(tap).map_err(|e| e.to_string())?;
+        if is_duplicate(ctx, job.folder, &hash) {
+            ctx.bytes.fetch_add(job.size, Ordering::Relaxed);
+            return Ok(Added::Duplicate);
+        }
+    }
+    let mut f = File::open(&job.path).map_err(|e| e.to_string())?;
+    add_one(ctx, job.folder, &job.name, &mut f, job.mtime)
 }
 
 /// Import these files, several at once (see above).
@@ -1213,6 +1236,29 @@ mod tests {
         let r = run(&s, &job(loose, None), &cancel, &mut |_| {});
         assert_eq!(r.imported, 6);
         assert_eq!(names(&s, None), (0..6).map(|i| format!("loose{i}.png")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_big_duplicate_is_never_written() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let src = t.path().join("Big");
+        fs::create_dir_all(&src).unwrap();
+        // Bigger than the (test) in-memory limit: streamed in.
+        let data: Vec<u8> = (0..300_000u32).map(|k| (k * 7) as u8).collect();
+        fs::write(src.join("film.mp4"), &data).unwrap();
+        let mut other = data.clone();
+        other[0] ^= 1;
+        fs::write(src.join("same size.mp4"), &other).unwrap();
+        let cancel = AtomicBool::new(false);
+        let r = run(&s, &job(vec![src.display().to_string()], None), &cancel, &mut |_| {});
+        assert_eq!((r.imported, r.duplicates), (2, 0), "same size but different: both kept");
+        let packs = || -> u64 { fs::read_dir(s.vault().root().join("packs")).unwrap().flatten().map(|e| e.metadata().unwrap().len()).sum() };
+        let before = packs();
+        let r = run(&s, &job(vec![src.display().to_string()], None), &cancel, &mut |_| {});
+        assert_eq!((r.imported, r.duplicates), (0, 2));
+        assert_eq!(packs(), before, "nothing was written for them");
+        assert_eq!(s.vault().list_objects(ObjectKind::Media).unwrap().len(), 2);
     }
 
     #[test]
