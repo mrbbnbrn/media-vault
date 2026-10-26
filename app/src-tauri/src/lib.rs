@@ -150,6 +150,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     userbusy::reset();
     gpuroom::reset();
     protocol::forget_cache();
+    library::forget_cache();
     depth::unload();
     subject::unload();
     inpaint::unload();
@@ -208,6 +209,7 @@ fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     }
     // Nothing decrypted from another vault stays in memory.
     protocol::forget_cache();
+    library::forget_cache();
     start_background(inner.clone(), s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
