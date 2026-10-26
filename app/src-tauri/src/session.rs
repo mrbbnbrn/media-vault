@@ -228,6 +228,12 @@ impl Session {
         });
     }
 
+    /// Holds back every other save while it is kept (putting a library backup
+    /// back: no save of the old library may land after it).
+    pub fn hold_saves(&self) -> MutexGuard<'_, ()> {
+        self.save_lock.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// How many changes there have been (grows with every change).
     pub fn changes(&self) -> u64 {
         self.changes.load(Ordering::SeqCst)

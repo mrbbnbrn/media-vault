@@ -69,6 +69,7 @@ mod organize;
 mod similar;
 mod sketch;
 mod storage;
+mod restore; // putting a library backup back
 mod throttle;
 mod userbusy; // background work waits while you use the window
 mod diaglog; // diagnostics.log: steps and sizes only, written straight to disk
@@ -2655,6 +2656,8 @@ pub fn run() {
             save_now,
             data_info,
             delete_data,
+            restore::library_backups,
+            restore::restore_library_backup,
             extract_folder,
             unextract_folder,
             ui_set,
