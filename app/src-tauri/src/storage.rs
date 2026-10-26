@@ -3,6 +3,7 @@
 //! left inside packs by deleted items.
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
 use vault_core::{ObjectId, ObjectKind};
@@ -234,10 +235,11 @@ pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
 /// Move items stored as separate files into packs. Safe to interrupt: the
 /// separate files are only deleted after the packed copies are verified and
 /// the library recording them has been saved.
-pub fn convert(s: &Session, progress: &mut dyn FnMut(usize, usize)) -> Result<usize, String> {
+pub fn convert(s: &Session, progress: &mut dyn FnMut(usize, usize), cancel: &AtomicBool) -> Result<usize, String> {
+    let stop = || cancel.load(Ordering::SeqCst) || s.is_closed();
     let n = s
         .vault()
-        .pack_loose_objects(progress)
+        .pack_loose_objects_until(progress, &stop)
         .map_err(|e| e.to_string())?;
     s.mark_dirty();
     s.save()?;
@@ -303,13 +305,19 @@ pub struct ReclaimReport {
 
 /// Rewrite packs that are at least 20% unused space.
 pub fn reclaim(s: &Session) -> Result<ReclaimReport, String> {
-    reclaim_over(s, 0.2)
+    reclaim_over(s, 0.2, &AtomicBool::new(false))
+}
+
+/// Like `reclaim`, stopping early when cancelled or the vault locks (what
+/// was copied so far counts; packs not copied completely stay as they are).
+pub fn reclaim_until(s: &Session, cancel: &AtomicBool) -> Result<ReclaimReport, String> {
+    reclaim_over(s, 0.2, cancel)
 }
 
 /// After deleting for good: every pack holding anything deleted is rewritten,
 /// so no deleted file's bytes stay in the vault folder.
 pub fn reclaim_all_deleted(s: &Session) -> Result<ReclaimReport, String> {
-    reclaim_over(s, 1e-9)
+    reclaim_over(s, 1e-9, &AtomicBool::new(false))
 }
 
 /// Only packs that are (almost) all unused: cheap, nearly nothing to copy (while a vault is being converted).
@@ -324,13 +332,14 @@ pub fn reclaim_emptied(s: &Session) -> Result<ReclaimReport, String> {
     if !any {
         return Ok(ReclaimReport { moved: 0, reclaimed_bytes: 0, packs_removed: 0 });
     }
-    reclaim_over(s, 0.98)
+    reclaim_over(s, 0.98, &AtomicBool::new(false))
 }
 
-fn reclaim_over(s: &Session, min_waste: f64) -> Result<ReclaimReport, String> {
+fn reclaim_over(s: &Session, min_waste: f64, cancel: &AtomicBool) -> Result<ReclaimReport, String> {
     s.save()?;
     check_all_present(s)?;
-    let plan = s.vault().compact(min_waste).map_err(|e| e.to_string())?;
+    let stop = || cancel.load(Ordering::SeqCst) || s.is_closed();
+    let plan = s.vault().compact_until(min_waste, &stop).map_err(|e| e.to_string())?;
     s.mark_dirty();
     // The new locations must be saved before the old packs are deleted.
     s.save()?;
@@ -490,6 +499,9 @@ mod tests {
         import::remove_objects(&s, &o);
         assert!(info(&s).unwrap().reclaimable_bytes > 1_500_000);
 
+        // Stopped straight away: nothing rewritten, nothing lost.
+        let stopped = reclaim_until(&s, &AtomicBool::new(true)).unwrap();
+        assert_eq!((stopped.moved, stopped.packs_removed), (0, 0));
         let rep = reclaim(&s).unwrap();
         assert!(rep.reclaimed_bytes > 1_500_000);
         assert!(info(&s).unwrap().total_bytes < before.total_bytes / 2);

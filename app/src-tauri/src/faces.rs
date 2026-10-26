@@ -23,9 +23,7 @@ use crate::facegraph::{self as fg, Analysis, FaceMeta, Graph, PersonMeta};
 use crate::faceid;
 use crate::library::{self, Item, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 /// face-api fingerprints (model 0).
 pub const DIM: usize = 128;
@@ -47,9 +45,7 @@ pub fn distance(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>().sqrt()
 }
 
-fn now() -> i64 {
-    library::now_secs()
-}
+use crate::util::now_secs as now;
 
 /// Something holding the open library (the session, or a bare database in tests).
 pub trait Lib {
@@ -68,7 +64,8 @@ impl Lib for crate::session::Session {
         self.vault().root().display().to_string()
     }
     fn changed(&self) {
-        self.mark_dirty();
+        // Look-alike graphs and automatic names: made again at any time.
+        self.mark_dirty_bg();
     }
 }
 
@@ -98,29 +95,39 @@ pub struct ScanRequest {
     pub again: bool,
 }
 
-fn scannable_ids(conn: &Connection, req: &ScanRequest) -> R<Vec<i64>> {
-    let items = if req.all {
-        library::query_items(conn, &Default::default())?
+/// Which items a request means, as SQL conditions (pictures and videos not in
+/// the trash): everything, a folder with its subfolders, or some ids (one
+/// condition per 500 ids). Only numbers go into the SQL.
+fn scannable_where(conn: &Connection, req: &ScanRequest) -> R<Vec<String>> {
+    const SCANNABLE: &str = "deleted_at IS NULL AND kind IN ('image', 'gif', 'video')";
+    Ok(if req.all {
+        vec![SCANNABLE.to_string()]
     } else if let Some(f) = req.folder {
-        library::query_items(conn, &library::ItemFilter { folder: Some(Some(f)), recursive: true, ..Default::default() })?
+        vec![format!("{SCANNABLE} AND folder_id IN ({})", crate::util::id_list(&library::descendants(conn, &[f])?))]
     } else {
-        library::items_by_ids(conn, &req.ids)?
-    };
-    Ok(items.into_iter().filter(|i| matches!(i.kind.as_str(), "image" | "gif" | "video")).map(|i| i.id).collect())
+        req.ids.chunks(500).map(|c| format!("{SCANNABLE} AND id IN ({})", crate::util::id_list(c))).collect()
+    })
+}
+
+fn scannable_ids(conn: &Connection, req: &ScanRequest) -> R<Vec<i64>> {
+    let mut out = Vec::new();
+    for w in scannable_where(conn, req)? {
+        let mut st = conn.prepare(&format!("SELECT id FROM media WHERE {w} ORDER BY id")).map_err(e)?;
+        for id in st.query_map([], |r| r.get(0)).map_err(e)? {
+            out.push(id.map_err(e)?);
+        }
+    }
+    Ok(out)
 }
 
 /// Put items in the scan queue. Returns how many will be scanned.
 pub fn queue(conn: &Connection, req: &ScanRequest) -> R<usize> {
-    let ids = scannable_ids(conn, req)?;
     let tx = conn.unchecked_transaction().map_err(e)?;
     let mut n = 0;
-    for id in ids {
-        let sql = if req.again {
-            "UPDATE media SET faces_state = 2 WHERE id = ?"
-        } else {
-            "UPDATE media SET faces_state = 2 WHERE id = ? AND faces_state IN (0, 2)"
-        };
-        n += tx.execute(sql, [id]).map_err(e)?;
+    // One update for all of them (not one per item).
+    for w in scannable_where(conn, req)? {
+        let again = if req.again { "" } else { " AND faces_state IN (0, 2)" };
+        n += tx.execute(&format!("UPDATE media SET faces_state = 2 WHERE {w}{again}"), []).map_err(e)?;
     }
     tx.commit().map_err(e)?;
     // Not in folders where face search is off.
@@ -136,8 +143,13 @@ pub struct ScanTask {
     pub duration_ms: Option<i64>,
 }
 
+/// The scan queue, items on screen first (reads only the queued items: db.rs "speed indexes").
+pub(crate) fn needed_sql() -> String {
+    format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} ORDER BY {}id LIMIT ?", off_sql(), crate::focus::order())
+}
+
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ScanTask>> {
-    conn.prepare(&format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} ORDER BY {}id LIMIT ?", off_sql(), crate::focus::order()))
+    conn.prepare_cached(&needed_sql())
         .map_err(e)?
         .query_map([limit], |r| Ok(ScanTask { id: r.get(0)?, kind: r.get(1)?, duration_ms: r.get(2)? }))
         .map_err(e)?
@@ -396,17 +408,23 @@ fn take_dirty(conn: &Connection) -> R<Vec<i64>> {
 }
 
 /// A model's graph from the library (or worked out anew): every fingerprint
-/// read in one go, then only faces new since it was saved are compared.
-fn load_graph(conn: &Connection, model: i64, present: &HashSet<i64>) -> R<Graph> {
-    let mut current: HashMap<i64, Vec<f32>> = HashMap::with_capacity(present.len());
-    let mut st = conn.prepare("SELECT id, descriptor FROM faces WHERE model = ?").map_err(e)?;
-    for row in st.query_map([model], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))).map_err(e)? {
-        let (id, b) = row.map_err(e)?;
-        if present.contains(&id) {
-            current.insert(id, from_blob(&b));
+/// read in one go, then only faces new since it was saved are compared. The
+/// library is held only while reading; the comparisons (which can take a
+/// while) run after it is let go.
+fn load_graph(lib: &dyn Lib, model: i64, present: &HashSet<i64>) -> R<Graph> {
+    let (mut current, saved) = {
+        let conn = lib.conn();
+        let mut current: HashMap<i64, Vec<f32>> = HashMap::with_capacity(present.len());
+        let mut st = conn.prepare("SELECT id, descriptor FROM faces WHERE model = ?").map_err(e)?;
+        for row in st.query_map([model], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))).map_err(e)? {
+            let (id, b) = row.map_err(e)?;
+            if present.contains(&id) {
+                current.insert(id, from_blob(&b));
+            }
         }
-    }
-    let saved: Option<Vec<u8>> = conn.query_row("SELECT data FROM face_graph WHERE model = ?", [model], |r| r.get(0)).optional().map_err(e)?;
+        let saved: Option<Vec<u8>> = conn.query_row("SELECT data FROM face_graph WHERE model = ?", [model], |r| r.get(0)).optional().map_err(e)?;
+        (current, saved)
+    };
     let mut graph = saved.and_then(|b| Graph::from_bytes(model, &b, &mut current)).unwrap_or_else(|| Graph::new(model));
     let mut rest: Vec<(i64, Vec<f32>)> = current.into_iter().collect();
     rest.sort_unstable_by_key(|x| x.0);
@@ -467,6 +485,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 /// Forget everything kept in memory (the vault locked).
 pub fn forget_cache() {
     *CACHE.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner()).clear();
     OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()).clear();
 }
 
@@ -620,7 +639,7 @@ fn analyse_all(lib: &dyn Lib) -> R<(Vec<ModelView>, Facts)> {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 // Changes since it was saved count from 0 (none = nothing to save).
-                v.insert(ModelState { graph: load_graph(&lib.conn(), model, &present)?, last: None, saved_version: 0 })
+                v.insert(ModelState { graph: load_graph(lib, model, &present)?, last: None, saved_version: 0 })
             }
         };
         st.graph.forget(&dirty);
@@ -678,8 +697,36 @@ fn apply(conn: &Connection, views: &[ModelView]) -> R<usize> {
 /// The automatic pass (after a scan batch, before showing People): returns
 /// how many faces changed (the caller saves the library if any did).
 pub fn refresh(lib: &dyn Lib) -> R<usize> {
+    // Nothing written to the library since the last pass (and the same rule
+    // for poor faces): the answer would be the same, so nothing is read.
+    // The window and the analysis pass both ask every 20 s.
+    let before = refresh_key(lib);
+    if LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner()).contains(&before) {
+        return Ok(0);
+    }
     let (views, _) = analyse_all(lib)?;
-    apply(&lib.conn(), &views)
+    let n = apply(&lib.conn(), &views)?;
+    // What this pass wrote itself doesn't count as a change.
+    let after = refresh_key(lib);
+    let mut last = LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner());
+    last.retain(|k| k.0 != after.0);
+    last.push(after);
+    if last.len() > 8 {
+        last.remove(0);
+    }
+    Ok(n)
+}
+
+/// The library and settings the last automatic pass saw (see `refresh`), per
+/// library (only one is open in the app; tests use several at once).
+static LAST_REFRESH: Mutex<Vec<RefreshKey>> = Mutex::new(Vec::new());
+
+/// Which library, its state (util::conn_state) and the poor-face rule.
+type RefreshKey = (String, (u64, u64), String);
+
+fn refresh_key(lib: &dyn Lib) -> RefreshKey {
+    let state = crate::util::conn_state(&lib.conn());
+    (lib.key(), state, crate::poorfaces::poor_sql("f"))
 }
 
 // ---- what the People page shows ---------------------------------------------------------------
@@ -1220,7 +1267,7 @@ pub fn refresh_off(conn: &Connection) -> R<()> {
     let sql = if tree.is_empty() {
         String::new()
     } else {
-        format!(" AND IFNULL(folder_id, -1) NOT IN ({})", tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))
+        format!(" AND IFNULL(folder_id, -1) NOT IN ({})", crate::util::id_list(&tree))
     };
     *OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()) = sql;
     Ok(())
@@ -1234,7 +1281,7 @@ fn dequeue_off(conn: &Connection) -> R<usize> {
     if tree.is_empty() {
         return Ok(0);
     }
-    let list = tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let list = crate::util::id_list(&tree);
     conn.execute(&format!("UPDATE media SET faces_state = 0 WHERE faces_state = 2 AND folder_id IN ({list})"), []).map_err(e)
 }
 
@@ -1264,7 +1311,7 @@ pub fn set_folder_off(conn: &Connection, folder: i64, off: bool) -> R<usize> {
         return Ok(0);
     }
     let inside = library::descendants(conn, &[folder])?;
-    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let marks = crate::util::id_list(&inside);
     conn.execute(
         &format!(
             "UPDATE media SET faces_state = 2 WHERE faces_state = 0 AND deleted_at IS NULL AND kind IN ('image', 'gif', 'video') AND folder_id IN ({marks}){}",
@@ -1293,8 +1340,7 @@ pub fn stop(conn: &Connection) -> R<usize> {
 /// pictures themselves don't change. Returns how many faces were deleted.
 pub fn delete_folder_faces(conn: &Connection, folder: i64) -> R<usize> {
     let inside = library::descendants(conn, &[folder])?;
-    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
-    delete_faces_of(conn, &format!("SELECT id FROM media WHERE folder_id IN ({marks})"))
+    delete_faces_of(conn, &format!("SELECT id FROM media WHERE folder_id IN ({})", crate::util::id_list(&inside)))
 }
 
 /// "Delete face data…" for chosen items (a selection).
@@ -1302,8 +1348,7 @@ pub fn delete_item_faces(conn: &Connection, ids: &[i64]) -> R<usize> {
     if ids.is_empty() {
         return Ok(0);
     }
-    let marks = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
-    delete_faces_of(conn, &format!("SELECT id FROM media WHERE id IN ({marks})"))
+    delete_faces_of(conn, &format!("SELECT id FROM media WHERE id IN ({})", crate::util::id_list(ids)))
 }
 
 /// Forgets the faces of the items `items` (an SQL list of media ids) and marks them unscanned.
@@ -1807,6 +1852,11 @@ mod tests {
         accept(&l.conn(), &ids, baran).unwrap();
         let changed = refresh(&l).unwrap();
         assert_eq!(changed, 2, "him alone and in the group photo");
+        // Asked again with nothing new: nothing to do (and nothing is read).
+        let before = l.conn().total_changes();
+        assert_eq!(refresh(&l).unwrap(), 0);
+        assert_eq!(l.conn().total_changes(), before);
+        assert!(LAST_REFRESH.lock().unwrap_or_else(|e| e.into_inner()).contains(&refresh_key(&l)));
         let r = review(&l, &ReviewRequest::default()).unwrap();
         let g = &r.people[0];
         assert!(g.owner.is_none());
@@ -1904,6 +1954,36 @@ mod tests {
         let again = faces_of_with(&c, m, true).unwrap();
         assert_eq!(again.len(), 2);
         assert!(again.iter().all(|x| x.person.is_none() && !x.hidden));
+    }
+
+    #[test]
+    fn queueing_picks_pictures_and_videos_not_in_the_trash() {
+        let _serial = serial();
+        refresh_off(&db::create_empty().unwrap()).unwrap();
+        let c = db::create_empty().unwrap();
+        let top = library::create_folder(&c, None, "Top").unwrap();
+        let sub = library::create_folder(&c, Some(top), "Sub").unwrap();
+        let a = add(&c, Some(top));
+        let b = add(&c, Some(sub));
+        let text = add(&c, Some(sub));
+        c.execute("UPDATE media SET kind = 'text' WHERE id = ?", [text]).unwrap();
+        let trashed = add(&c, None);
+        c.execute("UPDATE media SET deleted_at = 1 WHERE id = ?", [trashed]).unwrap();
+        let elsewhere = add(&c, None);
+        let queued = |c: &Connection| -> Vec<i64> {
+            let mut v: Vec<i64> = needed(c, 100).unwrap().into_iter().map(|t| t.id).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(scannable_ids(&c, &ScanRequest { folder: Some(top), ..Default::default() }).unwrap(), vec![a, b]);
+        assert_eq!(queue(&c, &ScanRequest { folder: Some(top), ..Default::default() }).unwrap(), 2);
+        assert_eq!(queued(&c), vec![a, b]);
+        assert_eq!(queue(&c, &ScanRequest { ids: vec![text, trashed, elsewhere], ..Default::default() }).unwrap(), 1);
+        c.execute("UPDATE media SET faces_state = 1", []).unwrap();
+        // Scanned already: only again when asked.
+        assert_eq!(queue(&c, &ScanRequest { all: true, ..Default::default() }).unwrap(), 0);
+        assert_eq!(queue(&c, &ScanRequest { all: true, again: true, ..Default::default() }).unwrap(), 3);
+        assert_eq!(queued(&c), vec![a, b, elsewhere]);
     }
 
     #[test]

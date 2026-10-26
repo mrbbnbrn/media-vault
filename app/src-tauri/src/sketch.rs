@@ -104,6 +104,10 @@ pub fn is_valid(s: &str) -> bool {
     c > 0 && r > 0 && b.len() == 2 + 3 * (c * r) as usize && b[2..].iter().all(|x| x.is_ascii_hexdigit())
 }
 
+/// Thumbnails without a sketch yet (reads only those: db.rs "speed indexes").
+pub(crate) const BACKFILL_SQL: &str = "SELECT DISTINCT thumb_object_id FROM media WHERE sketch IS NULL \
+     AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' LIMIT 40";
+
 /// Sketches for items that have a thumbnail but none yet (older libraries,
 /// free copies, thumbnails saved some other way). Slow and steady, while the
 /// vault is open; checks again every few seconds.
@@ -112,10 +116,7 @@ pub fn backfill(s: Arc<Session>) {
         while !s.is_closed() {
             let todo: Vec<String> = {
                 let db = s.db();
-                let Ok(mut st) = db.prepare(
-                    "SELECT DISTINCT thumb_object_id FROM media WHERE sketch IS NULL \
-                     AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' LIMIT 40",
-                ) else {
+                let Ok(mut st) = db.prepare_cached(BACKFILL_SQL) else {
                     return;
                 };
                 st.query_map([], |r| r.get(0)).and_then(|it| it.collect()).unwrap_or_default()
@@ -138,11 +139,10 @@ pub fn backfill(s: Arc<Session>) {
                     .and_then(|oid| s.vault().read_object(ObjectKind::Thumbnail, &oid).ok())
                     .and_then(|bytes| sketch_from_encoded(&bytes))
                     .unwrap_or_default();
-                let _ = s.db().execute(
-                    "UPDATE media SET sketch = ?1 WHERE thumb_object_id = ?2 AND sketch IS NULL",
+                let _ = s.db().prepare_cached("UPDATE media SET sketch = ?1 WHERE thumb_object_id = ?2 AND sketch IS NULL").and_then(|mut st| st.execute(
                     rusqlite::params![sketch, thumb],
-                );
-                s.mark_dirty();
+                ));
+                s.mark_dirty_bg();
                 // Leave the computer to the things you are doing.
                 std::thread::sleep(Duration::from_millis(3));
             }

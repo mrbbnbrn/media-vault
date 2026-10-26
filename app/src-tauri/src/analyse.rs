@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params};
@@ -41,9 +41,7 @@ const STRIP_COLS: f64 = 8.0;
 const STRIP_ROWS: f64 = 6.0;
 const STRIP_FRAMES: [usize; 4] = [0, 12, 24, 36];
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- what runs ----------------------------------------------------------------------------
 
@@ -65,7 +63,7 @@ struct Runner {
 
 static RUNNER: Mutex<Option<Runner>> = Mutex::new(None);
 static OPTIONS: Mutex<Options> = Mutex::new(Options { smart: true, faces_paused: false });
-static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static WAKE: crate::util::Wake = crate::util::Wake::new();
 /// Pictures this pass couldn't decode (left to the window until the app restarts).
 static NOT_HERE: Mutex<BTreeSet<i64>> = Mutex::new(BTreeSet::new());
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -87,7 +85,7 @@ static DONE: Counts = Counts {
 };
 
 fn running() -> bool {
-    RUNNER.lock().unwrap().as_ref().is_some_and(|r| !r.stop.load(Ordering::SeqCst) && !r.session.is_closed())
+    RUNNER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|r| !r.stop.load(Ordering::SeqCst) && !r.session.is_closed())
 }
 
 /// Which steps can be done here right now.
@@ -98,20 +96,32 @@ pub struct Caps {
 }
 
 fn caps() -> Caps {
-    let o = *OPTIONS.lock().unwrap();
+    let o = *OPTIONS.lock().unwrap_or_else(|e| e.into_inner());
     Caps { smart: o.smart && smartnative::usable(), faces: !o.faces_paused && faceid::info().available }
 }
 
+/// `here_sql` as last made (made again only when NOT_HERE changes, so the
+/// queries using it keep the same text and stay prepared).
+static HERE_SQL: Mutex<Option<String>> = Mutex::new(None);
+
 /// SQL: a picture this pass decodes itself.
 fn here_sql() -> String {
+    let mut kept = HERE_SQL.lock().unwrap_or_else(|x| x.into_inner());
+    if let Some(s) = kept.as_ref() {
+        return s.clone();
+    }
     let exts = picture::NATIVE_EXTS.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(", ");
-    let not = NOT_HERE.lock().unwrap();
-    let skip = if not.is_empty() {
-        String::new()
-    } else {
-        format!(" AND id NOT IN ({})", not.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))
-    };
-    format!("(kind IN ('image', 'gif') AND lower(IFNULL(ext, '')) IN ({exts}){skip})")
+    let not: Vec<i64> = NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).iter().copied().collect();
+    let skip = if not.is_empty() { String::new() } else { format!(" AND id NOT IN ({})", crate::util::id_list(&not)) };
+    let sql = format!("(kind IN ('image', 'gif') AND lower(IFNULL(ext, '')) IN ({exts}){skip})");
+    *kept = Some(sql.clone());
+    sql
+}
+
+/// Everything that couldn't be decoded is tried here again (another vault, or locked).
+fn forget_not_here() {
+    NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).clear();
+    *HERE_SQL.lock().unwrap_or_else(|x| x.into_inner()) = None;
 }
 
 // ---- what the window's loops leave to this pass ----------------------------------------------
@@ -131,15 +141,32 @@ pub fn window_skips_smart() -> bool {
     running() && caps().smart
 }
 
+/// The window's part of the face scan queue (" AND NOT (…)" while this runs with the faces pack).
+fn window_faces_sql() -> String {
+    if running() && faceid::info().available { format!(" AND NOT {}", here_sql()) } else { String::new() }
+}
+
+/// How many items the window still has to scan for faces (its scan job's "left").
+pub fn window_faces_left(conn: &Connection) -> R<i64> {
+    conn.prepare_cached(&format!(
+        "SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}{}",
+        faces::off_sql(),
+        window_faces_sql()
+    ))
+    .map_err(e)?
+    .query_row([], |r| r.get(0))
+    .map_err(e)
+}
+
 /// Faces still for the window (videos, pictures only it can read).
 pub fn window_faces(conn: &Connection, limit: i64) -> R<Vec<faces::ScanTask>> {
     if !(running() && faceid::info().available) {
         return faces::needed(conn, limit);
     }
-    conn.prepare(&format!(
-        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND NOT {} ORDER BY {}id LIMIT ?",
+    conn.prepare_cached(&format!(
+        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}{} ORDER BY {}id LIMIT ?",
         faces::off_sql(),
-        here_sql(),
+        window_faces_sql(),
         crate::focus::order()
     ))
     .map_err(e)?
@@ -164,31 +191,40 @@ struct Task {
     faces: bool,
 }
 
-fn where_sql(here: &str) -> String {
+/// The ids with something to do here: one part per step, each reading only
+/// the items waiting for that step (the partial indexes in db.rs, "speed
+/// indexes"), instead of one big OR that has to look at every item.
+/// ?1 = smart search on, ?2 = faces on.
+fn todo_sql(here: &str) -> String {
     let off = faces::off_sql();
     format!(
-        "((thumb_object_id IS NULL AND {here}) \
-         OR (IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} AND (phash_state = 0 OR (?1 AND clip_state = 0))) \
-         OR (thumb_object_id = '' AND ?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}) \
-         OR (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}))"
+        "SELECT id AS qid FROM media WHERE thumb_object_id IS NULL AND {here} \
+         UNION SELECT id FROM media WHERE phash_state = 0 AND IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} \
+         UNION SELECT id FROM media WHERE ?1 AND clip_state = 0 AND thumb_object_id IS NOT NULL AND deleted_at IS NULL AND kind IN {KINDS} \
+         UNION SELECT id FROM media WHERE ?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}"
+    )
+}
+
+fn select_sql(only: Option<&[i64]>) -> String {
+    let here = here_sql();
+    let off = faces::off_sql();
+    let ids = only.map(|ids| format!(" WHERE m.id IN ({})", crate::util::id_list(ids))).unwrap_or_default();
+    // The waiting ids first (CROSS JOIN keeps them first), then their rows.
+    format!(
+        "SELECT m.id, m.kind, m.object_id, m.thumb_object_id, m.preview_object_id, \
+           (m.thumb_object_id IS NULL AND {here}), \
+           (m.phash_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
+           (?1 AND m.clip_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
+           (?2 AND m.faces_state = 2 AND m.deleted_at IS NULL AND {here}{off}) \
+         FROM ({}) AS q CROSS JOIN media AS m ON m.id = q.qid{ids} ORDER BY {}m.id DESC LIMIT ?3",
+        todo_sql(&here),
+        crate::focus::order()
     )
 }
 
 fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<Vec<Task>> {
-    let here = here_sql();
-    let off = faces::off_sql();
-    let ids = only.map(|ids| format!(" AND id IN ({})", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
-    let sql = format!(
-        "SELECT id, kind, object_id, thumb_object_id, preview_object_id, \
-           (thumb_object_id IS NULL AND {here}), \
-           (phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
-           (?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
-           (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}) \
-         FROM media WHERE {}{ids} ORDER BY {}id DESC LIMIT ?3",
-        where_sql(&here),
-        crate::focus::order()
-    );
-    conn.prepare(&sql)
+    // The text only changes with what is on screen, so the prepared query is kept.
+    conn.prepare_cached(&select_sql(only))
         .map_err(e)?
         .query_map(params![caps.smart, caps.faces, limit], |r| {
             Ok(Task {
@@ -210,7 +246,9 @@ fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<
 
 /// How many items still have something to be done here.
 fn left(conn: &Connection, caps: Caps) -> R<i64> {
-    conn.query_row(&format!("SELECT COUNT(*) FROM media WHERE {}", where_sql(&here_sql())), params![caps.smart, caps.faces], |r| r.get(0))
+    conn.prepare_cached(&format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql())))
+        .map_err(e)?
+        .query_row(params![caps.smart, caps.faces], |r| r.get(0))
         .map_err(e)
 }
 
@@ -243,7 +281,9 @@ pub struct ItemReport {
 }
 
 fn not_here(id: i64) {
-    NOT_HERE.lock().unwrap().insert(id);
+    if NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).insert(id) {
+        *HERE_SQL.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    }
 }
 
 /// Everything for one item except the smart-search model run.
@@ -299,7 +339,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                     match faceid::faces_in(&rgba, w, h, 0) {
                         Ok(found) => {
                             let n = faces::save(&s.db(), t.id, &found, faces::ARCFACE).unwrap_or(0);
-                            s.mark_dirty();
+                            s.mark_dirty_bg();
                             DONE.faces.fetch_add(1, Ordering::Relaxed);
                             rep.faces = Some(n);
                         }
@@ -307,7 +347,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                         Err(_) if !faceid::info().available => {}
                         Err(_) => {
                             let _ = faces::failed(&s.db(), t.id, faces::ARCFACE);
-                            s.mark_dirty();
+                            s.mark_dirty_bg();
                         }
                     }
                 }
@@ -326,7 +366,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                 if print {
                     let (hash, sharp) = picture::fingerprint(&th);
                     let _ = similar::save(&s.db(), t.id, &hash, sharp);
-                    s.mark_dirty();
+                    s.mark_dirty_bg();
                     DONE.prints.fetch_add(1, Ordering::Relaxed);
                     rep.print = Some(hash);
                 }
@@ -343,7 +383,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                 if smart {
                     let _ = clip::failed(&db, t.id);
                 }
-                s.mark_dirty();
+                s.mark_dirty_bg();
             }
         }
     }
@@ -394,7 +434,7 @@ fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> Vec<i64> {
         }
         DONE.smart.fetch_add(1, Ordering::Relaxed);
     }
-    s.mark_dirty();
+    s.mark_dirty_bg();
     done
 }
 
@@ -430,16 +470,16 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
                     }
                     let (job, rep) = work(s, &tasks[i], caps, emit);
                     if let Some(j) = job {
-                        jobs.lock().unwrap().push(j);
+                        jobs.lock().unwrap_or_else(|e| e.into_inner()).push(j);
                     }
-                    reports.lock().unwrap().push(rep);
+                    reports.lock().unwrap_or_else(|e| e.into_inner()).push(rep);
                 }
             });
         }
     });
-    let mut reports = reports.into_inner().unwrap();
+    let mut reports = reports.into_inner().unwrap_or_else(|e| e.into_inner());
     if !stop.load(Ordering::SeqCst) && !s.is_closed() {
-        let done = finish_smart(s, jobs.into_inner().unwrap());
+        let done = finish_smart(s, jobs.into_inner().unwrap_or_else(|e| e.into_inner()));
         for r in reports.iter_mut() {
             r.smart = done.contains(&r.id);
         }
@@ -448,12 +488,7 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
 }
 
 fn sleep_until_woken(ms: u64) {
-    let (m, cv) = &WAKE;
-    let mut woken = m.lock().unwrap();
-    if !*woken {
-        woken = cv.wait_timeout(woken, Duration::from_millis(ms)).unwrap().0;
-    }
-    *woken = false;
+    WAKE.sleep(ms);
 }
 
 fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
@@ -473,6 +508,17 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
     };
     let mut last_naming = Instant::now();
     let mut named = false;
+    // How far it got, after every round (and when it runs out of work), so the
+    // window needn't keep asking. `fresh`: count what is left again.
+    let tell = |fresh: bool, nothing_left: bool| {
+        if nothing_left {
+            let _ = note_count(&s, caps(), true);
+        }
+        if let Ok(st) = status(&s, fresh && !nothing_left) {
+            let _ = app.emit("analyse-status", st);
+        }
+    };
+    let mut idle = true;
     while !stop.load(Ordering::SeqCst) && !s.is_closed() {
         let c = caps();
         let tasks = select(&s.db(), c, ROUND, None).unwrap_or_default();
@@ -484,18 +530,25 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
         }
         if tasks.is_empty() {
             BUSY.store(false, Ordering::SeqCst);
+            if !idle {
+                idle = true;
+                tell(false, true);
+            }
             if named {
                 named = false;
                 if faces::refresh(&*s).unwrap_or(0) > 0 {
-                    s.mark_dirty();
+                    s.mark_dirty_bg();
                 }
             }
             sleep_until_woken(5000);
             continue;
         }
         BUSY.store(true, Ordering::SeqCst);
+        // New work after a rest (an import): count what is left again.
+        let woke = std::mem::replace(&mut idle, false);
         let reports = process(&s, &tasks, c, &stop, &emit);
         send(true);
+        tell(woke, false);
         if reports.iter().any(|r| r.faces.is_some_and(|n| n > 0)) {
             named = true;
         }
@@ -504,7 +557,7 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
             last_naming = Instant::now();
             named = false;
             if faces::refresh(&*s).unwrap_or(0) > 0 {
-                s.mark_dirty();
+                s.mark_dirty_bg();
             }
         }
         std::thread::sleep(Duration::from_millis(30));
@@ -514,31 +567,31 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
 
 /// Stop the pass (the vault locked): it ends after the item it is on.
 pub fn stop() {
-    if let Some(r) = RUNNER.lock().unwrap().take() {
+    if let Some(r) = RUNNER.lock().unwrap_or_else(|e| e.into_inner()).take() {
         r.stop.store(true, Ordering::SeqCst);
     }
-    NOT_HERE.lock().unwrap().clear();
+    forget_not_here();
+    *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
     kick();
     smartnative::unload();
 }
 
 pub fn kick() {
-    let (m, cv) = &WAKE;
-    *m.lock().unwrap() = true;
-    cv.notify_all();
+    WAKE.wake();
 }
 
 /// Start the pass for this session (or just take the new options).
 pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
-    *OPTIONS.lock().unwrap() = opts;
-    let mut r = RUNNER.lock().unwrap();
+    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = opts;
+    let mut r = RUNNER.lock().unwrap_or_else(|e| e.into_inner());
     let same = r.as_ref().is_some_and(|r| Arc::ptr_eq(&r.session, &s) && !r.stop.load(Ordering::SeqCst));
     if !same {
         if let Some(old) = r.take() {
             old.stop.store(true, Ordering::SeqCst);
         }
         // Another vault: what couldn't be decoded there means nothing here.
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
+        *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
         let stop = Arc::new(AtomicBool::new(false));
         *r = Some(Runner { session: s.clone(), stop: stop.clone() });
         for c in [&DONE.items, &DONE.thumbs, &DONE.prints, &DONE.smart, &DONE.faces] {
@@ -570,14 +623,66 @@ pub struct AnalyseStatus {
     pub faces_left: i64,
 }
 
-fn status(s: &Session) -> R<AnalyseStatus> {
-    let c = caps();
+/// What is left, as last counted: counting holds the library, so it is
+/// done at most every `RECOUNT` (or when asked for a fresh count) and in
+/// between worked out from the items done since.
+struct Counted {
+    at: Instant,
+    caps: Caps,
+    done: u64,
+    faces_done: u64,
+    left: i64,
+    faces_left: i64,
+}
+static COUNTED: Mutex<Option<Counted>> = Mutex::new(None);
+const RECOUNT: Duration = Duration::from_secs(30);
+
+fn count_left(s: &Session, c: Caps) -> R<(i64, i64)> {
     let db = s.db();
-    let left = if running() { left(&db, c)? } else { 0 };
-    let faces_left = if running() && c.faces {
-        db.query_row(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND {}", faces::off_sql(), here_sql()), [], |r| r.get(0)).map_err(e)?
+    let left = left(&db, c)?;
+    let faces_left = if c.faces {
+        db.prepare_cached(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND {}", faces::off_sql(), here_sql()))
+            .map_err(e)?
+            .query_row([], |r| r.get(0))
+            .map_err(e)?
     } else {
         0
+    };
+    Ok((left, faces_left))
+}
+
+/// Remember a count (`nothing_left`: the pass just found nothing to do, so nothing is counted).
+fn note_count(s: &Session, c: Caps, nothing_left: bool) -> R<(i64, i64)> {
+    let (left, faces_left) = if nothing_left { (0, 0) } else { count_left(s, c)? };
+    *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = Some(Counted {
+        at: Instant::now(),
+        caps: c,
+        done: DONE.items.load(Ordering::Relaxed),
+        faces_done: DONE.faces.load(Ordering::Relaxed),
+        left,
+        faces_left,
+    });
+    Ok((left, faces_left))
+}
+
+/// `fresh`: count now (otherwise the last count, less what was done since,
+/// unless it is older than `RECOUNT`).
+fn status(s: &Session, fresh: bool) -> R<AnalyseStatus> {
+    let c = caps();
+    let (left, faces_left) = if !running() {
+        (0, 0)
+    } else {
+        let kept = COUNTED.lock().unwrap_or_else(|x| x.into_inner()).as_ref().and_then(|k| {
+            (!fresh && k.caps == c && k.at.elapsed() < RECOUNT).then(|| {
+                let done = DONE.items.load(Ordering::Relaxed).saturating_sub(k.done) as i64;
+                let faces = DONE.faces.load(Ordering::Relaxed).saturating_sub(k.faces_done) as i64;
+                ((k.left - done).max(0), (k.faces_left - faces).max(0))
+            })
+        });
+        match kept {
+            Some(k) => k,
+            None => note_count(s, c, false)?,
+        }
     };
     Ok(AnalyseStatus {
         running: running(),
@@ -597,13 +702,16 @@ fn status(s: &Session) -> R<AnalyseStatus> {
 pub async fn analyse_start(app: AppHandle, state: State<'_, crate::Shared>, options: Options) -> Result<AnalyseStatus, String> {
     let s = crate::sess(&state)?;
     start(app, s.clone(), options);
-    tauri::async_runtime::spawn_blocking(move || status(&s)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || status(&s, true)).await.map_err(|e| e.to_string())?
 }
 
+/// The same as the "analyse-status" event sent after every round (the
+/// window only asks now and then, in case it missed one). Cheap: what is
+/// left was counted at most `RECOUNT` ago.
 #[tauri::command]
 pub async fn analyse_status(state: State<'_, crate::Shared>) -> Result<AnalyseStatus, String> {
     let s = crate::sess(&state)?;
-    tauri::async_runtime::spawn_blocking(move || status(&s)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || status(&s, false)).await.map_err(|e| e.to_string())?
 }
 
 /// New items (an import): look now instead of in a few seconds.
@@ -623,7 +731,7 @@ pub async fn analyse_thumb(state: State<'_, crate::Shared>, id: i64) -> Result<b
             .query_row("SELECT kind, IFNULL(ext, ''), object_id FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .ok();
         let Some((kind, ext, object)) = row else { return Ok(false) };
-        if !matches!(kind.as_str(), "image" | "gif") || !picture::native_ext(&ext) || NOT_HERE.lock().unwrap().contains(&id) {
+        if !matches!(kind.as_str(), "image" | "gif") || !picture::native_ext(&ext) || NOT_HERE.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
             return Ok(false);
         }
         let Ok(pic) = read(&s, ObjectKind::Media, &object).and_then(|b| picture::decode(&b)) else {
@@ -691,7 +799,7 @@ mod tests {
         let tasks = select(&s.db(), caps, 10, Some(&[good, bad])).unwrap();
         assert_eq!(tasks.len(), 2);
         let made = Mutex::new(Vec::new());
-        let reps = process(&s, &tasks, caps, &AtomicBool::new(false), &|id| made.lock().unwrap().push(id));
+        let reps = process(&s, &tasks, caps, &AtomicBool::new(false), &|id| made.lock().unwrap_or_else(|e| e.into_inner()).push(id));
         assert_eq!(made.into_inner().unwrap(), vec![good], "grids hear about the new thumbnail");
         let (thumb, w, h, ps): (String, i64, i64, i64) = s
             .db()
@@ -706,9 +814,9 @@ mod tests {
         assert!(reps.iter().find(|r| r.id == bad).unwrap().left_to_window);
         let thumb_bad: Option<String> = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [bad], |r| r.get(0)).unwrap();
         assert_eq!(thumb_bad, None);
-        assert!(NOT_HERE.lock().unwrap().contains(&bad));
+        assert!(NOT_HERE.lock().unwrap_or_else(|e| e.into_inner()).contains(&bad));
         assert!(select(&s.db(), caps, 10, Some(&[bad])).unwrap().is_empty());
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
         // Nothing left to do for the good one.
         assert!(select(&s.db(), caps, 10, Some(&[good])).unwrap().is_empty());
     }
@@ -741,7 +849,7 @@ mod tests {
         not_here(jpg);
         assert_eq!(ids(select(&c, none, 10, None).unwrap()), vec![vid_thumb]);
         assert!(here_sql().contains(&jpg.to_string()));
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
         let _ = (heic, vid);
         // Only some ids (the self-test).
         assert_eq!(ids(select(&c, both, 10, Some(&[jpg])).unwrap()), vec![jpg]);
@@ -871,6 +979,42 @@ mod tests {
         }
     }
 
+    /// How SQLite runs a query, and that it never reads every item.
+    pub(crate) fn assert_no_full_scan(c: &Connection, sql: &str, index: &str) {
+        let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let args = vec![rusqlite::types::Value::Integer(1); st.parameter_count()];
+        let plan: Vec<String> = st.query_map(rusqlite::params_from_iter(args), |r| r.get(3)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let p = plan.join(" | ");
+        assert!(p.contains(index), "{index} not used: {sql}\n{p}");
+        for step in &plan {
+            let whole = (step == "SCAN media" || step == "SCAN m" || step.starts_with("SCAN media ") || step.starts_with("SCAN m "))
+                && !step.contains("INDEX");
+            assert!(!whole, "reads every item: {step}\n{sql}\n{p}");
+        }
+    }
+
+    #[test]
+    fn the_queues_read_only_what_is_waiting() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let c = db::create_empty().unwrap();
+        // Something on screen and a picture it couldn't read: the SQL still uses the indexes.
+        crate::focus::set(Some(crate::focus::Focus { folder: Some(999_999), in_folder: true, ids: vec![999_998] }));
+        not_here(999_997);
+        let all = select_sql(None).replace("?3", "5");
+        assert_no_full_scan(&c, &all, "media_need_thumb");
+        for index in ["media_need_print", "media_need_smart", "media_faces_queued"] {
+            assert_no_full_scan(&c, &all, index);
+        }
+        let left = format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql()));
+        assert_no_full_scan(&c, &left, "media_need_print");
+        assert_no_full_scan(&c, &faces::needed_sql().replace('?', "5"), "media_faces_queued");
+        assert_no_full_scan(&c, &crate::thumbs_needed_sql().replace('?', "5"), "media_need_thumb");
+        assert_no_full_scan(&c, crate::sketch::BACKFILL_SQL, "media_need_sketch");
+        assert_no_full_scan(&c, crate::meta::BACKFILL_SQL, "media_need_taken");
+        crate::focus::set(None);
+        forget_not_here();
+    }
+
     #[test]
     fn the_window_keeps_what_it_alone_can_do() {
         // Not running: the window does everything as before.
@@ -880,6 +1024,7 @@ mod tests {
         let v = add(&c, "video", "mp4", None);
         c.execute("UPDATE media SET faces_state = 2", []).unwrap();
         assert_eq!(window_faces(&c, 5).unwrap().len(), 1);
+        assert_eq!(window_faces_left(&c).unwrap(), 1);
         let _ = v;
     }
 }

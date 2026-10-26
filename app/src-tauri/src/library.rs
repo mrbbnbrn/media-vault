@@ -9,16 +9,9 @@ use serde::{Deserialize, Serialize};
 
 pub type R<T> = Result<T, String>;
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
-pub fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+pub use crate::util::now_secs;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -184,7 +177,41 @@ struct FolderRow {
 
 /// Every folder with counts, covers and tags, in tree order (parents before
 /// children, siblings by sort order then name).
+/// The folder cards last worked out, for which state of the library
+/// (util::conn_state). Every page shows them, so while nothing changes they
+/// are not worked out again on every click.
+type KeptCards = Option<((u64, u64), Vec<FolderCard>)>;
+static CARDS: std::sync::Mutex<KeptCards> = std::sync::Mutex::new(None);
+
+/// Which face each person folder shows on its card, and the faces it was
+/// worked out from (see `person_covers_key`).
+type KeptCovers = Option<(u64, String, HashMap<i64, i64>)>;
+static PERSON_COVERS: std::sync::Mutex<KeptCovers> = std::sync::Mutex::new(None);
+
+/// Nothing from this library stays in memory (the vault locked).
+pub fn forget_cache() {
+    *CARDS.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    *PERSON_COVERS.lock().unwrap_or_else(|x| x.into_inner()) = None;
+}
+
+/// Every folder card, in tree order. Kept until the library changes.
 pub fn all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
+    // Inside a transaction nothing is kept: it might still be undone.
+    if !conn.is_autocommit() {
+        return make_all_folders(conn);
+    }
+    let state = crate::util::conn_state(conn);
+    if let Some((k, cards)) = CARDS.lock().unwrap_or_else(|x| x.into_inner()).as_ref()
+        && *k == state
+    {
+        return Ok(cards.clone());
+    }
+    let cards = make_all_folders(conn)?;
+    *CARDS.lock().unwrap_or_else(|x| x.into_inner()) = Some((state, cards.clone()));
+    Ok(cards)
+}
+
+fn make_all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
     let rows: Vec<FolderRow> = conn
         .prepare(
             "SELECT f.id, f.parent_id, f.name, m.id, f.pinned, f.color, f.emoji, f.person, f.note, f.created_at, f.cover_x, f.cover_y, f.cover_zoom FROM folders f \
@@ -432,7 +459,42 @@ fn cover_face(conn: &Connection, media: i64, person: i64) -> Option<[f32; 4]> {
 
 /// For each person folder: the picture whose face is closest to that
 /// person's average face, preferring big, clear faces.
+/// What the person covers are worked out from, in a few cheap numbers: the
+/// named faces (and their names, hidden and automatic marks), the person
+/// folders, the trash and the items still without a thumbnail (a cover needs
+/// one). Other background work (fingerprints, smart search, scans that
+/// find no named faces) changes none of these, so the covers are kept.
+fn person_covers_key(conn: &Connection) -> R<String> {
+    conn.query_row(
+        "SELECT (SELECT COUNT(*) || ':' || IFNULL(MAX(id), 0) || ':' || IFNULL(SUM(person_id), 0) || ':' || IFNULL(SUM(auto), 0) || ':' || IFNULL(SUM(hidden), 0) \
+                 FROM faces WHERE person_id IS NOT NULL) \
+         || '/' || (SELECT IFNULL(group_concat(id), '') FROM folders WHERE person = 1 AND deleted_at IS NULL) \
+         || '/' || (SELECT COUNT(*) || ':' || IFNULL(MAX(deleted_at), 0) FROM media WHERE deleted_at IS NOT NULL) \
+         || '/' || (SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL)",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(e)
+}
+
 fn person_covers(conn: &Connection) -> R<HashMap<i64, i64>> {
+    if !conn.is_autocommit() {
+        return make_person_covers(conn);
+    }
+    let token = crate::util::conn_token(conn);
+    let key = person_covers_key(conn)?;
+    if let Some((t, k, covers)) = PERSON_COVERS.lock().unwrap_or_else(|x| x.into_inner()).as_ref()
+        && *t == token
+        && *k == key
+    {
+        return Ok(covers.clone());
+    }
+    let covers = make_person_covers(conn)?;
+    *PERSON_COVERS.lock().unwrap_or_else(|x| x.into_inner()) = Some((token, key, covers.clone()));
+    Ok(covers)
+}
+
+fn make_person_covers(conn: &Connection) -> R<HashMap<i64, i64>> {
     type Row = (i64, i64, f32, f32, Vec<u8>);
     let rows: Vec<Row> = conn
         .prepare(
@@ -948,12 +1010,7 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
 
 pub const TRASH_DAYS: i64 = 30;
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+use crate::util::now_ms;
 
 /// A fresh trash stamp. Everything deleted in one action shares a stamp, so
 /// restoring a folder brings back exactly what was deleted with it.
@@ -1469,7 +1526,7 @@ pub fn set_cover_frame(conn: &Connection, folder: i64, media: Option<i64>, pos: 
 
 pub fn id_list(ids: &[i64]) -> (String, Vec<Value>) {
     (
-        vec!["?"; ids.len()].join(","),
+        crate::util::placeholders(ids.len()),
         ids.iter().map(|i| Value::Integer(*i)).collect(),
     )
 }
@@ -1898,6 +1955,24 @@ mod tests {
         let f = card(alex).cover_face.expect("face of the cover");
         assert!((f[0] - 0.6).abs() < 1e-6 && (f[2] - 0.2).abs() < 1e-6, "their own face, not the biggest: {f:?}");
         assert_eq!(card(trips).cover_face, None);
+    }
+
+    #[test]
+    fn folder_cards_are_kept_until_something_changes() {
+        let c = db::create_empty().unwrap();
+        let a = create_folder(&c, None, "A").unwrap();
+        add(&c, "x", Some(a), "image");
+        let first = all_folders(&c).unwrap();
+        assert_eq!(all_folders(&c).unwrap(), first, "the same cards again");
+        // Any change shows at once, also one made straight in the library.
+        c.execute("UPDATE folders SET name = 'Renamed' WHERE id = ?", [a]).unwrap();
+        assert_eq!(all_folders(&c).unwrap()[0].name, "Renamed");
+        // Another library never gets these cards.
+        let other = db::create_empty().unwrap();
+        assert!(all_folders(&other).unwrap().is_empty());
+        assert_eq!(all_folders(&c).unwrap()[0].name, "Renamed");
+        forget_cache();
+        assert_eq!(all_folders(&c).unwrap()[0].items, 1);
     }
 
     #[test]

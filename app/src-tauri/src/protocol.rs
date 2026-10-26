@@ -156,6 +156,94 @@ fn header_str(req: &Request<Vec<u8>>, name: header::HeaderName) -> Option<&str> 
     req.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
+// ---- which files an item has ----------------------------------------------------------------
+
+/// What a request needs to know about an item (its stored files).
+#[derive(Clone)]
+struct Row {
+    obj: String,
+    thumb: Option<String>,
+    ext: String,
+    preview: Option<String>,
+    tiny: Option<String>,
+    folder: Option<i64>,
+}
+
+/// Items asked for recently, so a grid's thumbnails don't each wait for the
+/// library. All of it is thrown away as soon as anything in the library
+/// changes (Session::changes), and when the vault locks.
+struct Rows {
+    /// Which session and which change count the rows belong to.
+    stamp: Option<(usize, u64)>,
+    rows: std::collections::BTreeMap<i64, Row>,
+}
+static ROWS: Mutex<Rows> = Mutex::new(Rows { stamp: None, rows: std::collections::BTreeMap::new() });
+/// More than this many kept: start again (a few hundred grids' worth).
+const ROWS_KEPT: usize = 20_000;
+
+fn rows() -> std::sync::MutexGuard<'static, Rows> {
+    ROWS.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+fn item_row(s: &Session, id: i64) -> Option<Row> {
+    // Read before the library: a change made while it is read is never kept under the new count.
+    let stamp = (s as *const Session as usize, s.changes());
+    {
+        let mut g = rows();
+        if g.stamp != Some(stamp) {
+            g.stamp = Some(stamp);
+            g.rows.clear();
+        } else if let Some(r) = g.rows.get(&id) {
+            return Some(r.clone());
+        }
+    }
+    let row = s
+        .db()
+        .prepare_cached("SELECT object_id, thumb_object_id, ext, preview_object_id, tiny_object_id, folder_id FROM media WHERE id = ?")
+        .and_then(|mut st| {
+            st.query_row([id], |r| Ok(Row { obj: r.get(0)?, thumb: r.get(1)?, ext: r.get(2)?, preview: r.get(3)?, tiny: r.get(4)?, folder: r.get(5)? }))
+        })
+        .ok()?;
+    let mut g = rows();
+    if g.stamp == Some(stamp) {
+        if g.rows.len() >= ROWS_KEPT {
+            g.rows.clear();
+        }
+        g.rows.insert(id, row.clone());
+    }
+    Some(row)
+}
+
+// ---- answering requests from a few threads -------------------------------------------------
+
+/// Requests from the window are answered by this many threads (instead of a
+/// new thread for each of the hundreds of thumbnails a grid asks for).
+const WORKERS: usize = 5;
+
+type Job = Box<dyn FnOnce() + Send + 'static>;
+static QUEUE: std::sync::OnceLock<Mutex<std::sync::mpsc::Sender<Job>>> = std::sync::OnceLock::new();
+
+/// Answer a request on one of the worker threads (started the first time).
+pub fn run(job: impl FnOnce() + Send + 'static) {
+    let tx = QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Job>();
+        let rx = Arc::new(Mutex::new(rx));
+        for i in 0..WORKERS {
+            let rx = rx.clone();
+            let _ = std::thread::Builder::new().name(format!("vault-protocol-{i}")).spawn(move || {
+                loop {
+                    let job = rx.lock().unwrap_or_else(|e| e.into_inner()).recv();
+                    let Ok(job) = job else { return };
+                    // One request going wrong never takes a worker away.
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(job));
+                }
+            });
+        }
+        Mutex::new(tx)
+    });
+    let _ = tx.lock().unwrap_or_else(|e| e.into_inner()).send(Box::new(job));
+}
+
 pub fn serve_vault(session: Option<&Session>, req: &Request<Vec<u8>>) -> Response<Vec<u8>> {
     let r = serve_vault_inner(session, req);
     if std::env::var_os("MV_DEBUG").is_some() {
@@ -193,16 +281,7 @@ fn serve_vault_inner(session: Option<&Session>, req: &Request<Vec<u8>>) -> Respo
             None => plain(StatusCode::NOT_FOUND, "Not found."),
         };
     }
-    type Row = (String, Option<String>, String, Option<String>, Option<String>, Option<i64>);
-    let row: Option<Row> = s
-        .db()
-        .query_row(
-            "SELECT object_id, thumb_object_id, ext, preview_object_id, tiny_object_id, folder_id FROM media WHERE id = ?",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        )
-        .ok();
-    let Some((obj, thumb, ext, preview, tiny, folder)) = row else {
+    let Some(Row { obj, thumb, ext, preview, tiny, folder }) = item_row(s, id) else {
         return plain(StatusCode::NOT_FOUND, "Not found.");
     };
     // An empty type: found from the first bytes below.
@@ -362,6 +441,7 @@ fn chunks() -> std::sync::MutexGuard<'static, ChunkCache> {
 /// another one opened).
 pub fn forget_cache() {
     chunks().clear();
+    *rows() = Rows { stamp: None, rows: std::collections::BTreeMap::new() };
     thumbpages::forget();
 }
 
@@ -491,13 +571,13 @@ pub struct LocalAccess {
 impl LocalAccess {
     pub fn grant(&self, p: &Path) {
         if let Ok(c) = p.canonicalize() {
-            self.roots.lock().unwrap().insert(c);
+            self.roots.lock().unwrap_or_else(|e| e.into_inner()).insert(c);
         }
     }
 
     pub fn allowed(&self, p: &Path) -> Option<PathBuf> {
         let c = p.canonicalize().ok()?;
-        let roots = self.roots.lock().unwrap();
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
         roots
             .iter()
             .any(|r| c == *r || c.starts_with(r))
@@ -775,6 +855,44 @@ mod tests {
             .unwrap();
         let id = s.db().last_insert_rowid();
         (s, id, data)
+    }
+
+    #[test]
+    fn item_rows_are_kept_until_the_library_changes() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, id, _) = vault_with_video(t.path(), 1000);
+        assert_eq!(item_row(&s, id).unwrap().thumb, None);
+        assert!(item_row(&s, id + 1).is_none());
+        s.db().execute("UPDATE media SET thumb_object_id = 'aa' WHERE id = ?", [id]).unwrap();
+        s.mark_dirty_bg();
+        assert_eq!(item_row(&s, id).unwrap().thumb.as_deref(), Some("aa"), "a change shows at once");
+        // Answered from memory while nothing changes.
+        s.db().execute("UPDATE media SET ext = 'mkv' WHERE id = ?", [id]).unwrap();
+        let r = item_row(&s, id).unwrap();
+        assert!(r.ext == "mp4" || r.ext == "mkv");
+        forget_cache();
+        assert_eq!(item_row(&s, id).unwrap().ext, "mkv");
+    }
+
+    #[test]
+    fn requests_run_on_a_few_threads() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        for i in 0..50 {
+            let tx = tx.clone();
+            run(move || {
+                let _ = tx.send((i, std::thread::current().name().map(str::to_string)));
+            });
+        }
+        // One that goes wrong doesn't stop the others.
+        run(|| panic!("a broken request"));
+        let tx2 = tx.clone();
+        run(move || {
+            let _ = tx2.send((99, std::thread::current().name().map(str::to_string)));
+        });
+        let got: Vec<(i32, Option<String>)> = (0..51).map(|_| rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap()).collect();
+        let names: HashSet<String> = got.iter().filter_map(|g| g.1.clone()).collect();
+        assert!(names.len() <= WORKERS && names.iter().all(|n| n.starts_with("vault-protocol-")), "{names:?}");
+        assert!(got.iter().any(|g| g.0 == 99));
     }
 
     fn get_range(s: &Session, id: i64, range: &str) -> Response<Vec<u8>> {

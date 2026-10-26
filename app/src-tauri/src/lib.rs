@@ -37,6 +37,7 @@ mod subject;
 mod inpaint;
 // One loaded model per kind (depth, subject, fill), each in its own slot, freed when idle.
 mod modelslot;
+mod onnxmodel; // what the depth, subject and fill models share: loading on the best device, the graphics card's turn
 // Saved depth maps and outlines of still pictures, encrypted in the vault (schema v18).
 mod derived;
 // Duel mode: pick the better of two; Elo ratings set the slideshow weights.
@@ -71,6 +72,8 @@ mod sketch;
 mod storage;
 mod restore; // putting a library backup back
 mod throttle;
+mod diskspace; // free space on the vault's drive (one clear message when it is full)
+mod util; // small helpers shared by many modules
 mod userbusy; // background work waits while you use the window
 mod diaglog; // diagnostics.log: steps and sizes only, written straight to disk
 mod crashguard; // the window's processes ending (a black window): load the page again
@@ -133,7 +136,7 @@ fn panic_shortcut() -> Shortcut {
 
 /// Wipe the open vault from memory and tell the UI. Safe to call any time.
 fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
-    let taken = inner.session.lock().unwrap().take();
+    let taken = inner.session.lock().unwrap_or_else(|e| e.into_inner()).take();
     let was_open = taken.is_some();
     upscale::cancel();
     upscale::forget_all();
@@ -150,6 +153,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     userbusy::reset();
     gpuroom::reset();
     protocol::forget_cache();
+    library::forget_cache();
     depth::unload();
     subject::unload();
     inpaint::unload();
@@ -157,8 +161,12 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
         s.close(); // background work stops promptly
         // Again, now that it is closed: whatever a request still running put back.
         protocol::forget_cache();
-        if s.is_dirty() {
-            let _ = s.save();
+        // Twice when needed: files replaced since the last save are removed
+        // after the first, which the second records.
+        for _ in 0..2 {
+            if s.is_dirty() {
+                let _ = s.save();
+            }
         }
         // Background work may still hold it for a moment: the vault can be opened again meanwhile.
         s.release();
@@ -197,9 +205,9 @@ fn with_session<T>(
 fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     let mut info = s.info();
     info.login = Some(access::on_unlock(&s));
-    *inner.activity.lock().unwrap() = Activity::new(Instant::now());
+    *inner.activity.lock().unwrap_or_else(|e| e.into_inner()) = Activity::new(Instant::now());
     let s = Arc::new(s);
-    if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
+    if let Some(old) = inner.session.lock().unwrap_or_else(|e| e.into_inner()).replace(s.clone()) {
         old.close();
         if old.is_dirty() {
             let _ = old.save();
@@ -208,10 +216,11 @@ fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     }
     // Nothing decrypted from another vault stays in memory.
     protocol::forget_cache();
+    library::forget_cache();
     start_background(inner.clone(), s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
-        let mut cfg = inner.config.lock().unwrap();
+        let mut cfg = inner.config.lock().unwrap_or_else(|e| e.into_inner());
         cfg.add_vault(&info.path);
         cfg.last_vault = Some(info.path.clone());
         let _ = config::save(&inner.config_dir, &cfg);
@@ -281,13 +290,14 @@ struct AppStateDto {
 async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
     let inner = state.inner().clone();
     blocking(move || {
-        let config = inner.config.lock().unwrap().clone();
+        let config = inner.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        // Sizes take a while to add up: the window asks for them afterwards (vault_sizes).
         let vaults = config
             .vaults
             .iter()
-            .map(|v| session::describe(&v.path))
+            .map(|v| session::describe_quick(&v.path))
             .collect();
-        let session = inner.session.lock().unwrap().clone().map(|s| s.info());
+        let session = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone().map(|s| s.info());
         Ok(AppStateDto {
             config,
             vaults,
@@ -298,13 +308,38 @@ async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
     .await
 }
 
+/// The size of each vault in the list (adding up their files), for the
+/// start screen after it has shown the list. Vaults that aren't there: none.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSize {
+    path: String,
+    size_bytes: Option<u64>,
+}
+
+#[tauri::command]
+async fn vault_sizes(state: State<'_, Shared>) -> Result<Vec<VaultSize>, String> {
+    let inner = state.inner().clone();
+    blocking(move || {
+        let paths: Vec<String> = inner.config.lock().unwrap_or_else(|e| e.into_inner()).vaults.iter().map(|v| v.path.clone()).collect();
+        Ok(paths
+            .into_iter()
+            .map(|path| {
+                let size_bytes = session::describe(&path).size_bytes;
+                VaultSize { path, size_bytes }
+            })
+            .collect())
+    })
+    .await
+}
+
 #[tauri::command]
 fn save_config(
     app: AppHandle,
     state: State<'_, Shared>,
     config: AppConfig,
 ) -> Result<AppConfig, String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let mut next = config.sanitized();
     next.vaults = cfg.vaults.clone(); // vault list is only changed through its own commands
     next.last_vault = cfg.last_vault.clone();
@@ -323,7 +358,7 @@ fn add_vault(state: State<'_, Shared>, path: String) -> Result<VaultEntry, Strin
             "{path} is not a Media Vault folder. Choose the folder that contains vault.json."
         ));
     }
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     cfg.add_vault(&path);
     config::save(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(entry)
@@ -331,7 +366,7 @@ fn add_vault(state: State<'_, Shared>, path: String) -> Result<VaultEntry, Strin
 
 #[tauri::command]
 fn forget_vault(state: State<'_, Shared>, path: String) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     cfg.forget_vault(&path);
     config::save(&state.config_dir, &cfg).map_err(|e| e.to_string())
 }
@@ -489,7 +524,7 @@ async fn set_password(state: State<'_, Shared>, password: String) -> Result<Sess
             }
             s.vault_mut().change_password(&password).map_err(session::friendly)?;
             // Idle time counts from now, not from when the vault was opened.
-            *inner.activity.lock().unwrap() = Activity::new(Instant::now());
+            *inner.activity.lock().unwrap_or_else(|e| e.into_inner()) = Activity::new(Instant::now());
             Ok(s.info())
         })
     })
@@ -524,7 +559,7 @@ fn lock_vault(app: AppHandle, state: State<'_, Shared>) {
 #[tauri::command]
 fn report_activity(state: State<'_, Shared>, kind: String) {
     let now = Instant::now();
-    let mut a = state.activity.lock().unwrap();
+    let mut a = state.activity.lock().unwrap_or_else(|e| e.into_inner());
     match kind.as_str() {
         "playing" => a.playing(now),
         _ => a.input(now),
@@ -533,13 +568,26 @@ fn report_activity(state: State<'_, Shared>, kind: String) {
 
 // ---- library ---------------------------------------------------------------------
 
+/// Run `f` on the library, noting in diagnostics.log when the command
+/// waited long for it (another part of the app held it) or ran long.
+fn timed_db<F: FnOnce(&rusqlite::Connection) -> R, R>(s: &Session, f: F) -> R {
+    let t0 = Instant::now();
+    let db = s.db();
+    let waited = t0.elapsed();
+    let t1 = Instant::now();
+    let out = f(&db);
+    drop(db);
+    diaglog::library_time(diaglog::command_name::<F>(), waited, t1.elapsed());
+    out
+}
+
 /// Run a read-only library query off the UI thread.
 async fn read_db<T: Send + 'static>(
     inner: &Shared,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let s = sess(inner)?;
-    blocking(move || f(&s.db())).await
+    blocking(move || timed_db(&s, f)).await
 }
 
 /// Run a library edit made by you; it is saved (encrypted) right away.
@@ -549,7 +597,7 @@ async fn edit_db<T: Send + 'static>(
 ) -> Result<T, String> {
     let s = sess(inner)?;
     blocking(move || {
-        let out = f(&s.db())?;
+        let out = timed_db(&s, f)?;
         s.mark_dirty();
         s.save_soon();
         Ok(out)
@@ -565,8 +613,24 @@ async fn edit_db_bg<T: Send + 'static>(
 ) -> Result<T, String> {
     let s = sess(inner)?;
     blocking(move || {
-        let out = f(&s.db())?;
+        let out = timed_db(&s, f)?;
         s.mark_dirty();
+        Ok(out)
+    })
+    .await
+}
+
+/// A change from background work that can always be made again (thumbnail
+/// failures, fingerprints, smart-search vectors, face scans): saved with your
+/// next edit, or within a minute (session::BACKGROUND_SAVE_EVERY).
+async fn edit_db_derived<T: Send + 'static>(
+    inner: &Shared,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let s = sess(inner)?;
+    blocking(move || {
+        let out = timed_db(&s, f)?;
+        s.mark_dirty_bg();
         Ok(out)
     })
     .await
@@ -743,7 +807,7 @@ static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 /// good, the packs holding deleted files are rewritten in the background
 /// (never during an import), so nothing of them stays in the vault folder.
 pub(crate) fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
-    if !inner.config.lock().unwrap().auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
+    if !inner.config.lock().unwrap_or_else(|e| e.into_inner()).auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
@@ -1033,17 +1097,20 @@ struct ThumbTask {
     kind: String,
 }
 
+/// Items without a thumbnail, on screen first (reads only those: db.rs "speed indexes").
+fn thumbs_needed_sql() -> String {
+    format!(
+        "SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY {}id LIMIT ?",
+        analyse::window_thumbs_sql(),
+        focus::order()
+    )
+}
+
 #[tauri::command]
 async fn thumbs_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<ThumbTask>, String> {
     read_db(state.inner(), move |c| {
         // Pictures the native analysis pass reads are left to it (analyse.rs).
-        let mut st = c
-            .prepare(&format!(
-                "SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY {}id LIMIT ?",
-                analyse::window_thumbs_sql(),
-                focus::order()
-            ))
-            .map_err(|e| e.to_string())?;
+        let mut st = c.prepare_cached(&thumbs_needed_sql()).map_err(|e| e.to_string())?;
         let v = st
             .query_map([limit], |r| {
                 Ok(ThumbTask {
@@ -1104,7 +1171,7 @@ fn store_thumb(
         // The colour sketch shown while the thumbnail loads (sketch.rs).
         let sketch = sketch::sketch_from_encoded(data).unwrap_or_default();
         let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
-        let old: Option<String> = {
+        let stored = (|| -> Result<Option<String>, String> {
             let db = s.db();
             let old = db.query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
             db.execute(
@@ -1121,15 +1188,31 @@ fn store_thumb(
                 }
                 let _ = similar::reset(&db, id);
             }
-            old
+            Ok(old)
+        })();
+        let old = match stored {
+            Ok(old) => old,
+            Err(err) => {
+                // Not recorded: the new file isn't left behind.
+                let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &tid);
+                return Err(err);
+            }
         };
-        if let Some(o) = old.filter(|o| !o.is_empty())
-            && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
-        {
-            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
-        }
-        s.mark_dirty();
+        s.mark_dirty_bg();
+        retire_thumbnail(s, old);
         Ok(())
+    }
+}
+
+/// A replaced thumbnail, frame strip or tiny clip goes: thumbnail pages
+/// holding a copy of it at once (no copy left behind), the file itself once
+/// the library no longer pointing at it is saved.
+fn retire_thumbnail(s: &Session, old: Option<String>) {
+    if let Some(o) = old.filter(|o| !o.is_empty())
+        && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
+    {
+        thumbpages::drop_pages_holding(s, &[oid]);
+        s.delete_after_save(vault_core::ObjectKind::Thumbnail, oid);
     }
 }
 
@@ -1229,7 +1312,7 @@ async fn newest_item_id(state: State<'_, Shared>) -> Result<i64, String> {
 /// The window couldn't decode this file (e.g. an unsupported video codec).
 #[tauri::command]
 async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute(
             "UPDATE media SET thumb_object_id = '' WHERE id = ? AND thumb_object_id IS NULL",
             [id],
@@ -1302,7 +1385,7 @@ async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>)
 /// Store a preview object for an item (and its free copies), replacing the old one.
 fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Result<(), String> {
     let (pid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
-    let old: Option<String> = {
+    let stored = (|| -> Result<Option<String>, String> {
         let db = s.db();
         let old = db.query_row(&format!("SELECT {column} FROM media WHERE id = ?"), [id], |r| r.get(0)).ok().flatten();
         db.execute(
@@ -1314,14 +1397,17 @@ fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Resu
             // Smart search looks at the clip's moments too: analyse again.
             let _ = clip::reset(&db, id);
         }
-        old
+        Ok(old)
+    })();
+    let old = match stored {
+        Ok(old) => old,
+        Err(err) => {
+            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &pid);
+            return Err(err);
+        }
     };
-    if let Some(o) = old.filter(|o| !o.is_empty())
-        && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
-    {
-        let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
-    }
-    s.mark_dirty();
+    s.mark_dirty_bg();
+    retire_thumbnail(s, old);
     Ok(())
 }
 
@@ -1341,7 +1427,7 @@ async fn save_preview(state: State<'_, Shared>, request: tauri::ipc::Request<'_>
 
 #[tauri::command]
 async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute("UPDATE media SET preview_object_id = '' WHERE id = ? AND preview_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -1364,7 +1450,7 @@ async fn save_tiny(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -
 
 #[tauri::command]
 async fn tiny_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute("UPDATE media SET tiny_object_id = '' WHERE id = ? AND tiny_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -1470,7 +1556,7 @@ fn start_import(
     let inner = state.inner().clone();
     let id = inner.next_job.fetch_add(1, Ordering::SeqCst) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
-    inner.imports.lock().unwrap().insert(id, cancel.clone());
+    inner.imports.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancel.clone());
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
         let job = import::Job {
@@ -1484,7 +1570,7 @@ fn start_import(
             // import.rs already sends at most about ten a second.
             let _ = app.emit("import-progress", p);
         });
-        inner.imports.lock().unwrap().remove(&id);
+        inner.imports.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         let _ = app.emit("import-done", &report);
     });
     Ok(id)
@@ -1492,7 +1578,7 @@ fn start_import(
 
 #[tauri::command]
 fn cancel_import(state: State<'_, Shared>, job: u64) {
-    if let Some(c) = state.imports.lock().unwrap().get(&job) {
+    if let Some(c) = state.imports.lock().unwrap_or_else(|e| e.into_inner()).get(&job) {
         c.store(true, Ordering::SeqCst);
     }
 }
@@ -1545,9 +1631,14 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
         "deletePreviews" => "deletePreviews",
         _ => return Err("Unknown task.".into()),
     };
+    // One at a time; cancel_task("storage") stops moving files into packs or
+    // reclaiming space (safely, between files), as does locking the vault.
+    let cancel = begin_task(&inner, "storage")?;
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
-        let result = if task == "deleteThumbs" || task == "deletePreviews" {
+        let result = if s.is_closed() || cancel.load(Ordering::SeqCst) {
+            Err("Stopped.".to_string())
+        } else if task == "deleteThumbs" || task == "deletePreviews" {
             storage::delete_cache(&s, task == "deleteThumbs")
         } else if task == "convert" {
             let mut t = throttle::Throttle::new();
@@ -1555,10 +1646,10 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
                 if t.ready(done >= total) {
                     let _ = app.emit("storage-progress", StorageProgress { task, done, total });
                 }
-            })
+            }, &cancel)
             .map(|n| format!("{n} items moved into pack files."))
         } else {
-            storage::reclaim(&s).map(|r| {
+            storage::reclaim_until(&s, &cancel).map(|r| {
                 format!(
                     "Freed {:.1} MB ({} items moved, {} pack files removed).",
                     r.reclaimed_bytes as f64 / 1e6,
@@ -1567,6 +1658,7 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
                 )
             })
         };
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("storage");
         let (ok, message) = match result {
             Ok(m) => (true, m),
             Err(e) => (false, e),
@@ -1587,7 +1679,7 @@ struct TaskProgress {
 }
 
 fn begin_task(inner: &Inner, name: &'static str) -> Result<Arc<AtomicBool>, String> {
-    let mut t = inner.tasks.lock().unwrap();
+    let mut t = inner.tasks.lock().unwrap_or_else(|e| e.into_inner());
     if t.contains_key(name) {
         return Err("That is already running.".into());
     }
@@ -1611,7 +1703,7 @@ fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> 
                 let _ = app.emit("check-progress", TaskProgress { task: "check", done, total });
             }
         });
-        inner.tasks.lock().unwrap().remove("check");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("check");
         let _ = app.emit("check-done", r.map_err(|e| e.to_string()));
     });
     Ok(())
@@ -1619,7 +1711,7 @@ fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> 
 
 #[tauri::command]
 fn cancel_task(state: State<'_, Shared>, task: String) {
-    if let Some(c) = state.tasks.lock().unwrap().get(task.as_str()) {
+    if let Some(c) = state.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(task.as_str()) {
         c.store(true, Ordering::SeqCst);
     }
 }
@@ -1628,7 +1720,7 @@ fn cancel_task(state: State<'_, Shared>, task: String) {
 #[tauri::command]
 fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter::ExportRequest) -> Result<(), String> {
     let s = sess(&state)?;
-    request.strip = state.config.lock().unwrap().strip_metadata;
+    request.strip = state.config.lock().unwrap_or_else(|e| e.into_inner()).strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "export")?;
     std::thread::spawn(move || {
@@ -1638,7 +1730,7 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter:
                 let _ = app.emit("export-progress", p);
             }
         });
-        inner.tasks.lock().unwrap().remove("export");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("export");
         let _ = app.emit("export-done", done);
     });
     Ok(())
@@ -1651,7 +1743,7 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter:
 #[tauri::command]
 fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z::ShareRequest) -> Result<(), String> {
     let s = sess(&state)?;
-    request.strip = state.config.lock().unwrap().strip_metadata;
+    request.strip = state.config.lock().unwrap_or_else(|e| e.into_inner()).strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "share")?;
     std::thread::spawn(move || {
@@ -1661,7 +1753,7 @@ fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z
                 let _ = app.emit("share-progress", p);
             }
         });
-        inner.tasks.lock().unwrap().remove("share");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("share");
         let _ = app.emit("share-done", done);
     });
     Ok(())
@@ -1693,7 +1785,7 @@ fn video_task<D: Serialize + Clone + 'static>(
                 let _ = app.emit(&format!("{task}-progress"), p);
             }
         });
-        inner.tasks.lock().unwrap().remove(task);
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove(task);
         let _ = app.emit(&format!("{task}-done"), done);
     });
     Ok(())
@@ -1866,14 +1958,20 @@ async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces:
     read_db(state.inner(), move |c| analyse::window_faces(c, limit)).await
 }
 
+/// How many of those are left (counted, not listed).
+#[tauri::command]
+async fn faces_left(state: State<'_, Shared>) -> Result<i64, String> {
+    read_db(state.inner(), analyse::window_faces_left).await
+}
+
 #[tauri::command]
 async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>, model: Option<i64>) -> Result<usize, String> {
-    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
+    edit_db_derived(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
 async fn faces_failed(state: State<'_, Shared>, media: i64, model: Option<i64>) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::ARCFACE))).await
+    edit_db_derived(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
@@ -1888,7 +1986,7 @@ async fn faces_review(state: State<'_, Shared>, request: Option<faces::ReviewReq
     blocking(move || {
         let r = faces::review(&*s, &request.unwrap_or_default())?;
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -1902,7 +2000,7 @@ async fn faces_auto(state: State<'_, Shared>) -> Result<usize, String> {
     blocking(move || {
         let n = faces::refresh(&*s)?;
         if n > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(n)
     })
@@ -1958,7 +2056,7 @@ async fn faces_sort_offers(state: State<'_, Shared>, ids: Vec<i64>) -> Result<fa
     blocking(move || {
         let r = faces::sort_offers(&*s, &ids)?;
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -1973,7 +2071,7 @@ async fn faces_sort_all(state: State<'_, Shared>, ids: Option<Vec<i64>>, folder:
         // Only these items, or one folder and its subfolders; nothing given = the whole vault.
         let r = if ids.is_some() || folder.is_some() { faces::sort_scoped(&*s, &ids.unwrap_or_default(), folder)? } else { faces::sort_all(&*s)? };
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -2127,12 +2225,12 @@ struct MediaArgs {
 async fn clip_save(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let (MediaArgs { media }, data) = binbody::request(&request)?;
     let vec = binbody::floats(data)?;
-    edit_db_bg(state.inner(), move |c| clip::save(c, media, &vec)).await
+    edit_db_derived(state.inner(), move |c| clip::save(c, media, &vec)).await
 }
 
 #[tauri::command]
 async fn clip_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| clip::failed(c, media)).await
+    edit_db_derived(state.inner(), move |c| clip::failed(c, media)).await
 }
 
 #[tauri::command]
@@ -2163,12 +2261,12 @@ async fn similar_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<simi
 
 #[tauri::command]
 async fn similar_save(state: State<'_, Shared>, id: i64, hash: String, sharpness: f64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| similar::save(c, id, &hash, sharpness)).await
+    edit_db_derived(state.inner(), move |c| similar::save(c, id, &hash, sharpness)).await
 }
 
 #[tauri::command]
 async fn similar_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| similar::failed(c, id)).await
+    edit_db_derived(state.inner(), move |c| similar::failed(c, id)).await
 }
 
 #[tauri::command]
@@ -2326,12 +2424,12 @@ async fn exact_groups(state: State<'_, Shared>, folder: Option<i64>) -> Result<V
 
 #[tauri::command]
 fn selftest_info(state: State<'_, Shared>) -> Option<selftest::SelfTestInfo> {
-    state.selftest.lock().unwrap().clone()
+    state.selftest.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]
 fn selftest_done(state: State<'_, Shared>, ok: bool, report: String) {
-    if state.selftest.lock().unwrap().is_some() {
+    if state.selftest.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         std::process::exit(selftest::finish(ok, &report));
     }
 }
@@ -2363,31 +2461,44 @@ fn windows_session_locked() -> bool {
 fn start_watcher(app: AppHandle, inner: Shared) {
     std::thread::spawn(move || {
         let mut sleep = SleepDetector::new(SystemTime::now());
-        let mut told_failure = false;
+        let mut backoff = session::SaveBackoff::default();
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let slept = sleep.tick(SystemTime::now());
-            let Some(open) = inner.session.lock().unwrap().clone() else {
+            let Some(open) = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
                 continue;
             };
-            // Save library edits shortly after they happen: once they settle
-            // for a second, and at the latest 5 s after the first one (the
-            // background analysis keeps changing things all the time). While
-            // you are using the window, at the latest after 20 s: saving holds
-            // the library for a moment, and thumbnails would wait for it.
+            // Save your library edits shortly after they happen: once they
+            // settle for a second, and at the latest 5 s after the first one.
+            // While you are using the window, at the latest after 20 s: saving
+            // holds the library for a moment, and thumbnails would wait for it.
+            // What background work alone changed (all of which can be made
+            // again) is saved at most once a minute, or with your next edit.
             let max_wait = if userbusy::busy() { 20 } else { 5 };
-            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait)) {
-                Ok(()) => {
-                    told_failure = false;
+            // After a failed save, the next try waits longer each time (2 s, 5 s, 15 s, then a minute).
+            let tried = backoff
+                .due(Instant::now())
+                .then(|| open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait), session::BACKGROUND_SAVE_EVERY));
+            match tried {
+                None => {} // waiting for the next try
+                Some(Ok(())) => {
+                    backoff.ok();
                     // A vault without encryption: files follow their items (moves, renames, the trash).
                     if let Err(e) = plainfiles::arrange_if_changed(&open) {
                         eprintln!("Couldn't put files in their folders: {e}");
                     }
                 }
-                Err(e) => {
-                    if !told_failure {
-                        let _ = app.emit("save-failed", e);
-                        told_failure = true;
+                Some(Err(e)) => {
+                    // The vault's folder itself is gone: its drive was removed or disconnected.
+                    let gone = !open.vault().root().is_dir();
+                    if backoff.failed(Instant::now()) {
+                        if gone {
+                            let msg = "The vault's drive isn't there any more (was it unplugged or disconnected?). Connect it again and saving carries on by itself.";
+                            let _ = app.emit("vault-gone", msg);
+                            let _ = app.emit("save-failed", msg);
+                        } else {
+                            let _ = app.emit("save-failed", e);
+                        }
                     }
                 }
             }
@@ -2398,13 +2509,13 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             if !auto_lock {
                 continue;
             }
-            let lock = inner.config.lock().unwrap().lock.clone();
+            let lock = inner.config.lock().unwrap_or_else(|e| e.into_inner()).lock.clone();
             let reason = if lock.on_system_lock && slept {
                 Some(LockReason::Sleep)
             } else if lock.on_system_lock && windows_session_locked() {
                 Some(LockReason::SystemLocked)
             } else {
-                inner.activity.lock().unwrap().check(Instant::now(), &lock)
+                inner.activity.lock().unwrap_or_else(|e| e.into_inner()).check(Instant::now(), &lock)
             };
             if let Some(r) = reason {
                 lock_now(&app, &inner, r);
@@ -2417,11 +2528,13 @@ fn start_watcher(app: AppHandle, inner: Shared) {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn save_open(app: &AppHandle) {
     let inner = app.state::<Shared>().inner().clone();
-    let open = inner.session.lock().unwrap().clone();
-    if let Some(s) = open
-        && s.is_dirty()
-    {
-        let _ = s.save();
+    let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(s) = open {
+        for _ in 0..2 {
+            if s.is_dirty() {
+                let _ = s.save();
+            }
+        }
     }
 }
 
@@ -2504,8 +2617,9 @@ pub fn run() {
         })
         .register_asynchronous_uri_scheme_protocol("vault", |ctx, req, responder| {
             let inner = ctx.app_handle().state::<Shared>().inner().clone();
-            std::thread::spawn(move || {
-                let s = inner.session.lock().unwrap().clone();
+            // A few worker threads answer them all (protocol::run).
+            protocol::run(move || {
+                let s = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 responder.respond(protocol::serve_vault(s.as_deref(), &req));
             });
         })
@@ -2528,7 +2642,7 @@ pub fn run() {
                 match selftest::prepare(&inner.local) {
                     Ok((s, info)) => {
                         install_session(&inner, s);
-                        *inner.selftest.lock().unwrap() = Some(info);
+                        *inner.selftest.lock().unwrap_or_else(|e| e.into_inner()) = Some(info);
                     }
                     Err(e) => {
                         std::process::exit(selftest::finish(false, &format!("setup failed: {e}")))
@@ -2546,7 +2660,7 @@ pub fn run() {
             for (_, w) in app.webview_windows() {
                 crashguard::watch(app.handle(), &w);
             }
-            let block = inner.config.lock().unwrap().block_capture;
+            let block = inner.config.lock().unwrap_or_else(|e| e.into_inner()).block_capture;
             nocapture::apply_all(app.handle(), block);
             Ok(())
         })
@@ -2558,7 +2672,7 @@ pub fn run() {
             if let WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed = event {
                 diaglog::note(&format!("window '{}': {}", window.label(), if matches!(event, WindowEvent::Destroyed) { "destroyed" } else { "closing" }));
                 let inner = window.app_handle().state::<Shared>().inner().clone();
-                let open = inner.session.lock().unwrap().clone();
+                let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(s) = open
                     && s.is_dirty()
                 {
@@ -2568,8 +2682,8 @@ pub fn run() {
             if let WindowEvent::Resized(_) = event {
                 let app = window.app_handle();
                 let inner = app.state::<Shared>().inner().clone();
-                let on_min = inner.config.lock().unwrap().lock.on_minimize;
-                let has_password = inner.session.lock().unwrap().as_ref().is_some_and(|s| s.has_password());
+                let on_min = inner.config.lock().unwrap_or_else(|e| e.into_inner()).lock.on_minimize;
+                let has_password = inner.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.has_password());
                 if on_min && has_password && window.is_minimized().unwrap_or(false) {
                     lock_now(app, &inner, LockReason::Minimized);
                 }
@@ -2577,6 +2691,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            vault_sizes,
             save_config,
             add_vault,
             forget_vault,
@@ -2686,6 +2801,7 @@ pub fn run() {
             set_person_folder,
             faces_queue,
             faces_needed,
+            faces_left,
             faces_save,
             faces_failed,
             faces_status,
@@ -2840,7 +2956,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 beatlisten::stop(app);
                 let inner = app.state::<Shared>().inner().clone();
-                let open = inner.session.lock().unwrap().clone();
+                let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(s) = open
                     && s.is_dirty()
                 {
@@ -2848,4 +2964,56 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+    use vault_core::{ObjectId, ObjectKind};
+
+    fn vault(t: &std::path::Path) -> Session {
+        session::create(t.to_str().unwrap(), "V", "long enough pw", KdfParams::TEST_ONLY).unwrap().0
+    }
+
+    fn thumb_of(s: &Session, id: i64) -> ObjectId {
+        let hex: String = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).unwrap();
+        ObjectId::from_hex(&hex).unwrap()
+    }
+
+    #[test]
+    fn a_replaced_thumbnail_goes_after_the_save() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let id = import::add_bytes(&s, None, "a.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        store_thumb(&s, id, b"first thumbnail", None, None, None, false).unwrap();
+        let first = thumb_of(&s, id);
+        store_thumb(&s, id, b"second thumbnail", None, None, None, false).unwrap();
+        assert_ne!(thumb_of(&s, id), first);
+        // Still there until the library that no longer points at it is saved.
+        let stored = |o: &ObjectId| s.vault().list_objects(ObjectKind::Thumbnail).unwrap().contains(o);
+        assert!(stored(&first));
+        s.save().unwrap();
+        assert!(!stored(&first));
+        assert!(stored(&thumb_of(&s, id)));
+    }
+
+    #[test]
+    fn files_not_recorded_are_not_left_behind() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let id = import::add_bytes(&s, None, "a.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        let count = |k: ObjectKind| s.vault().list_objects(k).unwrap().len();
+        let (media, thumbs) = (count(ObjectKind::Media), count(ObjectKind::Thumbnail));
+        // The library refuses the change (as a full or damaged library would).
+        s.db()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_insert BEFORE INSERT ON main.media BEGIN SELECT RAISE(ABORT, 'refused'); END; \
+                 CREATE TEMP TRIGGER no_update BEFORE UPDATE ON main.media BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        assert!(import::add_bytes(&s, None, "b.png", &[0x89, b'P', b'N', b'G', 9, 9]).is_err());
+        assert!(store_thumb(&s, id, b"a thumbnail", None, None, None, false).is_err());
+        assert!(store_preview_object(&s, id, "tiny_object_id", b"a clip").is_err());
+        assert_eq!((count(ObjectKind::Media), count(ObjectKind::Thumbnail)), (media, thumbs));
+    }
 }

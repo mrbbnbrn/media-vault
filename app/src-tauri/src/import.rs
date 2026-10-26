@@ -338,11 +338,31 @@ struct Ctx<'a> {
     last_emit: Instant,
     last_save: Instant,
     progress: &'a mut dyn FnMut(&Progress),
+    /// The vault's drive is full: the import stops (with one message).
+    full: bool,
 }
+
+/// What an import says when the vault's drive fills up.
+const FULL_NAME: &str = "Drive full";
+const FULL_WHY: &str = "The vault's drive is full, so the import stopped here. Free up some space there and import the rest again (files already added stay).";
 
 impl Ctx<'_> {
     fn stopped(&self) -> bool {
-        self.cancel.load(Ordering::SeqCst) || self.s.is_closed()
+        self.full || self.cancel.load(Ordering::SeqCst) || self.s.is_closed()
+    }
+
+    /// A failure because the drive is full? (Then it is said once and the import stops.)
+    fn note_full(&mut self, e: &str) -> bool {
+        if self.full {
+            return true;
+        }
+        let root = self.s.vault().root().to_path_buf();
+        if crate::diskspace::is_full_error(e) || !crate::diskspace::has_room(&root, 0, 16 << 20) {
+            self.full = true;
+            self.report.failed.push((FULL_NAME.into(), FULL_WHY.into()));
+            return true;
+        }
+        false
     }
 
     fn emit(&mut self, current: &str, force: bool) {
@@ -437,7 +457,10 @@ fn add_one(
         let _ = ctx.s.vault().delete_object(ObjectKind::Media, &id);
         return Ok(Added::Duplicate);
     }
-    insert_item(ctx, folder, name, mtime, id, &written, &tap.head)
+    insert_item(ctx, folder, name, mtime, id, &written, &tap.head).inspect_err(|_| {
+        // Not recorded: the stored file isn't left behind.
+        let _ = ctx.s.vault().delete_object(ObjectKind::Media, &id);
+    })
 }
 
 /// The same file (same SHA-256) already in this folder?
@@ -493,6 +516,7 @@ fn record(ctx: &mut Ctx, name: &str, r: Result<Added, String>) {
         Ok(Added::New) => ctx.report.imported += 1,
         Ok(Added::Duplicate) => ctx.report.duplicates += 1,
         Err(_) if ctx.stopped() => {}
+        Err(e) if ctx.note_full(&e) => {}
         Err(e) => ctx.report.failed.push((name.to_string(), e)),
     }
     ctx.done += 1;
@@ -627,20 +651,48 @@ fn commit(ctx: &mut Ctx, job: &FileJob, p: Prepared) {
     }
     let r = match p {
         Prepared::Failed(e) => Err(e),
-        Prepared::Big => File::open(&job.path)
-            .map_err(|e| e.to_string())
-            .and_then(|mut f| add_one(ctx, job.folder, &job.name, &mut f, job.mtime)),
+        Prepared::Big => add_big(ctx, job),
         Prepared::Ready(enc, head) => {
             if is_duplicate(ctx, job.folder, &enc.written().sha256_hex) {
                 // Never stored at all.
                 Ok(Added::Duplicate)
             } else {
                 let stored = ctx.s.vault().add_encrypted(&enc).map_err(|e| e.to_string());
-                stored.and_then(|()| insert_item(ctx, job.folder, &job.name, job.mtime, enc.id(), enc.written(), &head))
+                stored.and_then(|()| {
+                    insert_item(ctx, job.folder, &job.name, job.mtime, enc.id(), enc.written(), &head).inspect_err(|_| {
+                        // Not recorded: the stored file isn't left behind.
+                        let _ = ctx.s.vault().delete_object(ObjectKind::Media, &enc.id());
+                    })
+                })
             }
         }
     };
     record(ctx, &job.name, r);
+}
+
+/// A file too big for memory, streamed into the vault. Only when an item of
+/// exactly its size is already in the folder can it be a duplicate: then it
+/// is read once to compare first (reading it twice beats writing gigabytes
+/// into the vault just to remove them again).
+fn add_big(ctx: &mut Ctx, job: &FileJob) -> Result<Added, String> {
+    let same_size = ctx
+        .s
+        .db()
+        .prepare_cached("SELECT 1 FROM media WHERE size = ?1 AND IFNULL(folder_id, 0) = IFNULL(?2, 0) AND deleted_at IS NULL LIMIT 1")
+        .and_then(|mut st| st.exists(params![job.size as i64, job.folder]))
+        .unwrap_or(false);
+    if same_size {
+        let counted = AtomicU64::new(0);
+        let f = File::open(&job.path).map_err(|e| e.to_string())?;
+        let tap = Tap { inner: f, head: Vec::new(), bytes: &counted, cancel: ctx.cancel, s: ctx.s };
+        let (hash, _) = vault_core::stream::sha256_of(tap).map_err(|e| e.to_string())?;
+        if is_duplicate(ctx, job.folder, &hash) {
+            ctx.bytes.fetch_add(job.size, Ordering::Relaxed);
+            return Ok(Added::Duplicate);
+        }
+    }
+    let mut f = File::open(&job.path).map_err(|e| e.to_string())?;
+    add_one(ctx, job.folder, &job.name, &mut f, job.mtime)
 }
 
 /// Import these files, several at once (see above).
@@ -834,7 +886,9 @@ fn import_archive(
         record(ctx, &name, r);
         Ok(true)
     });
-    if let Some(f) = first_failure {
+    if ctx.full {
+        // Already said once, for the whole import.
+    } else if let Some(f) = first_failure {
         let msg = if password.is_some() && ctx.report.imported == 0 {
             format!("stopped: {f} (is the password right?)")
         } else {
@@ -873,13 +927,25 @@ pub fn run(
         last_emit: Instant::now() - Duration::from_secs(1),
         last_save: Instant::now(),
         progress,
+        full: false,
     };
-    // Count first so the progress bar is honest.
+    // Count first so the progress bar is honest (and see how much room it needs).
+    let size_of = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let mut need: u64 = 0;
     for src in &sources {
         ctx.total += match src {
-            Source::File(_) => 1,
-            Source::Dir(d) => walk_files(d).len(),
+            Source::File(p) => {
+                need += size_of(p);
+                1
+            }
+            Source::Dir(d) => {
+                let files = walk_files(d);
+                need += files.iter().filter(|f| kind_by_ext(&f.to_string_lossy()).is_some()).map(|f| size_of(f)).sum::<u64>();
+                files.len()
+            }
             Source::Archive { first, parts } => {
+                // Packed files are usually about their archive's size (pictures and videos don't shrink).
+                need += parts.iter().map(|p| size_of(p)).sum::<u64>();
                 let i = archive_info(first, parts);
                 if i.needs_password && i.media == 0 {
                     open_archive(parts, job.password.as_deref())
@@ -890,6 +956,21 @@ pub fn run(
                 }
             }
         };
+    }
+    // Not enough room for it all: one clear message before anything is added.
+    let root = s.vault().root().to_path_buf();
+    if let Some(free) = crate::diskspace::free_bytes(&root)
+        && free < need.saturating_add(64 << 20)
+    {
+        ctx.report.failed.push((
+            FULL_NAME.into(),
+            format!(
+                "There isn't enough free space on the vault's drive for this import: it needs about {}, and {} is free. Free up some space there, or import fewer files at a time.",
+                crate::diskspace::size_text(need),
+                crate::diskspace::size_text(free)
+            ),
+        ));
+        ctx.full = true;
     }
     ctx.emit("", true);
     let mut loose: Vec<FileJob> = Vec::new();
@@ -965,12 +1046,17 @@ pub fn add_bytes(
         .add_object(ObjectKind::Media, bytes)
         .map_err(|e| e.to_string())?;
     let db = s.db();
-    db.execute(
+    let inserted = db.execute(
         "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
         params![id.to_hex(), folder, kind, name, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs()],
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    if let Err(err) = inserted {
+        drop(db);
+        // Not recorded: the stored file isn't left behind.
+        let _ = s.vault().delete_object(ObjectKind::Media, &id);
+        return Err(err.to_string());
+    }
     let new_id = db.last_insert_rowid();
     drop(db);
     s.mark_dirty();
@@ -1150,6 +1236,54 @@ mod tests {
         let r = run(&s, &job(loose, None), &cancel, &mut |_| {});
         assert_eq!(r.imported, 6);
         assert_eq!(names(&s, None), (0..6).map(|i| format!("loose{i}.png")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_big_duplicate_is_never_written() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let src = t.path().join("Big");
+        fs::create_dir_all(&src).unwrap();
+        // Bigger than the (test) in-memory limit: streamed in.
+        let data: Vec<u8> = (0..300_000u32).map(|k| (k * 7) as u8).collect();
+        fs::write(src.join("film.mp4"), &data).unwrap();
+        let mut other = data.clone();
+        other[0] ^= 1;
+        fs::write(src.join("same size.mp4"), &other).unwrap();
+        let cancel = AtomicBool::new(false);
+        let r = run(&s, &job(vec![src.display().to_string()], None), &cancel, &mut |_| {});
+        assert_eq!((r.imported, r.duplicates), (2, 0), "same size but different: both kept");
+        let packs = || -> u64 { fs::read_dir(s.vault().root().join("packs")).unwrap().flatten().map(|e| e.metadata().unwrap().len()).sum() };
+        let before = packs();
+        let r = run(&s, &job(vec![src.display().to_string()], None), &cancel, &mut |_| {});
+        assert_eq!((r.imported, r.duplicates), (0, 2));
+        assert_eq!(packs(), before, "nothing was written for them");
+        assert_eq!(s.vault().list_objects(ObjectKind::Media).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_full_drive_stops_an_import_with_one_message() {
+        let _turn = crate::diskspace::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let files: Vec<String> = (0..5)
+            .map(|i| {
+                let p = t.path().join(format!("p{i}.jpg"));
+                fs::write(&p, vec![i as u8; 50_000]).unwrap();
+                p.display().to_string()
+            })
+            .collect();
+        let root = s.vault().root().to_path_buf();
+        crate::diskspace::set_test_free(&root, Some(10 << 20));
+        let r = run(&s, &job(files.clone(), None), &AtomicBool::new(false), &mut |_| {});
+        crate::diskspace::set_test_free(&root, None);
+        assert_eq!(r.imported, 0);
+        assert_eq!(r.failed.len(), 1, "{:?}", r.failed);
+        assert_eq!(r.failed[0].0, FULL_NAME);
+        assert!(r.failed[0].1.contains("isn't enough free space"));
+        // With room it goes in.
+        let r = run(&s, &job(files, None), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((r.imported, r.failed.len()), (5, 0));
     }
 
     fn make_7z(path: &Path, password: Option<&str>, encrypt_names: bool, files: &[(&str, &[u8])]) {

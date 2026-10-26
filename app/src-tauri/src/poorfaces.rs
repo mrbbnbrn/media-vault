@@ -26,9 +26,7 @@ use crate::config::PoorFaceSettings;
 use crate::library::R;
 use crate::picture::{self, Rgb};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- the rule -------------------------------------------------------------------------------
 
@@ -265,7 +263,7 @@ pub fn measure_round(s: &crate::session::Session, here: &str) -> usize {
             }
         };
         if r.is_ok() {
-            s.mark_dirty();
+            s.mark_dirty_bg();
         }
         done += 1;
     }

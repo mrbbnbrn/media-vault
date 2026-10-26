@@ -123,6 +123,24 @@ pub struct WrittenObject {
     pub sha256_hex: String,
 }
 
+/// The SHA-256 (as `WrittenObject::sha256_hex` gives it) and length of
+/// everything read from `source`, without storing anything: to tell a
+/// duplicate before a big file is written into the vault.
+pub fn sha256_of(mut source: impl Read) -> io::Result<(String, u64)> {
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    let mut len = 0u64;
+    loop {
+        let n = source.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+        len += n as u64;
+    }
+    Ok((hex::encode(h.finalize()), len))
+}
+
 /// At most this much plaintext is encrypted or decrypted at once, spread over
 /// the processor's cores (several chunks of a big file at a time).
 pub const PARALLEL_BYTES: usize = 8 << 20;

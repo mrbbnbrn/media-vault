@@ -12,9 +12,7 @@ use crate::faces;
 use crate::library::{self, Item, R};
 use crate::session::Session;
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 /// The columns an item copy takes over (everything except id, object ids,
 /// folder, name, the trash and the copy link).

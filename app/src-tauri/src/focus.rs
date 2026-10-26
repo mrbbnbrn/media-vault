@@ -17,19 +17,24 @@ pub struct Focus {
 /// At most this many items on screen are put first.
 const MAX_IDS: usize = 400;
 
-static FOCUS: Mutex<Option<Focus>> = Mutex::new(None);
+/// The ORDER BY start for what is shown now, made once when it changes (not
+/// at every query), so queries using it keep the same text and stay prepared.
+static ORDER: Mutex<String> = Mutex::new(String::new());
 
 pub fn set(f: Option<Focus>) {
-    *FOCUS.lock().unwrap_or_else(|x| x.into_inner()) = f.map(|mut f| {
+    let f = f.map(|mut f| {
         f.ids.truncate(MAX_IDS);
         f
     });
+    *ORDER.lock().unwrap_or_else(|x| x.into_inner()) = order_for(f.as_ref());
 }
 
 /// The start of an ORDER BY over media rows ("…, " or nothing): items on
-/// screen first, then the rest of the open folder.
+/// screen first, then the rest of the open folder. The queues it orders
+/// read only the items waiting (partial indexes), and with their LIMIT
+/// SQLite keeps just the first few while reading, so this stays quick.
 pub fn order() -> String {
-    order_for(FOCUS.lock().unwrap_or_else(|x| x.into_inner()).as_ref())
+    ORDER.lock().unwrap_or_else(|x| x.into_inner()).clone()
 }
 
 pub fn order_for(f: Option<&Focus>) -> String {

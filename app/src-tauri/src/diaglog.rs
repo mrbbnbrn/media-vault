@@ -40,6 +40,44 @@ pub fn note(text: &str) {
     }
 }
 
+// ---- commands that waited for the library ---------------------------------------------------
+
+/// Waiting for or running a library query longer than this is noted.
+const SLOW: std::time::Duration = std::time::Duration::from_millis(50);
+/// At most this many such lines per minute (a busy minute shouldn't fill the log).
+const SLOW_PER_MINUTE: u32 = 4;
+static SLOW_LINES: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
+
+/// The command a closure belongs to, from its type name
+/// ("media_vault_app::library_page::{{closure}}" → "library_page").
+pub fn command_name<F>() -> &'static str {
+    let full = std::any::type_name::<F>();
+    full.split("::").filter(|p| !p.starts_with('{') && !p.is_empty()).last().unwrap_or(full)
+}
+
+/// Whether a slow library call should be written down now (and count it).
+fn slow_line_allowed(now: Instant) -> bool {
+    let mut g = SLOW_LINES.lock().unwrap_or_else(|e| e.into_inner());
+    match g.as_mut() {
+        Some((since, n)) if now.duration_since(*since) < std::time::Duration::from_secs(60) => {
+            *n += 1;
+            *n <= SLOW_PER_MINUTE
+        }
+        _ => {
+            *g = Some((now, 1));
+            true
+        }
+    }
+}
+
+/// A command waited for the library (held by a save, an import, background
+/// work) or ran long: noted when either took over 50 ms (no names from the vault).
+pub fn library_time(command: &str, waited: std::time::Duration, ran: std::time::Duration) {
+    if (waited >= SLOW || ran >= SLOW) && slow_line_allowed(Instant::now()) {
+        note(&format!("library: {command} waited {} ms for the library, then took {} ms", waited.as_millis(), ran.as_millis()));
+    }
+}
+
 /// The window's steps (the picture editor's saving, the window loading).
 #[tauri::command]
 pub fn diag_note(text: String) {
@@ -49,6 +87,20 @@ pub fn diag_note(text: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slow_library_calls_are_named_and_kept_few() {
+        let f = |_: i64| 1;
+        fn takes<F>(_: &F) -> &'static str {
+            command_name::<F>()
+        }
+        assert_eq!(takes(&f), "slow_library_calls_are_named_and_kept_few");
+        assert_eq!(command_name::<fn()>(), "fn()");
+        let t = Instant::now() + std::time::Duration::from_secs(3600);
+        let allowed = (0..10).filter(|_| slow_line_allowed(t)).count();
+        assert_eq!(allowed, SLOW_PER_MINUTE as usize);
+        assert!(slow_line_allowed(t + std::time::Duration::from_secs(61)), "a new minute");
+    }
 
     #[test]
     fn writes_one_line_each_and_stays_small() {

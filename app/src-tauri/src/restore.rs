@@ -143,6 +143,8 @@ pub async fn restore_library_backup(state: State<'_, Shared>, name: String) -> R
         crate::protocol::forget_cache();
         restore(&s, &name)?;
         crate::protocol::forget_cache();
+        // Folder cards and person covers kept from the library before.
+        crate::library::forget_cache();
         // Read again in the background, like after unlocking.
         let s2 = s.clone();
         std::thread::spawn(move || {

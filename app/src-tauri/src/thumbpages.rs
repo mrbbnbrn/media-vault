@@ -40,7 +40,7 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -180,7 +180,7 @@ pub struct Stats {
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
-static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static WAKE: crate::util::Wake = crate::util::Wake::new();
 
 fn state<'a>(g: &'a mut std::sync::MutexGuard<'static, Option<State>>, vault: &str) -> &'a mut State {
     if g.as_ref().is_none_or(|st| st.vault != vault) {
@@ -328,9 +328,7 @@ pub fn note_miss(s: &Session, folder: Option<i64>, size: Size) {
         st.checked.insert(key, Instant::now());
         st.wanted.push(key);
         drop(g);
-        let (m, cv) = &WAKE;
-        *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        cv.notify_all();
+        WAKE.wake();
     }
 }
 
@@ -429,9 +427,7 @@ fn write_pages(s: &Session, folder: Option<i64>, size: Size, thumbs: &[ObjectId]
     Ok(made)
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+use crate::util::now_secs as now;
 
 fn drop_pages(s: &Session, pages: &[ObjectId]) {
     for p in pages {
@@ -470,7 +466,7 @@ pub fn refresh_folder(s: &Session, folder: Option<i64>, size: Size, pause: Durat
         forget_pages(&vault, &gone);
         drop_pages(s, &gone);
         if !gone.is_empty() {
-            s.mark_dirty();
+            s.mark_dirty_bg();
         }
         return Ok(out);
     }
@@ -501,7 +497,7 @@ pub fn refresh_folder(s: &Session, folder: Option<i64>, size: Size, pause: Durat
         forget_pages(&vault, &old);
         drop_pages(s, &old);
     }
-    s.mark_dirty();
+    s.mark_dirty_bg();
     Ok(out)
 }
 
@@ -533,7 +529,7 @@ pub fn drop_pages_holding(s: &Session, thumbs: &[ObjectId]) -> usize {
     let vault = vault_id(s);
     forget_pages(&vault, &pages);
     drop_pages(s, &pages);
-    s.mark_dirty();
+    s.mark_dirty_bg();
     // The rest of those folders: paged again by the background thread.
     {
         let mut g = lock();
@@ -548,9 +544,7 @@ pub fn drop_pages_holding(s: &Session, thumbs: &[ObjectId]) -> usize {
             }
         }
     }
-    let (m, cv) = &WAKE;
-    *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-    cv.notify_all();
+    WAKE.wake();
     pages.len()
 }
 
@@ -588,7 +582,7 @@ pub fn delete_all(s: &Session) -> usize {
     }
     forget();
     if !ids.is_empty() {
-        s.mark_dirty();
+        s.mark_dirty_bg();
     }
     ids.len()
 }
@@ -622,10 +616,7 @@ fn take_wanted(vault: &str) -> Option<(Option<i64>, Size)> {
 }
 
 fn sleep_until_woken(ms: u64) {
-    let (m, cv) = &WAKE;
-    let g = m.lock().unwrap_or_else(|e| e.into_inner());
-    let (mut g, _) = cv.wait_timeout_while(g, Duration::from_millis(ms), |woken| !*woken).unwrap_or_else(|e| e.into_inner());
-    *g = false;
+    WAKE.sleep(ms);
 }
 
 /// Make (small) pages in the background while the vault is open: folders
@@ -640,10 +631,8 @@ pub fn start(s: Arc<Session>) {
         let mut last_sweep: Option<Instant> = None;
         while !s.is_closed() {
             if let Some((f, size)) = take_wanted(&vault) {
+                // New pages are saved with the next save (they can be made again).
                 let _ = refresh_folder(&s, f, size, Duration::ZERO);
-                if s.is_dirty() {
-                    s.save_soon();
-                }
                 continue;
             }
             if sweep.is_empty() && last_sweep.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
@@ -656,9 +645,6 @@ pub fn start(s: Arc<Session>) {
                     // The slow sweep waits while you use the window (pages a grid asks for don't).
                     crate::userbusy::give_way(&|| s.is_closed());
                     let _ = refresh_folder(&s, f, Size::Small, Duration::from_millis(2));
-                    if s.is_dirty() {
-                        s.save_soon();
-                    }
                     sleep_until_woken(500);
                 }
                 None => sleep_until_woken(30_000),

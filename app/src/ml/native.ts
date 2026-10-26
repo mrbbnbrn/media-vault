@@ -12,7 +12,6 @@ import { thumbMade } from '../media';
 import { faceScanPaused, noteFaceProgress, onFaceScanPaused, stopFaceSearch } from './facescan';
 import { noteClipProgress } from './smart';
 import { noteFingerprintProgress } from '../fingerprint';
-import { userBusy } from '../calm';
 
 const JOB = 'analyse';
 let options = { smart: true, facesPaused: false };
@@ -62,6 +61,40 @@ export function startNativeAnalyser(smart: boolean): () => void {
     const n = (last?.done ?? base) - base;
     endJob(JOB, { summary: `Analysis finished: ${n.toLocaleString()} ${n === 1 ? 'item' : 'items'}` });
   };
+  /** Show where the pass is; false once it has stopped. */
+  const show = (st: AnalyseStatus): boolean => {
+    if (!st.running) return false;
+    const prev = last;
+    last = st;
+    if (st.left > 0) {
+      const label = analyseLabel(st, options.smart);
+      if (!active) {
+        active = true;
+        base = st.done;
+        beginJob({
+          id: JOB, label, unit: 'items', total: st.left, long: st.facesLeft > 0, quiet: st.facesLeft === 0,
+          cancel: st.facesLeft > 0 ? () => void stopFaceSearch() : options.smart ? () => smartPauser?.() : undefined,
+          cancelLabel: st.facesLeft > 0 ? 'Stop face search' : 'Pause',
+        });
+      } else {
+        updateJob(JOB, { done: st.done - base, total: st.done - base + st.left, label });
+      }
+    } else {
+      finish();
+    }
+    // Pages showing counts refresh when their part moved on.
+    if (prev) {
+      if (st.thumbs !== prev.thumbs || st.prints !== prev.prints) noteFingerprintProgress();
+      if (st.smart !== prev.smart) noteClipProgress();
+      if (st.faces !== prev.faces) noteFaceProgress();
+    }
+    return true;
+  };
+  // The pass tells after every round; asking is only in case an event was missed.
+  const offStatus = onEvent<AnalyseStatus>('analyse-status', (st) => {
+    if (stopped) return;
+    if (!show(st)) wake?.();
+  });
   (async () => {
     try {
       await api.analyseStart(options);
@@ -76,33 +109,8 @@ export function startNativeAnalyser(smart: boolean): () => void {
       } catch {
         break; // locked
       }
-      if (!st.running) break;
-      const prev = last;
-      last = st;
-      if (st.left > 0) {
-        const label = analyseLabel(st, options.smart);
-        if (!active) {
-          active = true;
-          base = st.done;
-          beginJob({
-            id: JOB, label, unit: 'items', total: st.left, long: st.facesLeft > 0, quiet: st.facesLeft === 0,
-            cancel: st.facesLeft > 0 ? () => void stopFaceSearch() : options.smart ? () => smartPauser?.() : undefined,
-            cancelLabel: st.facesLeft > 0 ? 'Stop face search' : 'Pause',
-          });
-        } else {
-          updateJob(JOB, { done: st.done - base, total: st.done - base + st.left, label });
-        }
-      } else {
-        finish();
-      }
-      // Pages showing counts refresh when their part moved on.
-      if (prev) {
-        if (st.thumbs !== prev.thumbs || st.prints !== prev.prints) noteFingerprintProgress();
-        if (st.smart !== prev.smart) noteClipProgress();
-        if (st.faces !== prev.faces) noteFaceProgress();
-      }
-      // Asking holds the library a moment (it counts): less often while you are using the window.
-      await sleep(userBusy() ? 4000 : st.busy || st.left > 0 ? 1500 : 6000);
+      if (!show(st)) break;
+      await sleep(30_000);
     }
     finish();
     running = false;
@@ -111,6 +119,7 @@ export function startNativeAnalyser(smart: boolean): () => void {
     stopped = true;
     running = false;
     offThumb.then((u) => u());
+    offStatus.then((u) => u());
     offPause();
     wake?.();
     finish();

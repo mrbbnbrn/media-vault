@@ -71,11 +71,11 @@ pub fn info() -> SmartEngine {
     let Some(rt) = runtime_dir() else {
         return no("ONNX Runtime isn't there (it comes with the newer models download).");
     };
-    if let Some(e) = BROKEN.lock().unwrap().clone() {
+    if let Some(e) = BROKEN.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return no(&e);
     }
-    let known = *LAST_DEVICE.lock().unwrap();
-    let guess = !*NO_GPU.lock().unwrap() && cfg!(windows) && rt.join("DirectML.dll").is_file();
+    let known = *LAST_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
+    let guess = !*NO_GPU.lock().unwrap_or_else(|e| e.into_inner()) && cfg!(windows) && rt.join("DirectML.dll").is_file();
     SmartEngine {
         models,
         native: true,
@@ -87,7 +87,7 @@ pub fn info() -> SmartEngine {
 
 /// Pictures can be analysed natively right now.
 pub fn usable() -> bool {
-    model_path().is_some() && runtime_dir().is_some() && BROKEN.lock().unwrap().is_none()
+    model_path().is_some() && runtime_dir().is_some() && BROKEN.lock().unwrap_or_else(|e| e.into_inner()).is_none()
 }
 
 // ---- the model ------------------------------------------------------------------------
@@ -156,14 +156,14 @@ fn run(s: &mut ort::session::Session, input: &[f32], n: usize) -> Result<Vec<Vec
 fn reaper() {
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(20));
-        let idle = LAST_USE.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
+        let idle = LAST_USE.lock().unwrap_or_else(|e| e.into_inner()).is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
         if idle {
             if let Ok(mut m) = MODEL.try_lock() {
                 *m = None;
             } else {
                 continue;
             }
-            *LAST_USE.lock().unwrap() = None;
+            *LAST_USE.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return;
         }
     });
@@ -188,26 +188,26 @@ pub fn embed(input: &[f32], n: usize) -> Result<Vec<Vec<f32>>, String> {
     if input.len() != n * 3 * SIDE * SIDE || n == 0 {
         return Err("Smart search got a picture that wasn't whole.".into());
     }
-    let mut guard = MODEL.lock().unwrap();
+    let mut guard = MODEL.lock().unwrap_or_else(|e| e.into_inner());
     {
-        let mut last = LAST_USE.lock().unwrap();
+        let mut last = LAST_USE.lock().unwrap_or_else(|e| e.into_inner());
         if last.is_none() {
             reaper();
         }
         *last = Some(Instant::now());
     }
-    let can_gpu = || cfg!(windows) && !*NO_GPU.lock().unwrap() && runtime_dir().is_some_and(|d| d.join("DirectML.dll").is_file());
+    let can_gpu = || cfg!(windows) && !*NO_GPU.lock().unwrap_or_else(|e| e.into_inner()) && runtime_dir().is_some_and(|d| d.join("DirectML.dll").is_file());
     for _ in 0..3 {
         if guard.is_none() {
             let gpu = can_gpu();
             match open(gpu) {
                 Ok(s) => *guard = Some(Loaded { session: s, gpu, checked: !gpu }),
                 Err(_) if gpu => {
-                    *NO_GPU.lock().unwrap() = true;
+                    *NO_GPU.lock().unwrap_or_else(|e| e.into_inner()) = true;
                     continue;
                 }
                 Err(e) => {
-                    *BROKEN.lock().unwrap() = Some(e.clone());
+                    *BROKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                     return Err(e);
                 }
             }
@@ -236,32 +236,32 @@ pub fn embed(input: &[f32], n: usize) -> Result<Vec<Vec<f32>>, String> {
                 match cpu {
                     Ok(c) if cos(&c[0], &out[0]) >= GPU_AGREES => {
                         m.checked = true;
-                        *LAST_DEVICE.lock().unwrap() = Some(true);
+                        *LAST_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(true);
                         return Ok(out);
                     }
                     Ok(c) => {
                         eprintln!("smart search: graphics card disagrees with the processor ({:.4}); using the processor", cos(&c[0], &out[0]));
-                        *NO_GPU.lock().unwrap() = true;
+                        *NO_GPU.lock().unwrap_or_else(|e| e.into_inner()) = true;
                         *guard = None;
                         continue;
                     }
                     Err(e) => {
-                        *BROKEN.lock().unwrap() = Some(e.clone());
+                        *BROKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                         return Err(e);
                     }
                 }
             }
             None => {
-                *LAST_DEVICE.lock().unwrap() = Some(m.gpu);
+                *LAST_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(m.gpu);
                 return Ok(out);
             }
             Some(_) if m.gpu => {
-                *NO_GPU.lock().unwrap() = true;
+                *NO_GPU.lock().unwrap_or_else(|e| e.into_inner()) = true;
                 *guard = None;
                 continue;
             }
             Some(e) => {
-                *BROKEN.lock().unwrap() = Some(e.clone());
+                *BROKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                 *guard = None;
                 return Err(e);
             }

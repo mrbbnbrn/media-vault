@@ -13,6 +13,10 @@ use vault_core::{Access, Error, KdfParams, Vault};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 
+/// Changes made only by background work are saved at least this often (and
+/// always when the vault locks or the app closes).
+pub const BACKGROUND_SAVE_EVERY: Duration = Duration::from_secs(60);
+
 /// An unlocked vault. Shared (behind an `Arc`) between commands, the import
 /// worker and the media stream; dropping the last reference wipes the master
 /// key from memory.
@@ -25,6 +29,13 @@ pub struct Session {
     /// Set when the vault is locked; background work stops as soon as it sees it.
     closed: AtomicBool,
     dirty: AtomicBool,
+    /// Unsaved changes made only by background work, all of which can be
+    /// made again (thumbnails, fingerprints, smart-search vectors, sketches,
+    /// dates taken, face scans): saved at most every `BACKGROUND_SAVE_EVERY`,
+    /// so the whole library isn't written every few seconds while it runs.
+    dirty_bg: AtomicBool,
+    /// When the oldest unsaved background change was made.
+    first_unsaved_bg: Mutex<Option<Instant>>,
     last_change: Mutex<Instant>,
     /// A save has been asked for and not started yet.
     save_pending: AtomicBool,
@@ -34,6 +45,10 @@ pub struct Session {
     save_lock: Mutex<()>,
     /// Counts changes (so work that follows changes can tell when there were none).
     changes: std::sync::atomic::AtomicU64,
+    /// Stored files replaced by new ones, removed once the library no longer
+    /// pointing at them is saved (a crash before then leaves them, not a
+    /// library pointing at nothing).
+    retired: Mutex<Vec<(vault_core::ObjectKind, vault_core::ObjectId)>>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -108,14 +123,33 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// Vault sizes worked out before (adding up a vault's files takes a while
+/// on a big or slow drive), so the start screen shows them straight away.
+static SIZES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+fn known_size(path: &str) -> Option<u64> {
+    SIZES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, _)| p == path).map(|(_, s)| *s)
+}
+
+/// A vault in the list, with its size.
 pub fn describe(path: &str) -> VaultEntry {
+    let mut v = describe_quick(path);
+    if v.status == "ready" {
+        v.size_bytes = Some(vault_size(path));
+    }
+    v
+}
+
+/// A vault in the list, at once: its size only if it was worked out before
+/// (`vault_size` adds it up).
+pub fn describe_quick(path: &str) -> VaultEntry {
     let p = Path::new(path);
     let (status, size) = if !p.exists() {
         ("missing", None)
     } else if !vault_core::is_vault(p) {
         ("notVault", None)
     } else {
-        ("ready", Some(dir_size(p)))
+        ("ready", known_size(path))
     };
     let header = if status == "ready" { vault_core::read_header(p).ok() } else { None };
     let passwordless = header.as_ref().is_some_and(|h| h.is_passwordless());
@@ -128,6 +162,15 @@ pub fn describe(path: &str) -> VaultEntry {
         passwordless,
         encrypted,
     }
+}
+
+/// Add up a vault folder's files (and remember the answer for `describe_quick`).
+pub fn vault_size(path: &str) -> u64 {
+    let size = dir_size(Path::new(path));
+    let mut known = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+    known.retain(|(p, _)| p != path);
+    known.push((path.to_string(), size));
+    size
 }
 
 pub fn check_password(pw: &str) -> Result<(), String> {
@@ -152,10 +195,13 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         restored_from_backup: backup,
         closed: AtomicBool::new(false),
         dirty: AtomicBool::new(false),
+        dirty_bg: AtomicBool::new(false),
+        first_unsaved_bg: Mutex::new(None),
         last_change: Mutex::new(Instant::now()),
         first_unsaved: Mutex::new(None),
         save_pending: AtomicBool::new(false),
         save_lock: Mutex::new(()),
+        retired: Mutex::new(Vec::new()),
         // Starts somewhere new for every opening (work that remembers a count from another vault never matches).
         changes: std::sync::atomic::AtomicU64::new(
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1,
@@ -213,6 +259,20 @@ impl Session {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
+    /// Record a change made by background work that can always be made
+    /// again (see `dirty_bg`). Saved with the next save of your own edits, or
+    /// within `BACKGROUND_SAVE_EVERY`.
+    pub fn mark_dirty_bg(&self) {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(Instant::now());
+        self.dirty_bg.store(true, Ordering::SeqCst);
+    }
+
+    /// Remove this stored file after the next save (see `retired`).
+    pub fn delete_after_save(&self, kind: vault_core::ObjectKind, id: vault_core::ObjectId) {
+        self.retired.lock().unwrap_or_else(|e| e.into_inner()).push((kind, id));
+    }
+
     /// Save right away in the background (changes made while it runs are
     /// picked up by the next save). Several requests at once make one save.
     pub fn save_soon(self: &std::sync::Arc<Self>) {
@@ -239,51 +299,104 @@ impl Session {
         self.changes.load(Ordering::SeqCst)
     }
 
+    /// Anything unsaved at all (your edits or background work).
     pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::SeqCst) || self.dirty_bg.load(Ordering::SeqCst)
+    }
+
+    /// Unsaved edits of your own (saved within seconds).
+    pub fn has_user_changes(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
     }
 
     /// Encrypt and save the library database now.
     pub fn save(&self) -> Result<(), String> {
         let _one_at_a_time = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.dirty.store(false, Ordering::SeqCst);
+        // Taken now: changes made while this save runs make the next one.
+        let user = self.dirty.swap(false, Ordering::SeqCst);
+        let bg = self.dirty_bg.swap(false, Ordering::SeqCst);
         let first = self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let first_bg = self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // A failed save: everything it held is unsaved again.
         let restore_first = || {
+            if user {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+            if bg {
+                self.dirty_bg.store(true, Ordering::SeqCst);
+            }
             if let Some(f) = first {
                 self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
             }
+            if let Some(f) = first_bg {
+                self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
+            }
+        };
+        // Files retired before this point go once this save is done.
+        let retired: Vec<_> = std::mem::take(&mut *self.retired.lock().unwrap_or_else(|e| e.into_inner()));
+        let restore_retired = |r: Vec<_>| {
+            let mut g = self.retired.lock().unwrap_or_else(|e| e.into_inner());
+            let newer = std::mem::replace(&mut *g, r);
+            g.extend(newer);
+        };
+        let restore_first = || {
+            restore_first();
+            restore_retired(retired.clone());
         };
         // Where new encrypted files landed in the packs goes into the database too.
         let changes = self.vault().drain_index_changes();
+        // The library is held only while it is copied into memory; encrypting
+        // and writing the copy happen after it is let go, so the window and
+        // background work carry on meanwhile.
         let bytes = {
             let db = self.db();
             if let Err(e) = db::apply_index_changes(&db, &changes) {
                 self.vault().restore_index_changes(changes);
-                self.dirty.store(true, Ordering::SeqCst);
                 restore_first();
                 return Err(format!("Couldn't save the library: {}", friendly(e)));
             }
             match db::serialize(&db) {
                 Ok(b) => b,
                 Err(e) => {
-                    self.dirty.store(true, Ordering::SeqCst);
                     restore_first();
                     return Err(friendly(e));
                 }
             }
         };
-        // A backup copy at most every 10 minutes (saving happens after every change).
-        self.vault().save_db_spaced(&bytes, Duration::from_secs(600)).map_err(|e| {
-            self.dirty.store(true, Ordering::SeqCst);
+        // A full drive: say so plainly (the library stays in memory, nothing is lost yet).
+        let root = self.vault().root().to_path_buf();
+        let need = bytes.len() as u64;
+        if !crate::diskspace::has_room(&root, need, 8 << 20) {
+            restore_first();
+            return Err(format!(
+                "The vault's drive is full, so the library couldn't be saved. Free up at least {} there; your changes are kept while the app stays open.",
+                crate::diskspace::size_text(need + (8 << 20))
+            ));
+        }
+        // A backup copy at most every 10 minutes (saving happens after every
+        // change); none while space is short (the save itself comes first).
+        let backup = crate::diskspace::has_room(&root, need * 2, 64 << 20).then_some(Duration::from_secs(600));
+        self.vault().save_db_with(&bytes, backup).map_err(|e| {
             restore_first();
             format!("Couldn't save the library: {}", friendly(e))
-        })
+        })?;
+        if !retired.is_empty() {
+            // Taking them out of the pack index is itself a change, saved next time.
+            let v = self.vault();
+            for (kind, id) in &retired {
+                let _ = v.delete_object(*kind, id);
+            }
+            drop(v);
+            self.mark_dirty_bg();
+        }
+        Ok(())
     }
 
-    /// Save once changes have settled for `settle` (so a burst of edits is
-    /// written once) — but never later than `max_wait` after the first
-    /// unsaved change, even while background work keeps changing things.
-    pub fn save_if_settled(&self, settle: Duration, max_wait: Duration) -> Result<(), String> {
+    /// Save your edits once they have settled for `settle` (so a burst of
+    /// edits is written once) — but never later than `max_wait` after the
+    /// first unsaved one. Changes made only by background work wait up to
+    /// `bg_wait` (they are written with your edits when there are some).
+    pub fn save_if_settled(&self, settle: Duration, max_wait: Duration, bg_wait: Duration) -> Result<(), String> {
         let age = self
             .last_change
             .lock()
@@ -295,11 +408,15 @@ impl Session {
             .unwrap_or_else(|e| e.into_inner())
             .map(|t| t.elapsed())
             .unwrap_or_default();
-        if self.is_dirty() && (age >= settle || waiting >= max_wait) {
-            self.save()
-        } else {
-            Ok(())
-        }
+        let waiting_bg = self
+            .first_unsaved_bg
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+        let user_due = self.has_user_changes() && (age >= settle || waiting >= max_wait);
+        let bg_due = self.dirty_bg.load(Ordering::SeqCst) && waiting_bg >= bg_wait;
+        if user_due || bg_due { self.save() } else { Ok(()) }
     }
 
     pub fn info(&self) -> SessionInfo {
@@ -321,6 +438,36 @@ impl Session {
                 .map(|p| p.display().to_string()),
             login: None,
         }
+    }
+}
+
+/// When to try a failed save again: after 2 s, 5 s, 15 s, then once a
+/// minute (a removed drive shouldn't be tried every 2 s for ever).
+#[derive(Debug, Default)]
+pub struct SaveBackoff {
+    failures: u32,
+    next: Option<Instant>,
+}
+
+impl SaveBackoff {
+    const STEPS: [u64; 4] = [2, 5, 15, 60];
+
+    /// Whether a save may be tried now.
+    pub fn due(&self, now: Instant) -> bool {
+        self.next.is_none_or(|t| now >= t)
+    }
+
+    /// A save failed; true the first time (tell the window once).
+    pub fn failed(&mut self, now: Instant) -> bool {
+        let wait = Self::STEPS[(self.failures as usize).min(Self::STEPS.len() - 1)];
+        self.failures += 1;
+        self.next = Some(now + Duration::from_secs(wait));
+        self.failures == 1
+    }
+
+    /// A save worked (or there was nothing to save).
+    pub fn ok(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -459,17 +606,98 @@ mod tests {
         s.mark_dirty();
         // Changes keep coming (last change is always fresh): settling alone never saves…
         s.mark_dirty();
-        s.save_if_settled(Duration::from_secs(3600), Duration::from_secs(3600)).unwrap();
+        let hour = Duration::from_secs(3600);
+        s.save_if_settled(hour, hour, hour).unwrap();
         assert!(s.is_dirty());
         // …but the longest wait does.
         std::thread::sleep(Duration::from_millis(20));
         s.mark_dirty();
-        s.save_if_settled(Duration::from_secs(3600), Duration::from_millis(10)).unwrap();
+        s.save_if_settled(hour, Duration::from_millis(10), hour).unwrap();
         assert!(!s.is_dirty());
         drop(s);
         let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
         let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Alex'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "the folder was saved");
+    }
+
+    #[test]
+    fn background_changes_wait_for_their_own_longer_turn() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        let path = s.vault().root().to_path_buf();
+        let before = s.changes();
+        s.db().execute("INSERT INTO folders(parent_id, name, created_at) VALUES (NULL, 'Thumbs', 0)", []).unwrap();
+        s.mark_dirty_bg();
+        assert!(s.changes() > before, "background changes count as changes");
+        assert!(s.is_dirty() && !s.has_user_changes());
+        // Settled and past the usual wait: not yet saved (the background wait is longer).
+        std::thread::sleep(Duration::from_millis(20));
+        s.save_if_settled(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600)).unwrap();
+        assert!(s.is_dirty());
+        // An edit of yours takes the background changes with it.
+        s.mark_dirty();
+        s.save_if_settled(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600)).unwrap();
+        assert!(!s.is_dirty());
+        // Background only, once its wait is over.
+        s.mark_dirty_bg();
+        std::thread::sleep(Duration::from_millis(20));
+        s.save_if_settled(Duration::from_secs(3600), Duration::from_secs(3600), Duration::from_millis(10)).unwrap();
+        assert!(!s.is_dirty());
+        // A failed save keeps it unsaved (the vault was closed and let go).
+        s.mark_dirty_bg();
+        s.close();
+        s.release();
+        assert!(s.save().is_err());
+        assert!(s.is_dirty() && !s.has_user_changes());
+        drop(s);
+        let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
+        let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Thumbs'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn a_full_drive_keeps_changes_and_makes_no_backup() {
+        let _turn = crate::diskspace::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        let backups = |s: &Session| s.vault().db_backups().unwrap().len();
+        let before = backups(&s);
+        s.mark_dirty();
+        crate::diskspace::set_test_free(t.path(), Some(1000));
+        let err = s.save().unwrap_err();
+        assert!(err.contains("drive is full"), "{err}");
+        assert!(s.has_user_changes(), "still unsaved");
+        // Room for the library but not for a backup copy as well: saved, no copy.
+        let need = vault_core::db::serialize(&s.db()).unwrap().len() as u64;
+        crate::diskspace::set_test_free(t.path(), Some(need + (9 << 20)));
+        s.save().unwrap();
+        crate::diskspace::set_test_free(t.path(), None);
+        assert!(!s.is_dirty());
+        assert_eq!(backups(&s), before);
+        let dir = s.vault().root().join("meta-backups");
+        let parts = std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".part")).count()).unwrap_or(0);
+        assert_eq!(parts, 0, "no half-made copy is left");
+    }
+
+    #[test]
+    fn failed_saves_wait_longer_each_time() {
+        let t0 = Instant::now();
+        let mut b = SaveBackoff::default();
+        assert!(b.due(t0));
+        assert!(b.failed(t0), "the first failure is told");
+        assert!(!b.due(t0 + Duration::from_secs(1)) && b.due(t0 + Duration::from_secs(2)));
+        let t1 = t0 + Duration::from_secs(2);
+        assert!(!b.failed(t1), "told only once");
+        assert!(!b.due(t1 + Duration::from_secs(4)) && b.due(t1 + Duration::from_secs(5)));
+        let t2 = t1 + Duration::from_secs(5);
+        b.failed(t2);
+        let t3 = t2 + Duration::from_secs(15);
+        assert!(b.due(t3));
+        b.failed(t3);
+        b.failed(t3);
+        assert!(!b.due(t3 + Duration::from_secs(59)) && b.due(t3 + Duration::from_secs(60)), "then once a minute");
+        b.ok();
+        assert!(b.due(t3) && b.failed(t3), "told again after it worked");
     }
 
     #[test]
@@ -525,6 +753,10 @@ mod tests {
         let d = describe(&p);
         assert_eq!(d.status, "ready");
         assert!(d.size_bytes.unwrap() > 0);
+        // Quick: no adding up, but a size worked out before is shown.
+        let q = describe_quick(&p);
+        assert_eq!((q.status.as_str(), q.size_bytes), ("ready", d.size_bytes));
+        assert_eq!(describe_quick(&format!("{parent}/nope")).size_bytes, None);
         assert_eq!(describe(&format!("{parent}/nope")).status, "missing");
         assert_eq!(describe(parent).status, "notVault");
     }

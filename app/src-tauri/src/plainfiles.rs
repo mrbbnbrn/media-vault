@@ -22,9 +22,7 @@ use crate::session::Session;
 /// Where items in the trash are kept.
 pub const TRASH_DIR: &str = ".trash";
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 /// One arrange at a time.
 static RUNNING: Mutex<()> = Mutex::new(());

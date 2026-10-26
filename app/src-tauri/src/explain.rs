@@ -13,9 +13,7 @@ use tauri::State;
 use crate::clip;
 use crate::library::{self, Item, ItemFilter, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 /// One searched word and where it was found (character ranges, end exclusive,
 /// counted in Unicode characters of the original text).

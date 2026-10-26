@@ -15,9 +15,7 @@ use serde::Serialize;
 use crate::clip::{self, Hit};
 use crate::library::{self, Item, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -30,7 +28,7 @@ const KINDS: &str = "('image', 'gif', 'video')";
 
 /// Items whose fingerprint still has to be made (they need a thumbnail first).
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<FpTask>> {
-    conn.prepare(&format!(
+    conn.prepare_cached(&format!(
         "SELECT id, kind FROM media WHERE phash_state = 0 AND deleted_at IS NULL AND IFNULL(thumb_object_id, '') <> '' \
          AND kind IN {KINDS} ORDER BY {}id DESC LIMIT ?",
         crate::focus::order()
