@@ -34,6 +34,8 @@ export interface LayerOptions {
    * `onClose`. Layers with their own steps back (the museum's close look) say so here.
    */
   onBack?: () => void;
+  /** Where the keyboard was before the layer opened (useLayer notes it before the layer focuses itself). */
+  focusBefore?: HTMLElement | null;
 }
 
 interface Layer extends LayerOptions {
@@ -49,6 +51,9 @@ const changed = () => subs.forEach((f) => f());
 /** Open a layer; returns how to close it (safe to call twice). */
 export function pushLayer(o: LayerOptions): { id: number; pop: () => void; update: (o: Partial<LayerOptions>) => void } {
   const layer: Layer = { ...o, id: nextId++ };
+  // Where the keyboard was: given back when a dialog or menu closes (it used to land on the
+  // page itself, so Tab started over and the focused tile lost its ring).
+  const before = o.focusBefore !== undefined ? o.focusBefore : typeof document !== 'undefined' ? (document.activeElement as HTMLElement | null) : null;
   stack.push(layer);
   changed();
   return {
@@ -58,6 +63,14 @@ export function pushLayer(o: LayerOptions): { id: number; pop: () => void; updat
       if (i >= 0) {
         stack.splice(i, 1);
         changed();
+        if (o.modal && before && before !== document.body) {
+          // After the layer's own elements are gone (React removes them right after this).
+          setTimeout(() => {
+            const now = document.activeElement;
+            const lost = !now || now === document.body || !now.isConnected;
+            if (lost && before.isConnected && !before.closest('[inert]')) before.focus({ preventScroll: true });
+          }, 0);
+        }
       }
     },
     update: (p) => Object.assign(layer, p),
@@ -205,9 +218,15 @@ export function useLayer(active: boolean, o: LayerOptions): LayerHandle {
   opts.current = o;
   const idRef = useRef(0);
   const [id, setId] = useState(0);
+  // Noted while rendering, before the layer's own effects move the focus into it.
+  const focusBefore = useRef<HTMLElement | null>(null);
+  const wasActive = useRef(false);
+  if (active && !wasActive.current && typeof document !== 'undefined') focusBefore.current = document.activeElement as HTMLElement | null;
+  wasActive.current = active;
   useEffect(() => {
     if (!active) return;
     const l = pushLayer({
+      focusBefore: focusBefore.current,
       name: opts.current.name,
       modal: opts.current.modal,
       el: () => opts.current.el?.() ?? null,

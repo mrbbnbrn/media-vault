@@ -342,8 +342,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     saveColsLater(c); // also the default for views without their own
     setPrefsTick((t) => t + 1);
   }, []);
+  // The views' own settings (sort, size…) come first, so the first grid is drawn with them
+  // instead of with the defaults and then re-sorted.
+  const [prefsReady, setPrefsReady] = useState(false);
   useEffect(() => {
-    loadViewPrefs(s.path).then(() => setPrefsTick((t) => t + 1));
+    loadViewPrefs(s.path).catch(() => {}).finally(() => {
+      setPrefsTick((t) => t + 1);
+      setPrefsReady(true);
+    });
   }, [s.path]);
   // Keyboard cursor in the grid, quick look, and the item to show.
   const [cursor, setCursor] = useState<number | null>(null);
@@ -353,7 +359,24 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // "Where you left off" goes away by itself too (it is only an offer).
   useAutoDismiss(resume, () => setResume(null), PROBLEM_MS);
   const [everyFolder, setEveryFolder] = useState(true);
-  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
+  // Folded-up sidebar folders are remembered between visits.
+  const [collapsed, setCollapsedRaw] = useState<Set<number>>(new Set());
+  useEffect(() => {
+    api.uiGet('sidebar-collapsed').then((v) => {
+      if (!v) return;
+      try {
+        const ids = JSON.parse(v);
+        if (Array.isArray(ids)) setCollapsedRaw(new Set(ids.filter((x) => typeof x === 'number')));
+      } catch { /* old or broken value: start unfolded */ }
+    }).catch(() => {});
+  }, []);
+  const setCollapsed = useCallback((f: (c: Set<number>) => Set<number>) => {
+    setCollapsedRaw((c) => {
+      const n = f(c);
+      if (n !== c) api.uiSet('sidebar-collapsed', JSON.stringify([...n])).catch(() => {});
+      return n;
+    });
+  }, []);
   // Folder sorting: the sidebar (every level and the pinned list) and the folder cards (foldersort.ts).
   const fprefs = useFolderPrefs(s.path);
   const sideSort = fprefs.side;
@@ -591,6 +614,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
    */
   /** Each load gets a number: an answer that arrives after a newer load started is dropped. */
   const loadGen = useRef(0);
+  /** The folder of the view before (to select it when you come back up out of it). */
+  const cameFrom = useRef<number | null>(null);
   /** The view whose items are showing (set when its load finishes). */
   const loadedFor = useRef<string | null>(null);
   const reload = useCallback(async (opts?: { bg?: boolean; quiet?: boolean }) => {
@@ -701,6 +726,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, [items, folder, subfolders, trash, loading]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    if (!prefsReady) return;
     let live = true;
     const cached = viewCache.current.get(viewKRef.current);
     if (cached) {
@@ -718,8 +744,19 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setQuick(null);
     // The folder you are in is the selected folder (so the sidebar shows one thing, and Delete works on it).
     const here = view.kind === 'folder' && view.id != null ? view.id : null;
-    setSelFolders(kept ? new Set(kept.folders) : here != null ? new Set([here]) : new Set());
-    setFolderAnchor(here);
+    // Coming up out of a subfolder (Back, Up, the breadcrumb): that subfolder is selected, as in
+    // Explorer, so you keep your place among its sisters.
+    const from = cameFrom.current;
+    cameFrom.current = here;
+    const parentOfFrom = from != null ? folders.find((f) => f.id === from)?.parentId ?? null : undefined;
+    const outOf = !kept && from != null && parentOfFrom !== undefined && (view.kind === 'folder' || view.kind === 'folders') && parentOfFrom === here ? from : null;
+    setSelFolders(kept ? new Set(kept.folders) : outOf != null ? new Set([outOf]) : here != null ? new Set([here]) : new Set());
+    setFolderAnchor(outOf ?? here);
+    if (outOf != null) {
+      setTimeout(() => {
+        if (live) scroller.current?.querySelector<HTMLElement>(`[data-card="${outOf}"]`)?.scrollIntoView({ block: 'nearest' });
+      }, 60);
+    }
     // Timing panel (perf.ts): the page, then its first thumbnails.
     const what = viewTitle(view, null);
     beginStep('Open view', what);
@@ -736,7 +773,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     return () => {
       live = false;
     };
-  }, [reload, restoreScroll]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [reload, restoreScroll, prefsReady]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => rememberSelection(viewKRef.current, selected, selFolders), [selected, selFolders]);
   // Remember when each folder was opened (the "Recently opened" sort).
@@ -785,6 +822,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       // Anything open on top (a menu, a dialog, the museum, the river…) has the keys (keylayers.ts).
+      if (e.defaultPrevented && e.key.startsWith('Arrow')) return; // the sidebar used it
       if (asleepRef.current || !noLayerOpen() || museumOpen() || riverOpen() || faceToolOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       // The face wall shows instead of the grid: what is selected there can't be seen, so no selection keys.
       const hiddenSel = keyActions.current.selectionHidden();
@@ -816,6 +854,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         document.getElementById('lib-search')?.focus();
       } else if (!e.altKey && !e.ctrlKey && !e.metaKey && e.key.startsWith('Arrow') && keyActions.current.cardArrow(e.key, e.shiftKey)) {
         e.preventDefault();
+      } else if (e.altKey && e.key === 'ArrowUp') {
+        e.preventDefault();
+        keyActions.current.up();
       } else if (e.altKey && (e.key === 'ArrowLeft' || e.key === 'ArrowRight')) {
         e.preventDefault();
         if (e.key === 'ArrowLeft') keyActions.current.back();
@@ -1017,7 +1058,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const keyActions = useRef({
     selected, del: () => {}, selectAll: () => {}, selectNone: () => {}, back: () => {}, forward: () => {}, typeJump: (_k: string) => {},
     anySelected: () => false as boolean, openFolder: () => false as boolean, rename: () => {}, selectionHidden: () => false as boolean,
-    cardArrow: (_k: string, _shift: boolean) => false as boolean,
+    cardArrow: (_k: string, _shift: boolean) => false as boolean, up: () => {},
     clip: (_m: 'cut' | 'copy') => {}, paste: () => {},
   });
   keyActions.current = {
@@ -1071,6 +1112,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       if (!history.back() && view.kind === 'folder') setView(view.id == null ? { kind: 'folders' } : { kind: 'folder', id: folder?.parentId ?? null });
     },
     forward: () => void history.forward(),
+    // Alt+↑: the folder this one is in (and, from the top level, the folder list).
+    up: () => {
+      if (view.kind !== 'folder') return;
+      if (view.id == null) setView({ kind: 'folders' });
+      else openFolder(folders.find((f) => f.id === view.id)?.parentId ?? folder?.parentId ?? null);
+    },
     typeJump: (k: string) => typeJump(k),
     selectAll: () => selectAll(),
     selectNone: () => {
@@ -2198,9 +2245,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     }
     const ids = [...sel];
     const many = ids.length > 1;
-    const people = inTrash ? [] : await peopleIn(ids);
-    setCtx({ x: at.clientX, y: at.clientY, title: many ? `${ids.length} items` : it.name, items: menuOf(mediaActions([], ids, it, people)) });
+    const title = many ? `${ids.length} items` : it.name;
+    // The menu opens at once; the people in the picture ("Move to" their folders) join when known.
+    setCtx({ x: at.clientX, y: at.clientY, title, items: menuOf(mediaActions([], ids, it, [])) });
+    if (inTrash) return;
+    const people = await peopleIn(ids);
+    if (people.length) setCtx((c) => (c && c.title === title && c.x === at.clientX && c.y === at.clientY ? { ...c, items: itemMenuRef2.current(ids, it, people) } : c));
   };
+  const itemMenuRef2 = useRef<(ids: number[], it: Item, people: number[]) => MenuItem[]>(() => []);
+  itemMenuRef2.current = (ids, it, people) => menuOf(mediaActions([], ids, it, people));
 
   // Living folder cards: hovering a card cycles through a few items inside
   // (the counter lives in the hovered card's FolderCover, not here).
@@ -2352,9 +2405,55 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const minimapSort = timeline || smart || inTrash || view.kind === 'similar' ? null : sort;
   const gridMinimapLabel = useMemo(() => minimapLabel(minimapSort), [minimapSort]);
 
+  // The folder being opened, from the full folder list (known at once), so the title and the
+  // breadcrumb never show the previous folder's while the new one loads.
+  const headFolder = view.kind === 'folder' && view.id != null ? folders.find((f) => f.id === view.id) ?? folder : null;
+  // Arrow keys in the sidebar: ↑/↓ move between rows, → unfolds, ← folds (or goes to the parent row).
+  const sideKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.altKey || e.ctrlKey || e.metaKey || !e.key.startsWith('Arrow')) return;
+    const t = e.target as HTMLElement;
+    const btn = t.closest<HTMLElement>('.side-row > .tree-name, button.side-row');
+    if (!btn) return;
+    const rows = [...e.currentTarget.querySelectorAll<HTMLElement>('.side-row > .tree-name, button.side-row')];
+    const i = rows.indexOf(btn);
+    const row = btn.closest<HTMLElement>('[data-order]');
+    const id = row ? Number(row.dataset.order) : NaN;
+    const f = Number.isFinite(id) ? folders.find((x) => x.id === id) : undefined;
+    e.preventDefault();
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]?.focus();
+    } else if (f && e.key === 'ArrowRight' && f.subfolders > 0 && collapsed.has(f.id)) {
+      setCollapsed((c) => { const n = new Set(c); n.delete(f.id); return n; });
+    } else if (f && e.key === 'ArrowLeft') {
+      if (f.subfolders > 0 && !collapsed.has(f.id)) setCollapsed((c) => new Set(c).add(f.id));
+      else if (f.parentId != null) e.currentTarget.querySelector<HTMLElement>(`[data-order="${f.parentId}"] > .tree-name`)?.focus();
+    }
+  };
+  // The sidebar follows the folder you're in: its parents unfold and its row scrolls into view.
+  const followId = headFolder?.id ?? null;
+  useEffect(() => {
+    if (followId == null) return;
+    const f = folders.find((x) => x.id === followId);
+    if (!f) return;
+    const up = f.path.map((c) => c.id).filter((id) => id !== followId);
+    if (up.some((id) => collapsed.has(id))) {
+      setCollapsed((c) => {
+        const n = new Set(c);
+        for (const id of up) n.delete(id);
+        return n;
+      });
+    }
+    const t = setTimeout(() => {
+      const row = document.querySelector<HTMLElement>(`.side-col [data-order="${followId}"]`);
+      row?.scrollIntoView({ block: 'nearest' });
+    }, 60);
+    return () => clearTimeout(t);
+  }, [followId]); // eslint-disable-line react-hooks/exhaustive-deps
+  /** A view is loading and nothing of it is known yet: what still shows is dimmed. */
+  const switching = loading && loadedFor.current !== viewK;
   const heading = view.kind === 'search' ? `Search: ${searchTitle({ ...view, people: view.people ?? [] }, folders)}`
     : view.kind === 'timeline' && view.person != null ? `${folders.find((f) => f.id === view.person)?.name ?? 'Person'} · timeline`
-    : viewTitle(view, folder);
+    : viewTitle(view, headFolder);
   const showNote = !!note;
   return (
     <div className={`library${frozen ? ' frozen' : ''}`} ref={root} inert={frozen} aria-hidden={frozen || undefined}>
@@ -2415,7 +2514,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
 
       <div className="lib-body">
-        <div className="side-col">
+        <div className="side-col" onKeyDown={sideKeys}>
         <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
           <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
             aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
@@ -2505,7 +2604,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </div>
         </div>
 
-        <main className="lib-main" ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
+        <main className={`lib-main${switching ? ' switching' : ''}`} ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
           {login && <LoginBanner login={login} onClose={() => setLogin(null)} />}
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
@@ -2560,7 +2659,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
               <span className="crumbs">
                 <button type="button" className="link" data-drop="folder:top" onClick={() => setView({ kind: 'folders' })} {...middleView({ kind: 'folders' })}>All folders</button>
                 <button type="button" className="crumb-jump" aria-label="Folders at the top level" title="Jump to another folder at this level" onClick={(e) => crumbJump(e, null)}>›</button>
-                {folder?.path.map((c) => (
+                {headFolder?.path.map((c) => (
                   <span key={c.id}>
                     <button type="button" className="link" data-drop={`folder:${c.id}`} onClick={() => openFolder(c.id)} {...middleView({ kind: 'folder', id: c.id })}>{c.name}</button>
                     <button type="button" className="crumb-jump" aria-label={`Folders in ${c.name}`} title="Jump to another folder at this level" onClick={(e) => crumbJump(e, c.id)}>›</button>

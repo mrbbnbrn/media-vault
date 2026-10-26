@@ -151,8 +151,17 @@ export function useLibraryTabs(vault: string | null): LibraryTabs {
     canReopen: state.closed.length > 0,
     navigate: (v) => void update((s) => navigate(s, v)),
     replace: (v) => void update((s) => replaceView(s, v)),
-    back: () => update(goBack),
-    forward: () => update(goForward),
+    // Back and Forward put back what was selected there too (as switching tabs does).
+    back: () => update((s) => {
+      const n = goBack(s);
+      if (n && n !== s) armSelectionRestore();
+      return n;
+    }),
+    forward: () => update((s) => {
+      const n = goForward(s);
+      if (n && n !== s) armSelectionRestore();
+      return n;
+    }),
     open: (v, background = true) => void update((s) => openTab(s, v, { background })),
     newTab: () => void update((s) => openTab(s, HOME)),
     activate: (id) => void update((s) => activate(s, id)),

@@ -1174,3 +1174,4 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .seg.tx-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .seg.tx-pick button { padding: 0 6px; }
 .picker-path { margin-left: auto; font-size: 12px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.lib-main.switching > * { opacity: 0.35; transition: opacity 0.12s 0.08s; pointer-events: none; }

@@ -261,7 +261,8 @@ export const MediaGrid = memo(function MediaGrid(props: {
       // Something open on top (a menu, a dialog, the river…) has the keys (keylayers.ts).
       if (!noLayerOpen() || (e.target as HTMLElement).closest('input, textarea, select, [role=dialog]')) return;
       const k = e.key;
-      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' '].includes(k) || e.altKey) return;
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter', ' ', 'Home', 'End', 'PageUp', 'PageDown', 'ContextMenu', 'F10'].includes(k) || e.altKey) return;
+      if (k === 'F10' && !e.shiftKey) return;
       // Start from the last selected item; if the selection moved elsewhere, from a selected one.
       const order = p.items.map((x) => x.id);
       const cur = moveFrom(order, p.selected, p.cursor ?? null);
@@ -277,9 +278,34 @@ export const MediaGrid = memo(function MediaGrid(props: {
         if (cur >= 0) p.onQuickLook?.(p.items[cur]);
         return;
       }
+      // The menu key or Shift+F10: the right-click menu of the selected tile.
+      if (k === 'ContextMenu' || k === 'F10') {
+        if (cur < 0) return;
+        e.preventDefault();
+        const el = ref.current?.querySelector<HTMLElement>(`[data-item="${p.items[cur].id}"]`);
+        if (!el) return;
+        const r = el.getBoundingClientRect();
+        el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + Math.min(r.height / 2, 40) }));
+        return;
+      }
       e.preventDefault();
       let next = cur;
-      if (cur < 0) next = 0;
+      if (k === 'Home') next = 0;
+      else if (k === 'End') next = p.items.length - 1;
+      else if (k === 'PageUp' || k === 'PageDown') {
+        // A screenful up / down, staying in the same column as near as possible.
+        const page = (p.scroller.current?.clientHeight ?? 600) - 40;
+        const b = L.boxes[Math.max(0, cur)];
+        const want = b.y + (k === 'PageDown' ? page : -page);
+        const cx = b.x + b.w / 2;
+        let best = cur < 0 ? 0 : cur;
+        let bestD = Infinity;
+        L.boxes.forEach((o, j) => {
+          const d = Math.abs(o.y - want) * 4 + Math.abs(o.x + o.w / 2 - cx);
+          if (d < bestD) { bestD = d; best = j; }
+        });
+        next = best;
+      } else if (cur < 0) next = 0;
       else if (k === 'ArrowLeft') next = Math.max(0, cur - 1);
       else if (k === 'ArrowRight') next = Math.min(p.items.length - 1, cur + 1);
       else {

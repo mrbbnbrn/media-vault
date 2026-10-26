@@ -1,7 +1,7 @@
 // One player for pictures, GIFs / animated WebP, videos, text and PDF. Used
 // by the full viewer, each multi-screen panel, and the player outside the vault.
 //
-// Mouse: wheel = next / previous (scrolls inside text and PDF), Ctrl+wheel =
+// Mouse: wheel = next / previous (scrolls inside text and PDF; moves around a zoomed picture), Ctrl+wheel =
 // zoom, drag = draw a rectangle (click inside it to zoom to it, outside to
 // dismiss), right-drag = move the zoomed picture, 0 = reset zoom.
 // Videos: ←/→ jump (Shift = bigger jump), Ctrl+←/→ one frame, Ctrl+Space /
@@ -518,6 +518,14 @@ export function Player(props: PlayerProps) {
       }
       if (doc) return; // scroll inside the text / PDF
       e.preventDefault();
+      // Zoomed in: the wheel moves around the picture (Shift = sideways) instead of changing it.
+      if (zoom.s > 1.001) {
+        const k = e.deltaMode === 1 ? 40 : e.deltaMode === 2 ? 800 : 1;
+        const dx = (e.shiftKey ? e.deltaY : e.deltaX) * k;
+        const dy = (e.shiftKey ? 0 : e.deltaY) * k;
+        setZoom((z) => clampZoom({ s: z.s, x: z.x - dx, y: z.y - dy }));
+        return;
+      }
       // Every notch of a mouse wheel moves one item; touchpads (many small
       // deltas) move one item per ~half a notch of scrolling.
       const now = Date.now();

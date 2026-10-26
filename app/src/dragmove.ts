@@ -22,7 +22,25 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
   let over: HTMLElement | null = null;
   let edge: 'before' | 'after' | null = null;
   let ghost: HTMLDivElement | null = null;
-  const move = (ev: PointerEvent) => {
+  let last: PointerEvent | null = null;
+  let scrollTimer: ReturnType<typeof setInterval> | null = null;
+  // Near the top or bottom of a scrolling list (the sidebar, the grid): it scrolls by itself.
+  const autoScroll = () => {
+    if (!last) return;
+    const under = document.elementFromPoint(last.clientX, last.clientY) as HTMLElement | null;
+    let sc: HTMLElement | null = under;
+    while (sc && !(sc.scrollHeight > sc.clientHeight + 2 && /(auto|scroll)/.test(getComputedStyle(sc).overflowY))) sc = sc.parentElement;
+    if (!sc) return;
+    const r = sc.getBoundingClientRect();
+    const zone = Math.min(60, r.height / 4);
+    const dy = last.clientY < r.top + zone ? -(r.top + zone - last.clientY) : last.clientY > r.bottom - zone ? last.clientY - (r.bottom - zone) : 0;
+    if (dy) {
+      sc.scrollTop += Math.sign(dy) * Math.ceil(Math.abs(dy) / 3 + 2);
+      move(last, true);
+    }
+  };
+  const move = (ev: PointerEvent, again = false) => {
+    if (!again) last = ev;
     if (!active && Math.hypot(ev.clientX - x0, ev.clientY - y0) < 7) return;
     if (!active) {
       active = true;
@@ -30,6 +48,8 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
       ghost.className = 'drag-ghost';
       document.body.appendChild(ghost);
       document.body.classList.add('dragging');
+      scrollTimer = setInterval(autoScroll, 30);
+      window.addEventListener('keydown', esc, true);
     }
     const hit = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest<HTMLElement>('[data-drop^="folder:"]') ?? null;
     // Near the top or bottom edge of a sidebar folder: put it before / after it.
@@ -52,7 +72,19 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
       ghost.textContent = edge ? 'Put it here' : opts.label(el?.dataset.drop ?? null);
     }
   };
+  // Esc: the drag is called off and nothing moves.
+  const esc = (ke: KeyboardEvent) => {
+    if (ke.key !== 'Escape') return;
+    ke.preventDefault();
+    ke.stopPropagation();
+    over?.classList.remove('drop-over', 'drop-before', 'drop-after');
+    over = null;
+    up();
+  };
   const up = () => {
+    if (scrollTimer) clearInterval(scrollTimer);
+    scrollTimer = null;
+    window.removeEventListener('keydown', esc, true);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
     window.removeEventListener('pointercancel', up);
