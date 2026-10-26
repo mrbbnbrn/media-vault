@@ -17,7 +17,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Click', 'Select (a folder in the sidebar also opens)'],
       ['Arrow keys', 'Move the selection (Shift: extend it)'],
       ['Enter', 'Open the selected item or folder'],
-      ['Space', 'Quick look (Space or Esc closes, ←/→ next and previous)'],
+      ['Space', 'Quick look (Space or Esc closes, ←/→ next and previous, F favourite, Delete to the trash, Ctrl+Z undo)'],
       ['Type letters', 'Jump to the first folder or item starting with them'],
       ['Backspace / Alt+←', 'Back (also the mouse back button)'],
       ['Alt+→', 'Forward (also the mouse forward button)'],

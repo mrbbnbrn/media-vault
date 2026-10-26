@@ -2949,7 +2949,18 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <QuickLook items={shown} id={quick} onClose={() => setQuick(null)}
           onMove={(id) => { setQuick(id); setCursor(id); setSelected(new Set([id])); setAnchor(id); }}
           onOpen={(it) => { setQuick(null); playItems(false, it.id); }}
-          onShowFolder={view.kind === 'folder' ? undefined : (it) => { setQuick(null); showInFolder(it); }} />
+          onShowFolder={view.kind === 'folder' ? undefined : (it) => { setQuick(null); showInFolder(it); }}
+          onFavourite={view.kind === 'trash' ? undefined : (it) => void setFav([it.id], !it.favourite)}
+          onDelete={view.kind === 'trash' ? undefined : (it, next) => {
+            // The next one shows straight away; back to this one if it didn't go (cancelled, or failed).
+            const go = (id: number | null) => {
+              setQuick(id);
+              if (id != null) { setCursor(id); setSelected(new Set([id])); setAnchor(id); }
+            };
+            go(next?.id ?? null);
+            trashRef.current(it.id).then((ok) => { if (!ok) go(it.id); }, () => go(it.id));
+          }}
+          onUndo={() => void undo()} />
       )}
 
       {dialog?.t === 'newFolder' && (
