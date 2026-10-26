@@ -52,15 +52,16 @@ const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
 const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.UpscaleCompare));
 // 3D photos (end)
 import {
-  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
+  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
   MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, LiftIcon, OrbitIcon,
-  DepthEdgesIcon, Layered3DIcon, SubjectOnly3DIcon, SubjectPngIcon,
+  OrbitIcon,
+  SubjectPngIcon,
   SideChevronIcon, EditPictureIcon, Mp4Icon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
+import { DepthSettingsDialog } from './DepthSettings';
 import { useUpscale } from './Upscale';
 import { BookmarksPanel, GifMakerDialog, Mp4CutDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 import { ImageEditor } from './ImageEditor';
@@ -1188,6 +1189,28 @@ export function Player(props: PlayerProps) {
     saveViewerPrefs({ depthMouse: on });
     setFlash(on ? '3D: move the mouse over the picture · strength in View ▾ → 3D photos' : '3D off');
   };
+  /** The 3D photo settings window (shape, amount, speed…), from the 3D ▾ menu. */
+  const [depthSettings, setDepthSettings] = useState(false);
+  const stillOnly = item?.kind === 'image' ? undefined : 'still pictures';
+  /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons). */
+  const depthMenu = (): MenuItem[] => [
+    { label: '3D for GIFs and videos', hint: 'lets the 3D work on them too', checked: depthMoving,
+      onSelect: () => void toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it') },
+    { label: '3D to the beat', hint: prefs.depthBeat && beat3d.bpm ? `${Math.round(beat3d.bpm)} BPM` : 'pulses with music', checked: !!prefs.depthBeat,
+      onSelect: () => void toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)') },
+    { label: 'Lift-off', hint: stillOnly ?? 'the subject comes forward', checked: depthLift, disabled: !!stillOnly, sepBefore: true,
+      onSelect: () => void toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in 3D ▾ → 3D photo settings') },
+    ...(depthLift && inVault && !stillOnly ? [{ label: savingSubject ? 'Saving the subject…' : 'Save subject as PNG', hint: 'next to the original', disabled: savingSubject, onSelect: () => void saveSubject() }] : []),
+    { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
+    { label: '3D only on the subject', hint: stillOnly ?? 'background stays still', checked: depthSubjectOnly, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true }) },
+    { label: 'Layered 3D', hint: stillOnly ?? 'fills in behind the subject', checked: depthLayered, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true }) },
+    { label: '3D photo settings…', hint: 'shape, amount, speed', sepBefore: true, onSelect: () => setDepthSettings(true) },
+  ];
+  /** Something in the 3D ▾ menu is on (the button shows it). */
+  const depthMenuOn = depthMoving || !!prefs.depthBeat || depthLift || depthEdges3d || depthSubjectOnly || depthLayered;
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
   // ---- video and GIF tools ------------------------------------------------------------------
@@ -1590,10 +1613,18 @@ export function Player(props: PlayerProps) {
     </div>
   );
 
+  /** The top of View ▾: fit or fill, the glow around the picture, face boxes. */
+  const viewMenu: MenuItem[] = [
+    { label: 'Fit', hint: 'the whole picture', checked: s.fit === 'contain', onSelect: () => set({ fit: 'contain' }) },
+    { label: 'Fill', hint: 'crops the edges', checked: s.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
+    { label: 'Soft glow around', hint: 'instead of black', checked: !!prefs.ambient, sepBefore: true, onSelect: () => saveViewerPrefs({ ambient: !prefs.ambient }) },
+    ...(faceCapable ? [{ label: 'Face boxes', hint: 'boxes around faces', checked: prefs.faceBoxes, onSelect: () => setFaceBoxes(!prefs.faceBoxes) }] : []),
+  ];
+
   const speedButton = (
     <div role="group" aria-label="Playback speed" className="seg">
       {SPEEDS.map((sp) => (
-        <button key={sp} type="button" className={sp === s.speed ? 'on' : ''} disabled={item?.kind !== 'video'}
+        <button key={sp} type="button" className={sp === s.speed ? 'on' : ''}
           onClick={() => set({ speed: sp })}>{sp === 1 ? '1×' : `${sp}×`}</button>
       ))}
     </div>
@@ -1796,7 +1827,6 @@ export function Player(props: PlayerProps) {
               <button type="button" className={`btn btn-icon glass${fav ? ' accent' : ''}`} aria-label={fav ? 'Remove from favourites' : 'Add to favourites'}
                 aria-pressed={fav} onClick={toggleFavourite}><HeartIcon filled={fav} size={18} /></button>
             )}
-            <ScalingMenu prefs={prefs} />
             {props.topRight}
             {props.keys && (
               <button type="button" className="btn btn-icon btn-sm glass" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={() => setHelp(true)}>
@@ -1862,7 +1892,7 @@ export function Player(props: PlayerProps) {
               aria-label={s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}>
               <RepeatIcon />{timedTools ? (s.repeat === 'one' ? ' 1' : '') : ` ${s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}`}
             </button>
-            {speedButton}
+            {isVideo && speedButton}
             {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
               {canEdit && (
@@ -1884,66 +1914,27 @@ export function Player(props: PlayerProps) {
               {(isPicture || isVideo3d) && !failed && !props.compact && (
                 <div className="depth-btns" role="group" aria-label="3D">
                   <button type="button" className={`pbtn lg${depthAuto ? ' on' : ''}`} aria-pressed={depthAuto} aria-label="Gentle 3D motion"
-                    title={depthAuto ? 'Gentle 3D motion is on (shape, amount and speed in View ▾ → 3D photo settings) · click to turn off' : 'Gentle 3D motion: pictures move gently in depth (GIFs and videos too when their 3D switch is on)'}
+                    title={depthAuto ? 'Gentle 3D motion is on (shape, amount and speed in 3D ▾ → 3D photo settings) · click to turn off' : 'Gentle 3D motion: pictures move gently in depth (GIFs and videos too when their 3D switch is on)'}
                     onClick={() => toggleDepth({ depthAuto: !depthAuto }, !depthAuto, depthAuto ? 'Gentle 3D motion off' : 'Gentle 3D motion on')}>
                     <OrbitIcon size={18} />
                   </button>
-                  {(animated || isVideo3d) && (
-                    <button type="button" className={`pbtn lg${depthMoving ? ' on' : ''}`} aria-pressed={depthMoving} aria-label="3D for GIFs and videos"
-                      title={depthMoving ? '3D for GIFs and videos is on: the gentle motion, the 3D mouse and 3D to the beat work on them too · click to turn off' : '3D for GIFs and videos: lets the gentle motion, the 3D mouse and 3D to the beat work on GIFs and videos too (turns nothing else on)'}
-                      onClick={() => toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it')}>
-                      <Film3DIcon size={18} />
-                    </button>
-                  )}
                   <button type="button" className={`pbtn lg depth-btn${prefs.depthMouse ? ' on' : ''}`} aria-pressed={!!prefs.depthMouse}
-                    aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in View ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
+                    aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in 3D ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
                     onClick={toggleDepthMouse}>
                     3D
                   </button>
-                  <button type="button" className={`pbtn lg${prefs.depthBeat ? ' on' : ''}`} aria-pressed={!!prefs.depthBeat} aria-label="3D to the beat"
-                    title={prefs.depthBeat ? `3D to the beat is on${beat3d.silent ? ' (no music heard yet)' : beat3d.bpm ? ` · ${Math.round(beat3d.bpm)} BPM` : ''} · push or bounce in View ▾ → 3D photo settings · click to turn off` : '3D to the beat: with music playing, the 3D picture pulses on each beat'}
-                    onClick={() => toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)')}>
-                    <BeatIcon size={18} />
-                  </button>
-                  {item?.kind === 'image' && (
-                    <>
-                      <button type="button" className={`pbtn lg${depthLift ? ' on' : ''}`} aria-pressed={depthLift} aria-label="Lift-off"
-                        title={depthLift ? 'Lift-off is on: the subject comes forward a little (amount in View ▾ → 3D photo settings) · click to turn off' : 'Lift-off: the subject comes forward a little, with a soft shadow behind it (still pictures)'}
-                        onClick={() => toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in View ▾ → 3D photo settings')}>
-                        <LiftIcon size={18} />
-                      </button>
-                      {depthLift && inVault && (
-                        <button type="button" className="pbtn" aria-label="Save subject as PNG" disabled={savingSubject}
-                          title="Save the subject cut out (a PNG with a transparent background) next to the original · Ctrl+Z undoes it"
-                          onClick={() => void saveSubject()}>
-                          <SubjectPngIcon size={16} />
-                        </button>
-                      )}
-                      <button type="button" className={`pbtn lg${depthEdges3d ? ' on' : ''}`} aria-pressed={depthEdges3d} aria-label="Sharper depth edges"
-                        title={depthEdges3d ? 'Sharper depth edges are on: the depth follows the subject\'s outline (strength in View ▾ → 3D photo settings) · click to turn off' : 'Sharper depth edges: the depth follows the subject\'s outline, so it doesn\'t smear at the edges (works with every 3D mode)'}
-                        onClick={() => toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true })}>
-                        <DepthEdgesIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthSubjectOnly ? ' on' : ''}`} aria-pressed={depthSubjectOnly} aria-label="3D only on the subject"
-                        title={depthSubjectOnly ? '3D only on the subject is on: the background stays still · click to turn off' : '3D only on the subject: the background stays completely still, only the subject moves in 3D'}
-                        onClick={() => toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true })}>
-                        <SubjectOnly3DIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthLayered ? ' on' : ''}`} aria-pressed={depthLayered} aria-label="Layered 3D"
-                        title={depthLayered ? 'Layered 3D is on: the background behind the subject is filled in (fill in View ▾ → 3D photo settings) · click to turn off' : 'Layered 3D: the background behind the subject is filled in, so moving the camera shows background instead of stretched edges'}
-                        onClick={() => toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true })}>
-                        <Layered3DIcon size={18} />
-                      </button>
-                    </>
+                  {/* The other 3D switches, together in one menu. */}
+                  <Dropdown up className={`pbtn lg wide${depthMenuOn ? ' on' : ''}`} label="3D ▾" title="More 3D: GIFs and videos, the beat, Lift-off, layers" items={depthMenu} />
+                  {depthLift && inVault && item?.kind === 'image' && (
+                    <button type="button" className="pbtn" aria-label="Save subject as PNG" disabled={savingSubject}
+                      title="Save the subject cut out (a PNG with a transparent background) next to the original · Ctrl+Z undoes it"
+                      onClick={() => void saveSubject()}>
+                      <SubjectPngIcon size={16} />
+                    </button>
                   )}
                 </div>
               )}
-              {faceCapable && (
-                <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}
-                  aria-label="Face boxes" title={prefs.faceBoxes ? 'Hide face boxes' : 'Show boxes around faces'} onClick={() => setFaceBoxes(!prefs.faceBoxes)}>
-                  <FaceIcon size={18} />
-                </button>
-              )}
+              <ScalingMenu prefs={prefs} up className="pbtn lg wide" first={viewMenu} />
               <button type="button" className="pbtn lg" aria-label={muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
                 title={beatQuiet ? 'Slideshow videos stay muted while the slideshow follows the beat' : muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
                 onClick={() => set({ muted: !s.muted })}>
@@ -1990,6 +1981,7 @@ export function Player(props: PlayerProps) {
         <BestFramesDialog item={item} rot={rot} onClose={() => setBestFrames(false)} onMessage={setFlash} onSaved={() => { lastTurn.current = peekUndo(); }} />
       )}
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
+      {depthSettings && <DepthSettingsDialog prefs={prefs} onClose={() => setDepthSettings(false)} />}
     </div>
   );
 }
