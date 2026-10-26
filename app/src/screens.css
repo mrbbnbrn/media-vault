@@ -1197,3 +1197,6 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .qlook-stage { position: relative; }
 .qlook-note { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); padding: 8px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.8); color: #fff; font-size: 13px; pointer-events: none; animation: pop-in 0.15s ease-out; }
 .qlook-stage img.qlook-wait { min-width: min(60vw, 900px); filter: blur(2px); }
+/* Slideshow settings: whether this folder has its own. */
+.place-note { display: flex; flex-direction: column; gap: 8px; margin: -4px 0 14px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; }
+.place-note .faint { color: var(--text-2); }

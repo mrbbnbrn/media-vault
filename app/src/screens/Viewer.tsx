@@ -2,6 +2,7 @@
 // player in a corner of the library, and as the speed round.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { api, type Named } from '../api';
 import type { Nav } from '../App';
 import { BeatStatusLine } from '../components/BeatStatus';
@@ -13,7 +14,8 @@ import { drawnRect, type Box } from '../flip';
 import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
 import { noteItemsChanged, type PlayItem } from '../media';
 import { pushUndo } from '../undo';
-import type { Order } from '../playlist';
+import { sorted, type Order } from '../playlist';
+import { loadShows, peekShows, resumeAt, updateShow, type FolderShow } from '../slideshowmemory';
 import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } from '../presets';
 import { TRANSITIONS } from '../transitions';
 import { saveViewerPrefs, useViewerPrefs, viewerPrefs, withSound } from '../prefs';
@@ -28,6 +30,20 @@ function lastPlayback(): PlaybackSettings {
   return saved && typeof saved === 'object' ? normalize(saved as Partial<PlaybackSettings>) : DEFAULT_PLAYBACK;
 }
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+const RANDOM_ORDERS: Order[] = ['shuffle', 'random', 'weighted'];
+/** The settings without the sound (it has its own memory). */
+function withoutSound(s: PlaybackSettings): Partial<PlaybackSettings> {
+  const { muted: _m, volume: _v, ...keep } = s;
+  return keep;
+}
+const sameKeep = (s: PlaybackSettings) => JSON.stringify(withoutSound(s));
+
+/** A folder's slideshow: its own settings and where you stopped are remembered (slideshowmemory.ts). */
+export interface ShowPlace {
+  /** e.g. "f12", "top". */
+  key: string;
+  name: string;
+}
 
 /** A big title over a dark backdrop before the first item (e.g. a memory). */
 export interface TitleCard {
@@ -69,6 +85,8 @@ export function Viewer(props: {
   speedRound?: boolean;
   /** The slideshow is about this person (folder id): "Line up faces" uses their face. */
   person?: number | null;
+  /** The folder being shown: its own slideshow settings and where you stopped are remembered. */
+  place?: ShowPlace | null;
 }) {
   const current = useRef<PlayItem | null>(null);
   const player = useRef<PlayerHandle>(null);
@@ -93,18 +111,86 @@ export function Viewer(props: {
   const backRef = useRef(back);
   backRef.current = back;
   const viewerLayer = useLayer(!mini, { name: 'viewer', onBack: () => backRef.current() });
-  const [settings, setSettings] = useState<PlaybackSettings>(() => {
-    // Follow the library's sort order, unless a random order was chosen before.
-    const last = lastPlayback();
-    const random = ['shuffle', 'random', 'weighted'].includes(last.order);
-    const base = withSound(last);
-    return props.order && !random ? { ...base, order: props.order } : base;
-  });
+  const vault = !!props.nav.app.session;
+  const vaultKey = props.nav.app.session?.path ?? '';
+  const place = vault && !props.speedRound && props.place ? props.place : null;
+  // The library's sort order is followed, unless a random order was chosen.
+  const followSort = (s: PlaybackSettings) => (props.order && !RANDOM_ORDERS.includes(s.order) ? { ...s, order: props.order } : s);
+  /** The usual settings (folders without their own, and everywhere else). */
+  const usual = () => followSort(withSound(lastPlayback()));
+  const fromFolder = (own: Partial<PlaybackSettings>) => followSort(withSound(normalize(own)));
+  // ---- this folder's memory (begin) ----
+  const [store0] = useState(() => (place ? peekShows(vaultKey) : null));
+  const entry0 = place && store0 ? store0[place.key] : undefined;
+  const [settings, setSettings] = useState<PlaybackSettings>(() => (entry0?.settings ? fromFolder(entry0.settings) : usual()));
+  /** This folder has its own settings. */
+  const [own, setOwn] = useState(!!entry0?.settings);
+  /** Starting a folder's slideshow again: carry on where you stopped. */
+  const resumeFor = (e: FolderShow | undefined, order: Order) => (props.auto && !props.startKey ? resumeAt(e, sorted(props.items, order).map((x) => x.key), order) : null);
+  const [resumeKey, setResumeKey] = useState<string | null>(() => resumeFor(entry0, settings.order));
+  const [resumeChip, setResumeChip] = useState(resumeKey != null);
+  // A folder's slideshow waits (a moment) for its memory, so it can start where you stopped.
+  const [memReady, setMemReady] = useState(!place || store0 != null || !props.auto);
+  /** The settings as last saved or loaded (only real changes are saved). */
+  const savedKeep = useRef(sameKeep(settings));
+  const settingsNow = useRef(settings);
+  settingsNow.current = settings;
+  useEffect(() => {
+    if (!place || store0) return;
+    let live = true;
+    loadShows(vaultKey).then((st) => {
+      if (!live) return;
+      const e = st[place.key];
+      let s = settingsNow.current;
+      // (Unless you changed something meanwhile.)
+      if (e?.settings && sameKeep(s) === savedKeep.current) {
+        s = fromFolder(e.settings);
+        savedKeep.current = sameKeep(s);
+        setSettings(s);
+        setOwn(true);
+      }
+      const at = resumeFor(e, s.order);
+      setResumeKey(at);
+      setResumeChip(at != null);
+      setMemReady(true);
+    });
+    return () => {
+      live = false;
+    };
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!resumeChip) return;
+    const t = setTimeout(() => setResumeChip(false), 9000);
+    return () => clearTimeout(t);
+  }, [resumeChip]);
+  /** The slideshow moved on: remembered as where you stopped (forgotten at the end). */
+  const noteAt = (it: PlayItem | null) => {
+    if (!place) return;
+    if (!it) updateShow(vaultKey, place.key, { at: undefined });
+    else if (!RANDOM_ORDERS.includes(settingsNow.current.order)) updateShow(vaultKey, place.key, { at: it.key });
+  };
+  /** Back to the usual settings here (the folder's own are forgotten). */
+  const toUsual = () => {
+    if (!place) return;
+    if (saveTimer) clearTimeout(saveTimer);
+    saveTimer = null;
+    updateShow(vaultKey, place.key, { settings: undefined });
+    const s = { ...usual(), muted: settings.muted, volume: settings.volume };
+    savedKeep.current = sameKeep(s);
+    setSettings(s);
+    setOwn(false);
+    setPresetName(null);
+  };
+  /** This folder's settings become the usual ones too. */
+  const makeUsual = () => {
+    lastSettings = settings;
+    void saveViewerPrefs({ lastPlayback: withoutSound(settings) });
+  };
+  // ---- this folder's memory (end) ----
   const [presets, setPresets] = useState<Named<PlaybackSettings>[]>([]);
   const [presetName, setPresetName] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [clean, setClean] = useState(false);
-  const vault = !!props.nav.app.session;
 
   useEffect(() => {
     if (vault) api.listNamed<PlaybackSettings>('preset').then((list) => {
@@ -115,15 +201,21 @@ export function Viewer(props: {
     }).catch(() => {});
   }, [vault]);
   useEffect(() => {
-    lastSettings = settings;
-    // Remembered for next time (once the changes settle; sound has its own setting).
+    // Remembered for next time once the changes settle: for this folder (a folder's
+    // slideshow), else as the usual settings. Sound has its own setting.
+    const k = sameKeep(settings);
+    if (k === savedKeep.current) return;
+    savedKeep.current = k;
+    const keep = withoutSound(settings);
+    if (!place) lastSettings = settings;
+    else setOwn(true);
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       saveTimer = null;
-      const { muted: _m, volume: _v, ...keep } = settings;
-      void saveViewerPrefs({ lastPlayback: keep });
+      if (place) updateShow(vaultKey, place.key, { settings: keep });
+      else void saveViewerPrefs({ lastPlayback: keep });
     }, 500);
-  }, [settings]);
+  }, [settings]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => () => void setCleanFullscreen(false), []);
 
   const toggleClean = async () => {
@@ -251,10 +343,11 @@ export function Viewer(props: {
 
   return (
     <div ref={rootRef} className={`viewer${clean ? ' clean' : ''}${mini ? ' mini' : ''}${opening ? ' opening' : ''}`}>
-      <Player
+      {memReady && <Player
         ref={player}
         items={props.items}
-        startKey={props.startKey}
+        startKey={props.startKey ?? resumeKey ?? undefined}
+        onSlideshowAt={place ? noteAt : undefined}
         settings={settings}
         onSettings={(s) => { setSettings(s); setPresetName(null); }}
         autoSlideshow={props.auto}
@@ -290,14 +383,21 @@ export function Viewer(props: {
         topRight={
           <>
             {vault && <Dropdown className="btn btn-sm glass" label={`Preset: ${presetName ?? 'custom'} ▾`} items={presetItems} />}
-            <SettingsMenu s={settings} set={(p) => { setSettings({ ...settings, ...p }); setPresetName(null); }} />
+            <SettingsMenu s={settings} set={(p) => { setSettings({ ...settings, ...p }); setPresetName(null); }}
+              place={place ? { name: place.name, own, onUsual: toUsual, onMakeUsual: makeUsual } : undefined} />
           </>
         }
         onFavourite={vault ? (it, on) => setFavourite(it, on) : undefined}
         onWeight={vault ? (it, w, was) => setWeight(it, w, was) : undefined}
         onFullscreen={toggleClean}
         undoAll={vault && !mini}
-      />
+      />}
+      {resumeChip && resumeKey && !mini && !card && (
+        <div className="resume-chip" role="status">
+          Carried on where you stopped ·{' '}
+          <button type="button" className="link" onClick={() => { player.current?.restart(); setResumeChip(false); }}>Start from the beginning</button>
+        </div>
+      )}
       {card && props.titleCard && !mini && (
         <div className="title-card" style={{ animationDuration: `${TITLE_CARD_MS}ms` }} role="status">
           <h1>{props.titleCard.title}</h1>
@@ -317,15 +417,25 @@ export function Viewer(props: {
   );
 }
 
+/** A folder's slideshow: whether it has its own settings, and ways to change that. */
+export interface PlaceSettings {
+  name: string;
+  own: boolean;
+  /** Forget this folder's own settings (the usual ones apply again). */
+  onUsual: () => void;
+  /** Make this folder's settings the usual ones too. */
+  onMakeUsual: () => void;
+}
+
 /** Timing and display settings for the slideshow. */
-export function SettingsMenu({ s, set, compact }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; compact?: boolean }) {
+export function SettingsMenu({ s, set, compact, place }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; compact?: boolean; place?: PlaceSettings }) {
   const [open, setOpen] = useState(false);
   return (
     <>
       <button type="button" className={compact ? 'pbtn' : 'btn btn-sm glass'} onClick={() => setOpen(true)} aria-label="Slideshow settings" title="Slideshow settings">
         {compact ? '⚙' : 'Timing ▾'}
       </button>
-      {open && <PlaybackDialog s={s} set={set} onClose={() => setOpen(false)} />}
+      {open && <PlaybackDialog s={s} set={set} place={place} onClose={() => setOpen(false)} />}
     </>
   );
 }
@@ -333,7 +443,8 @@ export function SettingsMenu({ s, set, compact }: { s: PlaybackSettings; set: (p
 // Whether this computer can listen for beats (asked once).
 let beatsOk: Promise<boolean> | null = null;
 
-function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; onClose: () => void }) {
+function PlaybackDialog({ s, set, onClose, place }: { s: PlaybackSettings; set: (p: Partial<PlaybackSettings>) => void; onClose: () => void; place?: PlaceSettings }) {
+  const [madeUsual, setMadeUsual] = useState(false);
   const num = (v: string) => (v === '' ? 0 : Number(v));
   // A dialog (keylayers.ts): Esc closes it, keys here don't reach the viewer behind.
   const boxRef = useRef<HTMLDivElement>(null);
@@ -349,10 +460,28 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
       alive = false;
     };
   }, []);
-  return (
+  // On the page itself (a portal), like every other dialog: inside the viewer's top bar it
+  // faded away with the bar when the mouse stood still.
+  return createPortal(
     <div className="modal-back" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal" role="dialog" aria-modal="true" aria-label="Slideshow settings" ref={boxRef} tabIndex={-1}>
         <h2>Slideshow settings</h2>
+        {place && (
+          <div className="place-note">
+            {place.own ? (
+              <>
+                <span>These settings are kept for <b>{place.name}</b>.</span>
+                <span className="row" style={{ gap: 6 }}>
+                  <button type="button" className="btn btn-sm" onClick={place.onUsual} title="Forget this folder's own settings">Use the usual settings here</button>
+                  <button type="button" className="btn btn-sm" disabled={madeUsual} title="Other folders without their own settings use these too"
+                    onClick={() => { place.onMakeUsual(); setMadeUsual(true); }}>{madeUsual ? 'Now the usual settings ✓' : 'Make them the usual settings'}</button>
+                </span>
+              </>
+            ) : (
+              <span className="faint">Using the usual settings. Anything you change here is kept for <b>{place.name}</b> only.</span>
+            )}
+          </div>
+        )}
         <div className="form-grid">
           <label htmlFor="ps-img">Pictures stay for</label>
           <span className="row"><input id="ps-img" className="input small" type="number" min={0.1} step="any" value={s.imageSeconds}
@@ -460,6 +589,7 @@ function PlaybackDialog({ s, set, onClose }: { s: PlaybackSettings; set: (p: Par
           <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

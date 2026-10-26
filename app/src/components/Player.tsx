@@ -79,6 +79,8 @@ export interface PlayerHandle {
   toggleMute: () => void;
   /** Where the current picture / video is drawn on screen (null if unknown). */
   mediaRect: () => Box | null;
+  /** Back to the first item of the order. */
+  restart: () => void;
 }
 
 export interface PlayerProps {
@@ -117,6 +119,8 @@ export interface PlayerProps {
   /** The item's folder for the info panel (e.g. its name, as a link). */
   folderOf?: (item: PlayItem) => React.ReactNode;
   onCurrent?: (item: PlayItem | null) => void;
+  /** While the slideshow runs: each item it shows; null when it has reached the end (repeat off). */
+  onSlideshowAt?: (item: PlayItem | null) => void;
   /** Shrink into the mini player (button and M). */
   onMinimize?: () => void;
   /** Shown as the small floating mini player, with its own little controls. */
@@ -253,6 +257,11 @@ export function Player(props: PlayerProps) {
   }, [s.order, s.repeat]);
 
   useEffect(() => props.onCurrent?.(item), [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const slideshowAt = useRef(props.onSlideshowAt);
+  slideshowAt.current = props.onSlideshowAt;
+  useEffect(() => {
+    if (slideshow && item) slideshowAt.current?.(item);
+  }, [item?.key, slideshow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new item starts unzoomed, without a loop.
   useEffect(() => {
@@ -329,6 +338,7 @@ export function Player(props: PlayerProps) {
     if (n === null) {
       // End of the list with repeat off.
       setSlideshow(false);
+      if (auto) slideshowAt.current?.(null);
       return;
     }
     beatMark.current();
@@ -1453,6 +1463,14 @@ export function Player(props: PlayerProps) {
     next: () => go('next'),
     prev: () => go('prev'),
     toggleMute: () => set({ muted: !s.muted }),
+    restart: () => {
+      const p = listRef.current;
+      const first = p?.first();
+      if (!p || !first) return;
+      travel.current = 'next';
+      setFailed(false);
+      setCur(first);
+    },
     mediaRect: () => {
       const st = stageRef.current?.getBoundingClientRect();
       if (!st || !drawn) return null;
