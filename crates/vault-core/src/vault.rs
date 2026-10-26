@@ -1390,21 +1390,37 @@ impl Vault {
     /// one is older than `min_gap` (the app saves after every change, and ten
     /// backups a few seconds apart would be little use).
     pub fn save_db_spaced(&self, sqlite_bytes: &[u8], min_gap: std::time::Duration) -> Result<()> {
+        self.save_db_with(sqlite_bytes, Some(min_gap))
+    }
+
+    /// Like [`Vault::save_db_spaced`]; `None` makes no backup copy this time
+    /// (the app does that when the drive is nearly full). A backup copy that
+    /// can't be made is never left half-written, and doesn't stop the save.
+    pub fn save_db_with(&self, sqlite_bytes: &[u8], min_gap: Option<std::time::Duration>) -> Result<()> {
         self.require_write()?;
         // The database points into the packs, so they must be on disk first.
         self.packs.sync()?;
         let current = self.root.join(DB_FILE);
-        let backups = self.root.join(BACKUP_DIR);
-        fs::create_dir_all(&backups)?;
-        let newest_ms = self
-            .db_backups()?
-            .last()
-            .and_then(|p| p.file_name()?.to_str()?.strip_prefix("meta-")?.strip_suffix(".db.enc")?.parse::<u128>().ok());
-        let due = newest_ms.is_none_or(|ms| now_millis().saturating_sub(ms) >= min_gap.as_millis());
-        if current.exists() && due {
-            let name = format!("meta-{:015}.db.enc", now_millis());
-            fs::copy(&current, backups.join(name))?;
-            self.prune_db_backups()?;
+        if let Some(min_gap) = min_gap {
+            let backups = self.root.join(BACKUP_DIR);
+            fs::create_dir_all(&backups)?;
+            let newest_ms = self
+                .db_backups()?
+                .last()
+                .and_then(|p| p.file_name()?.to_str()?.strip_prefix("meta-")?.strip_suffix(".db.enc")?.parse::<u128>().ok());
+            let due = newest_ms.is_none_or(|ms| now_millis().saturating_sub(ms) >= min_gap.as_millis());
+            if current.exists() && due {
+                let name = format!("meta-{:015}.db.enc", now_millis());
+                // Copied under another name first, so a failed copy (a full
+                // drive) never looks like a backup.
+                let tmp = backups.join(format!("{name}.part"));
+                match fs::copy(&current, &tmp).and_then(|_| fs::rename(&tmp, backups.join(&name))) {
+                    Ok(()) => self.prune_db_backups()?,
+                    Err(_) => {
+                        let _ = fs::remove_file(&tmp);
+                    }
+                }
+            }
         }
         self.write_object_at(ObjectKind::Database, DB_OBJECT_ID, sqlite_bytes)?;
         Ok(())

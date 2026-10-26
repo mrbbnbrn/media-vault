@@ -338,11 +338,31 @@ struct Ctx<'a> {
     last_emit: Instant,
     last_save: Instant,
     progress: &'a mut dyn FnMut(&Progress),
+    /// The vault's drive is full: the import stops (with one message).
+    full: bool,
 }
+
+/// What an import says when the vault's drive fills up.
+const FULL_NAME: &str = "Drive full";
+const FULL_WHY: &str = "The vault's drive is full, so the import stopped here. Free up some space there and import the rest again (files already added stay).";
 
 impl Ctx<'_> {
     fn stopped(&self) -> bool {
-        self.cancel.load(Ordering::SeqCst) || self.s.is_closed()
+        self.full || self.cancel.load(Ordering::SeqCst) || self.s.is_closed()
+    }
+
+    /// A failure because the drive is full? (Then it is said once and the import stops.)
+    fn note_full(&mut self, e: &str) -> bool {
+        if self.full {
+            return true;
+        }
+        let root = self.s.vault().root().to_path_buf();
+        if crate::diskspace::is_full_error(e) || !crate::diskspace::has_room(&root, 0, 16 << 20) {
+            self.full = true;
+            self.report.failed.push((FULL_NAME.into(), FULL_WHY.into()));
+            return true;
+        }
+        false
     }
 
     fn emit(&mut self, current: &str, force: bool) {
@@ -493,6 +513,7 @@ fn record(ctx: &mut Ctx, name: &str, r: Result<Added, String>) {
         Ok(Added::New) => ctx.report.imported += 1,
         Ok(Added::Duplicate) => ctx.report.duplicates += 1,
         Err(_) if ctx.stopped() => {}
+        Err(e) if ctx.note_full(&e) => {}
         Err(e) => ctx.report.failed.push((name.to_string(), e)),
     }
     ctx.done += 1;
@@ -834,7 +855,9 @@ fn import_archive(
         record(ctx, &name, r);
         Ok(true)
     });
-    if let Some(f) = first_failure {
+    if ctx.full {
+        // Already said once, for the whole import.
+    } else if let Some(f) = first_failure {
         let msg = if password.is_some() && ctx.report.imported == 0 {
             format!("stopped: {f} (is the password right?)")
         } else {
@@ -873,13 +896,25 @@ pub fn run(
         last_emit: Instant::now() - Duration::from_secs(1),
         last_save: Instant::now(),
         progress,
+        full: false,
     };
-    // Count first so the progress bar is honest.
+    // Count first so the progress bar is honest (and see how much room it needs).
+    let size_of = |p: &Path| std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let mut need: u64 = 0;
     for src in &sources {
         ctx.total += match src {
-            Source::File(_) => 1,
-            Source::Dir(d) => walk_files(d).len(),
+            Source::File(p) => {
+                need += size_of(p);
+                1
+            }
+            Source::Dir(d) => {
+                let files = walk_files(d);
+                need += files.iter().filter(|f| kind_by_ext(&f.to_string_lossy()).is_some()).map(|f| size_of(f)).sum::<u64>();
+                files.len()
+            }
             Source::Archive { first, parts } => {
+                // Packed files are usually about their archive's size (pictures and videos don't shrink).
+                need += parts.iter().map(|p| size_of(p)).sum::<u64>();
                 let i = archive_info(first, parts);
                 if i.needs_password && i.media == 0 {
                     open_archive(parts, job.password.as_deref())
@@ -890,6 +925,21 @@ pub fn run(
                 }
             }
         };
+    }
+    // Not enough room for it all: one clear message before anything is added.
+    let root = s.vault().root().to_path_buf();
+    if let Some(free) = crate::diskspace::free_bytes(&root)
+        && free < need.saturating_add(64 << 20)
+    {
+        ctx.report.failed.push((
+            FULL_NAME.into(),
+            format!(
+                "There isn't enough free space on the vault's drive for this import: it needs about {}, and {} is free. Free up some space there, or import fewer files at a time.",
+                crate::diskspace::size_text(need),
+                crate::diskspace::size_text(free)
+            ),
+        ));
+        ctx.full = true;
     }
     ctx.emit("", true);
     let mut loose: Vec<FileJob> = Vec::new();
@@ -1150,6 +1200,31 @@ mod tests {
         let r = run(&s, &job(loose, None), &cancel, &mut |_| {});
         assert_eq!(r.imported, 6);
         assert_eq!(names(&s, None), (0..6).map(|i| format!("loose{i}.png")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn a_full_drive_stops_an_import_with_one_message() {
+        let _turn = crate::diskspace::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let files: Vec<String> = (0..5)
+            .map(|i| {
+                let p = t.path().join(format!("p{i}.jpg"));
+                fs::write(&p, vec![i as u8; 50_000]).unwrap();
+                p.display().to_string()
+            })
+            .collect();
+        let root = s.vault().root().to_path_buf();
+        crate::diskspace::set_test_free(&root, Some(10 << 20));
+        let r = run(&s, &job(files.clone(), None), &AtomicBool::new(false), &mut |_| {});
+        crate::diskspace::set_test_free(&root, None);
+        assert_eq!(r.imported, 0);
+        assert_eq!(r.failed.len(), 1, "{:?}", r.failed);
+        assert_eq!(r.failed[0].0, FULL_NAME);
+        assert!(r.failed[0].1.contains("isn't enough free space"));
+        // With room it goes in.
+        let r = run(&s, &job(files, None), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((r.imported, r.failed.len()), (5, 0));
     }
 
     fn make_7z(path: &Path, password: Option<&str>, encrypt_names: bool, files: &[(&str, &[u8])]) {

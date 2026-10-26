@@ -70,6 +70,7 @@ mod similar;
 mod sketch;
 mod storage;
 mod throttle;
+mod diskspace; // free space on the vault's drive (one clear message when it is full)
 mod util; // small helpers shared by many modules
 mod userbusy; // background work waits while you use the window
 mod diaglog; // diagnostics.log: steps and sizes only, written straight to disk

@@ -336,8 +336,20 @@ impl Session {
                 }
             }
         };
-        // A backup copy at most every 10 minutes (saving happens after every change).
-        self.vault().save_db_spaced(&bytes, Duration::from_secs(600)).map_err(|e| {
+        // A full drive: say so plainly (the library stays in memory, nothing is lost yet).
+        let root = self.vault().root().to_path_buf();
+        let need = bytes.len() as u64;
+        if !crate::diskspace::has_room(&root, need, 8 << 20) {
+            restore_first();
+            return Err(format!(
+                "The vault's drive is full, so the library couldn't be saved. Free up at least {} there; your changes are kept while the app stays open.",
+                crate::diskspace::size_text(need + (8 << 20))
+            ));
+        }
+        // A backup copy at most every 10 minutes (saving happens after every
+        // change); none while space is short (the save itself comes first).
+        let backup = crate::diskspace::has_room(&root, need * 2, 64 << 20).then_some(Duration::from_secs(600));
+        self.vault().save_db_with(&bytes, backup).map_err(|e| {
             restore_first();
             format!("Couldn't save the library: {}", friendly(e))
         })
@@ -574,6 +586,30 @@ mod tests {
         let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
         let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Thumbs'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn a_full_drive_keeps_changes_and_makes_no_backup() {
+        let _turn = crate::diskspace::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        let backups = |s: &Session| s.vault().db_backups().unwrap().len();
+        let before = backups(&s);
+        s.mark_dirty();
+        crate::diskspace::set_test_free(t.path(), Some(1000));
+        let err = s.save().unwrap_err();
+        assert!(err.contains("drive is full"), "{err}");
+        assert!(s.has_user_changes(), "still unsaved");
+        // Room for the library but not for a backup copy as well: saved, no copy.
+        let need = vault_core::db::serialize(&s.db()).unwrap().len() as u64;
+        crate::diskspace::set_test_free(t.path(), Some(need + (9 << 20)));
+        s.save().unwrap();
+        crate::diskspace::set_test_free(t.path(), None);
+        assert!(!s.is_dirty());
+        assert_eq!(backups(&s), before);
+        let dir = s.vault().root().join("meta-backups");
+        let parts = std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".part")).count()).unwrap_or(0);
+        assert_eq!(parts, 0, "no half-made copy is left");
     }
 
     #[test]
