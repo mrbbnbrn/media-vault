@@ -3,6 +3,7 @@
 // (double-click maximises), and the minimise / maximise / close buttons.
 // The OS window title always stays "Media Vault".
 
+import { ActivityRing } from './ActivityRing';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri } from '../api';
@@ -44,7 +45,7 @@ const win = (fn: (w: ReturnType<typeof getCurrentWindow>) => Promise<unknown>) =
   if (inTauri) fn(getCurrentWindow()).catch(() => {});
 };
 
-export function TitleBar({ tabs, onTab, onLock, closeOnly }: {
+export function TitleBar({ tabs, onTab, onLock, closeOnly, jobs }: {
   /** Tabs to show (null on the start and unlock screens). */
   tabs: LibraryTabs | null;
   /** A tab was chosen (the app shows the library if it was elsewhere). */
@@ -53,6 +54,8 @@ export function TitleBar({ tabs, onTab, onLock, closeOnly }: {
   onLock?: () => void;
   /** The vault has no password: the mark closes it (back to the vault list) instead of locking it. */
   closeOnly?: boolean;
+  /** With a vault open: the background-jobs ring (and whether a long job tells you when it's done). */
+  jobs?: { notify: boolean };
 }) {
   const max = useMaximized();
   return (
@@ -66,6 +69,7 @@ export function TitleBar({ tabs, onTab, onLock, closeOnly }: {
       {/* lock from the title bar (end) */}
       {tabs && <TabStrip tabs={tabs} onTab={onTab} />}
       <div className="wt-drag" data-tauri-drag-region />
+      {jobs && <ActivityRing titlebar notify={jobs.notify} />}
       <div className="wt-caption">
         <button type="button" className="wt-cap" aria-label="Minimise" title="Minimise" tabIndex={-1} onClick={() => win((w) => w.minimize())}>
           <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10" stroke="currentColor" strokeWidth="1" /></svg>

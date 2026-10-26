@@ -1853,6 +1853,12 @@ async fn faces_delete_folder(state: State<'_, Shared>, folder: i64) -> Result<us
     edit_db(state.inner(), move |c| faces::delete_folder_faces(c, folder)).await
 }
 
+/// "Delete face data…" for a selection of items.
+#[tauri::command]
+async fn faces_delete_items(state: State<'_, Shared>, ids: Vec<i64>) -> Result<usize, String> {
+    edit_db(state.inner(), move |c| faces::delete_item_faces(c, &ids)).await
+}
+
 #[tauri::command]
 async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces::ScanTask>, String> {
     // Pictures the native analysis pass reads are left to it (analyse.rs).
@@ -2690,6 +2696,7 @@ pub fn run() {
             faces_off_folders,
             faces_stop,
             faces_delete_folder,
+            faces_delete_items,
             faces_matches,
             faces_unsure,
             faces_of_many,

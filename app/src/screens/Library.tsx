@@ -38,7 +38,6 @@ import { maybeDragOut, lastDragOutError } from '../dragout';
 import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } from '../viewerflip';
 import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
-import { ActivityRing } from '../components/ActivityRing';
 import { CoverImg, leaveCard, setHoveredCard, useCardHovered, useFolderSamples, useHoverCycle } from '../components/CoverImg';
 import { kickFaceScanner, noteFaceProgress } from '../ml/facescan';
 import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
@@ -1525,7 +1524,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
       sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])], [], () => setDialog({ t: 'moveFolder', folder: f })) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
-    { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
+    { label: 'Move to trash…', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
   folderMenuRef.current = folderMenu;
 
@@ -2206,7 +2205,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       { id: 'export', group: 'Share and export', label: 'Export decrypted…', barLabel: 'Export…', icon: <ExportIcon />, title: 'Write unencrypted copies to a folder', bar: true,
         run: oneFolder ? () => setDialog({ t: 'export', request: { folder: oneFolder.id }, what })
           : itemsOnly ? () => setDialog({ t: 'export', request: { ids }, what }) : onAll((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
-      { id: 'delete', label: many ? `Delete ${what}…` : itemsOnly ? 'Delete' : 'Delete…', hint: itemsOnly ? 'Delete · to the trash' : 'Delete', barLabel: 'Delete', icon: <TrashIcon />,
+      { id: 'delete', label: itemsOnly ? 'Move to trash' : 'Move to trash…', hint: 'Delete', barLabel: 'Move to trash', icon: <TrashIcon />,
         danger: true, sepBefore: true, bar: 'pinned', title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
         run: itemsOnly ? () => failed(trashItems(ids)) : () => setDialog({ t: 'deleteMany', folders: fs, items: ids }) },
     ];
@@ -2682,7 +2681,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </aside>
         {/* Its own strip under the folder list, so it never covers a folder. */}
         <div className={`side-foot${rail ? ' rail' : ''}`}>
-          <ActivityRing rail={rail} notify={cfg.notifyDone !== false} />
         </div>
         </div>
 
@@ -3057,7 +3055,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onClose={() => setDialog(null)} onPick={(f) => moveFolder(dialog.folder, f)} />
       )}
       {dialog?.t === 'deleteFolder' && (
-        <ConfirmDialog title={`Delete “${dialog.folder.name}”?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+        <ConfirmDialog title={`Move “${dialog.folder.name}” to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
           onConfirm={() => trashFolder(dialog.folder)}>
           The folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside go to the trash.
           You can restore them from there for 30 days, or press Ctrl+Z right away. Your original files outside the vault are not touched.
@@ -3144,7 +3142,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           dialog.items.length ? plural(dialog.items.length, 'selected item') : '',
         ].filter(Boolean);
         return (
-          <ConfirmDialog title={`Delete ${parts.join(' and ')}?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+          <ConfirmDialog title={`Move ${parts.join(' and ')} to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
             onConfirm={() => askTrash(dialog.folders, dialog.items)}>
             {dialog.folders.length > 0 && <>{dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}{dialog.folders.length > 6 ? ' …' : ''}. </>}
             Everything goes to the trash, where you can restore it for 30 days, or press Ctrl+Z right away.

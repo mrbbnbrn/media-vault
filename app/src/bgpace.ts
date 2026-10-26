@@ -9,6 +9,26 @@ import { onBusyChange, userBusy } from './calm';
 
 let videoPlaying = 0;
 
+// "Pause background work" (the jobs ring): every background loop waits, and so
+// does the backend's analysis, until it is switched back on. Jobs you started
+// (imports, exports…) are not affected; they have their own Stop.
+let pausedAll = false;
+const pauseSubs = new Set<() => void>();
+export const backgroundPaused = () => pausedAll;
+export function setBackgroundPaused(on: boolean) {
+  if (pausedAll === on) return;
+  pausedAll = on;
+  pauseSubs.forEach((f) => f());
+  told = null;
+  tellBackend();
+}
+export function onBackgroundPause(f: () => void) {
+  pauseSubs.add(f);
+  return () => {
+    pauseSubs.delete(f);
+  };
+}
+
 /** A video is playing in the viewer (or stopped): background work slows down meanwhile. */
 export function setVideoPlaying(on: boolean) {
   videoPlaying = Math.max(0, videoPlaying + (on ? 1 : -1));
@@ -27,7 +47,7 @@ const idle = (timeout: number) =>
  * (or `stopped()`), after a breather while a video plays, in an idle moment.
  */
 export async function giveWay(stopped: () => boolean = () => false): Promise<void> {
-  while (!stopped() && userBusy()) await new Promise((r) => setTimeout(r, 250));
+  while (!stopped() && (userBusy() || pausedAll)) await new Promise((r) => setTimeout(r, 250));
   if (stopped()) return;
   if (videoPlaying > 0) await new Promise((r) => setTimeout(r, 400));
   await idle(videoPlaying > 0 ? 1000 : 300);
@@ -42,10 +62,10 @@ function tellBackend() {
   if (!inTauri) return;
   if (tellTimer) return;
   // Busy is said at once; calm a moment later (a short pause between clicks isn't calm yet).
-  const busy = userBusy() || videoPlaying > 0;
+  const busy = userBusy() || videoPlaying > 0 || pausedAll;
   tellTimer = setTimeout(() => {
     tellTimer = null;
-    const now = userBusy() || videoPlaying > 0;
+    const now = userBusy() || videoPlaying > 0 || pausedAll;
     if (now === told) return;
     told = now;
     api.setUserBusy(now, videoPlaying > 0).catch(() => {});

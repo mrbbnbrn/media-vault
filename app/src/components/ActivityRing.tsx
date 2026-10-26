@@ -1,21 +1,34 @@
-// The background-jobs ring: sits at the bottom of the sidebar, only while
-// something runs, and fades away a few seconds after everything finished.
-// Click it for a small list of the jobs with their bars and a way to stop
-// each one that can be stopped. It never covers the grid unless opened, and
-// the open list closes on any click elsewhere (that click still goes through).
+// The background-jobs ring: in the title bar, so it shows on every screen
+// (library, viewer, settings…) while something runs, and fades to a faint
+// ring once everything finished. Click it for a small list of the jobs with
+// their bars and a way to stop each one that can be stopped, "Pause background
+// work" (thumbnails, previews, faces, smart search… wait until resumed), and
+// what finished recently with its result. The open list closes on any click
+// elsewhere (that click still goes through).
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { inTauri } from '../api';
+import { backgroundPaused, onBackgroundPause, setBackgroundPaused } from '../bgpace';
 import {
-  countText, demoJobs, formatLeft, jobFraction, listenForJobs, overall, secondsLeft, setNotifyWhenDone, useJobs, visibleJobs, type Job,
+  countText, demoJobs, formatLeft, jobFraction, listenForJobs, overall, secondsLeft, setNotifyWhenDone, useJobs, useRecentJobs, visibleJobs, type DoneJob, type Job,
 } from '../jobs';
 import { CloseIcon, PauseIcon } from './Icons';
 import { useLayer } from '../keylayers';
 
 let demoStarted = false;
 
-export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
+/** The jobs "Pause background work" holds (they wait between items, bgpace.ts). */
+const BACKGROUND = /^(thumbs|previews|fingerprints|sharpen|thumbWebp|faces|smart|prepare)/;
+const usePaused = () => useSyncExternalStore(onBackgroundPause, backgroundPaused);
+const ago = (at: number, now: number) => {
+  const m = Math.round((now - at) / 60_000);
+  return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : `${Math.round(m / 60)} h ago`;
+};
+
+export function ActivityRing(props: { notify?: boolean; rail?: boolean; titlebar?: boolean }) {
   const all = useJobs();
+  const recent = useRecentJobs();
+  const paused = usePaused();
   const [now, setNow] = useState(() => Date.now());
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
@@ -45,16 +58,21 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
   const frac = allDone ? 1 : overall(running);
   const unknown = running.length > 0 && running.every((j) => jobFraction(j) == null);
 
+  // In the title bar it stays (faint) while there is something to look back at.
+  const idle = !shown.length;
+  const keep = props.titlebar && (recent.length > 0 || paused);
   useEffect(() => {
-    if (!shown.length && open) setOpen(false);
-  }, [shown.length, open]);
+    if (idle && !keep && open) setOpen(false);
+  }, [idle, keep, open]);
 
   // Place the list above the ring (fixed, so the sidebar's scrolling can't clip it).
   useLayoutEffect(() => {
     if (!open || !btn.current) return;
     const place = () => {
       const r = btn.current!.getBoundingClientRect();
-      setAt({ left: Math.max(8, r.left - 4), bottom: window.innerHeight - r.top + 10 });
+      // Title bar: below the ring, kept inside the window; sidebar: above it.
+      if (props.titlebar) setAt({ left: Math.max(8, Math.min(window.innerWidth - 328, r.left - 140)), bottom: -(r.bottom + 8) });
+      else setAt({ left: Math.max(8, r.left - 4), bottom: window.innerHeight - r.top + 10 });
     };
     place();
     window.addEventListener('resize', place);
@@ -84,20 +102,20 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
     };
   }, [open]);
 
-  if (!shown.length) return null;
+  if (idle && !keep) return null;
 
   const pct = Math.round(frac * 100);
   const lead = running[0] ?? shown[shown.length - 1];
-  const caption = allDone ? (failed ? 'Something stopped' : 'All done') : running.length > 1 ? `${running.length} jobs running` : lead.label;
-  const label = allDone ? caption : `Background jobs: ${running.length} running${unknown ? '' : `, ${pct}%`}`;
+  const caption = idle ? (paused ? 'Background work paused' : 'Nothing running') : allDone ? (failed ? 'Something stopped' : 'All done') : running.length > 1 ? `${running.length} jobs running` : lead.label;
+  const label = idle || allDone ? `Background jobs: ${caption}` : `Background jobs: ${running.length} running${unknown ? '' : `, ${pct}%`}${paused ? ' (background work paused)' : ''}`;
 
   return (
-    <div className={`jobring-wrap${props.rail ? ' rail' : ''}${allDone ? ' fading' : ''}`}>
-      <button ref={btn} type="button" className={`jobring${open ? ' open' : ''}`} aria-label={label} aria-expanded={open}
-        title={props.rail ? `${caption}${allDone || unknown ? '' : ` · ${pct}%`}` : undefined} onClick={() => setOpen((o) => !o)}>
-        <Ring frac={frac} unknown={unknown} done={allDone} failed={failed} />
+    <div className={`jobring-wrap${props.rail || props.titlebar ? ' rail' : ''}${props.titlebar ? ' in-titlebar' : ''}${allDone && !props.titlebar ? ' fading' : ''}${idle ? ' idle' : ''}`}>
+      <button ref={btn} type="button" className={`jobring${open ? ' open' : ''}${paused ? ' paused' : ''}`} aria-label={label} aria-expanded={open} tabIndex={props.titlebar ? -1 : undefined}
+        title={props.rail || props.titlebar ? `${caption}${allDone || unknown || idle ? '' : ` · ${pct}%`}` : undefined} onClick={() => setOpen((o) => !o)}>
+        <Ring frac={idle ? 1 : frac} unknown={unknown && !paused} done={allDone || (idle && !paused)} failed={failed && !idle} />
         {running.length > 1 && <span className="jobring-n" aria-hidden="true">{running.length}</span>}
-        {!props.rail && (
+        {!props.rail && !props.titlebar && (
           <span className="jobring-text">
             <span className="ellipsis">{caption}</span>
             {!allDone && !unknown && <span className="jobring-pct">{pct}%</span>}
@@ -105,22 +123,42 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean }) {
         )}
       </button>
       {open && at && (
-        <div ref={pop} className="jobpop" role="dialog" aria-label="Background jobs" style={{ left: at.left, bottom: at.bottom }}>
+        <div ref={pop} className="jobpop" role="dialog" aria-label="Background jobs" style={at.bottom < 0 ? { left: at.left, top: -at.bottom } : { left: at.left, bottom: at.bottom }}>
           <div className="jobpop-head">
             <b>Background jobs</b>
-            <span className="faint">{running.length ? `${running.length} running` : 'all finished'}</span>
+            <span className="faint">{running.length ? `${running.length} running` : shown.length ? 'all finished' : 'nothing running'}</span>
           </div>
-          {shown.map((j) => <JobRow key={j.id} j={j} now={now} />)}
+          <button type="button" className={`btn btn-sm${paused ? ' accent-soft' : ''}`} aria-pressed={paused}
+            title="Thumbnails, preview clips, face scanning, smart-search analysis, fingerprints and 3D preparing wait until you resume. Imports, exports and other jobs you started keep going."
+            onClick={() => setBackgroundPaused(!paused)}>
+            <PauseIcon size={12} /> {paused ? 'Resume background work' : 'Pause background work'}
+          </button>
+          {shown.map((j) => <JobRow key={j.id} j={j} now={now} paused={paused} />)}
+          {recent.length > 0 && (
+            <div className="jobpop-recent">
+              <span className="faint">Recently finished</span>
+              {recent.map((d) => <RecentRow key={`${d.id}-${d.at}`} d={d} now={now} />)}
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-function JobRow({ j, now }: { j: Job; now: number }) {
+function RecentRow({ d, now }: { d: DoneJob; now: number }) {
+  return (
+    <div className={`jobrecent${d.failed ? ' failed' : ''}`}>
+      <span>{d.summary}</span>
+      <span className="faint mono">{ago(d.at, now)}</span>
+    </div>
+  );
+}
+
+function JobRow({ j, now, paused }: { j: Job; now: number; paused: boolean }) {
   const f = jobFraction(j);
-  const left = j.endedAt ? '' : formatLeft(secondsLeft(j, now));
-  const state = j.endedAt ? (j.failed ? 'Stopped' : 'Done') : countText(j);
+  const left = j.endedAt ? '' : paused && BACKGROUND.test(j.id) ? '' : formatLeft(secondsLeft(j, now));
+  const state = j.endedAt ? (j.failed ? 'Stopped' : 'Done') : paused && BACKGROUND.test(j.id) ? 'Paused' : countText(j);
   return (
     <div className={`jobrow${j.endedAt ? ' ended' : ''}${j.failed ? ' failed' : ''}`}>
       <div className="jobrow-top">

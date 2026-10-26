@@ -1294,7 +1294,20 @@ pub fn stop(conn: &Connection) -> R<usize> {
 pub fn delete_folder_faces(conn: &Connection, folder: i64) -> R<usize> {
     let inside = library::descendants(conn, &[folder])?;
     let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
-    let items = format!("SELECT id FROM media WHERE folder_id IN ({marks})");
+    delete_faces_of(conn, &format!("SELECT id FROM media WHERE folder_id IN ({marks})"))
+}
+
+/// "Delete face data…" for chosen items (a selection).
+pub fn delete_item_faces(conn: &Connection, ids: &[i64]) -> R<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let marks = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    delete_faces_of(conn, &format!("SELECT id FROM media WHERE id IN ({marks})"))
+}
+
+/// Forgets the faces of the items `items` (an SQL list of media ids) and marks them unscanned.
+fn delete_faces_of(conn: &Connection, items: &str) -> R<usize> {
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute(&format!("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id IN ({items}))"), []).map_err(e)?;
     tx.execute(

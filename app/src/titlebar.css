@@ -68,3 +68,14 @@ body.clean-fs .titlebar { display: none; }
 @keyframes wt-lock-thud { 0%, 40% { transform: scale(1); } 60% { transform: scale(0.88); } 100% { transform: scale(1); } }
 @media (prefers-reduced-motion: reduce) { .wt-shackle, .wt-lock.snap .wt-shackle, .wt-lock.snap svg { transition: none; animation: none; } }
 /* ---- lock from the title bar (end) ---- */
+/* The background-jobs ring in the title bar (ActivityRing). */
+.jobring-wrap.in-titlebar { padding: 0 4px; border-top: none; display: flex; align-items: center; animation: none; }
+.jobring-wrap.in-titlebar .jobring { width: 34px; min-height: 28px; height: 28px; }
+.jobring-wrap.in-titlebar.idle { opacity: 0.45; }
+.jobring-wrap.in-titlebar.idle:hover { opacity: 1; }
+.jobring-wrap.in-titlebar .jobring-n { left: 20px; bottom: 0; }
+.jobring.paused .jring-arc { stroke: var(--faint); }
+.jobpop-recent { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.jobrecent { display: flex; justify-content: space-between; gap: 10px; color: var(--text-2); }
+.jobrecent.failed > span:first-child { color: var(--danger); }
+.jobpop > .btn { align-self: flex-start; }

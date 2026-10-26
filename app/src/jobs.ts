@@ -40,6 +40,26 @@ export interface Job {
 
 // ---- the store -------------------------------------------------------------------------
 
+/** A job that finished, for "Recently finished" in the ring's list (this session, until locking). */
+export interface DoneJob {
+  id: string;
+  label: string;
+  summary: string;
+  failed: boolean;
+  at: number;
+}
+let recent: DoneJob[] = [];
+let recentSnap = recent;
+export function useRecentJobs(): DoneJob[] {
+  return useSyncExternalStore(
+    (f) => {
+      subs.add(f);
+      return () => subs.delete(f);
+    },
+    () => recentSnap,
+  );
+}
+
 let jobs: Job[] = [];
 const subs = new Set<() => void>();
 const emit = () => {
@@ -93,6 +113,11 @@ export function endJob(id: string, r: { failed?: boolean; summary?: string } = {
     j.fraction = 1;
   }
   j.cancel = undefined;
+  // Housekeeping (thumbnails…) only when it went wrong.
+  if (!j.quiet || j.failed) {
+    recent = [{ id: j.id, label: j.label, summary: r.summary ?? (j.failed ? `${j.label}: stopped` : `${j.label}: done`), failed: j.failed, at: j.endedAt }, ...recent].slice(0, 8);
+    recentSnap = recent;
+  }
   emit();
   if (r.failed) flashError();
   if (j.long && r.summary && j.endedAt - j.startedAt >= NOTIFY_AFTER_MS) notify(r.summary);
@@ -108,6 +133,8 @@ export function endJob(id: string, r: { failed?: boolean; summary?: string } = {
 /** Forget everything (the vault was locked). */
 export function clearJobs() {
   jobs = [];
+  recent = [];
+  recentSnap = recent;
   emit();
 }
 
