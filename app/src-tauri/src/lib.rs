@@ -2565,8 +2565,9 @@ pub fn run() {
         })
         .register_asynchronous_uri_scheme_protocol("vault", |ctx, req, responder| {
             let inner = ctx.app_handle().state::<Shared>().inner().clone();
-            std::thread::spawn(move || {
-                let s = inner.session.lock().unwrap().clone();
+            // A few worker threads answer them all (protocol::run).
+            protocol::run(move || {
+                let s = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 responder.respond(protocol::serve_vault(s.as_deref(), &req));
             });
         })
