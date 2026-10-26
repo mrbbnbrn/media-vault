@@ -15,6 +15,7 @@ import { NO_SUBJECT_PACK, subjectPack } from '../subject';
 import { Modal } from './Dialogs';
 import { InpaintModelChoice } from './InpaintModels';
 import { edgesStrength } from '../layers';
+import { openSettings } from '../settingslink';
 
 const CHOICES: MotionChoice[] = ['random', ...MOTION_SHAPES];
 
@@ -216,11 +217,13 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Subject model</span>
         <SubjectModelChoice />
 
-        {/* Which model works out the depth (speed tests are in Settings → 3D photos). */}
+        {/* Which model works out the depth (speed tests are in Settings → AI & 3D). */}
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Depth model</span>
         <DepthModelChoice />
       </div>
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
+      <div className="row" style={{ justifyContent: 'space-between' }}>
+        {/* Speed tests, saved depth maps and the rest: Settings → AI & 3D, the one page for all 3D settings. */}
+        <button type="button" className="link" onClick={() => { onClose(); openSettings('ai', 'settings-3d'); }}>More 3D settings…</button>
         <button type="button" className="btn btn-primary" onClick={onClose}>Done</button>
       </div>
     </Modal>,
