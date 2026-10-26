@@ -561,13 +561,26 @@ fn report_activity(state: State<'_, Shared>, kind: String) {
 
 // ---- library ---------------------------------------------------------------------
 
+/// Run `f` on the library, noting in diagnostics.log when the command
+/// waited long for it (another part of the app held it) or ran long.
+fn timed_db<F: FnOnce(&rusqlite::Connection) -> R, R>(s: &Session, f: F) -> R {
+    let t0 = Instant::now();
+    let db = s.db();
+    let waited = t0.elapsed();
+    let t1 = Instant::now();
+    let out = f(&db);
+    drop(db);
+    diaglog::library_time(diaglog::command_name::<F>(), waited, t1.elapsed());
+    out
+}
+
 /// Run a read-only library query off the UI thread.
 async fn read_db<T: Send + 'static>(
     inner: &Shared,
     f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let s = sess(inner)?;
-    blocking(move || f(&s.db())).await
+    blocking(move || timed_db(&s, f)).await
 }
 
 /// Run a library edit made by you; it is saved (encrypted) right away.
@@ -577,7 +590,7 @@ async fn edit_db<T: Send + 'static>(
 ) -> Result<T, String> {
     let s = sess(inner)?;
     blocking(move || {
-        let out = f(&s.db())?;
+        let out = timed_db(&s, f)?;
         s.mark_dirty();
         s.save_soon();
         Ok(out)
@@ -593,7 +606,7 @@ async fn edit_db_bg<T: Send + 'static>(
 ) -> Result<T, String> {
     let s = sess(inner)?;
     blocking(move || {
-        let out = f(&s.db())?;
+        let out = timed_db(&s, f)?;
         s.mark_dirty();
         Ok(out)
     })
@@ -609,7 +622,7 @@ async fn edit_db_derived<T: Send + 'static>(
 ) -> Result<T, String> {
     let s = sess(inner)?;
     blocking(move || {
-        let out = f(&s.db())?;
+        let out = timed_db(&s, f)?;
         s.mark_dirty_bg();
         Ok(out)
     })
