@@ -5,6 +5,7 @@
 // the museum, which stays loaded and holds still underneath: closing the
 // viewer is instant and you stand exactly where you were.
 
+import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useMemo, useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, thumbUrl, type FolderCard, type Item } from '../../api';
 import { fromItem } from '../../media';
@@ -98,10 +99,12 @@ export function MuseumHost({ nav }: { nav: Nav; view?: LibView }) {
       />
       {s.viewing != null && (
         <div className="museum-viewer">
-          <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
-            onBack={(last) => {
-              if (session) set({ ...session, viewing: null, returnTo: last?.itemId != null ? { id: last.itemId, n: Date.now() } : session.returnTo });
-            }} />
+          <ErrorBoundary name="the viewer" onError={() => { if (session) set({ ...session, viewing: null }); }}>
+            <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
+              onBack={(last) => {
+                if (session) set({ ...session, viewing: null, returnTo: last?.itemId != null ? { id: last.itemId, n: Date.now() } : session.returnTo });
+              }} />
+          </ErrorBoundary>
         </div>
       )}
     </Suspense>

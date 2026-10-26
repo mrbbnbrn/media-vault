@@ -25,6 +25,31 @@ function subscribe(f: () => void) {
   return () => subs.delete(f);
 }
 
+/** The settings as they are now (every change anywhere included). */
+export function currentConfig(): AppConfig | null {
+  return config;
+}
+
+/** The settings, drawn again when anything changes them. */
+export function useAppConfig(): AppConfig | null {
+  return useSyncExternalStore(subscribe, () => config);
+}
+
+let saving: Promise<unknown> = Promise.resolve();
+/**
+ * Change and save the settings, always starting from the latest ones (so a change in one
+ * place never writes back old values of another: Settings used to keep its own copy).
+ * Saves go one after another, so an older answer can't undo a newer change.
+ */
+export function saveAppConfig(change: (c: AppConfig) => AppConfig): Promise<AppConfig | null> {
+  if (!config) return Promise.resolve(null);
+  const next = change(config);
+  setPrefsConfig(next); // feels instant; the saved copy follows
+  const p = saving.then(() => api.saveConfig(currentConfig() ?? next));
+  saving = p.catch(() => {});
+  return p.then((saved) => saved);
+}
+
 /** Face boxes: remembered like every other viewer setting (read once when the settings first arrive). */
 let faceBoxesNow = false;
 let faceTick = 0;
@@ -67,10 +92,8 @@ export function unmuteVolume(volume: number): number {
 
 export async function saveViewerPrefs(patch: Partial<ViewerSettings>) {
   if (!config) return;
-  const next = { ...config, viewer: { ...viewerPrefs(), ...patch } };
-  setPrefsConfig(next); // feels instant; the saved copy follows
   try {
-    setPrefsConfig(await api.saveConfig(next));
+    await saveAppConfig((c) => ({ ...c, viewer: { ...viewerPrefs(), ...patch } }));
   } catch {
     /* keep the local change; it is saved with the next settings change */
   }

@@ -404,14 +404,18 @@ export function thumbMade(id: number) {
   listeners.forEach((l) => l(id));
 }
 
-const changed = new Set<() => void>();
+const changed = new Set<(filesReplaced: boolean) => void>();
 
-/** An item's stored file was replaced (a saved rotation): lists showing it load again. */
-export function noteItemsChanged() {
-  changed.forEach((f) => f());
+/**
+ * Items were added or changed: lists showing them load again. `filesReplaced`: an
+ * item's stored file itself was replaced (a saved rotation), so decoded copies of it
+ * are out of date too. A new item next to the old ones (a saved copy) replaces nothing.
+ */
+export function noteItemsChanged(filesReplaced = false) {
+  changed.forEach((f) => f(filesReplaced));
 }
 
-export function onItemsChanged(cb: () => void): () => void {
+export function onItemsChanged(cb: (filesReplaced: boolean) => void): () => void {
   changed.add(cb);
   return () => changed.delete(cb);
 }

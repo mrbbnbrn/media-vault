@@ -6,6 +6,7 @@
 // Also the "Open player" screen, which plays files and folders dropped from
 // Windows without any vault.
 
+import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
 import { api, inTauri, type FolderCard, type Named, type TagCount } from '../api';
@@ -348,6 +349,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     const alone = solo === i;
     if (p.source && p.items.length)
       return (
+        // A panel that fails while drawing shows a note instead of taking the whole window down.
+        <ErrorBoundary key={`${p.startKey}`} name="a multi-screen panel" fallback={<div className="muted" style={{ padding: 16 }}>This panel ran into a problem. Choose what to show again.</div>}>
         <Player
           ref={(h) => { handles.current[i] = h; }}
           items={p.items}
@@ -377,6 +380,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             </>
           }
         />
+        </ErrorBoundary>
       );
     if (shaped && !alone)
       return (
@@ -528,9 +532,11 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           )}
           {wallSolo && (
             <div className="wall-solo">
+              <ErrorBoundary name="the wall's viewer" onError={() => setWallSolo(null)}>
               <Player items={wall.items} startKey={wallSolo.key} settings={panels[0].settings} onSettings={(s) => update(0, { settings: s })}
                 keys activityId="wall-solo" onClose={() => setWallSolo(null)}
                 title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the wall</button>} />
+              </ErrorBoundary>
             </div>
           )}
         </div>

@@ -4,6 +4,7 @@
 // Faces are measured (for their points) and lined up a little ahead of
 // where you are; the playback simply waits when it catches up.
 
+import { NOTE_MS, useAutoDismiss } from '../../autodismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type PersonFace } from '../../api';
 import { bigEnough, lapseAt, lapseLength, slotMs, type LapseTiming } from '../../facecrops';
@@ -37,6 +38,7 @@ export default function FaceTimelapse(props: {
   const [pack, setPack] = useState(true);
   const [saving, setSaving] = useState<{ done: number; total: number } | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  useAutoDismiss(note, () => setNote(null), NOTE_MS);
 
   const canvas = useRef<HTMLCanvasElement>(null);
   const cache = useMemo(() => new AlignedCache(40), []);

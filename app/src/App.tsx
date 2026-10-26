@@ -2,16 +2,19 @@ import { watchWindowErrors } from './diagwatch';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { continueIfNeeded, listenForEncryption } from './encryptionjob';
-import { api, inTauri, onEvent, onLocked, type AppState, type LockReason } from './api';
+import { api, DEFAULT_LOOK, inTauri, onEvent, onLocked, type AppState, type LockReason } from './api';
 const inTauriNow = () => inTauri;
 import { applyAccent } from './theme';
-import { setPrefsConfig } from './prefs';
+import { requestLock, setLockAsker, startKeepOpen } from './keepopen';
+import { ConfirmDialog } from './components/Dialogs';
+import { saveAppConfig, setPrefsConfig } from './prefs';
 import { applyLook, setZoom, zoomKey } from './look';
 import { clearUndo } from './undo';
 import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
 import { beginStep, clearPerf, setModelLogSource, setPerfJobs, startPerfObservers } from './perf';
-import { jobList } from './jobs';
+import { clearJobs, jobList } from './jobs';
+import { clearTasks } from './tasks';
 import { clearFolderSamples } from './components/CoverImg';
 import { Start } from './screens/Start';
 import { CreateVault } from './screens/CreateVault';
@@ -109,6 +112,13 @@ export function App() {
   const [app, setApp] = useState<AppState | null>(null);
   const [screen, setScreen] = useState<Screen>({ name: 'start' });
   const [toast, setToast] = useState<string | null>(null);
+  /** "Lock anyway?": what would stop (keepopen.ts). */
+  const [lockAsk, setLockAsk] = useState<string[] | null>(null);
+  useEffect(() => {
+    startKeepOpen();
+    setLockAsker(setLockAsk);
+    return () => setLockAsker(null);
+  }, []);
   const [fatal, setFatal] = useState<string | null>(null);
   /** The viewer shrunk into the mini player (it keeps playing over the library). */
   const [mini, setMini] = useState<ViewerRoute | null>(null);
@@ -174,8 +184,7 @@ export function App() {
       setZoom(z);
       if (t) clearTimeout(t);
       t = setTimeout(() => {
-        const c = lookConfig.current;
-        if (c?.look) api.saveConfig({ ...c, look: { ...c.look, uiScale: z } }).then(() => refreshRef.current?.()).catch(() => {});
+        saveAppConfig((c) => ({ ...c, look: { ...DEFAULT_LOOK, ...(c.look ?? {}), uiScale: z } })).then(() => refreshRef.current?.()).catch(() => {});
       }, 600);
     };
     window.addEventListener('keydown', onKey);
@@ -245,6 +254,9 @@ export function App() {
       clearViewMemory();
       clearPerf();
       clearFolderSamples();
+      // Finished jobs' messages can name folders and people: they go with the vault.
+      clearJobs();
+      clearTasks();
       setToast(reason === 'manual' && !hadPassword.current ? 'Vault closed.' : LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });
@@ -283,8 +295,7 @@ export function App() {
   useEffect(() => setNativeOptions({ smart: smartIndex }), [smartIndex]);
   // "Pause" on the analysis in the jobs ring pauses smart-search analysing (resume in Settings).
   useEffect(() => setSmartPauser(() => {
-    const c = lookConfig.current;
-    if (c) void api.saveConfig({ ...c, smartIndex: false }).then(() => refreshRef.current?.()).catch(() => {});
+    void saveAppConfig((c) => ({ ...c, smartIndex: false })).then(() => refreshRef.current?.()).catch(() => {});
   }), []);
   // Small preview clips for smooth grids (can be turned off in Settings → Storage).
   const makePreviews = open && app?.config.makePreviews !== false;
@@ -343,7 +354,7 @@ export function App() {
     <>
     <TitleBar tabs={withTabs ? tabs : null} onTab={() => {
       if (screen.name !== 'library') go({ name: 'library' });
-    }} onLock={app.session ? () => { api.lock().catch(() => {}); } : undefined} closeOnly={app.session?.hasPassword === false} />
+    }} onLock={app.session ? () => requestLock() : undefined} closeOnly={app.session?.hasPassword === false} />
     <div className="app">
       {/* Light sharpening used after smoothing pictures (Settings → Viewer). */}
       <svg width="0" height="0" style={{ position: 'absolute' }} aria-hidden="true">
@@ -420,6 +431,12 @@ export function App() {
         <MultiScreen nav={nav} vault={false} onBack={() => setScreen(app.session ? { name: 'library' } : { name: 'start' })} />
       )}
       {perfOpen && <PerfPanel onClose={() => setPerfOpen(false)} />}
+      {lockAsk && (
+        <ConfirmDialog title="Lock while this is running?" confirm="Lock anyway" danger onClose={() => setLockAsk(null)}
+          onConfirm={() => api.lock().catch(() => {})}>
+          {lockAsk.join(', ')} {lockAsk.length === 1 ? 'is' : 'are'} still running and will stop when the vault locks.
+        </ConfirmDialog>
+      )}
       {toast && (
         <div className="toast" role="status">
           {toast}

@@ -78,6 +78,11 @@ export const MediaGrid = memo(function MediaGrid(props: {
   onDragStart?: (e: React.PointerEvent, ids: number[]) => void;
   /** Space between tiles (re-layout when it changes). */
   gap?: number;
+  /**
+   * Filled with a function giving the items whose tiles meet a rectangle (window
+   * coordinates), from the layout itself: tiles not drawn right now (scrolled away) count too.
+   */
+  hitTest?: React.MutableRefObject<((r: { left: number; top: number; right: number; bottom: number }) => number[]) | null>;
   /** The overview strip beside the scrollbar (long grids only). */
   minimap?: boolean;
   /** What the scroll preview says at an item (month, first letters…); groups' labels win. */
@@ -191,6 +196,23 @@ export const MediaGrid = memo(function MediaGrid(props: {
   // Always the latest layout: the key handler below keeps the first render's copy of this function.
   const layoutNow = useRef(layout);
   layoutNow.current = layout;
+  const itemsNow = useRef(props.items);
+  itemsNow.current = props.items;
+  if (props.hitTest) {
+    props.hitTest.current = (r) => {
+      const el = ref.current;
+      if (!el) return [];
+      const g = el.getBoundingClientRect();
+      const out: number[] = [];
+      layoutNow.current.boxes.forEach((b, i) => {
+        if (!b) return;
+        const left = g.left + b.x;
+        const top = g.top + b.y;
+        if (left + b.w > r.left && left < r.right && top + b.h > r.top && top < r.bottom) out.push(itemsNow.current[i].id);
+      });
+      return out;
+    };
+  }
   const bringIntoView = (i: number, centre = false) => {
     const sc = props.scroller.current;
     const el = ref.current;

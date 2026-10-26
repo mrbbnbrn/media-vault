@@ -11,7 +11,8 @@ import { Player, type PlayerHandle } from '../components/Player';
 import { lazyPart } from '../lazypart';
 import { drawnRect, type Box } from '../flip';
 import { animOn, copyImage, growGhost, OPEN_MS, snapshotViewer, sourceElement, viewerMediaReady } from '../viewerflip';
-import type { PlayItem } from '../media';
+import { noteItemsChanged, type PlayItem } from '../media';
+import { pushUndo } from '../undo';
 import type { Order } from '../playlist';
 import { DEFAULT_PLAYBACK, depthToCarryOver, normalize, type PlaybackSettings } from '../presets';
 import { TRANSITIONS } from '../transitions';
@@ -225,6 +226,29 @@ export function Viewer(props: {
     );
   }
 
+  // Favourite and weight from the viewer: saved, undoable with Ctrl+Z (here and in the
+  // library), and the library shows them when the viewer closes (noteItemsChanged).
+  const setFavourite = async (it: PlayItem, on: boolean) => {
+    if (it.itemId == null) return;
+    const id = it.itemId;
+    await api.setFavourite([id], on);
+    noteItemsChanged();
+    pushUndo(on ? `Added “${it.name}” to favourites` : `Removed “${it.name}” from favourites`, async () => {
+      await api.setFavourite([id], !on);
+      noteItemsChanged();
+    });
+  };
+  const setWeight = async (it: PlayItem, w: number, was: number) => {
+    if (it.itemId == null) return;
+    const id = it.itemId;
+    await api.setWeight([id], w);
+    noteItemsChanged();
+    pushUndo(`Weight of “${it.name}” set to ${w}`, async () => {
+      await api.setWeight([id], was);
+      noteItemsChanged();
+    });
+  };
+
   return (
     <div ref={rootRef} className={`viewer${clean ? ' clean' : ''}${mini ? ' mini' : ''}${opening ? ' opening' : ''}`}>
       <Player
@@ -264,8 +288,8 @@ export function Viewer(props: {
             <SettingsMenu s={settings} set={(p) => { setSettings({ ...settings, ...p }); setPresetName(null); }} />
           </>
         }
-        onFavourite={vault ? (it, on) => it.itemId != null && api.setFavourite([it.itemId], on) : undefined}
-        onWeight={vault ? (it, w) => it.itemId != null && api.setWeight([it.itemId], w) : undefined}
+        onFavourite={vault ? (it, on) => setFavourite(it, on) : undefined}
+        onWeight={vault ? (it, w, was) => setWeight(it, w, was) : undefined}
         onFullscreen={toggleClean}
       />
       {card && props.titleCard && !mini && (

@@ -4,6 +4,7 @@
 // straight back to where you were. Kept small: the tools themselves load
 // only when opened.
 
+import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useSyncExternalStore } from 'react';
 import { api, onLocked, type Item } from '../../api';
 import { fromItem } from '../../media';
@@ -87,10 +88,12 @@ export function FaceToolsHost(props: { nav: Nav; onChanged: () => void }) {
       )}
       {o.viewing && (
         <div className="fc-viewer">
-          <Viewer nav={props.nav} items={o.viewing.items.map(fromItem)} startKey={`v${o.viewing.id}`} title={o.name} auto={false} person={o.person}
-            onBack={() => {
-              if (open) set({ ...open, viewing: null });
-            }} />
+          <ErrorBoundary name="the viewer" onError={() => { if (open) set({ ...open, viewing: null }); }}>
+            <Viewer nav={props.nav} items={o.viewing.items.map(fromItem)} startKey={`v${o.viewing.id}`} title={o.name} auto={false} person={o.person}
+              onBack={() => {
+                if (open) set({ ...open, viewing: null });
+              }} />
+          </ErrorBoundary>
         </div>
       )}
     </Suspense>

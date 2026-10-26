@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { EncryptionSection } from '../components/EncryptionSection';
 import { api, DEFAULT_LOOK, DEFAULT_VIEWER, onEvent, type AppConfig, type LookSettings, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
@@ -18,26 +18,50 @@ import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
 import { GrowthSpark } from '../components/VaultGrowth';
 import { setNotifyWhenDone } from '../jobs';
-import { setFaceBoxes, useFaceBoxes } from '../prefs';
+import { setFaceBoxes, useFaceBoxes, useAppConfig, saveAppConfig } from '../prefs';
 import { useLayer } from '../keylayers';
 
 type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
 
 export function Settings({ nav }: { nav: Nav }) {
   const [section, setSection] = useState<Section>('appearance');
-  const [cfg, setCfg] = useState<AppConfig>(nav.app.config);
+  // The shared settings (prefs.ts), not a copy: a change made elsewhere meanwhile (face boxes,
+  // the mini player's sound, Pause in the jobs ring) is never written back with old values.
+  const cfg: AppConfig = useAppConfig() ?? nav.app.config;
   const [error, setError] = useState<string | null>(null);
   const faceBoxesOn = useFaceBoxes();
+  const refreshSoon = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function update(next: AppConfig) {
-    setCfg(next);
-    applyAccent(next.accent);
-    try {
-      setCfg(await api.saveConfig(next));
-      await nav.refresh();
-    } catch (e) {
-      setError((e as Error).message);
+  /** Saves what differs between `next` and the settings shown (on top of the latest ones). */
+  function update(next: AppConfig): Promise<void> {
+    const was = cfg as unknown as Record<string, unknown>;
+    const now = next as unknown as Record<string, unknown>;
+    const patch: Record<string, unknown> = {};
+    for (const k of Object.keys(now)) {
+      if (now[k] === was[k]) continue;
+      const a = was[k];
+      const b = now[k];
+      // One level down too (look, viewer, lock, poor faces): only the fields that changed.
+      if (a && b && typeof a === 'object' && typeof b === 'object' && !Array.isArray(b)) {
+        const sub: Record<string, unknown> = {};
+        for (const sk of Object.keys(b)) if ((b as Record<string, unknown>)[sk] !== (a as Record<string, unknown>)[sk]) sub[sk] = (b as Record<string, unknown>)[sk];
+        patch[k] = { __merge: sub };
+      } else patch[k] = b;
     }
+    if (!Object.keys(patch).length) return Promise.resolve();
+    applyAccent(next.accent);
+    return saveAppConfig((c) => {
+      const out = { ...c } as unknown as Record<string, unknown>;
+      for (const [k, v] of Object.entries(patch)) {
+        const m = v && typeof v === 'object' && '__merge' in (v as object) ? (v as { __merge: Record<string, unknown> }).__merge : null;
+        out[k] = m ? { ...((out[k] as object | undefined) ?? {}), ...m } : v;
+      }
+      return out as unknown as AppConfig;
+    }).then(() => {
+      // The rest of the app picks it up once the sliders settle (not on every step).
+      if (refreshSoon.current) clearTimeout(refreshSoon.current);
+      refreshSoon.current = setTimeout(() => void nav.refresh().catch(() => {}), 400);
+    }, (e) => setError((e as Error).message));
   }
   const look = { ...DEFAULT_LOOK, ...(cfg.look ?? {}) };
   const setLook = (patch: Partial<LookSettings>) => update({ ...cfg, look: { ...look, ...patch } });
@@ -238,7 +262,7 @@ export function Settings({ nav }: { nav: Nav }) {
                 <h2>Around the picture</h2>
                 <Toggle title="Soft colour glow behind pictures" desc="Instead of plain black, a blurred, darkened copy of the picture fills the space around it."
                   on={viewer.ambient} set={(v) => setViewer({ ambient: v })} />
-                <Toggle title="Show boxes around faces" desc="Found faces get a box with the person's name. Click a box to see everything of that person, or to say who it is. The face button in the viewer switches this too. Starts off each time the app opens."
+                <Toggle title="Show boxes around faces" desc="Found faces get a box with the person's name. Click a box to see everything of that person, or to say who it is. The face button in the viewer switches this too, and the choice is remembered."
                   on={faceBoxesOn} set={setFaceBoxes} />
                 <Toggle title="Open and close animation" desc="Pictures grow out of their tile when you open them and shrink back into it when you close the viewer. Off opens and closes instantly."
                   on={viewer.openCloseAnim !== false} set={(v) => setViewer({ openCloseAnim: v })} />

@@ -172,7 +172,16 @@ export function ConfirmDialog(props: {
   );
 }
 
-/** Choose a destination folder (or the top level). */
+/** Lower case, accents and Turkish dotted/dotless i folded, for matching typed text. */
+function fold(x: string): string {
+  return x.toLocaleLowerCase('tr').replace(/ı/g, 'i').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+}
+
+/**
+ * Choose a destination folder (or the top level), from every folder. Typing filters the
+ * list (by name or path); ↑/↓ choose, Enter confirms, a double-click confirms that row.
+ * Nothing is chosen at first, so Enter never moves anything by accident.
+ */
 export function FolderPicker(props: {
   title: string;
   folders: FolderCard[];
@@ -182,37 +191,80 @@ export function FolderPicker(props: {
   onPick: (folder: number | null) => Promise<void> | void;
   onClose: () => void;
 }) {
-  const [sel, setSel] = useState<number | null>(null);
+  /** undefined = nothing chosen yet, null = the top level. */
+  const [sel, setSel] = useState<number | null | undefined>(undefined);
+  const [q, setQ] = useState('');
   const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
   const excluded = new Set<number>();
   for (const x of props.exclude ?? []) {
     excluded.add(x);
     for (const f of props.folders) if (f.path.some((c) => c.id === x)) excluded.add(f.id);
   }
+  const fq = fold(q);
+  const shown = props.folders.filter((f) => !excluded.has(f.id) && (!fq || fold([...f.path.map((c) => c.name), f.name].join(' ')).includes(fq)));
+  const rows: (number | null)[] = [...(fq ? [] : [null]), ...shown.map((f) => f.id)];
+  const pick = async (id: number | null | undefined = sel) => {
+    if (id === undefined || busy) return;
+    setBusy(true);
+    try {
+      await props.onPick(id);
+      props.onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+      setBusy(false);
+    }
+  };
+  const step = (d: number) => {
+    if (!rows.length) return;
+    const i = sel === undefined ? -1 : rows.indexOf(sel);
+    const next = rows[Math.max(0, Math.min(rows.length - 1, i < 0 ? (d > 0 ? 0 : rows.length - 1) : i + d))];
+    setSel(next);
+    requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>(`[data-row="${next ?? 'top'}"]`)?.scrollIntoView({ block: 'nearest' }));
+  };
   return (
     <Modal title={props.title} onClose={props.onClose}>
-      <div className="picker" role="listbox" aria-label="Folders">
-        <button type="button" role="option" aria-selected={sel === null} className={`picker-row${sel === null ? ' on' : ''}`} onClick={() => setSel(null)}>
-          <FolderIcon size={15} /> {props.topLabel ?? 'Top level'}
-        </button>
-        {props.folders.filter((f) => !excluded.has(f.id)).map((f) => (
-          <button type="button" role="option" aria-selected={sel === f.id} key={f.id}
-            className={`picker-row${sel === f.id ? ' on' : ''}`} style={{ paddingLeft: 14 + f.depth * 18 }} onClick={() => setSel(f.id)}>
+      <input type="search" className="input" placeholder={`Search ${props.folders.length.toLocaleString()} folders…`} value={q} autoFocus
+        aria-label="Search folders"
+        onChange={(e) => {
+          setQ(e.target.value);
+          // The best match is chosen as you type, so Enter takes it.
+          const fq2 = fold(e.target.value);
+          const first = fq2 ? props.folders.find((f) => !excluded.has(f.id) && fold([...f.path.map((c) => c.name), f.name].join(' ')).includes(fq2)) : undefined;
+          setSel(first ? first.id : undefined);
+        }}
+        onKeyDown={(e) => {
+          if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+            e.preventDefault();
+            step(e.key === 'ArrowDown' ? 1 : -1);
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            void pick();
+          }
+        }} />
+      <div className="picker" role="listbox" aria-label="Folders" ref={listRef}>
+        {!fq && (
+          <button type="button" role="option" data-row="top" aria-selected={sel === null} className={`picker-row${sel === null ? ' on' : ''}`}
+            onClick={() => setSel(null)} onDoubleClick={() => void pick(null)}>
+            <FolderIcon size={15} /> {props.topLabel ?? 'Top level'}
+          </button>
+        )}
+        {shown.map((f) => (
+          <button type="button" role="option" data-row={f.id} aria-selected={sel === f.id} key={f.id}
+            className={`picker-row${sel === f.id ? ' on' : ''}`} style={{ paddingLeft: 14 + (fq ? 0 : f.depth * 18) }}
+            onClick={() => setSel(f.id)} onDoubleClick={() => void pick(f.id)}>
             <FolderIcon size={15} /> {f.name}
+            {fq && f.path.length > 0 && <span className="faint picker-path">{f.path.map((c) => c.name).join(' › ')}</span>}
           </button>
         ))}
+        {fq && !shown.length && <p className="faint" style={{ padding: '8px 12px' }}>No folder matches “{q}”.</p>}
       </div>
       {err && <div className="error" role="alert">{err}</div>}
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
-        <button type="button" className="btn btn-primary" onClick={async () => {
-          try {
-            await props.onPick(sel);
-            props.onClose();
-          } catch (e) {
-            setErr(e instanceof Error ? e.message : String(e));
-          }
-        }}>{props.confirm}</button>
+        <button type="button" className="btn btn-primary" disabled={sel === undefined || busy} title={sel === undefined ? 'Choose a folder first' : undefined}
+          onClick={() => void pick()}>{props.confirm}</button>
       </div>
     </Modal>
   );
@@ -228,6 +280,8 @@ export interface MenuItem {
   sepBefore?: boolean;
   /** A submenu that opens to the side on hover, straight away. Clicking the item still runs onSelect. */
   sub?: MenuItem[];
+  /** The item only opens its submenu (clicking it doesn't close the menu or run anything). */
+  subOnly?: boolean;
   onSelect: () => void;
 }
 
@@ -238,8 +292,17 @@ export function Dropdown(props: {
   items: MenuItem[] | (() => MenuItem[]);
   className?: string; up?: boolean; title?: string; ariaLabel?: string;
 }) {
-  const [open, setOpen] = useState(false);
-  const items = open ? (typeof props.items === 'function' ? props.items() : props.items) : [];
+  const [open, setOpenRaw] = useState(false);
+  /** A submenu shown in place of the menu (with a way back), for items that have one. */
+  const [subOf, setSubOf] = useState<MenuItem | null>(null);
+  const setOpen = (v: boolean | ((o: boolean) => boolean)) => {
+    setSubOf(null);
+    setOpenRaw(v);
+  };
+  const top = open ? (typeof props.items === 'function' ? props.items() : props.items) : [];
+  const items: MenuItem[] = subOf?.sub
+    ? [{ label: `‹ ${subOf.label}`, hint: 'back', onSelect: () => {} }, ...subOf.sub.map((x, i) => (i === 0 ? { ...x, sepBefore: true } : x))]
+    : top;
   const [right, setRight] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   // Menus near the right edge open towards the left instead of running off screen.
@@ -273,12 +336,22 @@ export function Dropdown(props: {
               aria-checked={it.checked} disabled={it.disabled}
               className={`menu-item${it.checked ? ' on' : ''}${it.danger ? ' danger' : ''}`}
               onClick={() => {
+                if (subOf && it === items[0]) {
+                  setSubOf(null);
+                  return;
+                }
+                if (!subOf && it.sub?.length && (it.subOnly || !it.onSelect)) {
+                  setSubOf(it);
+                  requestAnimationFrame(() => ref.current?.querySelector<HTMLElement>('.menu button')?.focus());
+                  return;
+                }
                 setOpen(false);
                 it.onSelect();
               }}>
               <span className="tick">{it.checked ? '✓' : ''}</span>
               {it.label}
               {it.hint && <span className="hint">{it.hint}</span>}
+              {!subOf && it.sub?.length && it.subOnly ? <span className="hint">›</span> : null}
             </button>,
           ])}
         </div>
@@ -326,13 +399,17 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
     const close = (e: Event) => {
       if (!ref.current?.contains(e.target as Node) && !subRef.current?.contains(e.target as Node)) props.onClose();
     };
+    // The wheel over the menu scrolls it (long menus are taller than the screen); elsewhere it closes it.
+    const wheel = (e: Event) => {
+      if (!ref.current?.contains(e.target as Node) && !subRef.current?.contains(e.target as Node)) props.onClose();
+    };
     window.addEventListener('mousedown', close, true);
     window.addEventListener('resize', props.onClose);
-    window.addEventListener('wheel', props.onClose, { passive: true });
+    window.addEventListener('wheel', wheel, { passive: true });
     return () => {
       window.removeEventListener('mousedown', close, true);
       window.removeEventListener('resize', props.onClose);
-      window.removeEventListener('wheel', props.onClose);
+      window.removeEventListener('wheel', wheel);
     };
   }, [props.x, props.y]); // eslint-disable-line react-hooks/exhaustive-deps
   // A layer: Esc closes it, ↑ / ↓ move through it, → opens a submenu, nothing behind gets the keys.
@@ -375,7 +452,14 @@ export function ContextMenu(props: { x: number; y: number; title?: string; items
               setSub({ items: it.sub, left: r.right - 4, top: r.top - 5, key: it.label });
             } else setSub(null);
           }}
-          onClick={() => {
+          onClick={(e) => {
+            if (it.subOnly && it.sub?.length) {
+              // Opens its submenu (and its first entry gets the keyboard).
+              const r = e.currentTarget.getBoundingClientRect();
+              setSub({ items: it.sub, left: r.right - 4, top: r.top - 5, key: it.label });
+              requestAnimationFrame(() => subRef.current?.querySelector<HTMLElement>('button')?.focus());
+              return;
+            }
             props.onClose();
             it.onSelect();
           }}>

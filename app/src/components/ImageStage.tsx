@@ -149,29 +149,36 @@ export function ImageStage(props: Props) {
     ctx.clearRect(0, 0, cw, ch);
     ctx.imageSmoothingEnabled = smooth;
     ctx.imageSmoothingQuality = 'high';
+    // A picture let go of meanwhile (width 0) is not drawn: drawing it would throw and take the viewer down.
+    if (still.current && still.current.width === 0 && !frame.current) return;
     const pre = hq.current;
     const preFits = !!pre && Math.abs(pre.w - iw) < 1.5 && Math.abs(pre.h - ih) < 1.5;
     // Between screen size and full size, until the sharp resample (made in the worker) is there:
     // the screen-sized copy, a little soft, rather than shrinking the whole big picture here.
     const img: CanvasImageSource = !frame.current && full.current && still.current && shrinking && smooth && !preFits && iw <= 8192 && ih <= 8192 ? still.current : src;
-    if (shrinking && smooth && pre && preFits && !frame.current) {
-      // Whole pixels, so the resampled picture stays sharp.
-      const bw = r % 2 ? pre.h : pre.w;
-      const bh = r % 2 ? pre.w : pre.h;
-      ctx.setTransform(...turnMatrix(r, Math.round(x), Math.round(y), bw, bh));
-      ctx.drawImage(pre.bmp, 0, 0);
-    } else if (r === 0 && typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap && (x < 0 || y < 0 || x + w > cw || y + h > ch)) {
-      // Zoomed in: draw only the part of the picture that is on screen (a 50 MP picture is mostly off screen).
-      const kx = img.width / w;
-      const ky = img.height / h;
-      const sx0 = Math.max(0, Math.floor(Math.max(0, -x) * kx) - 1);
-      const sy0 = Math.max(0, Math.floor(Math.max(0, -y) * ky) - 1);
-      const sx1 = Math.min(img.width, Math.ceil(Math.min(w, cw - x) * kx) + 1);
-      const sy1 = Math.min(img.height, Math.ceil(Math.min(h, ch - y) * ky) + 1);
-      if (sx1 > sx0 && sy1 > sy0) ctx.drawImage(img, sx0, sy0, sx1 - sx0, sy1 - sy0, x + sx0 / kx, y + sy0 / ky, (sx1 - sx0) / kx, (sy1 - sy0) / ky);
-    } else {
-      ctx.setTransform(...turnMatrix(r, x, y, w, h));
-      ctx.drawImage(img, 0, 0, iw, ih);
+    try {
+      if (shrinking && smooth && pre && preFits && !frame.current) {
+        // Whole pixels, so the resampled picture stays sharp.
+        const bw = r % 2 ? pre.h : pre.w;
+        const bh = r % 2 ? pre.w : pre.h;
+        ctx.setTransform(...turnMatrix(r, Math.round(x), Math.round(y), bw, bh));
+        ctx.drawImage(pre.bmp, 0, 0);
+      } else if (r === 0 && typeof ImageBitmap !== 'undefined' && img instanceof ImageBitmap && (x < 0 || y < 0 || x + w > cw || y + h > ch)) {
+        // Zoomed in: draw only the part of the picture that is on screen (a 50 MP picture is mostly off screen).
+        const kx = img.width / w;
+        const ky = img.height / h;
+        const sx0 = Math.max(0, Math.floor(Math.max(0, -x) * kx) - 1);
+        const sy0 = Math.max(0, Math.floor(Math.max(0, -y) * ky) - 1);
+        const sx1 = Math.min(img.width, Math.ceil(Math.min(w, cw - x) * kx) + 1);
+        const sy1 = Math.min(img.height, Math.ceil(Math.min(h, ch - y) * ky) + 1);
+        if (sx1 > sx0 && sy1 > sy0) ctx.drawImage(img, sx0, sy0, sx1 - sx0, sy1 - sy0, x + sx0 / kx, y + sy0 / ky, (sx1 - sx0) / kx, (sy1 - sy0) / ky);
+      } else {
+        ctx.setTransform(...turnMatrix(r, x, y, w, h));
+        ctx.drawImage(img, 0, 0, iw, ih);
+      }
+    } catch {
+      // (A picture let go of between the check and here: drawn again with the next one.)
+      return;
     }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     c.style.filter = p.prefs.sharpen && smooth ? 'url(#mv-sharpen)' : '';

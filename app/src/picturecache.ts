@@ -41,6 +41,8 @@ export class Lru<V> {
   private map = new Map<string, { v: V; cost: number }>();
   private held = new Map<string, number>();
   private wanted = new Set<string>();
+  /** Forgotten while held (drawn right now): released only when no longer drawn. */
+  private retired = new Map<string, V[]>();
   total = 0;
 
   constructor(
@@ -94,7 +96,15 @@ export class Lru<V> {
   unhold(k: string) {
     const n = (this.held.get(k) ?? 0) - 1;
     if (n > 0) this.held.set(k, n);
-    else this.held.delete(k);
+    else {
+      this.held.delete(k);
+      // Forgotten while it was on screen: let go of it now that nothing draws it.
+      const old = this.retired.get(k);
+      if (old) {
+        this.retired.delete(k);
+        old.forEach((v) => this.release(v));
+      }
+    }
     this.trim();
   }
 
@@ -121,8 +131,20 @@ export class Lru<V> {
     for (const k of [...this.map.keys()]) if (!this.held.has(k)) this.delete(k);
   }
 
+  /**
+   * Forget everything: the next request decodes afresh. A picture drawn right now is
+   * not closed under the one drawing it (that crashed the viewer after "Save as copy"):
+   * it leaves the cache and is let go once it is no longer drawn.
+   */
   clear() {
-    for (const k of [...this.map.keys()]) this.delete(k);
+    for (const k of [...this.map.keys()]) {
+      const e = this.map.get(k)!;
+      if (this.held.has(k)) {
+        this.map.delete(k);
+        this.total -= e.cost;
+        this.retired.set(k, [...(this.retired.get(k) ?? []), e.v]);
+      } else this.delete(k);
+    }
     this.wanted.clear();
   }
 
@@ -479,7 +501,7 @@ function hookUp() {
   if (hooked || typeof document === 'undefined') return;
   hooked = true;
   onLocked(() => forgetPictures()).catch(() => {});
-  onItemsChanged(() => forgetPictures());
+  onItemsChanged((replaced) => replaced && forgetPictures());
   // Hidden for a minute (minimised, another program in front): keep only what is on screen.
   let t: ReturnType<typeof setTimeout> | null = null;
   document.addEventListener('visibilitychange', () => {

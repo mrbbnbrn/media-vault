@@ -3,6 +3,7 @@
 // the river, which holds still underneath: closing the viewer carries on
 // exactly where it was.
 
+import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, previewUrl, thumbUrl, tinyUrl, type FolderCard, type Item } from '../../api';
 import { setPreviewCover } from '../../previewgate';
@@ -143,10 +144,12 @@ export function RiverHost({ nav }: { nav: Nav }) {
       />
       {s.viewing != null && (
         <div className="river-viewer">
-          <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
-            onBack={() => {
-              if (session) set({ ...session, viewing: null, viewList: null });
-            }} />
+          <ErrorBoundary name="the viewer" onError={() => { if (session) set({ ...session, viewing: null, viewList: null }); }}>
+            <Viewer nav={nav} items={play} startKey={`v${s.viewing}`} title={s.title} auto={false}
+              onBack={() => {
+                if (session) set({ ...session, viewing: null, viewList: null });
+              }} />
+          </ErrorBoundary>
         </div>
       )}
     </Suspense>

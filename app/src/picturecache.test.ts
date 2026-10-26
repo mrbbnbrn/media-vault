@@ -61,8 +61,11 @@ describe('decoded picture cache', () => {
     c.dropUnheld();
     expect(gone).toEqual(['a']);
     c.clear();
-    expect(gone).toEqual(['a', 'b']);
+    // The drawn one leaves the cache but is let go only once it is no longer drawn.
+    expect(gone).toEqual(['a']);
     expect(c.total).toBe(0);
+    c.unhold('b');
+    expect(gone).toEqual(['a', 'b']);
   });
 
   it('decodes big pictures at screen size only', () => {
@@ -82,5 +85,20 @@ describe('decoded picture cache', () => {
     expect(budgetBytes(4)).toBe(512 * MB);
     expect(budgetBytes(0.5)).toBe(256 * MB);
     expect(budgetBytes(undefined)).toBe(1024 * MB);
+  });
+});
+
+describe('forgetting while a picture is on screen', () => {
+  it('keeps the drawn picture until it is no longer drawn', () => {
+    const gone: string[] = [];
+    const c = new Lru<string>(8, 1e9, (v) => gone.push(v));
+    c.set('a', 'A', 1);
+    c.set('b', 'B', 1);
+    c.hold('a');
+    c.clear();
+    expect(gone).toEqual(['B']);
+    expect(c.has('a')).toBe(false);
+    c.unhold('a');
+    expect(gone).toEqual(['B', 'A']);
   });
 });

@@ -8,7 +8,7 @@ import { open } from '@tauri-apps/plugin-dialog';
 import { gridShown } from '../firstgrid';
 import {
   api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind,
-  type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView,
+  type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView, type FolderBanner,
   takeLogin,
 } from '../api';
 import type { Nav } from '../App';
@@ -66,12 +66,14 @@ import { beginStep, dropStep, endStep, whenImagesShown } from '../perf';
 import { calmly, reuseSame, shallowSame, useStableList } from '../calm';
 import { useEvent } from '../useevent';
 import { sorted, type Order } from '../playlist';
-import { saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
+import { saveAppConfig, saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 import { lazyPart } from '../lazypart';
 import { FaceToolsHost, faceToolOpen, openFaceTool } from '../components/facecrops/launch';
 import { noLayerOpen, setScreenNav } from '../keylayers';
+import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
+import { requestLock } from '../keepopen';
 import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
@@ -142,7 +144,7 @@ type Dialog =
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
   | { t: 'renameMany'; entries: RenameEntry[] }
   | { t: 'freeCopy'; ids: number[] }
-  | { t: 'deleteOriginal'; groups: [Item, Item[]][]; ids: number[]; folders: FolderCard[] }
+  | { t: 'deleteOriginal'; groups: [Item, Item[]][]; ids: number[]; folders: FolderCard[]; done?: (deleted: boolean) => void }
   | { t: 'merge'; folders: FolderCard[] }
   | { t: 'note'; folder: boolean; id: number; name: string; note: string | null }
   | { t: 'copies'; item: Item; list: Item[] }
@@ -312,9 +314,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // What you do yourself shows at once; changes from background work keep things in place (calm.ts).
   const bgList = useRef(false);
   const setItems = (f: Item[]) => { bgList.current = false; setItemsRaw(f); };
-  const [folder, setFolder] = useState<FolderCard | null>(null);
-  const [trash, setTrash] = useState<TrashView | null>(null);
-  const [tags, setTags] = useState<TagCount[]>([]);
+  const [folder, setFolderRaw] = useState<FolderCard | null>(null);
+  const [trash, setTrashRaw] = useState<TrashView | null>(null);
+  const [tags, setTagsRaw] = useState<TagCount[]>([]);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   // Folders are selected like items: click (Ctrl / Shift for more). The folder you open is selected.
   const [selFolders, setSelFolders] = useState<Set<number>>(new Set());
@@ -348,6 +350,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [quick, setQuick] = useState<number | null>(null);
   const [revealHere, setRevealHere] = useState<{ id: number; n: number } | null>(null);
   const [resume, setResume] = useState<LastPlace | null>(null);
+  // "Where you left off" goes away by itself too (it is only an offer).
+  useAutoDismiss(resume, () => setResume(null), PROBLEM_MS);
   const [everyFolder, setEveryFolder] = useState(true);
   const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
   // Folder sorting: the sidebar (every level and the pinned list) and the folder cards (foldersort.ts).
@@ -356,7 +360,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const cardSort: FolderSort = vp.folderSort ?? sideSort;
   const setCardSort = (o: FolderSort) => { setViewPrefs(vKey, { folderSort: o }); setPrefsTick((t) => t + 1); };
   const [dialog, setDialog] = useState<Dialog | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorRaw] = useState<string | null>(null);
+  const setError = setErrorRaw;
   const [loading, setLoading] = useState(false);
   const [reports, setReports] = useState<ImportReport[]>([]);
   // ---- folder banners (begin) ----
@@ -371,9 +376,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const bannerEdit = banner != null && bannerEditOf === banner.media;
   useEffect(() => setBannerEditOf(null), [view]);
   const showBanner = view.kind === 'folder' && !!banner && !!folder && banner.folder === folder.id;
+  /** Banners of folders other than the open one, as far as known (asked when their menu opens). */
+  const bannerKnown = useRef(new Map<number, FolderBanner | null>());
+  const bannerOf = (id: number): FolderBanner | null => (banner?.folder === id ? banner : bannerKnown.current.get(id) ?? null);
   const removeBanner = (f: FolderCard) => {
-    const was = banner?.folder === f.id ? banner : null;
+    const was = bannerOf(f.id);
     api.setBanner(f.id, null).then(() => {
+      bannerKnown.current.set(f.id, null);
       if (was) did('Banner removed', () => api.setBanner(f.id, was.media, was.y).then(reloadBanner));
       reloadBanner();
     }, (err) => setError(errText(err)));
@@ -570,7 +579,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   useEffect(() => () => clearUndo(), [s.path]);
 
   const saveCfg = async (patch: Partial<typeof cfg>) => {
-    await api.saveConfig({ ...cfg, ...patch });
+    await saveAppConfig((c) => ({ ...c, ...patch }));
     await nav.refresh();
   };
 
@@ -580,15 +589,24 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
    * and what is on screen keeps its order (calm.ts). Views worked out by models
    * (smart search, similar) aren't recomputed then.
    */
+  /** Each load gets a number: an answer that arrives after a newer load started is dropped. */
+  const loadGen = useRef(0);
   const reload = useCallback(async (opts?: { bg?: boolean; quiet?: boolean }) => {
     const bg = !!opts?.bg;
+    const gen = ++loadGen.current;
+    // (Clicking folder A then B quickly: A's answer must never fill B's grid.)
+    const stale = () => gen !== loadGen.current;
     // `quiet`: after something you did (it already shows): no "loading…", and unchanged
     // things keep their objects so only what changed draws again (the order is fresh, though).
     const keep = bg || !!opts?.quiet;
     bgList.current = bg;
-    const setFolders = (f: FolderCard[]) => setFoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
-    const setSubfolders = (f: FolderCard[]) => setSubfoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
-    const setItems = (f: Item[]) => setItemsRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setFolders = (f: FolderCard[]) => !stale() && setFoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setSubfolders = (f: FolderCard[]) => !stale() && setSubfoldersRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setItems = (f: Item[]) => !stale() && setItemsRaw((prev) => (keep ? reuseSame(prev, f, (x) => x.id, shallowSame) : f));
+    const setFolder = (f: FolderCard | null) => !stale() && setFolderRaw(f);
+    const setTags = (t: TagCount[]) => !stale() && setTagsRaw(t);
+    const setTrash = (t: TrashView | null) => !stale() && setTrashRaw(t);
+    const setError = (e: string | null) => !stale() && setErrorRaw(e);
     if (!keep) setLoading(true);
     else if (view.kind === 'smart' || view.kind === 'similar' || view.kind === 'lookalikes') {
       // Only the folders and tags (the sidebar) then.
@@ -613,7 +631,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       setTrash(null);
       if (view.kind === 'folder' && folderItems) {
         const here = view.id == null ? null : f.find((x) => x.id === view.id) ?? null;
-        if (view.id != null && !here) throw new Error('That folder no longer exists.');
+        if (view.id != null && !here) {
+          // Gone meanwhile (deleted, merged; an old tab or Back): to All folders, not an error.
+          if (!stale()) {
+            setNote({ text: 'That folder no longer exists, so here are all folders.', at: 0 });
+            setView({ kind: 'folders' });
+          }
+          return;
+        }
         setFolder(here);
         setSubfolders(f.filter((x) => (x.parentId ?? null) === (view.id ?? null)));
         setItems(folderItems);
@@ -649,7 +674,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     } catch (e) {
       setError(errText(e));
     } finally {
-      if (!keep) setLoading(false);
+      if (!keep && !stale()) setLoading(false);
       // Background work may start now (firstgrid.ts).
       gridShown();
     }
@@ -780,6 +805,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     return () => window.removeEventListener('keydown', onKey);
   }, [undo]);
   const [noteHover, setNoteHover] = useState(false);
+  // Results and problems close by themselves after a while (hovering keeps them open).
+  useAutoDismiss(storageMsg, () => setStorageMsg(null), storageMsg && !storageMsg.ok ? PROBLEM_MS : RESULT_MS, noteHover);
+  useAutoDismiss(reports.length ? reports[0].job : null, () => setReports((rs) => rs.slice(1)), reports[0]?.failed.length ? PROBLEM_MS : RESULT_MS, noteHover);
+  useAutoDismiss(error, () => setError(null), PROBLEM_MS, noteHover);
   useEffect(() => {
     if (!note || noteHover) return;
     const t = setTimeout(() => setNote(null), 8000);
@@ -997,7 +1026,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       document.querySelector<HTMLElement>(`[data-card="${next.id}"]`)?.scrollIntoView({ block: 'nearest' });
       return true;
     },
-    anySelected: () => selected.size > 0 || selFolders.size > 0,
+    // Only the folder you are in (it shows as selected) doesn't count: Ctrl+C / Ctrl+X / F2
+    // would otherwise copy, cut or rename the folder around you (Delete already guarded this).
+    anySelected: () => selected.size > 0 || (selFolders.size > 0 && !(view.kind === 'folder' && selFolders.size === 1 && selFolders.has(view.id ?? -1))),
     rename: () => askRename(),
     clip: (m: 'cut' | 'copy') => clipSelection(m),
     paste: () => { paste().catch((err) => setError(errText(err))); },
@@ -1131,15 +1162,20 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     let live = true;
     const ids = faceKey.split(',').map(Number).filter((id) => !gridFaces.has(id));
     if (!ids.length) return;
-    api.facesOfMany(ids.slice(0, 2000)).then((res) => {
-      if (!live) return;
-      setGridFaces((m) => {
-        const n = new Map(m);
-        for (const id of ids) if (!n.has(id)) n.set(id, []);
-        for (const [id, f] of res) n.set(id, f);
-        return n;
-      });
-    }).catch(() => {});
+    // In batches (the backend takes up to 2,000 at a time), so every item gets its faces.
+    void (async () => {
+      for (let i = 0; i < ids.length && live; i += 2000) {
+        const part = ids.slice(i, i + 2000);
+        const res = await api.facesOfMany(part).catch(() => null);
+        if (!live || !res) return;
+        setGridFaces((m) => {
+          const n = new Map(m);
+          for (const id of part) if (!n.has(id)) n.set(id, []);
+          for (const [id, f] of res) n.set(id, f);
+          return n;
+        });
+      }
+    })();
     return () => {
       live = false;
     };
@@ -1337,6 +1373,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const pics = faces ? `the pictures with faces in ${what}` : `the pictures in ${what}`;
     setNote({ text: r === 'already' ? `Already preparing ${pics}.` : r === 'queued' ? `${pics[0].toUpperCase()}${pics.slice(1)} will be prepared for 3D after the job running now.` : `Preparing ${pics} for 3D in the background (depth maps and outlines${faces ? '; pictures not scanned for faces yet are left out' : ''}). See the ring at the bottom of the sidebar.`, at: 0 });
   };
+  const folderMenuRef = useRef<(f: FolderCard) => MenuItem[]>(() => []);
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
@@ -1350,8 +1387,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
     { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
     ...(f.cover != null ? [{ label: 'Adjust cover…', hint: 'drag and zoom', onSelect: () => setDialog({ t: 'coverFrame', folder: f.id }) }] : []),
-    { label: banner?.folder === f.id ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
-    ...(banner?.folder === f.id ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
+    { label: bannerOf(f.id) ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
+    ...(bannerOf(f.id) ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
     { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
     ...(facesOff.has(f.id)
@@ -1375,17 +1412,18 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Slot machine', hint: 'feeling lucky?', onSelect: () => setDialog({ t: 'slots', folder: f }) },
     { label: 'Note…', hint: f.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: true, id: f.id, name: f.name, note: f.note }) },
     // What the bottom bar can do with a selected folder, here too (mediaActions).
-    { label: 'Everything inside', hint: 'favourite, tags, weight…', onSelect: () => {},
+    { label: 'Everything inside', hint: 'favourite, tags, weight…', onSelect: () => {}, subOnly: true,
       sub: menuOf(mediaActions([f], [], null).filter((x) => ['fav', 'tags', 'weight', 'convert', 'gif'].includes(x.id))).map((x) => ({ ...x, label: x.label.replace(' (everything inside)', '') })) },
     { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
     { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
-      sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])]) },
+      sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])], [], () => setDialog({ t: 'moveFolder', folder: f })) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
     { label: 'Delete…', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
   ];
+  folderMenuRef.current = folderMenu;
 
   const setPersonFolder = (f: FolderCard, on: boolean) => act(async () => {
     await api.setPersonFolder(f.id, on);
@@ -1481,6 +1519,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   };
 
   // ---- rubber-band selection: drag a box in empty space -------------------------------------
+  /** The grid's own hit test (tiles scrolled out of the drawn range count too). */
+  const gridHit = useRef<((r: { left: number; top: number; right: number; bottom: number }) => number[]) | null>(null);
   const rubberBand = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
     const t = e.target as HTMLElement;
@@ -1496,6 +1536,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const x0 = e.clientX;
     const y0 = e.clientY + sc.scrollTop;
     let box: HTMLDivElement | null = null;
+    let last: PointerEvent | null = null;
+    let edge = 0;
     const move = (ev: PointerEvent) => {
       const y1 = ev.clientY + sc.scrollTop;
       if (!box && Math.hypot(ev.clientX - x0, y1 - y0) < 6) return;
@@ -1507,14 +1549,25 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       const top = Math.min(y0, y1) - sc.scrollTop;
       const r = { left: Math.min(x0, ev.clientX), top, right: Math.max(x0, ev.clientX), bottom: top + Math.abs(y1 - y0) };
       Object.assign(box.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.right - r.left}px`, height: `${r.bottom - r.top}px` });
-      // Scroll when the box reaches the edge.
+      // Scroll when the box reaches the edge (and keep scrolling while it stays there).
+      last = ev;
       if (ev.clientY > sr.bottom - 30) sc.scrollTop += 20;
       else if (ev.clientY < sr.top + 30) sc.scrollTop -= 20;
+      if (!edge && (ev.clientY > sr.bottom - 30 || ev.clientY < sr.top + 30)) {
+        edge = window.setInterval(() => {
+          if (!last || (last.clientY <= sr.bottom - 30 && last.clientY >= sr.top + 30)) {
+            window.clearInterval(edge);
+            edge = 0;
+            return;
+          }
+          move(last);
+        }, 50);
+      }
       const hit = (el: Element) => {
         const b = el.getBoundingClientRect();
         return b.right > r.left && b.left < r.right && b.bottom > r.top && b.top < r.bottom;
       };
-      const its = [...sc.querySelectorAll<HTMLElement>('[data-item]')].filter(hit).map((el) => Number(el.dataset.item));
+      const its = gridHit.current ? gridHit.current(r) : [...sc.querySelectorAll<HTMLElement>('[data-item]')].filter(hit).map((el) => Number(el.dataset.item));
       const fs = [...sc.querySelectorAll<HTMLElement>('[data-card]')].filter(hit).map((el) => Number(el.dataset.card));
       setSelected(bandPick(startSel, its, true));
       setSelFolders(bandPick(startFolders, fs, true));
@@ -1522,6 +1575,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      if (edge) window.clearInterval(edge);
       box?.remove();
       if (!box && !additive) {
         // A plain click on empty space clears the selection.
@@ -1650,13 +1704,17 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       .slice(0, n)
       .map(([id]) => byId.get(id)!);
   };
-  /** Most-used folders; `people` = person folders of the people in the picture, listed first. */
-  const moveSub = (go: (f: FolderCard) => void, except: number[] = [], people: number[] = []): MenuItem[] => {
+  /**
+   * The "Move to ›" list: person folders of the people in the picture first, then the folders
+   * moved into most, then "Choose any folder…" (`any`: the searchable list of every folder).
+   */
+  const moveSub = (go: (f: FolderCard) => void, except: number[] = [], people: number[] = [], any?: () => void): MenuItem[] => {
     const persons = people.map((id) => folders.find((f) => f.id === id)).filter((f): f is FolderCard => !!f && !except.includes(f.id));
-    const rest = topFolders(6, [...except, ...persons.map((f) => f.id)]);
+    const rest = topFolders(8, [...except, ...persons.map((f) => f.id)]);
     return [
       ...persons.map((f) => ({ label: f.name, hint: 'in this picture', onSelect: () => go(f) })),
       ...rest.map((f, k) => ({ label: f.name, hint: f.path.map((c) => c.name).join(' › ') || undefined, sepBefore: k === 0 && persons.length > 0, onSelect: () => go(f) })),
+      ...(any ? [{ label: 'Choose any folder…', hint: 'search every folder', sepBefore: persons.length + rest.length > 0, onSelect: any }] : []),
     ];
   };
   const finishMerge = async (m: Merged, target: FolderCard, sources: FolderCard[]) => {
@@ -1949,6 +2007,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const home = one && one.folderId != null ? folders.find((f) => f.id === one.folderId) ?? null : null;
     const here = view.kind === 'folder' ? view.id : undefined;
     const fRefs = fs.map((x) => ({ id: x.id, name: x.name, person: x.person }));
+    const openMovePicker = () => (itemsOnly ? setDialog({ t: 'moveItems', ids }) : !nI && nF > 1 ? setDialog({ t: 'moveFolders', folders: fs }) : setDialog({ t: 'moveMixed', folders: fs, ids }));
     const acts: (Act | false | null)[] = [
       oneFolder && here !== oneFolder.id && { id: 'open', label: 'Open', hint: 'Enter', icon: <FolderIcon size={14} />, bar: true, title: 'Enter', run: () => openFolder(oneFolder.id) },
       one && { id: 'open', label: 'Open', hint: 'Enter', run: () => playItems(false, one.id) },
@@ -1968,12 +2027,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       { id: 'weight', label: `Weight…${inside}`, hint: one ? `now ${one.weight}` : undefined, barLabel: 'Weight…', icon: <WeightIcon />, bar: true,
         run: itemsOnly ? () => setDialog({ t: 'weight', ids, current: one?.weight ?? itemById(ids[0])?.weight ?? 1 }) : onAll((list) => setDialog({ t: 'weight', ids: list.map((i) => i.id), current: list[0].weight ?? 1 })) },
       { id: 'move', label: 'Move to…', icon: <MoveIcon />, bar: true,
-        run: () => (itemsOnly ? setDialog({ t: 'moveItems', ids }) : !nI && nF > 1 ? setDialog({ t: 'moveFolders', folders: fs }) : setDialog({ t: 'moveMixed', folders: fs, ids })),
+        run: () => openMovePicker(),
         sub: itemsOnly
-          ? moveSub((to) => failed(moveItems(ids, to.id)), one?.folderId != null ? [one.folderId] : [], people)
-          : moveSub((to) => failed(!nI ? moveFolders(fs, to.id) : moveMixed(fs, ids, to.id)), fs.map((x) => x.id)) },
+          ? moveSub((to) => failed(moveItems(ids, to.id)), one?.folderId != null ? [one.folderId] : [], people, () => openMovePicker())
+          : moveSub((to) => failed(!nI ? moveFolders(fs, to.id) : moveMixed(fs, ids, to.id)), fs.map((x) => x.id), [], () => openMovePicker()) },
       itemsOnly && { id: 'freeCopy', label: 'Free copy to…', hint: 'no extra space', title: 'Copies that take no extra space', bar: true,
-        run: () => setDialog({ t: 'freeCopy', ids }), sub: moveSub((to) => failed(freeCopyTo(ids, to.id)), [], people) },
+        run: () => setDialog({ t: 'freeCopy', ids }), sub: moveSub((to) => failed(freeCopyTo(ids, to.id)), [], people, () => setDialog({ t: 'freeCopy', ids })) },
       one && one.linked && { id: 'copies', label: one.copyOf != null ? 'Show the original and other copies' : 'Show its free copies', run: () => failed(showCopies(one)) },
       { id: 'rename', label: many ? `Rename ${plural(nI + nF, nF && nI ? 'thing' : nF ? 'folder' : 'item')}…` : 'Rename…', barLabel: 'Rename…', hint: 'F2', title: 'F2', bar: true, run: () => {
         const entries: RenameEntry[] = [
@@ -2038,8 +2097,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   trashRef.current = async (id) => {
     const groups = await originalsWithCopies([id]).catch(() => []);
     if (groups.length) {
-      setDialog({ t: 'deleteOriginal', groups, ids: [id], folders: [] });
-      return false;
+      // Asks first (it has free copies); the viewer moves on once you've chosen.
+      return new Promise<boolean>((resolve) => setDialog({ t: 'deleteOriginal', groups, ids: [id], folders: [], done: resolve }));
     }
     await deleteMany([], [id]);
     return true;
@@ -2068,7 +2127,20 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       setCtx({ x: e.clientX, y: e.clientY, title: plural(fs.length, 'folder'), items: menuOf(mediaActions(fs, [], null)) });
       return;
     }
+    // Right-clicking a folder selects it (as with items), so the bar and keys act on what the menu shows.
+    if (!selFolders.has(f.id)) {
+      setSelFolders(new Set([f.id]));
+      setSelected(new Set());
+      setFolderAnchor(f.id);
+    }
     setCtx({ x: e.clientX, y: e.clientY, title: f.name, items: folderMenu(f) });
+    // Whether this folder has a banner (only the open folder's is loaded): the menu fills in when known.
+    if (!bannerKnown.current.has(f.id) && banner?.folder !== f.id) {
+      api.folderBanner(f.id).then((b) => {
+        bannerKnown.current.set(f.id, b);
+        setCtx((c) => (c && c.title === f.name ? { ...c, items: folderMenuRef.current(f) } : c));
+      }).catch(() => {});
+    }
   };
 
   /** Person folders of the people recognised in these items (for "Move to"); quick, local. */
@@ -2143,8 +2215,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     help: { label: 'Shortcuts', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={showHelp}><HelpIcon /></button> },
     settings: { label: 'Settings', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Settings" onClick={() => nav.go({ name: 'settings' })}><GearIcon /></button> },
     lock: nav.app.session?.hasPassword === false
-      ? { label: 'Close vault', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Close vault" title="Close the vault, back to the vault list (Ctrl+Shift+L)" onClick={() => api.lock()}><LeaveIcon size={16} /></button> }
-      : { label: 'Lock', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => api.lock()}><LockIcon size={16} /></button> },
+      ? { label: 'Close vault', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Close vault" title="Close the vault, back to the vault list (Ctrl+Shift+L)" onClick={() => requestLock()}><LeaveIcon size={16} /></button> }
+      : { label: 'Lock', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Lock vault" title="Lock (Ctrl+Shift+L)" onClick={() => requestLock()}><LockIcon size={16} /></button> },
   };
   const TOP_DEFAULT = ['dice', 'faces', 'preview', 'slideshow', 'multi', 'import', 'stats', 'help', 'settings', 'lock'];
   const savedTop = (look.topBar ?? []).filter((k) => topButtons[k]);
@@ -2670,7 +2742,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           ) : gridView && (
             shown.length ? (
               <div className={scrollMode ? 'scroll-mode' : 'grid-mode'}>
-              <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={gridQuickLook}
+              <MediaGrid items={shown} columns={scrollMode ? 1 : cols} cursor={cursor} onCursor={setCursor} onQuickLook={gridQuickLook} hitTest={gridHit}
                 keyboard={quick == null && !dialog && !ctx && !asleep && !(selected.size === 0 && selFolders.size === 1 && cards.some((c) => selFolders.has(c.id)))} reveal={revealHere} selected={selected} anchor={anchor} scroller={scroller}
                 onSelect={gridSelect}
                 onOpen={gridOpen}
@@ -2725,7 +2797,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
       {(reports.length > 0 || storageMsg || taskCards) && (
         <section className="imports" aria-label="Import progress">
-          <TaskCards />
+          <TaskCards paused={noteHover} />
           {storageMsg && (
             <div className="icard">
               <div className="row-between">
@@ -2827,9 +2899,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </ConfirmDialog>
       )}
       {dialog?.t === 'banner' && (
-        <BannerPicker folder={dialog.folder} current={banner?.folder === dialog.folder.id ? banner.media : null} onClose={() => setDialog(null)} onPicked={async (id) => {
+        <BannerPicker folder={dialog.folder} current={bannerOf(dialog.folder.id)?.media ?? null} onClose={() => setDialog(null)} onPicked={async (id) => {
           const f = dialog.folder;
-          const was = banner?.folder === f.id ? banner : null;
+          const was = bannerOf(f.id);
+          bannerKnown.current.delete(f.id);
           await api.setBanner(f.id, id, was?.media === id ? was.y : 0.5);
           did(was ? 'Banner changed' : 'Banner set', () => api.setBanner(f.id, was?.media ?? null, was?.y).then(reloadBanner));
           if (view.kind === 'folder' && view.id === f.id) setBannerEditOf(id); // then drag it to choose what shows
@@ -2881,7 +2954,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onClose={() => setDialog(null)} onPick={(f) => freeCopyTo(dialog.ids, f)} />
       )}
       {dialog?.t === 'deleteOriginal' && (
-        <DeleteOriginalDialog groups={dialog.groups} onCancel={() => setDialog(null)}
+        <DeleteOriginalDialog groups={dialog.groups} onCancel={() => { dialog.done?.(false); setDialog(null); }}
           folderName={(id) => (id == null ? 'Top level' : folders.find((f) => f.id === id)?.name ?? 'a folder')}
           onChoice={async (c) => {
             const d = dialog;
@@ -2893,7 +2966,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 for (const [o] of d.groups) links.push(await api.promoteCopy(o.id, c.picks.get(o.id)!));
                 await deleteMany(d.folders, d.ids, links);
               }
+              d.done?.(true);
             } catch (err) {
+              d.done?.(false);
               setError(errText(err));
             }
           }} />

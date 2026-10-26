@@ -1,5 +1,7 @@
 // Safety tools: export decrypted copies, check for damage, login history.
 
+import { dismissShare } from '../tasks';
+import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { useState } from 'react';
 import { api, pickFolder, type DamageReport, type ExportRequest, type LoginInfo } from '../api';
 import { dismissCheck, dismissExport, startExport, useTasks } from '../tasks';
@@ -97,10 +99,14 @@ export function DamageReportView(props: { report: DamageReport; onTrashed?: () =
   );
 }
 
-/** Progress cards for the corner of the library. */
-export function TaskCards() {
+/** Progress cards for the corner of the library (they close by themselves; hovering keeps them). */
+export function TaskCards(props: { paused?: boolean }) {
   const t = useTasks();
   const [showReport, setShowReport] = useState(false);
+  const damage = !!t.checkResult && 'report' in t.checkResult && t.checkResult.report.damaged.length > 0;
+  useAutoDismiss(t.checkResult, dismissCheck, damage ? PROBLEM_MS * 3 : RESULT_MS, !!props.paused || showReport);
+  useAutoDismiss(t.exportDone, dismissExport, t.exportDone?.error ? PROBLEM_MS : RESULT_MS, !!props.paused);
+  useAutoDismiss(t.shareDone, dismissShare, t.shareDone?.error ? PROBLEM_MS : RESULT_MS, !!props.paused);
   return (
     <>
       {t.checkResult && (

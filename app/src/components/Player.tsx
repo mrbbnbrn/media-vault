@@ -103,8 +103,9 @@ export interface PlayerProps {
   title?: ReactNode;
   topRight?: ReactNode;
   panelExtra?: ReactNode;
-  onFavourite?: (item: PlayItem, on: boolean) => void;
-  onWeight?: (item: PlayItem, weight: number) => void;
+  onFavourite?: (item: PlayItem, on: boolean) => Promise<void> | void;
+  /** `was`: the weight before (for undo). */
+  onWeight?: (item: PlayItem, weight: number, was: number) => Promise<void> | void;
   onFullscreen?: () => void;
   onClose?: () => void;
   /** Extra line under the file name (e.g. its folder, as a link). */
@@ -275,6 +276,8 @@ export function Player(props: PlayerProps) {
   const txStart = useRef<(dir: 'next' | 'prev', how?: { effect: Effect; fromPx: number }) => void>(() => {});
   // Delete (vault items): to the trash, the same way as in the library (undoable), and on to the next one.
   const gone = useRef(new Set<string>());
+  /** How many were deleted here (the "N of total" count and the edges leave them out). */
+  const [goneCount, setGoneCount] = useState(0);
   const deleteCurrent = () => {
     const p = listRef.current;
     const c = p?.current();
@@ -287,6 +290,7 @@ export function Player(props: PlayerProps) {
       const nextKey = p.peek(1).find((x) => !gone.current.has(x.key))?.key ?? p.peekBack(1).find((x) => !gone.current.has(x.key))?.key;
       p.setItems(rest, nextKey);
       setCur(p.current());
+      setGoneCount(gone.current.size);
       setFlash('Moved to the trash · Ctrl+Z in the library undoes it');
     });
   };
@@ -869,7 +873,8 @@ export function Player(props: PlayerProps) {
   const swipeOn = prefs.swipeNav !== false && !mini && !props.compact && !props.bare && !zoomed && !isDoc && !!item && !editing;
   const canGo = (dir: Side) => {
     const i = listRef.current?.index() ?? -1;
-    return props.items.length > 1 && (s.repeat !== 'off' || i < 0 || (dir === 'next' ? i < props.items.length - 1 : i > 0));
+    const n = props.items.length - goneCount;
+    return n > 1 && (s.repeat !== 'off' || i < 0 || (dir === 'next' ? i < n - 1 : i > 0));
   };
 
   // ---- faces ------------------------------------------------------------------------------------
@@ -1263,7 +1268,7 @@ export function Player(props: PlayerProps) {
       const showAgain = (width: number | null, height: number | null) =>
         setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], src: freshSrc(it.src), width, height } }));
       showAgain(t.width, t.height);
-      noteItemsChanged();
+      noteItemsChanged(true);
       if (listRef.current?.current()?.key === it.key) setRot(0);
       kickThumbnails();
       kickFaceScanner();
@@ -1271,7 +1276,7 @@ export function Player(props: PlayerProps) {
       pushUndo(`Saved the rotation of “${it.name}”`, async () => {
         await api.rotateUndo(t);
         showAgain(t.oldWidth, t.oldHeight);
-        noteItemsChanged();
+        noteItemsChanged(true);
         kickThumbnails();
         kickFaceScanner();
         setFaceReload((n) => n + 1);
@@ -1447,7 +1452,7 @@ export function Player(props: PlayerProps) {
   });
 
   const index = listRef.current?.index() ?? -1;
-  const total = props.items.length;
+  const total = props.items.length - goneCount;
   const orderLabel = ORDERS.find((o) => o.id === s.order)?.label ?? '';
   const orderItems = ORDERS.map((o) => ({ label: o.label, hint: o.hint, checked: o.id === s.order, onSelect: () => set({ order: o.id as Order }) }));
   const showUi = controls && allowControls;
@@ -1478,8 +1483,25 @@ export function Player(props: PlayerProps) {
   const fav = item?.favourite ?? false;
   const toggleFavourite = () => {
     if (!item || !props.onFavourite) return;
-    setOverrides((o) => ({ ...o, [item.key]: { ...o[item.key], favourite: !fav } }));
-    props.onFavourite(item, !fav);
+    const it = item;
+    const on = !fav;
+    setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: on } }));
+    Promise.resolve(props.onFavourite(it, on)).then(() => setFlash(on ? 'Added to favourites · Ctrl+Z undoes it' : 'Removed from favourites · Ctrl+Z undoes it')).catch((e) => {
+      setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: !on } }));
+      setFlash(`Couldn't change the favourite: ${e instanceof Error ? e.message : String(e)}`);
+    });
+  };
+  const changeWeight = (w: number) => {
+    if (!item || !props.onWeight) return;
+    const it = item;
+    const was = weight;
+    setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], weight: w } }));
+    if (cur) cur.weight = w; // the play order uses the new weight right away
+    Promise.resolve(props.onWeight(it, w, was)).catch((e) => {
+      setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], weight: was } }));
+      if (cur) cur.weight = was;
+      setFlash(`Couldn't change the weight: ${e instanceof Error ? e.message : String(e)}`);
+    });
   };
   // The library's actions for the right-click menu (itemmenu.ts), asked for when it opens.
   const [libMenu, setLibMenu] = useState<MenuItem[]>([]);
@@ -1751,18 +1773,11 @@ export function Player(props: PlayerProps) {
           <div className="row">
             {item?.itemId != null && props.onWeight && (
               <Dropdown className="btn btn-sm glass" label={<>Weight {weight}</>} title="How often this file comes up in Weighted random"
-                items={WEIGHTS.map((w) => ({ label: String(w), hint: w === 0 ? 'never' : w === 1 ? 'normal' : undefined, checked: w === weight, onSelect: () => {
-                  setOverrides((o) => ({ ...o, [item.key]: { ...o[item.key], weight: w } }));
-                  if (cur) cur.weight = w; // the play order uses the new weight right away
-                  props.onWeight!(item, w);
-                } }))} />
+                items={WEIGHTS.map((w) => ({ label: String(w), hint: w === 0 ? 'never' : w === 1 ? 'normal' : undefined, checked: w === weight, onSelect: () => changeWeight(w) }))} />
             )}
             {item?.itemId != null && props.onFavourite && (
               <button type="button" className={`btn btn-icon glass${fav ? ' accent' : ''}`} aria-label={fav ? 'Remove from favourites' : 'Add to favourites'}
-                aria-pressed={fav} onClick={() => {
-                  setOverrides((o) => ({ ...o, [item.key]: { ...o[item.key], favourite: !fav } }));
-                  props.onFavourite!(item, !fav);
-                }}><HeartIcon filled={fav} size={18} /></button>
+                aria-pressed={fav} onClick={toggleFavourite}><HeartIcon filled={fav} size={18} /></button>
             )}
             <ScalingMenu prefs={prefs} />
             {props.topRight}
@@ -1964,12 +1979,14 @@ export function Player(props: PlayerProps) {
 
 /** Sound of a video through a short delay (or straight through again): once routed, a video's sound always goes this way. */
 const routes = new WeakMap<HTMLVideoElement, { ctx: AudioContext; delay: DelayNode }>();
+/** One sound engine for every video (a new one per video kept running, one more each video). */
+let sharedAudio: AudioContext | null = null;
 function audioRoute(v: HTMLVideoElement, on: boolean): ((on: boolean) => void) | null {
   let r = routes.get(v);
   if (!r) {
     if (!on) return null;
     try {
-      const ctx = new AudioContext();
+      const ctx = (sharedAudio ??= new AudioContext());
       const src = ctx.createMediaElementSource(v);
       const delay = ctx.createDelay(1);
       src.connect(delay).connect(ctx.destination);

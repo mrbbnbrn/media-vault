@@ -4,6 +4,7 @@
 // everyone else is grouped ("Person 3 · 312 photos") to be named once.
 // Naming never moves files: a person's page shows every photo of them.
 
+import { RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
 import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
@@ -84,6 +85,7 @@ export function PeopleView(props: {
   const { review, err, load } = useReview(req);
   const [paused, setPaused] = useState(faceScanPaused());
   const [msg, setMsg] = useState<string | null>(null);
+  useAutoDismiss(msg, () => setMsg(null), RESULT_MS);
   const [error, setError] = useState<string | null>(null);
   const [findMe, setFindMe] = useState<{ folder: number; name: string } | null>(null);
   const [naming, setNaming] = useState<UnknownGroup | null>(null);
