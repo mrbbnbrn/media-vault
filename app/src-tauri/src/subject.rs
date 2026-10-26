@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::modelslot::ModelSlot;
+use crate::onnxmodel;
 use crate::{depth, faceid, upscale};
 
 /// Each pack describes itself in this file.
@@ -388,7 +389,7 @@ pub fn info(wanted: &str) -> SubjectInfo {
     };
     let rt = pack.runtime.clone().unwrap_or_else(|| pack.dir.clone());
     let known = LAST_DEVICE.lock().unwrap().get(&pack.manifest.id).copied();
-    let guess = if cfg!(windows) && rt.join("DirectML.dll").is_file() { "gpu" } else { "cpu" };
+    let guess = onnxmodel::device_guess(&rt);
     SubjectInfo {
         available: true,
         problem: None,
@@ -422,17 +423,6 @@ static LAST_DEVICE: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 /// Models whose runtime or file couldn't start at all (shown in Settings), per model.
 static BROKEN: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-/// The model's own input size when it is fixed; `want` otherwise.
-fn session_side(session: &ort::session::Session, want: usize) -> (usize, usize) {
-    let dims: Vec<i64> = session
-        .inputs()
-        .first()
-        .and_then(|i| i.dtype().tensor_shape())
-        .map(|s| s.iter().copied().collect())
-        .unwrap_or_default();
-    let pick = |v: Option<&i64>| v.copied().filter(|&d| d > 0).map(|d| d as usize).unwrap_or(want);
-    if dims.len() == 4 { (pick(dims.get(2)), pick(dims.get(3))) } else { (want, want) }
-}
 
 /// The model on the graphics card (exactly like the upscaler's), or on the
 /// processor without ONNX Runtime's memory pool: at 1024 px a picture needs a
@@ -457,7 +447,7 @@ fn load(pack: &Pack, gpu: bool) -> Result<Loaded, String> {
     let env = upscale::start_runtime(rt).map_err(|e| friendly(&e))?;
     let session = open_session(env, &pack.dir.join(&pack.manifest.file), gpu)?;
     let m = &pack.manifest;
-    let side = session_side(&session, m.side);
+    let side = onnxmodel::session_side(&session, m.side);
     Ok(Loaded { session, key: m.id.clone(), side, output: m.output, mean: m.mean, std: m.std, gpu })
 }
 
@@ -480,83 +470,28 @@ pub fn last_used() -> Option<Instant> {
 /// there is tried once more on the processor). Only one model is kept.
 /// `loaded_ms` is set to how long loading took (0 when it was loaded already).
 fn with_model<T>(pack: &Pack, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
-    use crate::gpuroom::{self, Device, Kind};
-    let try_gpu = cfg!(windows) && pack.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
     let key = pack.manifest.id.clone();
-    // One model on the graphics card at a time (gpuroom.rs).
-    let waited = Instant::now();
-    let _turn = gpuroom::turn();
-    let wait = waited.elapsed();
-    let mut guard = MODEL.lock();
-    if guard.as_ref().is_some_and(|l| l.key != key) {
-        *guard = None; // a different model: free the old one first (they're big)
+    let run = onnxmodel::Run {
+        kind: crate::gpuroom::Kind::Subject,
+        id: &key,
+        key: &key,
+        measured_as: Some(&key),
+        try_gpu: onnxmodel::can_use_gpu(pack.runtime.as_deref()),
+        gpu_only: None,
+        failed: "Subject outlines couldn't run.",
+    };
+    let records = onnxmodel::Records { last_device: &LAST_DEVICE, broken: &BROKEN };
+    onnxmodel::with_model(&MODEL, &records, &run, &mut |gpu| load(pack, gpu), loaded_ms, f)
+}
+
+impl onnxmodel::LoadedModel for Loaded {
+    type Key = String;
+    fn key(&self) -> &Self::Key {
+        &self.key
     }
-    // On the processor since a fall-back: the graphics card again now and then.
-    if try_gpu && guard.as_ref().is_some_and(|l| !l.gpu) && gpuroom::retry_gpu_due(&key) {
-        *guard = None;
+    fn gpu(&self) -> bool {
+        self.gpu
     }
-    *loaded_ms = 0.0;
-    // Keep what fits on the graphics card: free the others first if this one wouldn't.
-    let (before, fit_note) = if try_gpu { gpuroom::fit(Kind::Subject, &key, guard.is_some()) } else { (None, String::new()) };
-    let on_cpu = guard.as_ref().is_some_and(|l| !l.gpu);
-    let order: &[Device] = if on_cpu { &[Device::Cpu] } else { gpuroom::attempts(try_gpu) };
-    let mut note = fit_note;
-    let mut last_err = String::from("Subject outlines couldn't run.");
-    let mut load_failed = false;
-    for &dev in order {
-        if dev == Device::GpuAfterRoom {
-            // Not enough room on the graphics card with the other models loaded: free them, try again.
-            gpuroom::make_room(Kind::Subject);
-            note = if note.is_empty() { "made room on the graphics card".into() } else { format!("{note}; made room on the graphics card") };
-        }
-        if guard.is_none() {
-            let start = Instant::now();
-            match load(pack, dev.gpu()) {
-                Ok(l) => {
-                    *loaded_ms += start.elapsed().as_secs_f64() * 1000.0;
-                    *guard = Some(l);
-                }
-                Err(e) => {
-                    last_err = e;
-                    load_failed = true;
-                    continue;
-                }
-            }
-        }
-        load_failed = false;
-        let loaded = guard.as_mut().expect("loaded above");
-        let gpu = loaded.gpu;
-        let run = Instant::now();
-        match f(loaded) {
-            Ok(v) => {
-                let ran = run.elapsed();
-                LAST_DEVICE.lock().unwrap().insert(key.clone(), gpu);
-                let mut card = None;
-                if gpu {
-                    gpuroom::on_gpu(&key);
-                    let (n, c) = gpuroom::after(Kind::Subject, &key, Some(key.as_str()), *loaded_ms > 0.0, before, ran);
-                    card = c;
-                    if !n.is_empty() {
-                        note = if note.is_empty() { n } else { format!("{note}; {n}") };
-                    }
-                } else if try_gpu {
-                    gpuroom::fell_back(&key);
-                    note = if note.is_empty() { "on the processor (the graphics card failed)".into() } else { format!("{note}; on the processor") };
-                }
-                gpuroom::log(Kind::Subject, &key, gpu, wait, *loaded_ms, ran, &note, card);
-                return Ok(v);
-            }
-            Err(e) => {
-                *guard = None;
-                last_err = e;
-            }
-        }
-    }
-    if load_failed {
-        BROKEN.lock().unwrap().insert(key.clone(), last_err.clone());
-    }
-    gpuroom::log(Kind::Subject, &key, false, wait, *loaded_ms, Duration::ZERO, &format!("didn't run: {last_err}"), gpuroom::card_memory());
-    Err(last_err)
 }
 
 // ---- the maths (no model needed) --------------------------------------------------------------

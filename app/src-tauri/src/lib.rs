@@ -37,6 +37,7 @@ mod subject;
 mod inpaint;
 // One loaded model per kind (depth, subject, fill), each in its own slot, freed when idle.
 mod modelslot;
+mod onnxmodel; // what the depth, subject and fill models share: loading on the best device, the graphics card's turn
 // Saved depth maps and outlines of still pictures, encrypted in the vault (schema v18).
 mod derived;
 // Duel mode: pick the better of two; Elo ratings set the slideshow weights.

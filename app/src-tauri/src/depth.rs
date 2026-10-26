@@ -41,6 +41,7 @@ use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
 use crate::modelslot::ModelSlot;
+use crate::onnxmodel;
 use crate::{faceid, upscale, upscale_img};
 
 /// The Fast model's file (its pack has no manifest).
@@ -290,7 +291,7 @@ pub fn scan(base: Option<&Path>, any_name: bool, single: Option<&Path>, others: 
         if p.problem.is_none() && p.runtime.is_none() {
             p.problem = Some("The depth pack is incomplete (onnxruntime is missing).".into());
         }
-        p.gpu = cfg!(windows) && p.runtime.as_ref().is_some_and(|r| r.join("DirectML.dll").is_file());
+        p.gpu = onnxmodel::can_use_gpu(p.runtime.as_deref());
     }
     packs
 }
@@ -501,7 +502,7 @@ pub fn info(wanted: &str, detail: Detail) -> DepthInfo {
     };
     let rt = pack.runtime.clone().unwrap_or_else(|| pack.dir.clone());
     let known = LAST_DEVICE.lock().unwrap().get(&pack.manifest.id).copied();
-    let guess = if cfg!(windows) && rt.join("DirectML.dll").is_file() { "gpu" } else { "cpu" };
+    let guess = onnxmodel::device_guess(&rt);
     let detail = if pack.manifest.dynamic() { detail } else { Detail::Standard };
     DepthInfo {
         available: true,
@@ -539,24 +540,13 @@ static LAST_DEVICE: Mutex<BTreeMap<String, bool>> = Mutex::new(BTreeMap::new());
 /// Models whose runtime or file couldn't start at all (shown in Settings), per model.
 static BROKEN: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
 
-/// A fixed-size model's own input size (it may differ from what its pack says); `want` otherwise.
-fn session_side(session: &ort::session::Session, want: usize) -> (usize, usize) {
-    let dims: Vec<i64> = session
-        .inputs()
-        .first()
-        .and_then(|i| i.dtype().tensor_shape())
-        .map(|s| s.iter().copied().collect())
-        .unwrap_or_default();
-    let pick = |v: Option<&i64>| v.copied().filter(|&d| d > 0).map(|d| d as usize).unwrap_or(want);
-    if dims.len() == 4 { (pick(dims.get(2)), pick(dims.get(3))) } else { (want, want) }
-}
 
 fn load(pack: &Pack, side: usize, gpu: bool) -> Result<Loaded, String> {
     let rt = pack.runtime.as_ref().ok_or("The depth pack is incomplete (onnxruntime is missing).")?;
     let env = upscale::start_runtime(rt).map_err(|e| friendly(&e))?;
     let session = upscale::open_session(env, &pack.dir.join(&pack.manifest.file), gpu).map_err(|e| friendly(&e))?;
     // Models of any size get exactly the size asked for; fixed ones keep their own.
-    let side = if pack.manifest.dynamic() { (side, side) } else { session_side(&session, side) };
+    let side = if pack.manifest.dynamic() { (side, side) } else { onnxmodel::session_side(&session, side) };
     let m = &pack.manifest;
     Ok(Loaded { session, key: (m.id.clone(), side.0), side, output: m.output, mean: m.mean, std: m.std, gpu })
 }
@@ -588,101 +578,47 @@ fn key_of(pack: &Pack, detail: Detail) -> (String, usize) {
 /// graphics-card-only model never goes to the processor: when the graphics
 /// card fails it is marked as not usable here (so Fast is chosen instead).
 fn with_model<T>(pack: &Pack, detail: Detail, loaded_ms: &mut f64, f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
-    use crate::gpuroom::{self, Device, Kind};
-    let try_gpu = pack.gpu;
-    let gpu_only = pack.manifest.gpu_only;
     let id = pack.manifest.id.clone();
     let no_gpu = |e: &str| {
         let why = format!("{NO_GPU} ({e})");
-        BROKEN.lock().unwrap().insert(id.clone(), why.clone());
+        BROKEN.lock().unwrap_or_else(|x| x.into_inner()).insert(id.clone(), why.clone());
         why
     };
-    if gpu_only && !try_gpu {
+    let gpu_only = pack.manifest.gpu_only;
+    if gpu_only && !pack.gpu {
         return Err(no_gpu("no graphics card here"));
     }
     let key = key_of(pack, detail);
     let side = key.1;
-    // One model on the graphics card at a time (gpuroom.rs).
-    let waited = Instant::now();
-    let _turn = gpuroom::turn();
-    let wait = waited.elapsed();
-    let mut guard = MODEL.lock();
-    if guard.as_ref().is_some_and(|l| l.key != key) {
-        *guard = None; // a different model or size: free the old one first (they're big)
+    let measured = format!("{id}@{side}");
+    let run = onnxmodel::Run {
+        kind: crate::gpuroom::Kind::Depth,
+        id: &id,
+        key: &key,
+        measured_as: Some(&measured),
+        try_gpu: pack.gpu,
+        gpu_only: if gpu_only { Some(&no_gpu) } else { None },
+        failed: "3D photos couldn't run.",
+    };
+    let records = onnxmodel::Records { last_device: &LAST_DEVICE, broken: &BROKEN };
+    // Kept under the size asked for (a fixed-size model runs at its own).
+    let mut load_it = |gpu: bool| {
+        load(pack, side, gpu).map(|mut l| {
+            l.key = key.clone();
+            l
+        })
+    };
+    onnxmodel::with_model(&MODEL, &records, &run, &mut load_it, loaded_ms, f)
+}
+
+impl onnxmodel::LoadedModel for Loaded {
+    type Key = (String, usize);
+    fn key(&self) -> &Self::Key {
+        &self.key
     }
-    // On the processor since a fall-back: the graphics card again now and then.
-    if try_gpu && guard.as_ref().is_some_and(|l| !l.gpu) && gpuroom::retry_gpu_due(&id) {
-        *guard = None;
+    fn gpu(&self) -> bool {
+        self.gpu
     }
-    *loaded_ms = 0.0;
-    // Keep what fits on the graphics card: free the others first if this one wouldn't.
-    let (before, fit_note) = if try_gpu { gpuroom::fit(Kind::Depth, &id, guard.is_some()) } else { (None, String::new()) };
-    let on_cpu = guard.as_ref().is_some_and(|l| !l.gpu);
-    let order: &[Device] = if on_cpu { &[Device::Cpu] } else { gpuroom::attempts(try_gpu) };
-    let mut note = fit_note;
-    let mut last_err = String::from("3D photos couldn't run.");
-    let mut load_failed = false;
-    for &dev in order {
-        if gpu_only && !dev.gpu() {
-            break;
-        }
-        if dev == Device::GpuAfterRoom {
-            // Not enough room on the graphics card with the other models loaded: free them, try again.
-            gpuroom::make_room(Kind::Depth);
-            note = if note.is_empty() { "made room on the graphics card".into() } else { format!("{note}; made room on the graphics card") };
-        }
-        if guard.is_none() {
-            let start = Instant::now();
-            match load(pack, side, dev.gpu()) {
-                Ok(mut l) => {
-                    l.key = key.clone();
-                    *loaded_ms += start.elapsed().as_secs_f64() * 1000.0;
-                    *guard = Some(l);
-                }
-                Err(e) => {
-                    last_err = e;
-                    load_failed = true;
-                    continue;
-                }
-            }
-        }
-        load_failed = false;
-        let loaded = guard.as_mut().expect("loaded above");
-        let gpu = loaded.gpu;
-        let run = Instant::now();
-        match f(loaded) {
-            Ok(v) => {
-                let ran = run.elapsed();
-                LAST_DEVICE.lock().unwrap().insert(id.clone(), gpu);
-                let mut card = None;
-                if gpu {
-                    gpuroom::on_gpu(&id);
-                    let (n, c) = gpuroom::after(Kind::Depth, &id, Some(format!("{id}@{side}").as_str()), *loaded_ms > 0.0, before, ran);
-                    card = c;
-                    if !n.is_empty() {
-                        note = if note.is_empty() { n } else { format!("{note}; {n}") };
-                    }
-                } else if try_gpu {
-                    gpuroom::fell_back(&id);
-                    note = if note.is_empty() { "on the processor (the graphics card failed)".into() } else { format!("{note}; on the processor") };
-                }
-                gpuroom::log(Kind::Depth, &id, gpu, wait, *loaded_ms, ran, &note, card);
-                return Ok(v);
-            }
-            Err(e) => {
-                *guard = None;
-                last_err = e;
-            }
-        }
-    }
-    if gpu_only {
-        return Err(no_gpu(&last_err));
-    }
-    if load_failed {
-        BROKEN.lock().unwrap().insert(id.clone(), last_err.clone());
-    }
-    gpuroom::log(Kind::Depth, &id, false, wait, *loaded_ms, Duration::ZERO, &format!("didn't run: {last_err}"), gpuroom::card_memory());
-    Err(last_err)
 }
 
 // ---- the maths (no model needed) --------------------------------------------------------------
