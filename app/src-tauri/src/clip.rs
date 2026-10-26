@@ -54,7 +54,7 @@ pub struct ClipTask {
 
 /// Items that still need analysing (they need a thumbnail first).
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ClipTask>> {
-    conn.prepare(&format!(
+    conn.prepare_cached(&format!(
         "SELECT id, kind, IFNULL(preview_object_id, '') <> '' FROM media WHERE clip_state = 0 AND deleted_at IS NULL AND thumb_object_id IS NOT NULL \
          AND kind IN ('image', 'gif', 'video') ORDER BY {}id DESC LIMIT ?",
         crate::focus::order()

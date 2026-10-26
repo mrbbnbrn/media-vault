@@ -252,6 +252,9 @@ pub fn media_date<R: Read + Seek>(ext: &str, head: &[u8], full: Option<&mut R>) 
     }
 }
 
+/// Items whose date taken hasn't been looked for yet (reads only those: db.rs "speed indexes").
+pub(crate) const BACKFILL_SQL: &str = "SELECT id, object_id, ext, file_mtime FROM media WHERE taken_at IS NULL ORDER BY id LIMIT 40";
+
 /// Fill in `taken_at` for items that haven't been looked at yet (older
 /// vaults, and videos whose header is at the end of the file). Runs in the
 /// background while the vault is open.
@@ -261,9 +264,7 @@ pub fn backfill(s: Arc<Session>) {
         while !s.is_closed() {
             let todo: Vec<(i64, String, String, Option<i64>)> = {
                 let db = s.db();
-                let Ok(mut st) = db.prepare(
-                    "SELECT id, object_id, ext, file_mtime FROM media WHERE taken_at IS NULL ORDER BY id LIMIT 40",
-                ) else {
+                let Ok(mut st) = db.prepare_cached(BACKFILL_SQL) else {
                     return;
                 };
                 st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
@@ -301,10 +302,9 @@ pub fn backfill(s: Arc<Session>) {
                         head.truncate(n);
                         media_date(&ext, &head, Some(&mut r))
                     });
-                let _ = s.db().execute(
-                    "UPDATE media SET taken_at = ? WHERE id = ? AND taken_at IS NULL",
-                    rusqlite::params![date.unwrap_or(0), id],
-                );
+                let _ = s.db().prepare_cached("UPDATE media SET taken_at = ? WHERE id = ? AND taken_at IS NULL").and_then(|mut st| {
+                    st.execute(rusqlite::params![date.unwrap_or(0), id])
+                });
                 s.mark_dirty();
             }
         }

@@ -70,6 +70,7 @@ mod similar;
 mod sketch;
 mod storage;
 mod throttle;
+mod util; // small helpers shared by many modules
 mod userbusy; // background work waits while you use the window
 mod diaglog; // diagnostics.log: steps and sizes only, written straight to disk
 mod crashguard; // the window's processes ending (a black window): load the page again
@@ -1032,17 +1033,20 @@ struct ThumbTask {
     kind: String,
 }
 
+/// Items without a thumbnail, on screen first (reads only those: db.rs "speed indexes").
+fn thumbs_needed_sql() -> String {
+    format!(
+        "SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY {}id LIMIT ?",
+        analyse::window_thumbs_sql(),
+        focus::order()
+    )
+}
+
 #[tauri::command]
 async fn thumbs_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<ThumbTask>, String> {
     read_db(state.inner(), move |c| {
         // Pictures the native analysis pass reads are left to it (analyse.rs).
-        let mut st = c
-            .prepare(&format!(
-                "SELECT id, kind FROM media WHERE thumb_object_id IS NULL{} ORDER BY {}id LIMIT ?",
-                analyse::window_thumbs_sql(),
-                focus::order()
-            ))
-            .map_err(|e| e.to_string())?;
+        let mut st = c.prepare_cached(&thumbs_needed_sql()).map_err(|e| e.to_string())?;
         let v = st
             .query_map([limit], |r| {
                 Ok(ThumbTask {

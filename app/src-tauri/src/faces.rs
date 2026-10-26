@@ -136,8 +136,13 @@ pub struct ScanTask {
     pub duration_ms: Option<i64>,
 }
 
+/// The scan queue, items on screen first (reads only the queued items: db.rs "speed indexes").
+pub(crate) fn needed_sql() -> String {
+    format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} ORDER BY {}id LIMIT ?", off_sql(), crate::focus::order())
+}
+
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<ScanTask>> {
-    conn.prepare(&format!("SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} ORDER BY {}id LIMIT ?", off_sql(), crate::focus::order()))
+    conn.prepare_cached(&needed_sql())
         .map_err(e)?
         .query_map([limit], |r| Ok(ScanTask { id: r.get(0)?, kind: r.get(1)?, duration_ms: r.get(2)? }))
         .map_err(e)?

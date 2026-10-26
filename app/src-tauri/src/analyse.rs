@@ -164,31 +164,40 @@ struct Task {
     faces: bool,
 }
 
-fn where_sql(here: &str) -> String {
+/// The ids with something to do here: one part per step, each reading only
+/// the items waiting for that step (the partial indexes in db.rs, "speed
+/// indexes"), instead of one big OR that has to look at every item.
+/// ?1 = smart search on, ?2 = faces on.
+fn todo_sql(here: &str) -> String {
     let off = faces::off_sql();
     format!(
-        "((thumb_object_id IS NULL AND {here}) \
-         OR (IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} AND (phash_state = 0 OR (?1 AND clip_state = 0))) \
-         OR (thumb_object_id = '' AND ?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}) \
-         OR (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}))"
+        "SELECT id AS qid FROM media WHERE thumb_object_id IS NULL AND {here} \
+         UNION SELECT id FROM media WHERE phash_state = 0 AND IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} \
+         UNION SELECT id FROM media WHERE ?1 AND clip_state = 0 AND thumb_object_id IS NOT NULL AND deleted_at IS NULL AND kind IN {KINDS} \
+         UNION SELECT id FROM media WHERE ?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}"
+    )
+}
+
+fn select_sql(only: Option<&[i64]>) -> String {
+    let here = here_sql();
+    let off = faces::off_sql();
+    let ids = only.map(|ids| format!(" WHERE m.id IN ({})", crate::util::id_list(ids))).unwrap_or_default();
+    // The waiting ids first (CROSS JOIN keeps them first), then their rows.
+    format!(
+        "SELECT m.id, m.kind, m.object_id, m.thumb_object_id, m.preview_object_id, \
+           (m.thumb_object_id IS NULL AND {here}), \
+           (m.phash_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
+           (?1 AND m.clip_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
+           (?2 AND m.faces_state = 2 AND m.deleted_at IS NULL AND {here}{off}) \
+         FROM ({}) AS q CROSS JOIN media AS m ON m.id = q.qid{ids} ORDER BY {}m.id DESC LIMIT ?3",
+        todo_sql(&here),
+        crate::focus::order()
     )
 }
 
 fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<Vec<Task>> {
-    let here = here_sql();
-    let off = faces::off_sql();
-    let ids = only.map(|ids| format!(" AND id IN ({})", ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))).unwrap_or_default();
-    let sql = format!(
-        "SELECT id, kind, object_id, thumb_object_id, preview_object_id, \
-           (thumb_object_id IS NULL AND {here}), \
-           (phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
-           (?1 AND clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}), \
-           (?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}) \
-         FROM media WHERE {}{ids} ORDER BY {}id DESC LIMIT ?3",
-        where_sql(&here),
-        crate::focus::order()
-    );
-    conn.prepare(&sql)
+    // The text only changes with what is on screen, so the prepared query is kept.
+    conn.prepare_cached(&select_sql(only))
         .map_err(e)?
         .query_map(params![caps.smart, caps.faces, limit], |r| {
             Ok(Task {
@@ -210,7 +219,9 @@ fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<
 
 /// How many items still have something to be done here.
 fn left(conn: &Connection, caps: Caps) -> R<i64> {
-    conn.query_row(&format!("SELECT COUNT(*) FROM media WHERE {}", where_sql(&here_sql())), params![caps.smart, caps.faces], |r| r.get(0))
+    conn.prepare_cached(&format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql())))
+        .map_err(e)?
+        .query_row(params![caps.smart, caps.faces], |r| r.get(0))
         .map_err(e)
 }
 
@@ -869,6 +880,42 @@ mod tests {
             let raw: Vec<u8> = inputs.iter().flat_map(|f| f.to_le_bytes()).collect();
             std::fs::write(format!("{path}.inputs.bin"), raw).unwrap();
         }
+    }
+
+    /// How SQLite runs a query, and that it never reads every item.
+    pub(crate) fn assert_no_full_scan(c: &Connection, sql: &str, index: &str) {
+        let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let args = vec![rusqlite::types::Value::Integer(1); st.parameter_count()];
+        let plan: Vec<String> = st.query_map(rusqlite::params_from_iter(args), |r| r.get(3)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        let p = plan.join(" | ");
+        assert!(p.contains(index), "{index} not used: {sql}\n{p}");
+        for step in &plan {
+            let whole = (step == "SCAN media" || step == "SCAN m" || step.starts_with("SCAN media ") || step.starts_with("SCAN m "))
+                && !step.contains("INDEX");
+            assert!(!whole, "reads every item: {step}\n{sql}\n{p}");
+        }
+    }
+
+    #[test]
+    fn the_queues_read_only_what_is_waiting() {
+        let _turn = TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let c = db::create_empty().unwrap();
+        // Something on screen and a picture it couldn't read: the SQL still uses the indexes.
+        crate::focus::set(Some(crate::focus::Focus { folder: Some(999_999), in_folder: true, ids: vec![999_998] }));
+        not_here(999_997);
+        let all = select_sql(None).replace("?3", "5");
+        assert_no_full_scan(&c, &all, "media_need_thumb");
+        for index in ["media_need_print", "media_need_smart", "media_faces_queued"] {
+            assert_no_full_scan(&c, &all, index);
+        }
+        let left = format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql()));
+        assert_no_full_scan(&c, &left, "media_need_print");
+        assert_no_full_scan(&c, &faces::needed_sql().replace('?', "5"), "media_faces_queued");
+        assert_no_full_scan(&c, &crate::thumbs_needed_sql().replace('?', "5"), "media_need_thumb");
+        assert_no_full_scan(&c, crate::sketch::BACKFILL_SQL, "media_need_sketch");
+        assert_no_full_scan(&c, crate::meta::BACKFILL_SQL, "media_need_taken");
+        crate::focus::set(None);
+        NOT_HERE.lock().unwrap().clear();
     }
 
     #[test]

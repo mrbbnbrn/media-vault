@@ -672,8 +672,35 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- vaults without encryption (end) ----
+    // ---- speed indexes (begin) ----
+    // Indexes for the background work queues (looked at every few seconds)
+    // and for folder pages. Not a new format: they are made at every opening
+    // if they aren't there yet (an older app opens the library just the same,
+    // and simply doesn't use them). Partial indexes only hold the items still
+    // waiting, so finding the next few is quick however large the library is.
+    conn.execute_batch(SPEED_INDEXES_SQL)?;
+    if has_table(conn, "face_rejects")? {
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS face_rejects_folder ON face_rejects(folder_id);")?;
+    }
+    // ---- speed indexes (end) ----
     Ok(())
 }
+
+/// See "speed indexes" in `migrate`. Every column used here exists from v12 on.
+const SPEED_INDEXES_SQL: &str = r#"
+CREATE INDEX IF NOT EXISTS media_need_thumb ON media(id) WHERE thumb_object_id IS NULL;
+CREATE INDEX IF NOT EXISTS media_need_sketch ON media(thumb_object_id) WHERE sketch IS NULL;
+CREATE INDEX IF NOT EXISTS media_need_taken ON media(id) WHERE taken_at IS NULL;
+CREATE INDEX IF NOT EXISTS media_faces_queued ON media(id) WHERE faces_state = 2;
+CREATE INDEX IF NOT EXISTS media_need_print ON media(id) WHERE phash_state = 0;
+CREATE INDEX IF NOT EXISTS media_need_smart ON media(id) WHERE clip_state = 0;
+CREATE INDEX IF NOT EXISTS media_need_previews ON media(id)
+    WHERE kind = 'video' AND (preview_object_id IS NULL OR tiny_object_id IS NULL);
+CREATE INDEX IF NOT EXISTS media_folder_items ON media(folder_id, imported_at, id);
+CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent_id);
+CREATE INDEX IF NOT EXISTS folders_cover ON folders(cover_media_id);
+CREATE INDEX IF NOT EXISTS folders_banner ON folders(banner_media_id);
+"#;
 
 const NOT_SAME_SQL: &str = r#"
 CREATE INDEX IF NOT EXISTS face_not_same_b ON face_not_same(b);
@@ -1292,5 +1319,46 @@ mod tests {
         c.execute("DELETE FROM media WHERE id = 2", []).unwrap();
         assert_eq!(n(&c), 0);
         migrate(&c).unwrap();
+    }
+    /// How SQLite would run a query (the "detail" column of EXPLAIN QUERY PLAN).
+    pub(crate) fn plan(c: &Connection, sql: &str) -> String {
+        let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();
+        let rows = st.query_map([], |r| r.get::<_, String>(3)).unwrap();
+        rows.collect::<rusqlite::Result<Vec<_>>>().unwrap().join(" | ")
+    }
+
+    #[test]
+    fn speed_indexes_are_made_at_every_opening_without_a_new_format() {
+        let c = create_empty().unwrap();
+        // An older library (made before them): they appear when it is opened.
+        c.execute_batch("DROP INDEX media_need_thumb; DROP INDEX folders_parent; DROP INDEX face_rejects_folder;").unwrap();
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the format number stays");
+        for i in ["media_need_thumb", "folders_parent", "face_rejects_folder", "media_folder_items"] {
+            let n: i64 = c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", [i], |r| r.get(0)).unwrap();
+            assert_eq!(n, 1, "{i}");
+        }
+        // The background queues read only the items still waiting.
+        let uses = |sql: &str, index: &str| {
+            let p = plan(&c, sql);
+            assert!(p.contains(index), "{sql}: {p}");
+        };
+        uses("SELECT id, kind FROM media WHERE thumb_object_id IS NULL ORDER BY id LIMIT 5", "media_need_thumb");
+        uses(
+            "SELECT DISTINCT thumb_object_id FROM media WHERE sketch IS NULL AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' LIMIT 40",
+            "media_need_sketch",
+        );
+        uses("SELECT id, object_id, ext, file_mtime FROM media WHERE taken_at IS NULL ORDER BY id LIMIT 40", "media_need_taken");
+        uses("SELECT id FROM media WHERE faces_state = 2 AND deleted_at IS NULL ORDER BY id LIMIT 5", "media_faces_queued");
+        uses(
+            "SELECT id FROM media WHERE kind = 'video' AND (preview_object_id IS NULL OR tiny_object_id IS NULL) \
+             AND deleted_at IS NULL AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY id DESC LIMIT 5",
+            "media_need_previews",
+        );
+        uses("SELECT id FROM folders WHERE parent_id = 3", "folders_parent");
+        uses("SELECT id FROM folders WHERE cover_media_id = 3", "folders_cover");
+        uses("SELECT face_id FROM face_rejects WHERE folder_id = 3", "face_rejects_folder");
+        uses("SELECT id FROM media WHERE folder_id = 3 ORDER BY imported_at, id", "media_folder_items");
     }
 }
