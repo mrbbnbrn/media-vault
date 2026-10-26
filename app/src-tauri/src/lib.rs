@@ -2424,7 +2424,7 @@ fn windows_session_locked() -> bool {
 fn start_watcher(app: AppHandle, inner: Shared) {
     std::thread::spawn(move || {
         let mut sleep = SleepDetector::new(SystemTime::now());
-        let mut told_failure = false;
+        let mut backoff = session::SaveBackoff::default();
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let slept = sleep.tick(SystemTime::now());
@@ -2438,18 +2438,30 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             // What background work alone changed (all of which can be made
             // again) is saved at most once a minute, or with your next edit.
             let max_wait = if userbusy::busy() { 20 } else { 5 };
-            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait), session::BACKGROUND_SAVE_EVERY) {
-                Ok(()) => {
-                    told_failure = false;
+            // After a failed save, the next try waits longer each time (2 s, 5 s, 15 s, then a minute).
+            let tried = backoff
+                .due(Instant::now())
+                .then(|| open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait), session::BACKGROUND_SAVE_EVERY));
+            match tried {
+                None => {} // waiting for the next try
+                Some(Ok(())) => {
+                    backoff.ok();
                     // A vault without encryption: files follow their items (moves, renames, the trash).
                     if let Err(e) = plainfiles::arrange_if_changed(&open) {
                         eprintln!("Couldn't put files in their folders: {e}");
                     }
                 }
-                Err(e) => {
-                    if !told_failure {
-                        let _ = app.emit("save-failed", e);
-                        told_failure = true;
+                Some(Err(e)) => {
+                    // The vault's folder itself is gone: its drive was removed or disconnected.
+                    let gone = !open.vault().root().is_dir();
+                    if backoff.failed(Instant::now()) {
+                        if gone {
+                            let msg = "The vault's drive isn't there any more (was it unplugged or disconnected?). Connect it again and saving carries on by itself.";
+                            let _ = app.emit("vault-gone", msg);
+                            let _ = app.emit("save-failed", msg);
+                        } else {
+                            let _ = app.emit("save-failed", e);
+                        }
                     }
                 }
             }

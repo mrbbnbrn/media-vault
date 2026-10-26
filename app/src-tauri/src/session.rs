@@ -404,6 +404,36 @@ impl Session {
     }
 }
 
+/// When to try a failed save again: after 2 s, 5 s, 15 s, then once a
+/// minute (a removed drive shouldn't be tried every 2 s for ever).
+#[derive(Debug, Default)]
+pub struct SaveBackoff {
+    failures: u32,
+    next: Option<Instant>,
+}
+
+impl SaveBackoff {
+    const STEPS: [u64; 4] = [2, 5, 15, 60];
+
+    /// Whether a save may be tried now.
+    pub fn due(&self, now: Instant) -> bool {
+        self.next.is_none_or(|t| now >= t)
+    }
+
+    /// A save failed; true the first time (tell the window once).
+    pub fn failed(&mut self, now: Instant) -> bool {
+        let wait = Self::STEPS[(self.failures as usize).min(Self::STEPS.len() - 1)];
+        self.failures += 1;
+        self.next = Some(now + Duration::from_secs(wait));
+        self.failures == 1
+    }
+
+    /// A save worked (or there was nothing to save).
+    pub fn ok(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Create a vault in `parent/name`. Returns the open session and the 24 words.
 pub fn create(
     parent: &str,
@@ -610,6 +640,27 @@ mod tests {
         let dir = s.vault().root().join("meta-backups");
         let parts = std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".part")).count()).unwrap_or(0);
         assert_eq!(parts, 0, "no half-made copy is left");
+    }
+
+    #[test]
+    fn failed_saves_wait_longer_each_time() {
+        let t0 = Instant::now();
+        let mut b = SaveBackoff::default();
+        assert!(b.due(t0));
+        assert!(b.failed(t0), "the first failure is told");
+        assert!(!b.due(t0 + Duration::from_secs(1)) && b.due(t0 + Duration::from_secs(2)));
+        let t1 = t0 + Duration::from_secs(2);
+        assert!(!b.failed(t1), "told only once");
+        assert!(!b.due(t1 + Duration::from_secs(4)) && b.due(t1 + Duration::from_secs(5)));
+        let t2 = t1 + Duration::from_secs(5);
+        b.failed(t2);
+        let t3 = t2 + Duration::from_secs(15);
+        assert!(b.due(t3));
+        b.failed(t3);
+        b.failed(t3);
+        assert!(!b.due(t3 + Duration::from_secs(59)) && b.due(t3 + Duration::from_secs(60)), "then once a minute");
+        b.ok();
+        assert!(b.due(t3) && b.failed(t3), "told again after it worked");
     }
 
     #[test]
