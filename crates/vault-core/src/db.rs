@@ -1006,7 +1006,7 @@ mod tests {
     fn v11_adds_the_sketch_column() {
         let c = create_empty().unwrap();
         c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'image', 'a', 'jpg', 1, 'h', 0)", []).unwrap();
-        c.execute_batch("ALTER TABLE media DROP COLUMN sketch; PRAGMA user_version = 10;").unwrap();
+        c.execute_batch("DROP INDEX media_need_sketch; ALTER TABLE media DROP COLUMN sketch; PRAGMA user_version = 10;").unwrap();
         migrate(&c).unwrap();
         let s: Option<String> = c.query_row("SELECT sketch FROM media", [], |r| r.get(0)).unwrap();
         assert_eq!(s, None);
@@ -1026,7 +1026,7 @@ mod tests {
             [],
         )
         .unwrap();
-        c.execute_batch("ALTER TABLE media DROP COLUMN tiny_object_id; PRAGMA user_version = 11;").unwrap();
+        c.execute_batch("DROP INDEX media_need_previews; ALTER TABLE media DROP COLUMN tiny_object_id; PRAGMA user_version = 11;").unwrap();
         migrate(&c).unwrap();
         let (p, t): (String, Option<String>) =
             c.query_row("SELECT preview_object_id, tiny_object_id FROM media", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
