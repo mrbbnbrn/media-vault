@@ -99,29 +99,39 @@ pub struct ScanRequest {
     pub again: bool,
 }
 
-fn scannable_ids(conn: &Connection, req: &ScanRequest) -> R<Vec<i64>> {
-    let items = if req.all {
-        library::query_items(conn, &Default::default())?
+/// Which items a request means, as SQL conditions (pictures and videos not in
+/// the trash): everything, a folder with its subfolders, or some ids (one
+/// condition per 500 ids). Only numbers go into the SQL.
+fn scannable_where(conn: &Connection, req: &ScanRequest) -> R<Vec<String>> {
+    const SCANNABLE: &str = "deleted_at IS NULL AND kind IN ('image', 'gif', 'video')";
+    Ok(if req.all {
+        vec![SCANNABLE.to_string()]
     } else if let Some(f) = req.folder {
-        library::query_items(conn, &library::ItemFilter { folder: Some(Some(f)), recursive: true, ..Default::default() })?
+        vec![format!("{SCANNABLE} AND folder_id IN ({})", crate::util::id_list(&library::descendants(conn, &[f])?))]
     } else {
-        library::items_by_ids(conn, &req.ids)?
-    };
-    Ok(items.into_iter().filter(|i| matches!(i.kind.as_str(), "image" | "gif" | "video")).map(|i| i.id).collect())
+        req.ids.chunks(500).map(|c| format!("{SCANNABLE} AND id IN ({})", crate::util::id_list(c))).collect()
+    })
+}
+
+fn scannable_ids(conn: &Connection, req: &ScanRequest) -> R<Vec<i64>> {
+    let mut out = Vec::new();
+    for w in scannable_where(conn, req)? {
+        let mut st = conn.prepare(&format!("SELECT id FROM media WHERE {w} ORDER BY id")).map_err(e)?;
+        for id in st.query_map([], |r| r.get(0)).map_err(e)? {
+            out.push(id.map_err(e)?);
+        }
+    }
+    Ok(out)
 }
 
 /// Put items in the scan queue. Returns how many will be scanned.
 pub fn queue(conn: &Connection, req: &ScanRequest) -> R<usize> {
-    let ids = scannable_ids(conn, req)?;
     let tx = conn.unchecked_transaction().map_err(e)?;
     let mut n = 0;
-    for id in ids {
-        let sql = if req.again {
-            "UPDATE media SET faces_state = 2 WHERE id = ?"
-        } else {
-            "UPDATE media SET faces_state = 2 WHERE id = ? AND faces_state IN (0, 2)"
-        };
-        n += tx.execute(sql, [id]).map_err(e)?;
+    // One update for all of them (not one per item).
+    for w in scannable_where(conn, req)? {
+        let again = if req.again { "" } else { " AND faces_state IN (0, 2)" };
+        n += tx.execute(&format!("UPDATE media SET faces_state = 2 WHERE {w}{again}"), []).map_err(e)?;
     }
     tx.commit().map_err(e)?;
     // Not in folders where face search is off.
@@ -1937,6 +1947,36 @@ mod tests {
         let again = faces_of_with(&c, m, true).unwrap();
         assert_eq!(again.len(), 2);
         assert!(again.iter().all(|x| x.person.is_none() && !x.hidden));
+    }
+
+    #[test]
+    fn queueing_picks_pictures_and_videos_not_in_the_trash() {
+        let _serial = serial();
+        refresh_off(&db::create_empty().unwrap()).unwrap();
+        let c = db::create_empty().unwrap();
+        let top = library::create_folder(&c, None, "Top").unwrap();
+        let sub = library::create_folder(&c, Some(top), "Sub").unwrap();
+        let a = add(&c, Some(top));
+        let b = add(&c, Some(sub));
+        let text = add(&c, Some(sub));
+        c.execute("UPDATE media SET kind = 'text' WHERE id = ?", [text]).unwrap();
+        let trashed = add(&c, None);
+        c.execute("UPDATE media SET deleted_at = 1 WHERE id = ?", [trashed]).unwrap();
+        let elsewhere = add(&c, None);
+        let queued = |c: &Connection| -> Vec<i64> {
+            let mut v: Vec<i64> = needed(c, 100).unwrap().into_iter().map(|t| t.id).collect();
+            v.sort();
+            v
+        };
+        assert_eq!(scannable_ids(&c, &ScanRequest { folder: Some(top), ..Default::default() }).unwrap(), vec![a, b]);
+        assert_eq!(queue(&c, &ScanRequest { folder: Some(top), ..Default::default() }).unwrap(), 2);
+        assert_eq!(queued(&c), vec![a, b]);
+        assert_eq!(queue(&c, &ScanRequest { ids: vec![text, trashed, elsewhere], ..Default::default() }).unwrap(), 1);
+        c.execute("UPDATE media SET faces_state = 1", []).unwrap();
+        // Scanned already: only again when asked.
+        assert_eq!(queue(&c, &ScanRequest { all: true, ..Default::default() }).unwrap(), 0);
+        assert_eq!(queue(&c, &ScanRequest { all: true, again: true, ..Default::default() }).unwrap(), 3);
+        assert_eq!(queued(&c), vec![a, b, elsewhere]);
     }
 
     #[test]
