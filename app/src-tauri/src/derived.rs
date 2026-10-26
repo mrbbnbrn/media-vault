@@ -30,9 +30,7 @@ const MAX_LAYER: usize = 64 << 20;
 /// Biggest map accepted (the estimate commands give at most 2048 × 2048).
 const MAX_SIDE: u32 = 4096;
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 fn check_kind(kind: &str) -> Result<(), String> {
     if KINDS.contains(&kind) { Ok(()) } else { Err("Only depth maps, outlines and 3D layers can be saved.".into()) }
@@ -84,9 +82,7 @@ fn picture_source(conn: &Connection, item: i64) -> Result<String, String> {
     }
 }
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
-}
+use crate::util::now_ms;
 
 /// Save (or replace) an item's map of this kind made by this model.
 pub fn put(s: &Session, item: i64, kind: &str, model: &str, bytes: &[u8]) -> Result<(), String> {
@@ -192,9 +188,7 @@ pub struct DerivedGroup {
 /// Item ids in groups small enough for one statement.
 const CHUNK: usize = 500;
 
-fn in_list(n: usize) -> String {
-    vec!["?"; n].join(",")
-}
+use crate::util::placeholders as in_list;
 
 /// What is saved for these items, by kind and model (kinds in order, then models by name).
 pub fn summary(conn: &Connection, items: &[i64]) -> Result<Vec<DerivedGroup>, String> {

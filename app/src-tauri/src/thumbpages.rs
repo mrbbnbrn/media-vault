@@ -40,7 +40,7 @@
 //! ```
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -180,7 +180,7 @@ pub struct Stats {
 }
 
 static STATE: Mutex<Option<State>> = Mutex::new(None);
-static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static WAKE: crate::util::Wake = crate::util::Wake::new();
 
 fn state<'a>(g: &'a mut std::sync::MutexGuard<'static, Option<State>>, vault: &str) -> &'a mut State {
     if g.as_ref().is_none_or(|st| st.vault != vault) {
@@ -328,9 +328,7 @@ pub fn note_miss(s: &Session, folder: Option<i64>, size: Size) {
         st.checked.insert(key, Instant::now());
         st.wanted.push(key);
         drop(g);
-        let (m, cv) = &WAKE;
-        *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-        cv.notify_all();
+        WAKE.wake();
     }
 }
 
@@ -429,9 +427,7 @@ fn write_pages(s: &Session, folder: Option<i64>, size: Size, thumbs: &[ObjectId]
     Ok(made)
 }
 
-fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+use crate::util::now_secs as now;
 
 fn drop_pages(s: &Session, pages: &[ObjectId]) {
     for p in pages {
@@ -548,9 +544,7 @@ pub fn drop_pages_holding(s: &Session, thumbs: &[ObjectId]) -> usize {
             }
         }
     }
-    let (m, cv) = &WAKE;
-    *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-    cv.notify_all();
+    WAKE.wake();
     pages.len()
 }
 
@@ -622,10 +616,7 @@ fn take_wanted(vault: &str) -> Option<(Option<i64>, Size)> {
 }
 
 fn sleep_until_woken(ms: u64) {
-    let (m, cv) = &WAKE;
-    let g = m.lock().unwrap_or_else(|e| e.into_inner());
-    let (mut g, _) = cv.wait_timeout_while(g, Duration::from_millis(ms), |woken| !*woken).unwrap_or_else(|e| e.into_inner());
-    *g = false;
+    WAKE.sleep(ms);
 }
 
 /// Make (small) pages in the background while the vault is open: folders

@@ -1,5 +1,53 @@
 //! Small helpers shared by many modules.
 
+use std::sync::{Condvar, Mutex};
+use std::time::Duration;
+
+/// A library error as the window shows it.
+pub fn sql_err(err: rusqlite::Error) -> String {
+    format!("Library error: {err}")
+}
+
+/// Seconds since 1970 (UTC).
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Milliseconds since 1970 (UTC).
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+}
+
+/// "?,?,?": `n` placeholders for an SQL list.
+pub fn placeholders(n: usize) -> String {
+    vec!["?"; n].join(",")
+}
+
+/// A background loop's rest that something can cut short ("there is new
+/// work"): `sleep` waits up to the time given or until `wake`, whichever
+/// comes first; a wake while it wasn't sleeping cuts the next rest short.
+pub struct Wake {
+    woken: Mutex<bool>,
+    cv: Condvar,
+}
+
+impl Wake {
+    pub const fn new() -> Self {
+        Self { woken: Mutex::new(false), cv: Condvar::new() }
+    }
+
+    pub fn wake(&self) {
+        *self.woken.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.cv.notify_all();
+    }
+
+    pub fn sleep(&self, ms: u64) {
+        let g = self.woken.lock().unwrap_or_else(|e| e.into_inner());
+        let (mut g, _) = self.cv.wait_timeout_while(g, Duration::from_millis(ms), |woken| !*woken).unwrap_or_else(|e| e.into_inner());
+        *g = false;
+    }
+}
+
 /// Numbers for an SQL list: "1, 2, 3" (only numbers go into the SQL text).
 pub fn id_list(ids: &[i64]) -> String {
     ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
@@ -45,6 +93,27 @@ mod tests {
         // A temporary table never reaches the saved library.
         let names: i64 = a.query_row("SELECT COUNT(*) FROM main.sqlite_master WHERE name = 'mv_conn_token'", [], |r| r.get(0)).unwrap();
         assert_eq!(names, 0);
+    }
+
+    #[test]
+    fn a_wake_cuts_the_rest_short() {
+        static W: Wake = Wake::new();
+        let t = std::time::Instant::now();
+        W.wake();
+        W.sleep(10_000);
+        assert!(t.elapsed() < Duration::from_secs(5), "woken before it slept");
+        let t = std::time::Instant::now();
+        W.sleep(30);
+        assert!(t.elapsed() >= Duration::from_millis(25), "not woken: the whole rest");
+        std::thread::spawn(|| {
+            std::thread::sleep(Duration::from_millis(50));
+            W.wake();
+        });
+        let t = std::time::Instant::now();
+        W.sleep(10_000);
+        assert!(t.elapsed() < Duration::from_secs(5));
+        assert_eq!(placeholders(3), "?,?,?");
+        assert!(now_ms() / 1000 - now_secs() <= 1);
     }
 
     #[test]

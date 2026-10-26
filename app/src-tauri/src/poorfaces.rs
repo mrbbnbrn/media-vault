@@ -26,9 +26,7 @@ use crate::config::PoorFaceSettings;
 use crate::library::R;
 use crate::picture::{self, Rgb};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- the rule -------------------------------------------------------------------------------
 

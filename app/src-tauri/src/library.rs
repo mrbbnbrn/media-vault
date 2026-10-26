@@ -9,16 +9,9 @@ use serde::{Deserialize, Serialize};
 
 pub type R<T> = Result<T, String>;
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
-pub fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+pub use crate::util::now_secs;
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -1017,12 +1010,7 @@ fn collect_orphans(conn: &Connection, where_sql: &str, args: &[Value]) -> R<Orph
 
 pub const TRASH_DAYS: i64 = 30;
 
-fn now_ms() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as i64)
-        .unwrap_or(0)
-}
+use crate::util::now_ms;
 
 /// A fresh trash stamp. Everything deleted in one action shares a stamp, so
 /// restoring a folder brings back exactly what was deleted with it.
@@ -1538,7 +1526,7 @@ pub fn set_cover_frame(conn: &Connection, folder: i64, media: Option<i64>, pos: 
 
 pub fn id_list(ids: &[i64]) -> (String, Vec<Value>) {
     (
-        vec!["?"; ids.len()].join(","),
+        crate::util::placeholders(ids.len()),
         ids.iter().map(|i| Value::Integer(*i)).collect(),
     )
 }

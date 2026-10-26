@@ -27,9 +27,7 @@ use crate::library::{self, Orphans};
 use crate::session::Session;
 use crate::stripmeta::{exif_orientation, minimal_exif};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- EXIF orientation -------------------------------------------------------------------------
 

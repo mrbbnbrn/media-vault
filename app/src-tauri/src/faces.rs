@@ -23,9 +23,7 @@ use crate::facegraph::{self as fg, Analysis, FaceMeta, Graph, PersonMeta};
 use crate::faceid;
 use crate::library::{self, Item, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 /// face-api fingerprints (model 0).
 pub const DIM: usize = 128;
@@ -47,9 +45,7 @@ pub fn distance(a: &[f32], b: &[f32]) -> f32 {
     a.iter().zip(b).map(|(x, y)| (x - y) * (x - y)).sum::<f32>().sqrt()
 }
 
-fn now() -> i64 {
-    library::now_secs()
-}
+use crate::util::now_secs as now;
 
 /// Something holding the open library (the session, or a bare database in tests).
 pub trait Lib {
@@ -1271,7 +1267,7 @@ pub fn refresh_off(conn: &Connection) -> R<()> {
     let sql = if tree.is_empty() {
         String::new()
     } else {
-        format!(" AND IFNULL(folder_id, -1) NOT IN ({})", tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))
+        format!(" AND IFNULL(folder_id, -1) NOT IN ({})", crate::util::id_list(&tree))
     };
     *OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()) = sql;
     Ok(())
@@ -1285,7 +1281,7 @@ fn dequeue_off(conn: &Connection) -> R<usize> {
     if tree.is_empty() {
         return Ok(0);
     }
-    let list = tree.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let list = crate::util::id_list(&tree);
     conn.execute(&format!("UPDATE media SET faces_state = 0 WHERE faces_state = 2 AND folder_id IN ({list})"), []).map_err(e)
 }
 
@@ -1315,7 +1311,7 @@ pub fn set_folder_off(conn: &Connection, folder: i64, off: bool) -> R<usize> {
         return Ok(0);
     }
     let inside = library::descendants(conn, &[folder])?;
-    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let marks = crate::util::id_list(&inside);
     conn.execute(
         &format!(
             "UPDATE media SET faces_state = 2 WHERE faces_state = 0 AND deleted_at IS NULL AND kind IN ('image', 'gif', 'video') AND folder_id IN ({marks}){}",
@@ -1344,7 +1340,7 @@ pub fn stop(conn: &Connection) -> R<usize> {
 /// pictures themselves don't change. Returns how many faces were deleted.
 pub fn delete_folder_faces(conn: &Connection, folder: i64) -> R<usize> {
     let inside = library::descendants(conn, &[folder])?;
-    let marks = inside.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+    let marks = crate::util::id_list(&inside);
     let items = format!("SELECT id FROM media WHERE folder_id IN ({marks})");
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute(&format!("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id IN ({items}))"), []).map_err(e)?;

@@ -20,9 +20,7 @@ use vault_core::{ObjectId, ObjectKind};
 
 use crate::picture::{self, Filter, Rgb};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- the list ---------------------------------------------------------------------------------
 

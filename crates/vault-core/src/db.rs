@@ -120,6 +120,21 @@ pub fn deserialize(bytes: &[u8]) -> Result<Connection> {
     Ok(conn)
 }
 
+/// Run one upgrade step as a whole: all of it, or (on any error) none of it.
+fn in_tx(conn: &Connection, step: impl FnOnce() -> Result<()>) -> Result<()> {
+    conn.execute_batch("BEGIN;")?;
+    match step() {
+        Ok(()) => {
+            conn.execute_batch("COMMIT;")?;
+            Ok(())
+        }
+        Err(e) => {
+            let _ = conn.execute_batch("ROLLBACK;");
+            Err(e)
+        }
+    }
+}
+
 fn has_column(conn: &Connection, table: &str, col: &str) -> Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let names = stmt
@@ -210,9 +225,9 @@ fn migrate(conn: &Connection) -> Result<()> {
     if v < 4 {
         // v4: trash (deleted_at), pinned folders, folder colour and emoji,
         // date taken, view counts, video bookmarks.
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
+        in_tx(conn, || {
+            conn.execute_batch(
+                r#"
             ALTER TABLE folders ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE folders ADD COLUMN color TEXT;
             ALTER TABLE folders ADD COLUMN emoji TEXT;
@@ -235,20 +250,17 @@ fn migrate(conn: &Connection) -> Result<()> {
                 WHERE deleted_at IS NULL;
             CREATE INDEX media_deleted ON media(deleted_at) WHERE deleted_at IS NOT NULL;
             PRAGMA user_version = 4;
-            COMMIT;
             "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
-        }
+            )?;
+            Ok(())
+        })?;
     }
     if v < 5 {
         // v5: face recognition (person folders, faces found in each item)
         // and smart search (one picture fingerprint per item).
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
+        in_tx(conn, || {
+            conn.execute_batch(
+                r#"
             ALTER TABLE folders ADD COLUMN person INTEGER NOT NULL DEFAULT 0;
             ALTER TABLE media ADD COLUMN faces_state INTEGER NOT NULL DEFAULT 0;  -- 0 not scanned, 2 queued, 1 done, -1 failed
             ALTER TABLE media ADD COLUMN clip_state INTEGER NOT NULL DEFAULT 0;   -- 0 not analysed, 1 done, -1 failed
@@ -273,65 +285,53 @@ fn migrate(conn: &Connection) -> Result<()> {
                 vec       BLOB NOT NULL                   -- 512 little-endian f32, unit length
             );
             PRAGMA user_version = 5;
-            COMMIT;
             "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
-        }
+            )?;
+            Ok(())
+        })?;
     }
     if v < 6 {
         // v6: a small preview clip per video (a strip of frames, stored with
         // the thumbnails). NULL = not made yet, '' = couldn't be made.
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
+        in_tx(conn, || {
+            conn.execute_batch(
+                r#"
             ALTER TABLE media ADD COLUMN preview_object_id TEXT;
             PRAGMA user_version = 6;
-            COMMIT;
             "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
-        }
+            )?;
+            Ok(())
+        })?;
     }
     if v < 7 {
         // v7: smart search also looks at several moments of each video
         // (from its preview clip); videos that have one are analysed again.
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
+        in_tx(conn, || {
+            conn.execute_batch(
+                r#"
             DELETE FROM clip WHERE media_id IN (SELECT id FROM media WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '');
             UPDATE media SET clip_state = 0 WHERE kind = 'video' AND IFNULL(preview_object_id, '') <> '';
             PRAGMA user_version = 7;
-            COMMIT;
             "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
-        }
+            )?;
+            Ok(())
+        })?;
     }
     if v < 8 {
         // v8: a picture fingerprint (64-bit perceptual hash) and a sharpness
         // score per item, made from its thumbnail, for finding look-alikes.
         // phash_state: 0 not made, 1 made, -1 couldn't be made.
-        let r = conn.execute_batch(
-            r#"
-            BEGIN;
+        in_tx(conn, || {
+            conn.execute_batch(
+                r#"
             ALTER TABLE media ADD COLUMN phash INTEGER;
             ALTER TABLE media ADD COLUMN sharpness REAL;
             ALTER TABLE media ADD COLUMN phash_state INTEGER NOT NULL DEFAULT 0;
             PRAGMA user_version = 8;
-            COMMIT;
             "#,
-        );
-        if let Err(e) = r {
-            let _ = conn.execute_batch("ROLLBACK;");
-            return Err(e.into());
-        }
+            )?;
+            Ok(())
+        })?;
     }
     if v < 9 {
         // v9 needs several items to be able to share one stored file, so the
@@ -369,9 +369,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         // v9: free copies (several items sharing one stored file; copy_of =
         // the original's id), notes, tag colours, where a video was left off,
         // and the duel ranking. Each column only if it isn't there yet.
-        let table_exists = |t: &str| -> Result<bool> {
-            Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
-        };
         let adds: [(&str, &str, &str); 7] = [
             ("media", "copy_of", "INTEGER"),
             ("media", "note", "TEXT"),
@@ -381,23 +378,15 @@ fn migrate(conn: &Connection) -> Result<()> {
             ("folders", "note", "TEXT"),
             ("tags", "color", "TEXT"),
         ];
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             for (t, c, def) in adds {
-                if table_exists(t)? && !has_column(conn, t, c)? {
+                if has_table(conn, t)? && !has_column(conn, t, c)? {
                     conn.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN {c} {def};"))?;
                 }
             }
             conn.execute_batch("CREATE INDEX IF NOT EXISTS media_object ON media(object_id); PRAGMA user_version = 9;")?;
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     if v < 10 {
         // v10: native face recognition (InsightFace). Which model found each
@@ -405,9 +394,6 @@ fn migrate(conn: &Connection) -> Result<()> {
         // faces named automatically (and when), "not important" faces, and
         // pairs of people you said are not the same. Each part only if its
         // table is there and it isn't there yet.
-        let table_exists = |t: &str| -> Result<bool> {
-            Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
-        };
         let adds: [(&str, &str, &str); 5] = [
             ("faces", "model", "INTEGER NOT NULL DEFAULT 0"),
             ("faces", "auto", "INTEGER NOT NULL DEFAULT 0"),
@@ -415,14 +401,13 @@ fn migrate(conn: &Connection) -> Result<()> {
             ("faces", "hidden", "INTEGER NOT NULL DEFAULT 0"),
             ("media", "faces_model", "INTEGER NOT NULL DEFAULT 0"),
         ];
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             for (t, c, def) in adds {
-                if table_exists(t)? && !has_column(conn, t, c)? {
+                if has_table(conn, t)? && !has_column(conn, t, c)? {
                     conn.execute_batch(&format!("ALTER TABLE {t} ADD COLUMN {c} {def};"))?;
                 }
             }
-            if table_exists("faces")? {
+            if has_table(conn, "faces")? {
                 conn.execute_batch("CREATE INDEX IF NOT EXISTS faces_model ON faces(model);")?;
             }
             conn.execute_batch(
@@ -430,14 +415,7 @@ fn migrate(conn: &Connection) -> Result<()> {
                  PRAGMA user_version = 10;",
             )?;
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     if v < 11 {
         // v11: a tiny colour sketch of each thumbnail (a few cells of colour,
@@ -452,8 +430,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         // seconds, stored with the thumbnails) that grids play straight away.
         // NULL = not made yet, '' = couldn't be made. Only added if it isn't
         // there yet, so this step is safe to run again.
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             if !has_column(conn, "media", "tiny_object_id")? {
                 conn.execute_batch("ALTER TABLE media ADD COLUMN tiny_object_id TEXT;")?;
             }
@@ -461,24 +438,16 @@ fn migrate(conn: &Connection) -> Result<()> {
                 conn.execute_batch("PRAGMA user_version = 12;")?;
             }
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
-    if v < 13 || !table_exists(conn, "folder_stats")? || !has_column(conn, "clip", "f16")? {
+    if v < 13 || !has_table(conn, "folder_stats")? || !has_column(conn, "clip", "f16")? {
         // v13: speed. Item counts and sizes per folder kept up to date by
         // triggers (instead of counting on every folder load); smart-search
         // vectors stored as 16-bit floats (half the size, same results); the
         // face look-alike graph saved (face_graph) instead of worked out
         // again at every unlock. Every part only if it isn't there yet, so
         // this step is safe to run again.
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             conn.execute_batch(FOLDER_STATS_SQL)?;
             rebuild_folder_stats(conn)?;
             if !has_column(conn, "clip", "f16")? {
@@ -499,14 +468,7 @@ fn migrate(conn: &Connection) -> Result<()> {
                 conn.execute_batch("PRAGMA user_version = 13;")?;
             }
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     if v < 14 || !has_table(conn, "thumb_bundles")? {
         // v14: thumbnail pages — a folder's thumbnails packed into a few
@@ -534,8 +496,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         // v15: a wide banner picture at the top of a folder (one of its items)
         // and where in it to look (0 = top, 1 = bottom). NULL = no banner.
         // Each column only if it isn't there yet, so this is safe to run again.
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             if !has_column(conn, "folders", "banner_media_id")? {
                 conn.execute_batch("ALTER TABLE folders ADD COLUMN banner_media_id INTEGER REFERENCES media(id) ON DELETE SET NULL;")?;
             }
@@ -546,14 +507,7 @@ fn migrate(conn: &Connection) -> Result<()> {
                 conn.execute_batch("PRAGMA user_version = 15;")?;
             }
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     // ---- folder banners (end) ----
     // ---- cover framing (begin) ----
@@ -563,8 +517,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         // 0–1) and how far to zoom in (1 = the whole card filled, no more).
         // NULL = automatic (centred, or on the face for person folders).
         // Each column only if it isn't there yet, so this is safe to run again.
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             for col in ["cover_x", "cover_y", "cover_zoom"] {
                 if !has_column(conn, "folders", col)? {
                     conn.execute_batch(&format!("ALTER TABLE folders ADD COLUMN {col} REAL;"))?;
@@ -574,18 +527,11 @@ fn migrate(conn: &Connection) -> Result<()> {
                 conn.execute_batch("PRAGMA user_version = 16;")?;
             }
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     // ---- cover framing (end) ----
     // ---- poor faces (begin) ----
-    let faces_table = table_exists(conn, "faces")?;
+    let faces_table = has_table(conn, "faces")?;
     if v < 17 || (faces_table && (!has_column(conn, "faces", "px")? || !has_column(conn, "faces", "sharp")? || !has_column(conn, "faces", "turn")?)) {
         // v17: what's needed to tell a "poor face" (too small, too blurry or
         // turned too far away to be trusted): its height in the item's own
@@ -597,8 +543,7 @@ fn migrate(conn: &Connection) -> Result<()> {
         // straight away from the item's size; sharpness and turn are measured
         // in the background. Each column only if it isn't there yet, so this
         // is safe to run again (with or without v16 before it).
-        conn.execute_batch("BEGIN;")?;
-        let r = (|| -> Result<()> {
+        in_tx(conn, || {
             if faces_table {
                 for col in ["px", "sharp", "turn"] {
                     if !has_column(conn, "faces", col)? {
@@ -614,14 +559,7 @@ fn migrate(conn: &Connection) -> Result<()> {
                 conn.execute_batch("PRAGMA user_version = 17;")?;
             }
             Ok(())
-        })();
-        match r {
-            Ok(()) => conn.execute_batch("COMMIT;")?,
-            Err(e) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                return Err(e);
-            }
-        }
+        })?;
     }
     // ---- poor faces (end) ----
     // ---- saved depth maps and outlines (begin) ----
@@ -729,9 +667,6 @@ CREATE INDEX IF NOT EXISTS derived_kind ON derived(kind);
 CREATE INDEX IF NOT EXISTS derived_object ON derived(object_id);
 "#;
 
-fn table_exists(conn: &Connection, t: &str) -> Result<bool> {
-    Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
-}
 
 /// Items (not in the trash) directly in each folder and their total size,
 /// kept up to date by triggers on `media` for every insert, delete, move,

@@ -18,7 +18,7 @@
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use rusqlite::{Connection, params};
@@ -41,9 +41,7 @@ const STRIP_COLS: f64 = 8.0;
 const STRIP_ROWS: f64 = 6.0;
 const STRIP_FRAMES: [usize; 4] = [0, 12, 24, 36];
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 // ---- what runs ----------------------------------------------------------------------------
 
@@ -65,7 +63,7 @@ struct Runner {
 
 static RUNNER: Mutex<Option<Runner>> = Mutex::new(None);
 static OPTIONS: Mutex<Options> = Mutex::new(Options { smart: true, faces_paused: false });
-static WAKE: (Mutex<bool>, Condvar) = (Mutex::new(false), Condvar::new());
+static WAKE: crate::util::Wake = crate::util::Wake::new();
 /// Pictures this pass couldn't decode (left to the window until the app restarts).
 static NOT_HERE: Mutex<BTreeSet<i64>> = Mutex::new(BTreeSet::new());
 static BUSY: AtomicBool = AtomicBool::new(false);
@@ -490,12 +488,7 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
 }
 
 fn sleep_until_woken(ms: u64) {
-    let (m, cv) = &WAKE;
-    let mut woken = m.lock().unwrap_or_else(|e| e.into_inner());
-    if !*woken {
-        woken = cv.wait_timeout(woken, Duration::from_millis(ms)).unwrap_or_else(|e| e.into_inner()).0;
-    }
-    *woken = false;
+    WAKE.sleep(ms);
 }
 
 fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
@@ -584,9 +577,7 @@ pub fn stop() {
 }
 
 pub fn kick() {
-    let (m, cv) = &WAKE;
-    *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
-    cv.notify_all();
+    WAKE.wake();
 }
 
 /// Start the pass for this session (or just take the new options).

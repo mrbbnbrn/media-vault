@@ -17,9 +17,7 @@ use vault_core::half;
 
 use crate::library::{self, Item, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 pub const DIM: usize = 512;
 

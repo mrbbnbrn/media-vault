@@ -15,9 +15,7 @@ use serde::Serialize;
 use crate::clip::{self, Hit};
 use crate::library::{self, Item, R};
 
-fn e(err: rusqlite::Error) -> String {
-    format!("Library error: {err}")
-}
+use crate::util::sql_err as e;
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
