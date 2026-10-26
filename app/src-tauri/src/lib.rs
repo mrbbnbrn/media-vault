@@ -1629,9 +1629,14 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
         "deletePreviews" => "deletePreviews",
         _ => return Err("Unknown task.".into()),
     };
+    // One at a time; cancel_task("storage") stops moving files into packs or
+    // reclaiming space (safely, between files), as does locking the vault.
+    let cancel = begin_task(&inner, "storage")?;
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
-        let result = if task == "deleteThumbs" || task == "deletePreviews" {
+        let result = if s.is_closed() || cancel.load(Ordering::SeqCst) {
+            Err("Stopped.".to_string())
+        } else if task == "deleteThumbs" || task == "deletePreviews" {
             storage::delete_cache(&s, task == "deleteThumbs")
         } else if task == "convert" {
             let mut t = throttle::Throttle::new();
@@ -1639,10 +1644,10 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
                 if t.ready(done >= total) {
                     let _ = app.emit("storage-progress", StorageProgress { task, done, total });
                 }
-            })
+            }, &cancel)
             .map(|n| format!("{n} items moved into pack files."))
         } else {
-            storage::reclaim(&s).map(|r| {
+            storage::reclaim_until(&s, &cancel).map(|r| {
                 format!(
                     "Freed {:.1} MB ({} items moved, {} pack files removed).",
                     r.reclaimed_bytes as f64 / 1e6,
@@ -1651,6 +1656,7 @@ fn storage_task(app: AppHandle, state: State<'_, Shared>, task: String) -> Resul
                 )
             })
         };
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("storage");
         let (ok, message) = match result {
             Ok(m) => (true, m),
             Err(e) => (false, e),

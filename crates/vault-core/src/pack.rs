@@ -589,8 +589,18 @@ impl PackStore {
     /// save the database (with the new locations) and then call
     /// [`PackStore::delete_retired`].
     pub fn compact(&self, min_waste: f64) -> Result<CompactPlan> {
+        self.compact_until(min_waste, &|| false)
+    }
+
+    /// Like [`PackStore::compact`], stopping early when `stop` says so
+    /// (between objects): only packs copied completely are in the plan, the
+    /// rest keep their objects (copies already made are simply used instead).
+    pub fn compact_until(&self, min_waste: f64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
         let mut plan = CompactPlan::default();
         for kind in [ObjectKind::Media, ObjectKind::Thumbnail] {
+            if stop() {
+                break;
+            }
             // If the pack being written to is itself mostly waste, start a
             // fresh one so it can be reclaimed too.
             {
@@ -632,13 +642,21 @@ impl PackStore {
                     v.sort_by_key(|(_, l)| l.offset);
                     v
                 };
+                let mut whole = true;
                 for (id, loc) in entries {
+                    if stop() {
+                        whole = false;
+                        break;
+                    }
                     let src = self.open_at(&id, &loc)?.ok_or_else(|| {
                         Error::Corrupt(format!("object {id} missing from its pack"))
                     })?;
                     self.append_raw(kind, id, src)?;
                     plan.moved += 1;
                     plan.moved_bytes += loc.len;
+                }
+                if !whole {
+                    break;
                 }
                 plan.reclaimed_bytes += waste;
                 plan.retired.push(self.path(kind, u.pack));

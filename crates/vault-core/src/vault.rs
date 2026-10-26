@@ -1289,7 +1289,14 @@ impl Vault {
     /// Step 1 of converting a format-1 vault: copy every loose object into
     /// packs (unchanged, still encrypted). `progress(done, total)`.
     /// Then save the database, then call [`Vault::remove_packed_loose_files`].
-    pub fn pack_loose_objects(&self, mut progress: impl FnMut(usize, usize)) -> Result<usize> {
+    pub fn pack_loose_objects(&self, progress: impl FnMut(usize, usize)) -> Result<usize> {
+        self.pack_loose_objects_until(progress, &|| false)
+    }
+
+    /// Like [`Vault::pack_loose_objects`], stopping early when `stop` says so
+    /// (safe: what was copied is kept; the rest stay separate files). Returns
+    /// how many were copied.
+    pub fn pack_loose_objects_until(&self, mut progress: impl FnMut(usize, usize), stop: &dyn Fn() -> bool) -> Result<usize> {
         self.require_write()?;
         let mut todo = Vec::new();
         for kind in [ObjectKind::Media, ObjectKind::Thumbnail] {
@@ -1301,6 +1308,9 @@ impl Vault {
         }
         let total = todo.len();
         for (i, (kind, id)) in todo.into_iter().enumerate() {
+            if stop() {
+                return Ok(i);
+            }
             let f = File::open(self.object_path(kind, &id))?;
             self.packs.append_raw(kind, id, f)?;
             // Make sure the packed copy is complete and decrypts.
@@ -1361,8 +1371,14 @@ impl Vault {
     /// least `min_waste` (0..1) is unused. Save the database, then call
     /// [`Vault::finish_compact`].
     pub fn compact(&self, min_waste: f64) -> Result<CompactPlan> {
+        self.compact_until(min_waste, &|| false)
+    }
+
+    /// Like [`Vault::compact`], stopping early when `stop` says so (only
+    /// packs copied completely are retired).
+    pub fn compact_until(&self, min_waste: f64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
         self.require_write()?;
-        self.packs.compact(min_waste)
+        self.packs.compact_until(min_waste, stop)
     }
 
     pub fn finish_compact(&self, plan: &CompactPlan) -> Result<()> {
