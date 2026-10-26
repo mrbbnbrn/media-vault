@@ -473,6 +473,7 @@ static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
 /// Forget everything kept in memory (the vault locked).
 pub fn forget_cache() {
     *CACHE.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner()).clear();
     OFF_SQL.lock().unwrap_or_else(|x| x.into_inner()).clear();
 }
 
@@ -684,8 +685,36 @@ fn apply(conn: &Connection, views: &[ModelView]) -> R<usize> {
 /// The automatic pass (after a scan batch, before showing People): returns
 /// how many faces changed (the caller saves the library if any did).
 pub fn refresh(lib: &dyn Lib) -> R<usize> {
+    // Nothing written to the library since the last pass (and the same rule
+    // for poor faces): the answer would be the same, so nothing is read.
+    // The window and the analysis pass both ask every 20 s.
+    let before = refresh_key(lib);
+    if LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner()).contains(&before) {
+        return Ok(0);
+    }
     let (views, _) = analyse_all(lib)?;
-    apply(&lib.conn(), &views)
+    let n = apply(&lib.conn(), &views)?;
+    // What this pass wrote itself doesn't count as a change.
+    let after = refresh_key(lib);
+    let mut last = LAST_REFRESH.lock().unwrap_or_else(|x| x.into_inner());
+    last.retain(|k| k.0 != after.0);
+    last.push(after);
+    if last.len() > 8 {
+        last.remove(0);
+    }
+    Ok(n)
+}
+
+/// The library and settings the last automatic pass saw (see `refresh`), per
+/// library (only one is open in the app; tests use several at once).
+static LAST_REFRESH: Mutex<Vec<RefreshKey>> = Mutex::new(Vec::new());
+
+/// Which library, its state (util::conn_state) and the poor-face rule.
+type RefreshKey = (String, (u64, u64), String);
+
+fn refresh_key(lib: &dyn Lib) -> RefreshKey {
+    let state = crate::util::conn_state(&lib.conn());
+    (lib.key(), state, crate::poorfaces::poor_sql("f"))
 }
 
 // ---- what the People page shows ---------------------------------------------------------------
@@ -1800,6 +1829,11 @@ mod tests {
         accept(&l.conn(), &ids, baran).unwrap();
         let changed = refresh(&l).unwrap();
         assert_eq!(changed, 2, "him alone and in the group photo");
+        // Asked again with nothing new: nothing to do (and nothing is read).
+        let before = l.conn().total_changes();
+        assert_eq!(refresh(&l).unwrap(), 0);
+        assert_eq!(l.conn().total_changes(), before);
+        assert!(LAST_REFRESH.lock().unwrap().contains(&refresh_key(&l)));
         let r = review(&l, &ReviewRequest::default()).unwrap();
         let g = &r.people[0];
         assert!(g.owner.is_none());
