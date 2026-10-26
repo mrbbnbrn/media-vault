@@ -11,7 +11,7 @@
 // beside the picture (or in the wide strips at the far left and right) goes to
 // the previous / next item; a click in those strips too (swipe.ts).
 
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
@@ -142,7 +142,17 @@ export function Player(props: PlayerProps) {
   const [overrides, setOverrides] = useState<Record<string, Partial<PlayItem>>>({});
   const [failed, setFailed] = useState(false);
   const [imgInfo, setImgInfo] = useState<ImageInfo | null>(null);
-  const [gifFrame, setGifFrame] = useState({ index: 0, count: 0 });
+  // A GIF's frame changes many times a second: kept outside React state (only the frame bar
+  // draws again, not the whole viewer); the frame count is state (it changes once per GIF).
+  const gifAt = useRef(0);
+  const gifSubs = useRef(new Set<() => void>());
+  const [gifCount, setGifCount] = useState(0);
+  const gifFrame = { get index() { return gifAt.current; }, count: gifCount };
+  const setGifFrame = (f: { index: number; count: number }) => {
+    gifAt.current = f.index;
+    gifSubs.current.forEach((cb) => cb());
+    if (f.count !== gifCount) setGifCount(f.count);
+  };
   const [time, setTime] = useState({ at: 0, dur: 0 });
   const [controls, setControls] = useState(true);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -1520,9 +1530,8 @@ export function Player(props: PlayerProps) {
   const saveTip = way?.way === 'no' ? way.why : way?.way === 'jpeg' ? 'Keep it turned this way, without touching the picture itself (Ctrl+Z undoes it)'
     : way?.way === 'video' ? 'Keep it turned this way, without re-encoding the video (Ctrl+Z undoes it)' : 'Keep it turned this way (Ctrl+Z undoes it)';
   const weight = item?.weight ?? 1;
-  const timeline = !props.compact && isGif && gifFrame.count > 1 ? (
-    <PositionBar at={gifFrame.index} dur={gifFrame.count - 1} onSeek={(i) => { setPaused(true); imgRef.current?.seek(i); }}
-      bookmarks={[]} loop={loop} frames={gifFrame} />
+  const timeline = !props.compact && isGif && gifCount > 1 ? (
+    <GifBar at={gifAt} subs={gifSubs.current} count={gifCount} onSeek={(i) => { setPaused(true); imgRef.current?.seek(i); }} loop={loop} />
   ) : isVideo && time.dur > 0 ? (
     <PositionBar at={time.at} dur={time.dur} onSeek={seekTo} bookmarks={props.compact ? [] : bookmarks} loop={props.compact ? NO_LOOP : loop}
       suffix={s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''}
@@ -1654,7 +1663,7 @@ export function Player(props: PlayerProps) {
             )}
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
-              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : slideshow ? 'show' : 'loop'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
+              <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'motion'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
                 subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : undefined}
                 subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
                 layers={layersHere ? {
@@ -2002,4 +2011,17 @@ function audioRoute(v: HTMLVideoElement, on: boolean): ((on: boolean) => void) |
   };
   set(on);
   return set;
+}
+
+
+/** The GIF's frame bar: draws again on each frame by itself (the rest of the viewer doesn't). */
+function GifBar(props: { at: MutableRefObject<number>; subs: Set<() => void>; count: number; onSeek: (i: number) => void; loop: { a: number | null; b: number | null } }) {
+  const index = useSyncExternalStore(
+    (cb) => {
+      props.subs.add(cb);
+      return () => props.subs.delete(cb);
+    },
+    () => props.at.current,
+  );
+  return <PositionBar at={index} dur={props.count - 1} onSeek={props.onSeek} bookmarks={[]} loop={props.loop} frames={{ index, count: props.count }} />;
 }

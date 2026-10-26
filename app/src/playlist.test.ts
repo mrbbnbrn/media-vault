@@ -136,7 +136,16 @@ describe('peek', () => {
     expect(p.peek(2).map((x) => x.key)).toEqual(['b2.jpg', 'a2.jpg']);
     const off = new Playlist(items, 'nameAsc', 'off', 'a10.jpg');
     expect(off.peek(5).map((x) => x.key)).toEqual(['b2.jpg']);
-    expect(new Playlist(items, 'random').peek(3)).toEqual([]);
+  });
+
+  it('in random order, chooses the next ones now and then goes to them', () => {
+    const p = new Playlist(items, 'random');
+    const ahead = p.peek(2).map((x) => x.key);
+    expect(ahead).toHaveLength(2);
+    // Asking again gives the same ones (they are kept), and Next goes to them in turn.
+    expect(p.peek(2).map((x) => x.key)).toEqual(ahead);
+    expect(p.next()?.key).toBe(ahead[0]);
+    expect(p.next()?.key).toBe(ahead[1]);
   });
 });
 

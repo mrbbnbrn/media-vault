@@ -98,6 +98,8 @@ export class Playlist<T extends Entry = Entry> {
   private seq: T[] = [];
   private pos = -1;
   private history: number[] = []; // positions/indices visited (random modes)
+  /** Random modes: the next ones already chosen, so they can be decoded ahead like any other order. */
+  private ahead: number[] = [];
   private items: T[];
 
   constructor(
@@ -121,6 +123,7 @@ export class Playlist<T extends Entry = Entry> {
 
   private rebuild(keepKey?: string) {
     this.history = [];
+    this.ahead = [];
     if (isRandomish(this.order)) {
       this.seq = this.items;
       const i = keepKey ? this.items.findIndex((x) => x.key === keepKey) : -1;
@@ -172,7 +175,7 @@ export class Playlist<T extends Entry = Entry> {
     if (this.pos < 0) return null;
     if (auto && this.repeat === 'one') return this.current();
     if (isRandomish(this.order)) {
-      const p = this.pick(this.pos);
+      const p = this.ahead.length ? this.ahead.shift()! : this.pick(this.pos);
       if (p < 0) return null;
       this.pos = p;
       this.history.push(p);
@@ -200,6 +203,7 @@ export class Playlist<T extends Entry = Entry> {
   prev(): T | null {
     if (this.pos < 0) return null;
     if (isRandomish(this.order)) {
+      this.ahead = [];
       if (this.history.length > 1) {
         this.history.pop();
         this.pos = this.history[this.history.length - 1];
@@ -213,6 +217,7 @@ export class Playlist<T extends Entry = Entry> {
 
   /** Jump straight to an item (e.g. clicked in the grid). */
   jump(key: string): T | null {
+    this.ahead = [];
     const i = this.seq.findIndex((x) => x.key === key);
     if (i >= 0) {
       this.pos = i;
@@ -221,9 +226,19 @@ export class Playlist<T extends Entry = Entry> {
     return this.current();
   }
 
-  /** The next `n` items in order (none in random modes, where the next one isn't known yet). */
+  /** The next `n` items (in random modes: chosen now, so the ones shown next are these). */
   peek(n: number): T[] {
-    if (this.pos < 0 || isRandomish(this.order)) return [];
+    if (this.pos < 0) return [];
+    if (isRandomish(this.order)) {
+      // Chosen now (and kept), so Next really goes to them.
+      while (this.ahead.length < n && this.items.length > 1) {
+        const from = this.ahead.length ? this.ahead[this.ahead.length - 1] : this.pos;
+        const p = this.pick(from);
+        if (p < 0) break;
+        this.ahead.push(p);
+      }
+      return this.ahead.slice(0, n).map((i) => this.seq[i]);
+    }
     const out: T[] = [];
     for (let k = 1; k <= n && k < this.seq.length; k++) {
       const i = this.pos + k;

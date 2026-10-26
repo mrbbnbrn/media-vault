@@ -591,6 +591,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
    */
   /** Each load gets a number: an answer that arrives after a newer load started is dropped. */
   const loadGen = useRef(0);
+  /** The view whose items are showing (set when its load finishes). */
+  const loadedFor = useRef<string | null>(null);
   const reload = useCallback(async (opts?: { bg?: boolean; quiet?: boolean }) => {
     const bg = !!opts?.bg;
     const gen = ++loadGen.current;
@@ -674,6 +676,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     } catch (e) {
       setError(errText(e));
     } finally {
+      if (!stale()) loadedFor.current = viewKey(view);
       if (!keep && !stale()) setLoading(false);
       // Background work may start now (firstgrid.ts).
       gridShown();
@@ -684,8 +687,29 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const reloadRef = useRef(reload);
   reloadRef.current = reload;
 
+  // ---- the last views, shown at once (back/forward, tabs) ----
+  // What each of the last few views showed is kept in memory; going back to one shows it at
+  // once, and it is loaded again quietly behind (anything changed meanwhile then appears).
+  const viewCache = useRef(new Map<string, { items: Item[]; folder: FolderCard | null; subfolders: FolderCard[]; trash: TrashView | null }>());
+  useEffect(() => {
+    // Only what was loaded for this very view (right after switching, the old view's items still show).
+    if (loading || loadedFor.current !== viewK) return;
+    const c = viewCache.current;
+    c.delete(viewK);
+    c.set(viewK, { items, folder, subfolders, trash });
+    while (c.size > 12) c.delete(c.keys().next().value as string);
+  }, [items, folder, subfolders, trash, loading]); // eslint-disable-line react-hooks/exhaustive-deps
+
   useEffect(() => {
     let live = true;
+    const cached = viewCache.current.get(viewKRef.current);
+    if (cached) {
+      loadedFor.current = viewKRef.current;
+      setItemsRaw(cached.items);
+      setFolderRaw(cached.folder);
+      setSubfoldersRaw(cached.subfolders);
+      setTrashRaw(cached.trash);
+    }
     // Switching tabs puts back that tab's selection.
     const kept = takeSelection(viewKRef.current);
     setSelected(new Set(kept?.items));
@@ -700,7 +724,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const what = viewTitle(view, null);
     beginStep('Open view', what);
     dropStep('First thumbnails');
-    reload().then(() => {
+    // Shown from memory: loaded again quietly (no "loading…", unchanged tiles stay as they are).
+    if (cached) requestAnimationFrame(() => live && restoreScroll());
+    (cached ? reload({ quiet: true }) : reload()).then(() => {
       if (!live) return dropStep('Open view');
       restoreScroll();
       endStep('Open view');
@@ -844,7 +870,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
 
   // Items fetched from selected folders (so undo knows their old values).
   const known = useRef(new Map<number, Item>());
-  const itemById = (id: number) => items.find((i) => i.id === id) ?? known.current.get(id);
+  /** Items by id (a lookup, not a search through the list: with thousands selected, every redraw used to search the list once per selected item). */
+  const itemIndex = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
+  const itemById = (id: number) => itemIndex.get(id) ?? known.current.get(id);
 
   const act = async (fn: () => Promise<unknown>) => {
     try {

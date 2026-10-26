@@ -5,11 +5,12 @@
 // the rotation can instead be saved to the original as before (Player.tsx,
 // rotatesave.ts). The sums are in imageedit.ts.
 
+import { bitmapOffThread } from '../picturecache';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import {
-  adjustPixels, anySeeThrough, ASPECTS, aspectRatio, clampAngle, dragCrop, editedName, editMatrix, fitAspect, frameSize, FULL, hasAdjust,
-  isRotationOnly, isUnchanged, MAX_ANGLE, mul, NO_ADJUST, NO_EDIT, outputSize, savedFormat, turnEdit, type Adjust, type Aspect, type Edit, type Handle, type Matrix,
+  adjustPixels, ASPECTS, aspectRatio, clampAngle, dragCrop, editedName, editMatrix, fitAspect, frameSize, FULL, hasAdjust,
+  isRotationOnly, isUnchanged, MAX_ANGLE, mul, NO_ADJUST, NO_EDIT, outputSize, turnEdit, type Adjust, type Aspect, type Edit, type Handle, type Matrix,
 } from '../imageedit';
 import { kickThumbnails, noteItemsChanged, type PlayItem } from '../media';
 import { saveWay, type Quarter } from '../rotation';
@@ -46,7 +47,7 @@ export function ImageEditor(props: {
 }) {
   const { item } = props;
   const [edit, setEdit] = useState<Edit>(NO_EDIT);
-  const [pic, setPic] = useState<{ full: ImageBitmap; small: ImageBitmap } | null>(null);
+  const [pic, setPic] = useState<{ full: { width: number; height: number }; small: ImageBitmap } | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [area, setArea] = useState({ w: 0, h: 0 });
@@ -55,22 +56,30 @@ export function ImageEditor(props: {
   const W = pic?.full.width ?? item.width ?? 1;
   const H = pic?.full.height ?? item.height ?? 1;
 
-  // The picture, upright as the viewer shows it (its own orientation applied), and a smaller copy for the preview.
+  // The picture, upright as the viewer shows it (its own orientation applied): its size, and a
+  // smaller copy for the preview, decoded and resized in the decode worker (a high-quality
+  // resize on the window's thread froze the app on big photos). The file's bytes are kept
+  // for saving, which happens in its own worker too (editworker.ts).
+  const bytesRef = useRef<ArrayBuffer | null>(null);
   useEffect(() => {
     let alive = true;
-    let got: { full: ImageBitmap; small: ImageBitmap } | null = null;
+    let got: { full: { width: number; height: number }; small: ImageBitmap } | null = null;
     (async () => {
       const r = await fetch(item.src);
       if (!r.ok) throw new Error(`couldn't read it (${r.status})`);
       const blob = await r.blob();
-      let full: ImageBitmap;
+      bytesRef.current = await blob.arrayBuffer();
+      let dims: ImageBitmap;
       try {
-        full = await createImageBitmap(blob, { imageOrientation: 'from-image' });
+        dims = await createImageBitmap(blob, { imageOrientation: 'from-image' });
       } catch {
-        full = await createImageBitmap(blob);
+        dims = await createImageBitmap(blob);
       }
+      const full = { width: dims.width, height: dims.height };
+      dims.close();
       const k = Math.min(1, PREVIEW_SIDE / Math.max(full.width, full.height));
-      const small = k < 1 ? await createImageBitmap(full, { resizeWidth: Math.max(1, Math.round(full.width * k)), resizeHeight: Math.max(1, Math.round(full.height * k)), resizeQuality: 'high' }) : full;
+      const small = await bitmapOffThread(item.src, Math.max(1, Math.round(full.width * k)), Math.max(1, Math.round(full.height * k)));
+      if (!small) throw new Error("couldn't decode it");
       got = { full, small };
       if (!alive) return;
       setPic(got);
@@ -78,21 +87,10 @@ export function ImageEditor(props: {
     })().catch((e) => alive && setLoadErr(`The picture couldn't be opened for editing: ${e instanceof Error ? e.message : String(e)}`));
     return () => {
       alive = false;
-      if (got) {
-        if (got.small !== got.full) got.small.close();
-        got.full.close();
-      }
+      got?.small.close();
+      bytesRef.current = null;
     };
   }, [item.src]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // The editor draws the picture at full size: give the graphics card's memory
-  // the 3D models hold back first (they load again when 3D is next needed).
-  useEffect(() => {
-    void api.depthForget().catch(() => {});
-    void api.subjectForget().catch(() => {});
-    void api.inpaintForget().catch(() => {});
-    void api.upscaleForget().catch(() => {});
-  }, []);
 
   useLayoutEffect(() => {
     const el = areaRef.current;
@@ -210,38 +208,29 @@ export function ImageEditor(props: {
     setBusy('Saving a copy…');
     // Each step goes into diagnostics.log first (sizes only), so if the window dies we know where.
     const ext0 = (item.name.match(/\.([^.]+)$/)?.[1] ?? '').toLowerCase();
-    await api.diagNote(`editor save: start · picture ${W}×${H} (${pic.full.width}×${pic.full.height} decoded) · out ${out.w}×${out.h} · .${ext0} · turn ${edit.quarter ?? 0} · angle ${edit.angle ?? 0} · adjust ${hasAdjust(edit.adjust)}`);
-    let c: HTMLCanvasElement | null = document.createElement('canvas');
+    await api.diagNote(`editor save: start · picture ${W}×${H} · out ${out.w}×${out.h} · .${ext0} · turn ${edit.quarter ?? 0} · angle ${edit.angle ?? 0} · adjust ${hasAdjust(edit.adjust)}`);
     try {
-      c.width = out.w;
-      c.height = out.h;
-      const ctx = c.getContext('2d', { willReadFrequently: true });
-      if (!ctx) throw new Error("the window couldn't draw it");
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.setTransform(...editMatrix(W, H, edit));
-      await api.diagNote('editor save: canvas made, drawing');
-      ctx.drawImage(pic.full, 0, 0);
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
-      await api.diagNote('editor save: drawn');
-      const ext = (item.name.match(/\.([^.]+)$/)?.[1] ?? '').toLowerCase();
-      const jpeg = ext === 'jpg' || ext === 'jpeg';
-      let seeThrough = false;
-      if (hasAdjust(edit.adjust) || (!jpeg && ext !== 'png')) {
-        // Let the window draw first, so "Saving a copy…" shows on big pictures.
-        await new Promise((r) => setTimeout(r, 30));
-        const d = ctx.getImageData(0, 0, out.w, out.h);
-        if (!jpeg && ext !== 'png') seeThrough = anySeeThrough(d.data);
-        adjustPixels(d.data, out.w, out.h, edit.adjust);
-        ctx.putImageData(d, 0, 0);
-      }
-      const fmt = savedFormat(item.name, seeThrough);
-      await api.diagNote(`editor save: encoding ${fmt.mime}`);
-      const blob = await new Promise<Blob | null>((res) => c!.toBlob(res, fmt.mime, fmt.quality));
-      if (!blob) throw new Error("the window couldn't make the picture file");
-      await api.diagNote(`editor save: encoded ${blob.size} bytes, sending`);
+      const bytes = bytesRef.current;
+      if (!bytes) throw new Error("the picture isn't loaded");
+      // Drawn, adjusted and encoded in a worker: the window stays free (editworker.ts).
+      const made = await new Promise<{ data: ArrayBuffer; mime: string; ext: string }>((resolve, reject) => {
+        const w = new Worker(new URL('../editworker.ts', import.meta.url), { type: 'module' });
+        w.onmessage = (ev: MessageEvent<{ data?: ArrayBuffer; mime?: string; ext?: string; error?: string }>) => {
+          w.terminate();
+          if (ev.data.data) resolve({ data: ev.data.data, mime: ev.data.mime!, ext: ev.data.ext! });
+          else reject(new Error(ev.data.error ?? "the picture couldn't be made"));
+        };
+        w.onerror = () => {
+          w.terminate();
+          reject(new Error("the picture couldn't be made"));
+        };
+        const copy = bytes.slice(0);
+        w.postMessage({ bytes: copy, name: item.name, out, matrix: editMatrix(W, H, edit), adjust: edit.adjust }, [copy]);
+      });
+      const fmt = { ext: made.ext };
+      await api.diagNote(`editor save: encoded ${made.data.byteLength} bytes, sending`);
       const name = editedName(item.name, fmt.ext);
-      const saved = await api.addCopyBytes(item.itemId, name, new Uint8Array(await blob.arrayBuffer()), out.w, out.h);
+      const saved = await api.addCopyBytes(item.itemId, name, new Uint8Array(made.data), out.w, out.h);
       await api.diagNote(`editor save: saved (${saved.reused ? 'already there' : 'new item'})`);
       if (!saved.reused) {
         pushUndo(`Saved “${name}”`, () => api.deleteItems([saved.id]));
@@ -257,9 +246,6 @@ export function ImageEditor(props: {
       void api.diagNote(`editor save: failed · ${e instanceof Error ? e.message : String(e)}`);
       props.onMessage(`Couldn't save the copy: ${e instanceof Error ? e.message : String(e)}`);
       setBusy(null);
-    } finally {
-      c.width = c.height = 0;
-      c = null;
     }
   };
 

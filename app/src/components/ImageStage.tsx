@@ -234,7 +234,10 @@ export function ImageStage(props: Props) {
     return fullAsked.current;
   };
 
-  useEffect(draw); // every render: zoom, fit, prefs, size
+  // When what the picture looks like changes (zoom, fit, turn, scaling settings, the box's size);
+  // not on every render of the viewer (a slideshow, the video clock or the beat meter
+  // re-render it several times a second). New pictures and resamples draw themselves.
+  useEffect(draw, [props.zoom, props.fit, props.rot, props.prefs, size, props.src]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const el = boxRef.current;

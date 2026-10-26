@@ -161,8 +161,12 @@ export function budgetBytes(deviceMemoryGb: number | undefined): number {
   return Math.max(256 * MB, Math.min(1024 * MB, (gb * 1024 * MB) / 8));
 }
 
-/** The last 5 shown plus the next 2 and 1 behind. */
-const ENTRIES = 8;
+/**
+ * How many decoded pictures are kept: at least the last 5 shown plus the next 2 and 1
+ * behind, and more when the memory allows (a screen-sized photo is about 15 MB), so going
+ * back a dozen pictures, or 4 multi-screen panels at once, don't decode again.
+ */
+const ENTRIES = Math.max(8, Math.min(32, Math.floor(budgetBytes(typeof navigator !== 'undefined' ? (navigator as { deviceMemory?: number }).deviceMemory : undefined) / (20 * MB))));
 
 function costOf(v: Value): number {
   if ('gif' in v) return v.bytes.byteLength;
@@ -481,9 +485,19 @@ export function forgetPictures() {
 }
 
 let users = 0;
-/** A viewer is open (call the returned function when it closes); the last one to close lets go of everything. */
+/** After the last viewer closes, decoded pictures stay this long (reopening the same picture is instant). */
+const KEEP_AFTER_CLOSE_MS = 60_000;
+let letGo: ReturnType<typeof setTimeout> | null = null;
+/**
+ * A viewer is open (call the returned function when it closes). A minute after the last one
+ * closes, everything is let go (locking lets go at once).
+ */
 export function viewerOpened(): () => void {
   users += 1;
+  if (letGo) {
+    clearTimeout(letGo);
+    letGo = null;
+  }
   let done = false;
   return () => {
     if (done) return;
@@ -491,7 +505,12 @@ export function viewerOpened(): () => void {
     users -= 1;
     if (users <= 0) {
       users = 0;
-      forgetPictures();
+      warmVideos([]);
+      if (letGo) clearTimeout(letGo);
+      letGo = setTimeout(() => {
+        letGo = null;
+        if (users === 0) forgetPictures();
+      }, KEEP_AFTER_CLOSE_MS);
     }
   };
 }

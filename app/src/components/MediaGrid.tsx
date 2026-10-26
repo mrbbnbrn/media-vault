@@ -5,6 +5,7 @@
 // Layouts: equal tiles ("grid") or every item at its true shape ("shape"),
 // optionally in groups with a header (the timeline's months).
 
+import { preloadPictures } from '../picturecache';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { itemThumbUrl, mediaUrl, smallEnough, thumbUrl, type FaceBox, type Item } from '../api';
 import { formatBytes } from '../theme';
@@ -419,6 +420,16 @@ export const MediaGrid = memo(function MediaGrid(props: {
 
   // The hovered video/GIF uncropped: same scale as in its tile, the tile
   // just grows in the direction that was cut off. Kept inside the view.
+  // The picture you hover a moment, or move the cursor to, starts decoding at screen size:
+  // opening it is then instant (picturecache.ts keeps it).
+  const warmId = hover ?? props.cursor ?? null;
+  useEffect(() => {
+    if (warmId == null) return;
+    const it = props.items.find((x) => x.id === warmId);
+    if (!it || (it.kind !== 'image' && it.kind !== 'gif')) return;
+    const t = setTimeout(() => preloadPictures([{ src: mediaUrl(it.id), kind: it.kind, size: it.width && it.height ? { w: it.width, h: it.height } : null }]), 250);
+    return () => clearTimeout(t);
+  }, [warmId]); // eslint-disable-line react-hooks/exhaustive-deps
   const hoverIdx = hover != null ? props.items.findIndex((x) => x.id === hover) : -1;
   const hovered = hoverIdx >= 0 ? props.items[hoverIdx] : null;
   let pop: { left: number; top: number; w: number; h: number; item: Item } | null = null;
