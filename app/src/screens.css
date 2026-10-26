@@ -1175,3 +1175,22 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .seg.tx-pick button { padding: 0 6px; }
 .picker-path { margin-left: auto; font-size: 12px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .lib-main.switching > * { opacity: 0.35; transition: opacity 0.12s 0.08s; pointer-events: none; }
+
+/* The viewer's info panel (I): a column on the right, over the picture. */
+.info-panel { position: absolute; right: 16px; top: 76px; max-height: calc(100% - 200px); z-index: 5; width: 300px; max-width: calc(100% - 32px); overflow: auto; padding: 14px 16px; border-radius: 14px; background: rgba(12, 13, 16, 0.86); border: 1px solid rgba(255, 255, 255, 0.08); backdrop-filter: blur(10px); color: #f0eee9; font-size: 13px; animation: pop-in 0.15s ease-out; }
+.info-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.info-head h3 { flex: 1; margin: 0; font-size: 14px; font-weight: 600; }
+.info-list { margin: 0; display: flex; flex-direction: column; gap: 7px; }
+.info-list > div { display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+.info-list dt { color: var(--faint); }
+.info-list dd { margin: 0; overflow-wrap: anywhere; }
+.info-list dd.accent { color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
+.info-list .link { color: var(--accent); padding: 0; text-align: left; }
+.info-panel section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.info-panel h4 { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.info-panel p { margin: 0; }
+.info-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.info-tags .chip small { opacity: 0.7; }
+.info-note { white-space: pre-wrap; line-height: 1.5; }
+.player.idle .info-panel { opacity: 0.9; }
+@media (prefers-reduced-motion: reduce) { .info-panel { animation: none; } }

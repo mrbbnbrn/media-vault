@@ -276,6 +276,11 @@ export function Viewer(props: {
             in {it.folderId == null ? 'Top level' : folderNames.get(it.folderId) ?? 'its folder'}
           </button>
         ) : null}
+        folderOf={(it) => it.itemId != null && props.onShowFolder ? (
+          <button type="button" className="link" title="Show this item in its folder" onClick={() => props.onShowFolder?.(it)}>
+            {it.folderId == null ? 'Top level' : folderNames.get(it.folderId) ?? 'its folder'}
+          </button>
+        ) : it.itemId != null ? (it.folderId == null ? 'Top level' : folderNames.get(it.folderId) ?? '') : null}
         activityId="viewer"
         title={
           <button type="button" className="btn btn-icon btn-sm glass" aria-label="Back" onClick={() => (clean ? toggleClean() : back())}>
@@ -291,6 +296,7 @@ export function Viewer(props: {
         onFavourite={vault ? (it, on) => setFavourite(it, on) : undefined}
         onWeight={vault ? (it, w, was) => setWeight(it, w, was) : undefined}
         onFullscreen={toggleClean}
+        undoAll={vault && !mini}
       />
       {card && props.titleCard && !mini && (
         <div className="title-card" style={{ animationDuration: `${TITLE_CARD_MS}ms` }} role="status">

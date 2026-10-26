@@ -53,7 +53,7 @@ const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.U
 // 3D photos (end)
 import {
   BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
-  MiniPlayerIcon, MuteIcon, NextIcon,
+  InfoIcon, MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
   OrbitIcon,
   SubjectPngIcon,
@@ -62,6 +62,7 @@ import {
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
 import { DepthSettingsDialog } from './DepthSettings';
+import { InfoPanel, infoPanelWasOpen, rememberInfoPanel } from './InfoPanel';
 import { useUpscale } from './Upscale';
 import { BookmarksPanel, GifMakerDialog, Mp4CutDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 import { ImageEditor } from './ImageEditor';
@@ -109,8 +110,12 @@ export interface PlayerProps {
   onWeight?: (item: PlayItem, weight: number, was: number) => Promise<void> | void;
   onFullscreen?: () => void;
   onClose?: () => void;
+  /** Ctrl+Z undoes anything, the same as in the library (the full viewer of the vault); otherwise only what was saved here. */
+  undoAll?: boolean;
   /** Extra line under the file name (e.g. its folder, as a link). */
   subtitle?: (item: PlayItem) => React.ReactNode;
+  /** The item's folder for the info panel (e.g. its name, as a link). */
+  folderOf?: (item: PlayItem) => React.ReactNode;
   onCurrent?: (item: PlayItem | null) => void;
   /** Shrink into the mini player (button and M). */
   onMinimize?: () => void;
@@ -212,6 +217,16 @@ export function Player(props: PlayerProps) {
   const [rot, setRot] = useState<Quarter>(0);
   const [rotSaving, setRotSaving] = useState(false);
   const lastTurn = useRef<UndoEntry | null>(null);
+  // The info panel (I): open as it was left last time (the full viewer only).
+  const infoAllowed = !!props.keys && !props.compact && !props.bare && !props.mini;
+  const [infoOpen, setInfoOpen] = useState(() => infoAllowed && infoPanelWasOpen());
+  /** Bumped when the item may have changed (an undo): the panel reads it again. */
+  const [infoReload, setInfoReload] = useState(0);
+  const toggleInfo = () => {
+    const on = !infoOpen;
+    setInfoOpen(on);
+    rememberInfoPanel(on);
+  };
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
   const isVideo = item?.kind === 'video';
@@ -302,7 +317,7 @@ export function Player(props: PlayerProps) {
       p.setItems(rest, nextKey);
       setCur(p.current());
       setGoneCount(gone.current.size);
-      setFlash('Moved to the trash · Ctrl+Z in the library undoes it');
+      setFlash(props.undoAll ? 'Moved to the trash · Ctrl+Z undoes it' : 'Moved to the trash · Ctrl+Z in the library undoes it');
     });
   };
   const go = useCallback((dir: 'next' | 'prev', auto = false, how?: { effect: Effect; fromPx: number }) => {
@@ -1350,6 +1365,71 @@ export function Player(props: PlayerProps) {
     }
   };
 
+  /** Items whose favourite or weight changed here (looked at again after an undo). */
+  const touched = useRef(new Set<string>());
+  /**
+   * Ctrl+Z in the full viewer: undoes the last change, wherever it was made (favourite,
+   * weight, delete, tags, a saved rotation…), and the viewer follows: an item that comes
+   * back from the trash shows again, hearts and weights show as they are now.
+   */
+  const undoHere = async () => {
+    let label: string | null;
+    try {
+      label = await undoLast();
+    } catch (e) {
+      setFlash(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    lastTurn.current = null;
+    if (!label) {
+      setFlash('Nothing to undo');
+      return;
+    }
+    setFlash(`Undone: ${label}`);
+    noteItemsChanged(); // the library loads again when the viewer closes
+    setInfoReload((n) => n + 1);
+    const p = listRef.current;
+    if (!p) return;
+    const now = p.current();
+    const keys = new Set([...gone.current, ...touched.current, ...(now ? [now.key] : [])]);
+    const looked = await Promise.all([...keys].map(async (key) => {
+      const it = props.items.find((x) => x.key === key);
+      return it?.itemId != null ? { key, it, full: await api.getItem(it.itemId).catch(() => null) } : null;
+    }));
+    if (listRef.current !== p) return;
+    const patch: Record<string, Partial<PlayItem>> = {};
+    let back: string | null = null;
+    let left = false;
+    for (const x of looked) {
+      if (!x?.full) continue;
+      const inTrash = x.full.deletedAt != null;
+      if (gone.current.has(x.key) && !inTrash) {
+        gone.current.delete(x.key);
+        back = x.key;
+      } else if (!gone.current.has(x.key) && inTrash) {
+        // Undoing took it away (e.g. a copy made here): it leaves the list like a delete.
+        gone.current.add(x.key);
+        left = true;
+      }
+      patch[x.key] = { favourite: x.full.favourite, weight: x.full.weight };
+      x.it.weight = x.full.weight; // the play order uses it right away
+    }
+    setOverrides((o) => {
+      const n = { ...o };
+      for (const [k, v] of Object.entries(patch)) n[k] = { ...n[k], ...v };
+      return n;
+    });
+    if (back || left) {
+      const rest = props.items.filter((x) => !gone.current.has(x.key));
+      if (!rest.length) return props.onClose?.();
+      // The item that came back shows again.
+      p.setItems(rest, back ?? (now && !gone.current.has(now.key) ? now.key : rest[0].key));
+      setCur(p.current());
+      setGoneCount(gone.current.size);
+      if (back) setFlash(`Undone: ${label} · it's back`);
+    }
+  };
+
   const set = (patch: Partial<PlaybackSettings>) => {
     const next = { ...s, ...patch };
     // Turning sound on at volume 0 starts at 20%. (Dragging the slider itself to 0 stays 0.)
@@ -1412,7 +1492,10 @@ export function Player(props: PlayerProps) {
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
       if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
-        if (lastTurn.current && peekUndo() === lastTurn.current) {
+        if (props.undoAll) {
+          e.preventDefault();
+          void undoHere();
+        } else if (lastTurn.current && peekUndo() === lastTurn.current) {
           e.preventDefault();
           undoTurn();
         }
@@ -1464,6 +1547,7 @@ export function Player(props: PlayerProps) {
         saveViewerPrefs({ smoothZoom: !prefs.smoothZoom });
         setFlash(prefs.smoothZoom ? 'Crisp pixels when zoomed in' : 'Smooth when zoomed in');
       } else if (k === '?') setHelp(true);
+      else if (k === 'i' && infoAllowed && !e.ctrlKey && !e.altKey && !e.metaKey) toggleInfo();
       else if (k === 'm' && props.onMinimize && !e.shiftKey && !e.ctrlKey) props.onMinimize();
       else if (k === 'm') set({ muted: !s.muted });
       else if (k === 'f') props.onFullscreen?.();
@@ -1526,6 +1610,7 @@ export function Player(props: PlayerProps) {
     if (!item || !props.onFavourite) return;
     const it = item;
     const on = !fav;
+    touched.current.add(it.key);
     setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: on } }));
     Promise.resolve(props.onFavourite(it, on)).then(() => setFlash(on ? 'Added to favourites · Ctrl+Z undoes it' : 'Removed from favourites · Ctrl+Z undoes it')).catch((e) => {
       setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: !on } }));
@@ -1536,6 +1621,7 @@ export function Player(props: PlayerProps) {
     if (!item || !props.onWeight) return;
     const it = item;
     const was = weight;
+    touched.current.add(it.key);
     setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], weight: w } }));
     if (cur) cur.weight = w; // the play order uses the new weight right away
     Promise.resolve(props.onWeight(it, w, was)).catch((e) => {
@@ -1757,6 +1843,10 @@ export function Player(props: PlayerProps) {
       )}
       {up.bar}
       {flash && <div className="p-flash" role="status">{flash}</div>}
+      {infoOpen && infoAllowed && item && (
+        <InfoPanel item={item} natural={natural} playedSeconds={isVideo ? time.dur : 0} folder={props.folderOf?.(item)}
+          reload={infoReload} onClose={toggleInfo} />
+      )}
       {resumed != null && !mini && (
         <div className="resume-chip" role="status">
           Resumed at {formatTime(resumed * 1000)} ·{' '}
@@ -1828,6 +1918,10 @@ export function Player(props: PlayerProps) {
                 aria-pressed={fav} onClick={toggleFavourite}><HeartIcon filled={fav} size={18} /></button>
             )}
             {props.topRight}
+            {infoAllowed && (
+              <button type="button" className={`btn btn-icon btn-sm glass${infoOpen ? ' accent' : ''}`} aria-pressed={infoOpen} aria-label="Info (I)"
+                title="Info: size, dates, folder, tags and note (I)" onClick={toggleInfo}><InfoIcon /></button>
+            )}
             {props.keys && (
               <button type="button" className="btn btn-icon btn-sm glass" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={() => setHelp(true)}>
                 <HelpIcon />

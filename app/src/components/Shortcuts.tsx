@@ -84,6 +84,8 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['F', 'Clean full screen'],
       ['Right-click', 'Edit or rotate, faces, favourite, tags, move, rename, share… (the library’s item options)'],
       ['Delete', 'Move it to the trash and go on to the next one'],
+      ['Ctrl+Z', 'Undo the last change (favourite, weight, delete, tags, rotation…); a deleted item comes back'],
+      ['I', 'Info: size, dates, folder, tags and note'],
       ['Alt+←', 'Back (like Esc)'],
       ['Esc', 'Reset zoom, leave full screen, go back'],
     ],
