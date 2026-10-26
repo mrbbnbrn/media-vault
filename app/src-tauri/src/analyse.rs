@@ -310,7 +310,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                     match faceid::faces_in(&rgba, w, h, 0) {
                         Ok(found) => {
                             let n = faces::save(&s.db(), t.id, &found, faces::ARCFACE).unwrap_or(0);
-                            s.mark_dirty();
+                            s.mark_dirty_bg();
                             DONE.faces.fetch_add(1, Ordering::Relaxed);
                             rep.faces = Some(n);
                         }
@@ -318,7 +318,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                         Err(_) if !faceid::info().available => {}
                         Err(_) => {
                             let _ = faces::failed(&s.db(), t.id, faces::ARCFACE);
-                            s.mark_dirty();
+                            s.mark_dirty_bg();
                         }
                     }
                 }
@@ -337,7 +337,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                 if print {
                     let (hash, sharp) = picture::fingerprint(&th);
                     let _ = similar::save(&s.db(), t.id, &hash, sharp);
-                    s.mark_dirty();
+                    s.mark_dirty_bg();
                     DONE.prints.fetch_add(1, Ordering::Relaxed);
                     rep.print = Some(hash);
                 }
@@ -354,7 +354,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                 if smart {
                     let _ = clip::failed(&db, t.id);
                 }
-                s.mark_dirty();
+                s.mark_dirty_bg();
             }
         }
     }
@@ -405,7 +405,7 @@ fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> Vec<i64> {
         }
         DONE.smart.fetch_add(1, Ordering::Relaxed);
     }
-    s.mark_dirty();
+    s.mark_dirty_bg();
     done
 }
 
@@ -498,7 +498,7 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
             if named {
                 named = false;
                 if faces::refresh(&*s).unwrap_or(0) > 0 {
-                    s.mark_dirty();
+                    s.mark_dirty_bg();
                 }
             }
             sleep_until_woken(5000);
@@ -515,7 +515,7 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
             last_naming = Instant::now();
             named = false;
             if faces::refresh(&*s).unwrap_or(0) > 0 {
-                s.mark_dirty();
+                s.mark_dirty_bg();
             }
         }
         std::thread::sleep(Duration::from_millis(30));

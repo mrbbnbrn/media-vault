@@ -265,7 +265,7 @@ pub fn measure_round(s: &crate::session::Session, here: &str) -> usize {
             }
         };
         if r.is_ok() {
-            s.mark_dirty();
+            s.mark_dirty_bg();
         }
         done += 1;
     }

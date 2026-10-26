@@ -142,7 +142,7 @@ pub fn backfill(s: Arc<Session>) {
                 let _ = s.db().prepare_cached("UPDATE media SET sketch = ?1 WHERE thumb_object_id = ?2 AND sketch IS NULL").and_then(|mut st| st.execute(
                     rusqlite::params![sketch, thumb],
                 ));
-                s.mark_dirty();
+                s.mark_dirty_bg();
                 // Leave the computer to the things you are doing.
                 std::thread::sleep(Duration::from_millis(3));
             }

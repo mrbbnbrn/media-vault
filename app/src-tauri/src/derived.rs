@@ -115,7 +115,7 @@ pub fn put(s: &Session, item: i64, kind: &str, model: &str, bytes: &[u8]) -> Res
             if let Some(id) = old.and_then(|o| ObjectId::from_hex(&o).ok()) {
                 let _ = s.vault().delete_object(ObjectKind::Thumbnail, &id);
             }
-            s.mark_dirty();
+            s.mark_dirty_bg(); // made again at any time
             Ok(())
         }
         Err(err) => {

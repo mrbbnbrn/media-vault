@@ -13,6 +13,10 @@ use vault_core::{Access, Error, KdfParams, Vault};
 
 pub const MIN_PASSWORD_CHARS: usize = 8;
 
+/// Changes made only by background work are saved at least this often (and
+/// always when the vault locks or the app closes).
+pub const BACKGROUND_SAVE_EVERY: Duration = Duration::from_secs(60);
+
 /// An unlocked vault. Shared (behind an `Arc`) between commands, the import
 /// worker and the media stream; dropping the last reference wipes the master
 /// key from memory.
@@ -25,6 +29,13 @@ pub struct Session {
     /// Set when the vault is locked; background work stops as soon as it sees it.
     closed: AtomicBool,
     dirty: AtomicBool,
+    /// Unsaved changes made only by background work, all of which can be
+    /// made again (thumbnails, fingerprints, smart-search vectors, sketches,
+    /// dates taken, face scans): saved at most every `BACKGROUND_SAVE_EVERY`,
+    /// so the whole library isn't written every few seconds while it runs.
+    dirty_bg: AtomicBool,
+    /// When the oldest unsaved background change was made.
+    first_unsaved_bg: Mutex<Option<Instant>>,
     last_change: Mutex<Instant>,
     /// A save has been asked for and not started yet.
     save_pending: AtomicBool,
@@ -152,6 +163,8 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         restored_from_backup: backup,
         closed: AtomicBool::new(false),
         dirty: AtomicBool::new(false),
+        dirty_bg: AtomicBool::new(false),
+        first_unsaved_bg: Mutex::new(None),
         last_change: Mutex::new(Instant::now()),
         first_unsaved: Mutex::new(None),
         save_pending: AtomicBool::new(false),
@@ -213,6 +226,15 @@ impl Session {
         self.dirty.store(true, Ordering::SeqCst);
     }
 
+    /// Record a change made by background work that can always be made
+    /// again (see `dirty_bg`). Saved with the next save of your own edits, or
+    /// within `BACKGROUND_SAVE_EVERY`.
+    pub fn mark_dirty_bg(&self) {
+        self.changes.fetch_add(1, Ordering::SeqCst);
+        self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(Instant::now());
+        self.dirty_bg.store(true, Ordering::SeqCst);
+    }
+
     /// Save right away in the background (changes made while it runs are
     /// picked up by the next save). Several requests at once make one save.
     pub fn save_soon(self: &std::sync::Arc<Self>) {
@@ -233,34 +255,54 @@ impl Session {
         self.changes.load(Ordering::SeqCst)
     }
 
+    /// Anything unsaved at all (your edits or background work).
     pub fn is_dirty(&self) -> bool {
+        self.dirty.load(Ordering::SeqCst) || self.dirty_bg.load(Ordering::SeqCst)
+    }
+
+    /// Unsaved edits of your own (saved within seconds).
+    pub fn has_user_changes(&self) -> bool {
         self.dirty.load(Ordering::SeqCst)
     }
 
     /// Encrypt and save the library database now.
     pub fn save(&self) -> Result<(), String> {
         let _one_at_a_time = self.save_lock.lock().unwrap_or_else(|e| e.into_inner());
-        self.dirty.store(false, Ordering::SeqCst);
+        // Taken now: changes made while this save runs make the next one.
+        let user = self.dirty.swap(false, Ordering::SeqCst);
+        let bg = self.dirty_bg.swap(false, Ordering::SeqCst);
         let first = self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let first_bg = self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).take();
+        // A failed save: everything it held is unsaved again.
         let restore_first = || {
+            if user {
+                self.dirty.store(true, Ordering::SeqCst);
+            }
+            if bg {
+                self.dirty_bg.store(true, Ordering::SeqCst);
+            }
             if let Some(f) = first {
                 self.first_unsaved.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
+            }
+            if let Some(f) = first_bg {
+                self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
             }
         };
         // Where new encrypted files landed in the packs goes into the database too.
         let changes = self.vault().drain_index_changes();
+        // The library is held only while it is copied into memory; encrypting
+        // and writing the copy happen after it is let go, so the window and
+        // background work carry on meanwhile.
         let bytes = {
             let db = self.db();
             if let Err(e) = db::apply_index_changes(&db, &changes) {
                 self.vault().restore_index_changes(changes);
-                self.dirty.store(true, Ordering::SeqCst);
                 restore_first();
                 return Err(format!("Couldn't save the library: {}", friendly(e)));
             }
             match db::serialize(&db) {
                 Ok(b) => b,
                 Err(e) => {
-                    self.dirty.store(true, Ordering::SeqCst);
                     restore_first();
                     return Err(friendly(e));
                 }
@@ -268,16 +310,16 @@ impl Session {
         };
         // A backup copy at most every 10 minutes (saving happens after every change).
         self.vault().save_db_spaced(&bytes, Duration::from_secs(600)).map_err(|e| {
-            self.dirty.store(true, Ordering::SeqCst);
             restore_first();
             format!("Couldn't save the library: {}", friendly(e))
         })
     }
 
-    /// Save once changes have settled for `settle` (so a burst of edits is
-    /// written once) — but never later than `max_wait` after the first
-    /// unsaved change, even while background work keeps changing things.
-    pub fn save_if_settled(&self, settle: Duration, max_wait: Duration) -> Result<(), String> {
+    /// Save your edits once they have settled for `settle` (so a burst of
+    /// edits is written once) — but never later than `max_wait` after the
+    /// first unsaved one. Changes made only by background work wait up to
+    /// `bg_wait` (they are written with your edits when there are some).
+    pub fn save_if_settled(&self, settle: Duration, max_wait: Duration, bg_wait: Duration) -> Result<(), String> {
         let age = self
             .last_change
             .lock()
@@ -289,11 +331,15 @@ impl Session {
             .unwrap_or_else(|e| e.into_inner())
             .map(|t| t.elapsed())
             .unwrap_or_default();
-        if self.is_dirty() && (age >= settle || waiting >= max_wait) {
-            self.save()
-        } else {
-            Ok(())
-        }
+        let waiting_bg = self
+            .first_unsaved_bg
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .map(|t| t.elapsed())
+            .unwrap_or_default();
+        let user_due = self.has_user_changes() && (age >= settle || waiting >= max_wait);
+        let bg_due = self.dirty_bg.load(Ordering::SeqCst) && waiting_bg >= bg_wait;
+        if user_due || bg_due { self.save() } else { Ok(()) }
     }
 
     pub fn info(&self) -> SessionInfo {
@@ -453,17 +499,53 @@ mod tests {
         s.mark_dirty();
         // Changes keep coming (last change is always fresh): settling alone never saves…
         s.mark_dirty();
-        s.save_if_settled(Duration::from_secs(3600), Duration::from_secs(3600)).unwrap();
+        let hour = Duration::from_secs(3600);
+        s.save_if_settled(hour, hour, hour).unwrap();
         assert!(s.is_dirty());
         // …but the longest wait does.
         std::thread::sleep(Duration::from_millis(20));
         s.mark_dirty();
-        s.save_if_settled(Duration::from_secs(3600), Duration::from_millis(10)).unwrap();
+        s.save_if_settled(hour, Duration::from_millis(10), hour).unwrap();
         assert!(!s.is_dirty());
         drop(s);
         let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
         let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Alex'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1, "the folder was saved");
+    }
+
+    #[test]
+    fn background_changes_wait_for_their_own_longer_turn() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = create(t.path().to_str().unwrap(), "V", "long enough pw", KDF).unwrap();
+        let path = s.vault().root().to_path_buf();
+        let before = s.changes();
+        s.db().execute("INSERT INTO folders(parent_id, name, created_at) VALUES (NULL, 'Thumbs', 0)", []).unwrap();
+        s.mark_dirty_bg();
+        assert!(s.changes() > before, "background changes count as changes");
+        assert!(s.is_dirty() && !s.has_user_changes());
+        // Settled and past the usual wait: not yet saved (the background wait is longer).
+        std::thread::sleep(Duration::from_millis(20));
+        s.save_if_settled(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600)).unwrap();
+        assert!(s.is_dirty());
+        // An edit of yours takes the background changes with it.
+        s.mark_dirty();
+        s.save_if_settled(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600)).unwrap();
+        assert!(!s.is_dirty());
+        // Background only, once its wait is over.
+        s.mark_dirty_bg();
+        std::thread::sleep(Duration::from_millis(20));
+        s.save_if_settled(Duration::from_secs(3600), Duration::from_secs(3600), Duration::from_millis(10)).unwrap();
+        assert!(!s.is_dirty());
+        // A failed save keeps it unsaved (the vault was closed and let go).
+        s.mark_dirty_bg();
+        s.close();
+        s.release();
+        assert!(s.save().is_err());
+        assert!(s.is_dirty() && !s.has_user_changes());
+        drop(s);
+        let s = unlock(path.to_str().unwrap(), "long enough pw").unwrap();
+        let n: i64 = s.db().query_row("SELECT COUNT(*) FROM folders WHERE name = 'Thumbs'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 
     #[test]

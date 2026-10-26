@@ -305,7 +305,7 @@ pub fn backfill(s: Arc<Session>) {
                 let _ = s.db().prepare_cached("UPDATE media SET taken_at = ? WHERE id = ? AND taken_at IS NULL").and_then(|mut st| {
                     st.execute(rusqlite::params![date.unwrap_or(0), id])
                 });
-                s.mark_dirty();
+                s.mark_dirty_bg();
             }
         }
     });

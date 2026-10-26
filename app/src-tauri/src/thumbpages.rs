@@ -470,7 +470,7 @@ pub fn refresh_folder(s: &Session, folder: Option<i64>, size: Size, pause: Durat
         forget_pages(&vault, &gone);
         drop_pages(s, &gone);
         if !gone.is_empty() {
-            s.mark_dirty();
+            s.mark_dirty_bg();
         }
         return Ok(out);
     }
@@ -501,7 +501,7 @@ pub fn refresh_folder(s: &Session, folder: Option<i64>, size: Size, pause: Durat
         forget_pages(&vault, &old);
         drop_pages(s, &old);
     }
-    s.mark_dirty();
+    s.mark_dirty_bg();
     Ok(out)
 }
 
@@ -533,7 +533,7 @@ pub fn drop_pages_holding(s: &Session, thumbs: &[ObjectId]) -> usize {
     let vault = vault_id(s);
     forget_pages(&vault, &pages);
     drop_pages(s, &pages);
-    s.mark_dirty();
+    s.mark_dirty_bg();
     // The rest of those folders: paged again by the background thread.
     {
         let mut g = lock();
@@ -588,7 +588,7 @@ pub fn delete_all(s: &Session) -> usize {
     }
     forget();
     if !ids.is_empty() {
-        s.mark_dirty();
+        s.mark_dirty_bg();
     }
     ids.len()
 }
@@ -640,10 +640,8 @@ pub fn start(s: Arc<Session>) {
         let mut last_sweep: Option<Instant> = None;
         while !s.is_closed() {
             if let Some((f, size)) = take_wanted(&vault) {
+                // New pages are saved with the next save (they can be made again).
                 let _ = refresh_folder(&s, f, size, Duration::ZERO);
-                if s.is_dirty() {
-                    s.save_soon();
-                }
                 continue;
             }
             if sweep.is_empty() && last_sweep.is_none_or(|t| t.elapsed() > Duration::from_secs(600)) {
@@ -656,9 +654,6 @@ pub fn start(s: Arc<Session>) {
                     // The slow sweep waits while you use the window (pages a grid asks for don't).
                     crate::userbusy::give_way(&|| s.is_closed());
                     let _ = refresh_folder(&s, f, Size::Small, Duration::from_millis(2));
-                    if s.is_dirty() {
-                        s.save_soon();
-                    }
                     sleep_until_woken(500);
                 }
                 None => sleep_until_woken(30_000),

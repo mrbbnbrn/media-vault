@@ -68,7 +68,8 @@ impl Lib for crate::session::Session {
         self.vault().root().display().to_string()
     }
     fn changed(&self) {
-        self.mark_dirty();
+        // Look-alike graphs and automatic names: made again at any time.
+        self.mark_dirty_bg();
     }
 }
 

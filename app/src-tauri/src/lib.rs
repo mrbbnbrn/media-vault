@@ -572,6 +572,22 @@ async fn edit_db_bg<T: Send + 'static>(
     .await
 }
 
+/// A change from background work that can always be made again (thumbnail
+/// failures, fingerprints, smart-search vectors, face scans): saved with your
+/// next edit, or within a minute (session::BACKGROUND_SAVE_EVERY).
+async fn edit_db_derived<T: Send + 'static>(
+    inner: &Shared,
+    f: impl FnOnce(&rusqlite::Connection) -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    let s = sess(inner)?;
+    blocking(move || {
+        let out = f(&s.db())?;
+        s.mark_dirty_bg();
+        Ok(out)
+    })
+    .await
+}
+
 /// Ctrl+S: save everything now.
 #[tauri::command]
 async fn save_now(state: State<'_, Shared>) -> Result<(), String> {
@@ -1131,7 +1147,7 @@ fn store_thumb(
         {
             let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
         }
-        s.mark_dirty();
+        s.mark_dirty_bg();
         Ok(())
     }
 }
@@ -1232,7 +1248,7 @@ async fn newest_item_id(state: State<'_, Shared>) -> Result<i64, String> {
 /// The window couldn't decode this file (e.g. an unsupported video codec).
 #[tauri::command]
 async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute(
             "UPDATE media SET thumb_object_id = '' WHERE id = ? AND thumb_object_id IS NULL",
             [id],
@@ -1324,7 +1340,7 @@ fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Resu
     {
         let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
     }
-    s.mark_dirty();
+    s.mark_dirty_bg();
     Ok(())
 }
 
@@ -1344,7 +1360,7 @@ async fn save_preview(state: State<'_, Shared>, request: tauri::ipc::Request<'_>
 
 #[tauri::command]
 async fn preview_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute("UPDATE media SET preview_object_id = '' WHERE id = ? AND preview_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -1367,7 +1383,7 @@ async fn save_tiny(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -
 
 #[tauri::command]
 async fn tiny_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| {
+    edit_db_derived(state.inner(), move |c| {
         c.execute("UPDATE media SET tiny_object_id = '' WHERE id = ? AND tiny_object_id IS NULL", [id])
             .map_err(|e| e.to_string())?;
         Ok(())
@@ -1865,12 +1881,12 @@ async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces:
 
 #[tauri::command]
 async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>, model: Option<i64>) -> Result<usize, String> {
-    edit_db_bg(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
+    edit_db_derived(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
 async fn faces_failed(state: State<'_, Shared>, media: i64, model: Option<i64>) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::ARCFACE))).await
+    edit_db_derived(state.inner(), move |c| faces::failed(c, media, model.unwrap_or(faces::ARCFACE))).await
 }
 
 #[tauri::command]
@@ -1885,7 +1901,7 @@ async fn faces_review(state: State<'_, Shared>, request: Option<faces::ReviewReq
     blocking(move || {
         let r = faces::review(&*s, &request.unwrap_or_default())?;
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -1899,7 +1915,7 @@ async fn faces_auto(state: State<'_, Shared>) -> Result<usize, String> {
     blocking(move || {
         let n = faces::refresh(&*s)?;
         if n > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(n)
     })
@@ -1955,7 +1971,7 @@ async fn faces_sort_offers(state: State<'_, Shared>, ids: Vec<i64>) -> Result<fa
     blocking(move || {
         let r = faces::sort_offers(&*s, &ids)?;
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -1970,7 +1986,7 @@ async fn faces_sort_all(state: State<'_, Shared>, ids: Option<Vec<i64>>, folder:
         // Only these items, or one folder and its subfolders; nothing given = the whole vault.
         let r = if ids.is_some() || folder.is_some() { faces::sort_scoped(&*s, &ids.unwrap_or_default(), folder)? } else { faces::sort_all(&*s)? };
         if r.changed > 0 {
-            s.mark_dirty();
+            s.mark_dirty_bg(); // automatic names only
         }
         Ok(r)
     })
@@ -2124,12 +2140,12 @@ struct MediaArgs {
 async fn clip_save(state: State<'_, Shared>, request: tauri::ipc::Request<'_>) -> Result<(), String> {
     let (MediaArgs { media }, data) = binbody::request(&request)?;
     let vec = binbody::floats(data)?;
-    edit_db_bg(state.inner(), move |c| clip::save(c, media, &vec)).await
+    edit_db_derived(state.inner(), move |c| clip::save(c, media, &vec)).await
 }
 
 #[tauri::command]
 async fn clip_failed(state: State<'_, Shared>, media: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| clip::failed(c, media)).await
+    edit_db_derived(state.inner(), move |c| clip::failed(c, media)).await
 }
 
 #[tauri::command]
@@ -2160,12 +2176,12 @@ async fn similar_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<simi
 
 #[tauri::command]
 async fn similar_save(state: State<'_, Shared>, id: i64, hash: String, sharpness: f64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| similar::save(c, id, &hash, sharpness)).await
+    edit_db_derived(state.inner(), move |c| similar::save(c, id, &hash, sharpness)).await
 }
 
 #[tauri::command]
 async fn similar_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
-    edit_db_bg(state.inner(), move |c| similar::failed(c, id)).await
+    edit_db_derived(state.inner(), move |c| similar::failed(c, id)).await
 }
 
 #[tauri::command]
@@ -2367,13 +2383,14 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             let Some(open) = inner.session.lock().unwrap().clone() else {
                 continue;
             };
-            // Save library edits shortly after they happen: once they settle
-            // for a second, and at the latest 5 s after the first one (the
-            // background analysis keeps changing things all the time). While
-            // you are using the window, at the latest after 20 s: saving holds
-            // the library for a moment, and thumbnails would wait for it.
+            // Save your library edits shortly after they happen: once they
+            // settle for a second, and at the latest 5 s after the first one.
+            // While you are using the window, at the latest after 20 s: saving
+            // holds the library for a moment, and thumbnails would wait for it.
+            // What background work alone changed (all of which can be made
+            // again) is saved at most once a minute, or with your next edit.
             let max_wait = if userbusy::busy() { 20 } else { 5 };
-            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait)) {
+            match open.save_if_settled(Duration::from_secs(1), Duration::from_secs(max_wait), session::BACKGROUND_SAVE_EVERY) {
                 Ok(()) => {
                     told_failure = false;
                     // A vault without encryption: files follow their items (moves, renames, the trash).
