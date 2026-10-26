@@ -2,6 +2,7 @@
 // find & replace, added text, or one by one, with a preview. File
 // extensions are always kept.
 
+import { errText } from '../text';
 import { useMemo, useState } from 'react';
 import { FolderIcon } from './Icons';
 import { Modal } from './Dialogs';
@@ -104,7 +105,7 @@ export function RenameDialog(props: {
       await props.onRename(changes);
       props.onClose();
     } catch (x) {
-      setErr(x instanceof Error ? x.message : String(x));
+      setErr(errText(x));
       setBusy(false);
     }
   };

@@ -3,6 +3,7 @@
 // another. All three the same person or tag = jackpot, with a slideshow of
 // everything in that group. Thumbnails only. Esc leaves.
 
+import { errText } from '../text';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type Item, type SlotData } from '../api';
 import { evaluate, planSpin, reelStrip, usefulGroups, type SlotGroup, type SpinResult } from '../slots';
@@ -101,7 +102,7 @@ export function SlotMachine({ folder, onClose, onPlay }: {
   const ticker = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    api.slotData(folder?.id ?? null).then(setData).catch((e) => setError(e instanceof Error ? e.message : String(e)));
+    api.slotData(folder?.id ?? null).then(setData).catch((e) => setError(errText(e)));
   }, [folder?.id]);
   const pool = useMemo(() => data?.items.map((i) => i.id) ?? [], [data]);
   const groups = useMemo(() => (data ? usefulGroups(data.groups as SlotGroup[], pool) : []), [data, pool]);

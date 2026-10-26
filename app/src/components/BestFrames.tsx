@@ -5,6 +5,7 @@
 // straight into the vault, encrypted (add_file_bytes), never to disk.
 // The rules are in bestframes.ts.
 
+import { errText } from '../text';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type FaceBox } from '../api';
 import {
@@ -140,7 +141,7 @@ export function BestFramesDialog(props: {
       if (!samples.length) throw new Error('No frames could be read from this video.');
       refresh();
       setPhase({ kind: 'ready', stopped: stop.current });
-    })().catch((e) => alive.current && setPhase({ kind: 'failed', why: e instanceof Error ? e.message : String(e) }));
+    })().catch((e) => alive.current && setPhase({ kind: 'failed', why: errText(e) }));
     return () => {
       alive.current = false;
       v.removeAttribute('src');
@@ -173,7 +174,7 @@ export function BestFramesDialog(props: {
         if (alive.current) setPhase({ kind: 'saving', done: i + 1, total: chosen.length });
       }
     } catch (e) {
-      props.onMessage(`Couldn't save ${ids.length ? 'all the frames' : 'the frames'}: ${e instanceof Error ? e.message : String(e)}`);
+      props.onMessage(`Couldn't save ${ids.length ? 'all the frames' : 'the frames'}: ${errText(e)}`);
     }
     if (ids.length) {
       kickThumbnails();

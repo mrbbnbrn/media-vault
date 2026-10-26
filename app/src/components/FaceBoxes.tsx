@@ -6,6 +6,7 @@
 // opens the person in a new tab behind this one, Ctrl+middle-click marks a
 // face "not important", right-click has everything else.
 
+import { errText } from '../text';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, type FaceBox, type FolderCard } from '../api';
@@ -89,7 +90,7 @@ export function FaceLayer(props: {
       props.onMessage(await toggleImportant(f));
       props.onChanged();
     } catch (e) {
-      props.onMessage(`Couldn't change it: ${e instanceof Error ? e.message : String(e)}`);
+      props.onMessage(`Couldn't change it: ${errText(e)}`);
     }
   };
   const openBehind = (f: FaceBox) => {
@@ -194,7 +195,7 @@ export function FaceLayer(props: {
                   props.onMessage(`Not ${mname} any more`);
                   props.onChanged();
                 } catch (e) {
-                  props.onMessage(`Couldn't change it: ${e instanceof Error ? e.message : String(e)}`);
+                  props.onMessage(`Couldn't change it: ${errText(e)}`);
                 }
               },
             }] : []),
@@ -272,7 +273,7 @@ export function WhoIsIt(props: {
       props.onDone(cur ? `Changed to ${f.name}` : `Marked as ${f.name}`);
     } catch (e) {
       setBusy(false);
-      props.onDone(`Couldn't save that: ${e instanceof Error ? e.message : String(e)}`);
+      props.onDone(`Couldn't save that: ${errText(e)}`);
     }
   };
 
@@ -300,7 +301,7 @@ export function WhoIsIt(props: {
                   props.onDone(`Not ${cur.name} any more`);
                 } catch (e) {
                   setBusy(false);
-                  props.onDone(`Couldn't change it: ${e instanceof Error ? e.message : String(e)}`);
+                  props.onDone(`Couldn't change it: ${errText(e)}`);
                 }
               }}>This isn't {cur.name}</button>
             <span className="faint" style={{ fontSize: 12 }}>Or change it to:</span>
@@ -329,7 +330,7 @@ export function WhoIsIt(props: {
                 props.onDone('Hidden: not important');
               } catch (e) {
                 setBusy(false);
-                props.onDone(`Couldn't hide it: ${e instanceof Error ? e.message : String(e)}`);
+                props.onDone(`Couldn't hide it: ${errText(e)}`);
               }
             }}>Not important</button>
         </div>

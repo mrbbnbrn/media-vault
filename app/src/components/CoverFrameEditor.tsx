@@ -3,6 +3,7 @@
 // the real card shape (round for person folders) with the real cover, and a
 // video or GIF cover plays in it. Nothing is changed until Save.
 
+import { errText } from '../text';
 import { useEffect, useRef, useState } from 'react';
 import { mediaUrl, thumbUrl, type FolderCard } from '../api';
 import { clampPos, dragBy, fromPlacement, samePos, zoomAround, ZOOM_MAX, ZOOM_MIN, type CoverPos } from '../coverframe';
@@ -96,7 +97,7 @@ export function CoverFrameEditor(props: { folder: FolderCard; onClose: () => voi
       await props.onSave(pos ? clampPos(pos) : null);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
       setBusy(false);
     }
   };

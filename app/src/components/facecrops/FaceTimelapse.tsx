@@ -4,6 +4,7 @@
 // Faces are measured (for their points) and lined up a little ahead of
 // where you are; the playback simply waits when it catches up.
 
+import { errText } from '../../text';
 import { NOTE_MS, useAutoDismiss } from '../../autodismiss';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type PersonFace } from '../../api';
@@ -230,7 +231,7 @@ export default function FaceTimelapse(props: {
       setNote(`Saved “${name}” in ${props.name}.`);
       props.onSaved();
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errText(e);
       setNote(stopSave.current ? 'Stopped. Nothing was saved.' : `Couldn't save the video: ${msg}`);
     } finally {
       rec.clear();

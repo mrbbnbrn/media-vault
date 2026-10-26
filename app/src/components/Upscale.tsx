@@ -11,6 +11,7 @@
 // faces are found by the faces pack (faceid.rs, offline) and the upscaling
 // itself runs in Rust (upscale.rs) on the graphics card or the processor.
 
+import { errText } from '../text';
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   api, inTauri, onUpscale, upscaledUrl,
@@ -197,7 +198,7 @@ export function useUpscale(o: {
         bmp.close();
       }
     } catch (e) {
-      if (mine === run.current) setPhase({ kind: 'note', text: e instanceof Error ? e.message : String(e) });
+      if (mine === run.current) setPhase({ kind: 'note', text: errText(e) });
     }
   };
 
@@ -232,7 +233,7 @@ export function useUpscale(o: {
       pushUndo(`Saved “${s.name}”`, () => api.deleteItems([s.id]));
       oRef.current.onMessage(`Saved “${s.name}” next to the original (Ctrl+Z undoes it)`);
     } catch (e) {
-      oRef.current.onMessage(`Couldn't save: ${e instanceof Error ? e.message : String(e)}`);
+      oRef.current.onMessage(`Couldn't save: ${errText(e)}`);
     }
   };
 

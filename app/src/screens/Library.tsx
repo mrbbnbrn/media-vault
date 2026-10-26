@@ -2,6 +2,7 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
+import { errText } from '../text';
 import { MESSAGE_SLOT } from '../components/Messages';
 import { say } from '../messages';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -199,7 +200,6 @@ const PREVIEWS: { id: 'all' | 'hover' | 'off'; label: string; hint: string }[] =
   { id: 'off', label: 'No previews', hint: 'still pictures' },
 ];
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 function viewTitle(v: LibView, folder: FolderCard | null): string {
   switch (v.kind) {
@@ -3520,7 +3520,7 @@ function ArchivePasswordDialog(props: { summary: DropSummary; onClose: () => voi
           await props.onImport(pw);
           props.onClose();
         } catch (x) {
-          setErr(x instanceof Error ? x.message : String(x));
+          setErr(errText(x));
         } finally {
           setBusy(false);
         }
@@ -3677,7 +3677,7 @@ function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked:
       await props.onPicked(id);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     }
   };
   const shown = items?.slice(0, limit) ?? [];

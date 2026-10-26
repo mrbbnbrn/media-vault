@@ -23,8 +23,6 @@ let nativeFailures = 0;
 
 /** "native-gpu" or "native-cpu" once the faces pack is there, else "". */
 export const faceBackend = () => (available ? (nativeDevice === 'gpu' ? 'native-gpu' : 'native-cpu') : '');
-/** The faces pack is there and working. */
-export const facesReady = () => available;
 
 /** Ask the app whether the faces pack is there. */
 export async function checkFaceEngine(): Promise<FaceEngineStatus | null> {

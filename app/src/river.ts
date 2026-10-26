@@ -85,7 +85,6 @@ let density = 1;
 export function setDensity(d: number) {
   density = Math.max(MIN_DENSITY, Math.min(MAX_DENSITY, d));
 }
-export const getDensity = () => density;
 
 export interface Drifter {
   /** Unique, for the drawing to keep its card. */

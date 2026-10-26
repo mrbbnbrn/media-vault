@@ -14,7 +14,7 @@
 // - swallows keys pressed outside it (e.g. the focus was on the page), except
 //   the app's own global keys.
 
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 export interface LayerOptions {
   /** For the timing panel and debugging. */
@@ -84,9 +84,6 @@ export const noLayerOpen = () => stack.length === 0;
 
 /** Layer `id` is on top: its keys are its own. */
 export const keysAreMine = (id: number) => topLayer()?.id === id;
-
-/** Some layer with this name is open. */
-export const layerOpen = (name: string) => stack.some((l) => l.name === name);
 
 /** For tests and the timing panel. */
 export const layerNames = () => stack.map((l) => l.name);
@@ -244,9 +241,4 @@ export function useLayer(active: boolean, o: LayerOptions): LayerHandle {
   }, [active]); // eslint-disable-line react-hooks/exhaustive-deps
   const mine = useRef(() => idRef.current !== 0 && keysAreMine(idRef.current)).current;
   return useMemo(() => ({ id, mine }), [id, mine]);
-}
-
-/** Re-render when layers open or close (e.g. to know whether the library may use keys). */
-export function useNoLayerOpen(): boolean {
-  return useSyncExternalStore(onLayersChange, noLayerOpen);
 }

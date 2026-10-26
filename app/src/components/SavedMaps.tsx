@@ -3,6 +3,7 @@
 // out the missing ones or all of them again in the background (prepare.ts),
 // with progress and Stop.
 
+import { errText } from '../text';
 import { useEffect, useState, useSyncExternalStore } from 'react';
 import { api, type DerivedStats, type ViewerSettings } from '../api';
 import { onSavedChange } from '../derived';
@@ -44,7 +45,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       const n = await api.derivedClear();
       setNote(n ? `Cleared ${n.toLocaleString()} saved ${n === 1 ? 'map' : 'maps'}.` : 'Nothing to clear.');
     } catch (e) {
-      setNote(`Couldn't clear them: ${e instanceof Error ? e.message : String(e)}`);
+      setNote(`Couldn't clear them: ${errText(e)}`);
     }
     load();
   };

@@ -90,10 +90,6 @@ export function onPreviewMade(cb: (id: number, kind: PreviewKind) => void): () =
   return () => madeListeners.delete(cb);
 }
 
-export function kickPreviews() {
-  wake?.();
-}
-
 /** Make the frame strip of one video, in memory (WebP bytes, or JPEG where WebP can't be made). */
 export async function makePreviewStrip(id: number): Promise<Uint8Array> {
   const m = await makeVideoPreviews(mediaUrl(id), { strip: true, tiny: false });

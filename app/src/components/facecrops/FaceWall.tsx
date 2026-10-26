@@ -3,6 +3,7 @@
 // clicking a tile. Shown instead of the grid on a person's page and on a
 // search for one person.
 
+import { errText } from '../../text';
 import { useEffect, useMemo, useState } from 'react';
 import { api, type PersonFace } from '../../api';
 import { bigEnough, byMonth } from '../../facecrops';
@@ -20,7 +21,7 @@ export function FaceWall(props: { person: number; name: string; onOpen: (mediaId
     let alive = true;
     setAll(null);
     setError(null);
-    api.faceCropsList(props.person).then((l) => alive && setAll(l)).catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    api.faceCropsList(props.person).then((l) => alive && setAll(l)).catch((e) => alive && setError(errText(e)));
     return () => {
       alive = false;
     };

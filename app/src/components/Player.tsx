@@ -11,6 +11,7 @@
 // beside the picture (or in the wide strips at the far left and right) goes to
 // the previous / next item; a click in those strips too (swipe.ts).
 
+import { errText } from '../text';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
@@ -963,7 +964,7 @@ export function Player(props: PlayerProps) {
       } else await api.facesQueue({ ids: [id], again: true });
       kickFaceScanner();
     } catch (e) {
-      setFlash(`Couldn't look for faces: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't look for faces: ${errText(e)}`);
       return;
     }
     setFlash(reset ? `Faces forgotten · looking again in this ${what}…` : `Looking for faces in this ${what}…`);
@@ -1183,7 +1184,7 @@ export function Player(props: PlayerProps) {
       lastTurn.current = peekUndo();
       setFlash(`Saved “${name}” next to the original (Ctrl+Z undoes it)`);
     } catch (e) {
-      setFlash(`Couldn't save the subject: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't save the subject: ${errText(e)}`);
     } finally {
       setSavingSubject(false);
     }
@@ -1304,7 +1305,7 @@ export function Player(props: PlayerProps) {
       kickThumbnails();
       setFlash(`Saved “${name}” in this folder`);
     } catch (e) {
-      setFlash(`Couldn't save the frame: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't save the frame: ${errText(e)}`);
     }
   };
 
@@ -1350,7 +1351,7 @@ export function Player(props: PlayerProps) {
       lastTurn.current = peekUndo();
       setFlash(savedText(t));
     } catch (e) {
-      setFlash(e instanceof RotateNote ? e.message : `Couldn't save the rotation: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(e instanceof RotateNote ? e.message : `Couldn't save the rotation: ${errText(e)}`);
     } finally {
       setRotSaving(false);
     }
@@ -1371,7 +1372,7 @@ export function Player(props: PlayerProps) {
       const label = await undoLast();
       if (label) setFlash(`Undone: ${label}`);
     } catch (e) {
-      setFlash(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't undo: ${errText(e)}`);
     }
   };
 
@@ -1387,7 +1388,7 @@ export function Player(props: PlayerProps) {
     try {
       label = await undoLast();
     } catch (e) {
-      setFlash(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't undo: ${errText(e)}`);
       return;
     }
     lastTurn.current = null;
@@ -1632,7 +1633,7 @@ export function Player(props: PlayerProps) {
     setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: on } }));
     Promise.resolve(props.onFavourite(it, on)).then(() => setFlash(on ? 'Added to favourites · Ctrl+Z undoes it' : 'Removed from favourites · Ctrl+Z undoes it')).catch((e) => {
       setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: !on } }));
-      setFlash(`Couldn't change the favourite: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't change the favourite: ${errText(e)}`);
     });
   };
   const changeWeight = (w: number) => {
@@ -1645,7 +1646,7 @@ export function Player(props: PlayerProps) {
     Promise.resolve(props.onWeight(it, w, was)).catch((e) => {
       setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], weight: was } }));
       if (cur) cur.weight = was;
-      setFlash(`Couldn't change the weight: ${e instanceof Error ? e.message : String(e)}`);
+      setFlash(`Couldn't change the weight: ${errText(e)}`);
     });
   };
   // The library's actions for the right-click menu (itemmenu.ts), asked for when it opens.

@@ -7,6 +7,7 @@
 // In:  { bytes: ArrayBuffer, name, out: { w, h }, matrix, adjust, W, H }
 // Out: { data: ArrayBuffer, mime, ext } or { error }
 
+import { errText } from './text';
 import { adjustPixels, anySeeThrough, hasAdjust, savedFormat, type Adjust, type Matrix } from './imageedit';
 
 interface Job {
@@ -51,6 +52,6 @@ self.onmessage = async (e: MessageEvent<Job>) => {
     const data = await blob.arrayBuffer();
     post({ data, mime: fmt.mime, ext: fmt.ext }, [data]);
   } catch (err) {
-    post({ error: err instanceof Error ? err.message : String(err) });
+    post({ error: errText(err) });
   }
 };

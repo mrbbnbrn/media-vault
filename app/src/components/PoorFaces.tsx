@@ -2,6 +2,7 @@
 // be trusted (Settings → Faces decides where that starts). They are never
 // named on their own or learned from; naming one yourself makes it count.
 
+import { errText } from '../text';
 import { useState } from 'react';
 import { api, type FaceReview, type Item, type PoorFace } from '../api';
 import { poorReason } from '../poorfaces';
@@ -27,7 +28,7 @@ export function PoorFacesSection(props: {
       await api.facesHide([p.faceId], true);
       props.onDone('Hidden: not important.');
     } catch (e) {
-      props.onError(e instanceof Error ? e.message : String(e));
+      props.onError(errText(e));
     }
   };
   return (

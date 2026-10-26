@@ -4,6 +4,7 @@
 // background with progress and Pause (encryptionjob.ts); while it runs, or
 // if it was paused, the vault reads normally.
 
+import { errText } from '../text';
 import { useState } from 'react';
 import { api } from '../api';
 import type { Nav } from '../App';
@@ -46,7 +47,7 @@ export function EncryptionSection({ nav }: { nav: Nav }) {
       await nav.refresh();
       nav.go({ name: 'words', words: r.words, context: 'encrypt' });
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
       setBusy(false);
     }
   }

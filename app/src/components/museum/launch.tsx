@@ -5,6 +5,7 @@
 // the museum, which stays loaded and holds still underneath: closing the
 // viewer is instant and you stand exactly where you were.
 
+import { errText } from '../../text';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useMemo, useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, thumbUrl, type FolderCard, type Item } from '../../api';
@@ -65,7 +66,7 @@ export async function openFolderMuseum(f: FolderCard, note?: (text: string) => v
     const items = f.person ? await api.queryItems({ people: [f.id] }) : await api.queryItems({ folder: f.id, recursive: true });
     openMuseum(f.name, items, note);
   } catch (e) {
-    note?.(e instanceof Error ? e.message : String(e));
+    note?.(errText(e));
   }
 }
 

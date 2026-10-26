@@ -118,10 +118,6 @@ export function noteClipProgress() {
   listeners.forEach((l) => l());
 }
 
-export function kickClipIndexer() {
-  wake?.();
-}
-
 /** Background loop: analyse pictures that haven't been yet. Stops on lock. */
 export function startClipIndexer(): () => void {
   if (running) return stop ?? (() => {});

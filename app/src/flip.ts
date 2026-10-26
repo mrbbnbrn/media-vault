@@ -53,10 +53,6 @@ export function invert(from: Box, to: Box): { x: number; y: number; s: number } 
   };
 }
 
-export function toBox(r: { left: number; top: number; width: number; height: number }): Box {
-  return { left: r.left, top: r.top, width: r.width, height: r.height };
-}
-
 export function reducedMotion(): boolean {
   return typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
 }

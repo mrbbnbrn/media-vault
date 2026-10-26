@@ -1,5 +1,6 @@
 // Colour dot and emoji for a folder, shown in the sidebar and on its card.
 
+import { errText } from '../text';
 import { useState } from 'react';
 import type { FolderCard } from '../api';
 import { Modal } from './Dialogs';
@@ -20,7 +21,7 @@ export function FolderLookDialog(props: { folder: FolderCard; onClose: () => voi
       await props.onSave(color, emoji.trim() || null);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     }
   };
   return (

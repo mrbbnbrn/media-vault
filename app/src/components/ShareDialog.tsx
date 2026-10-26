@@ -1,6 +1,7 @@
 // "Share as encrypted .7z…": put the chosen items and folders into a
 // password-protected 7z archive that 7-Zip (and most archive tools) can open.
 
+import { errText } from '../text';
 import { useEffect, useState } from 'react';
 import { api, pickSave7z, type ShareDone } from '../api';
 import { dismissShare, startShare, useTasks, watchShare } from '../tasks';
@@ -9,7 +10,6 @@ import { plural } from '../undo';
 import { Modal } from './Dialogs';
 import { LockIcon } from './Icons';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const MiB = 1024 * 1024;
 
 type Split = 'none' | '700' | '1024' | '4092' | 'custom';

@@ -3,6 +3,8 @@
 // As you scroll down, the picture drifts slower than the page and fades away.
 // The banner and where it looks (drag it up or down) are kept in the vault.
 
+import { gateVideo } from '../previewgate';
+import { errText } from '../text';
 import { useEffect, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type FolderBanner, type FolderCard, type Item } from '../api';
 import { bannerRank, bannerSpan, dragFocus } from '../bannerlogic';
@@ -153,7 +155,7 @@ export function FolderBannerView({ banner, title, note, preview, scroller, editi
           <img className="fbanner-full" src={mediaUrl(banner.media)} alt="" draggable={false} style={{ objectPosition: pos }} onLoad={() => setFull(true)} />
         )}
         {banner.kind === 'video' && playing && (
-          <video className="fbanner-full" src={mediaUrl(banner.media)} muted loop autoPlay playsInline disablePictureInPicture style={{ objectPosition: pos }}
+          <video ref={gateVideo} className="fbanner-full" src={mediaUrl(banner.media)} muted loop autoPlay playsInline disablePictureInPicture style={{ objectPosition: pos }}
             onPlaying={() => setFull(true)} onLoadedMetadata={(e) => learn(e.currentTarget.videoWidth, e.currentTarget.videoHeight)} />
         )}
       </div>
@@ -193,7 +195,7 @@ export function BannerPicker(props: { folder: FolderCard; current: number | null
       await props.onPicked(id);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     }
   };
   return (

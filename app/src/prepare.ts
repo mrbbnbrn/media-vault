@@ -15,6 +15,7 @@
 // Both go through the same one-at-a-time queues as the viewer (depth.ts,
 // subject.ts), behind whatever the viewer needs right now.
 
+import { errText } from './text';
 import { api, mediaUrl, onLocked, type Item, type ItemFilter } from './api';
 import { viewerPrefs } from './prefs';
 import { beginJob, endJob, updateJob } from './jobs';
@@ -375,7 +376,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
     }
   } catch (e) {
     ok = false;
-    set({ note: `Couldn't finish (${r.what}): ${e instanceof Error ? e.message : String(e)}` });
+    set({ note: `Couldn't finish (${r.what}): ${errText(e)}` });
   } finally {
     endJob(JOB, { failed: !ok, summary: `${state.done.toLocaleString()} maps prepared for 3D` });
     running = null;

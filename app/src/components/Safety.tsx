@@ -1,5 +1,6 @@
 // Safety tools: export decrypted copies, check for damage, login history.
 
+import { errText } from '../text';
 import { dismissShare } from '../tasks';
 import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { useState } from 'react';
@@ -11,7 +12,6 @@ import { Modal } from './Dialogs';
 import { ExportIcon, ShieldIcon, WarnIcon } from './Icons';
 import { ShareTaskCards } from './ShareDialog';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Asks where to export, after a clear warning that the copies are not encrypted. */
 export function ExportDialog(props: { request: Omit<ExportRequest, 'dest'>; what: string; onClose: () => void }) {

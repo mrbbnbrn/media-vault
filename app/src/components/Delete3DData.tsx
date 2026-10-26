@@ -6,6 +6,7 @@
 // found no face (or only poor faces) in, e.g. screenshots. Only the saved depth maps and outlines go: the pictures
 // never change, and the maps are worked out again when needed.
 
+import { errText } from '../text';
 import { useEffect, useMemo, useState } from 'react';
 import { api, type DerivedGroup, type DerivedKind, type FaceSplit, type ItemFilter } from '../api';
 import { mapLabel, savedChanged } from '../derived';
@@ -76,7 +77,7 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
         setAll(list);
         setSplit(sp);
       } catch (e) {
-        if (live) setErr(e instanceof Error ? e.message : String(e));
+        if (live) setErr(errText(e));
       }
     })();
     return () => {
@@ -95,7 +96,7 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
         setGroups(g);
         setChecked(new Set(g.map(keyOf)));
       },
-      (e) => live && setErr(e instanceof Error ? e.message : String(e)),
+      (e) => live && setErr(errText(e)),
     );
     return () => {
       live = false;

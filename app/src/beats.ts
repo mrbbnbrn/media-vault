@@ -4,6 +4,7 @@
 //   const beat = useBeatSync({ enabled, everyBeats: 4, minSeconds: 2, onAdvance: next });
 //   // when beat.silent is true, keep using the normal slideshow timer
 
+import { errText } from './text';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, inTauri, onEvent, type BeatEvent, type BeatLevelEvent, type BeatStatus } from './api';
 
@@ -129,7 +130,7 @@ export function useBeatSync(opts: BeatSyncOptions): BeatSync {
       const st = await api.beatsStatus().catch(() => null);
       if (alive && st) setStatus((cur) => cur ?? st);
     })().catch((e) => {
-      const msg = e instanceof Error ? e.message : String(e);
+      const msg = errText(e);
       console.error('Beat sync could not start:', msg);
       if (alive) {
         setListening(false);

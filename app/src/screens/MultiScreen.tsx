@@ -6,6 +6,7 @@
 // Also the "Open player" screen, which plays files and folders dropped from
 // Windows without any vault.
 
+import { errText } from '../text';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
@@ -174,8 +175,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       }
       setPanels((ps) => ps.map((p, i) => (i === idx ? { ...p, source: src, items: r.items, startKey: r.startKey, error: r.items.length ? undefined : 'Nothing to play there.' } : p)));
     } catch (e) {
-      if (idx === 'wall') setWall((w) => ({ ...w, error: e instanceof Error ? e.message : String(e) }));
-      else update(idx, { error: e instanceof Error ? e.message : String(e) });
+      if (idx === 'wall') setWall((w) => ({ ...w, error: errText(e) }));
+      else update(idx, { error: errText(e) });
     }
   }, []);
 

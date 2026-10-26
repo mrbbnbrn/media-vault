@@ -4,6 +4,7 @@
 // opening it again, or changing the slider, is quick. Each result can become
 // the person's cover, and opens its photo on click.
 
+import { errText } from '../../text';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, type FaceMeasure, type PersonFace } from '../../api';
 import { bigEnough } from '../../facecrops';
@@ -37,7 +38,7 @@ export default function BestFaces(props: {
 
   useEffect(() => {
     let alive = true;
-    api.faceCropsList(props.person).then((l) => alive && setAll(l)).catch((e) => alive && setError(e instanceof Error ? e.message : String(e)));
+    api.faceCropsList(props.person).then((l) => alive && setAll(l)).catch((e) => alive && setError(errText(e)));
     return () => {
       alive = false;
       stopped.current = true;
@@ -56,7 +57,7 @@ export default function BestFaces(props: {
     let alive = true;
     stopped.current = false;
     measureFaces(need, { stopped: () => !alive || stopped.current, progress: (done, total) => alive && setProgress({ done, total }) })
-      .catch((e) => alive && setError(e instanceof Error ? e.message : String(e)))
+      .catch((e) => alive && setError(errText(e)))
       .finally(() => {
         if (alive) {
           setProgress(null);
@@ -98,7 +99,7 @@ export default function BestFaces(props: {
       setCover(media);
       props.onChanged();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errText(e));
     }
   };
   const pct = (x: number) => `${Math.round(Math.max(0, Math.min(1, x)) * 100)}%`;

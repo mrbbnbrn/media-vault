@@ -1,5 +1,6 @@
 // Small modal dialogs and a dropdown menu, kept plain and keyboard-friendly.
 
+import { errText, fold } from '../text';
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import type { FolderCard } from '../api';
@@ -89,7 +90,7 @@ export function PromptDialog(props: {
       await props.onSubmit(v);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
@@ -160,7 +161,7 @@ export function ConfirmDialog(props: {
               await props.onConfirm();
               props.onClose();
             } catch (e) {
-              setErr(e instanceof Error ? e.message : String(e));
+              setErr(errText(e));
               setBusy(false);
             }
           }}
@@ -173,9 +174,6 @@ export function ConfirmDialog(props: {
 }
 
 /** Lower case, accents and Turkish dotted/dotless i folded, for matching typed text. */
-function fold(x: string): string {
-  return x.toLocaleLowerCase('tr').replace(/ı/g, 'i').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-}
 
 /**
  * Choose a destination folder (or the top level), from every folder. Typing filters the
@@ -212,7 +210,7 @@ export function FolderPicker(props: {
       await props.onPick(id);
       props.onClose();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
       setBusy(false);
     }
   };

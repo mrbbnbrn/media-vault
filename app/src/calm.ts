@@ -124,11 +124,6 @@ export function calmly(key: string, fn: () => void): void {
   schedule();
 }
 
-/** Forget something waiting (e.g. the view changed and loaded anyway). */
-export function dropCalm(key: string): void {
-  queued.delete(key);
-}
-
 /** Something on screen asks for stillness (an open menu): changes wait until released. */
 export function holdCalm(key: string, on: boolean): void {
   start();

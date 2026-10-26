@@ -6,6 +6,7 @@
 // counted as faceless ("Scan them now" scans them; the counts follow).
 // The other way round too: move the ones with faces. One Ctrl+Z undoes it.
 
+import { errText } from '../text';
 import { useEffect, useMemo, useState } from 'react';
 import { api, thumbUrl, type FaceSplit, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
@@ -55,7 +56,7 @@ export function SeparateFaces(props: {
         setItems(list);
         setSplit(sp);
       } catch (e) {
-        if (live) setErr(e instanceof Error ? e.message : String(e));
+        if (live) setErr(errText(e));
       }
     })();
     return () => {
@@ -160,7 +161,7 @@ export function SeparateFaces(props: {
               await props.onApply(going, dest === 'new' ? { newName: newName.trim() } : { id: picked ?? null }, copy);
               props.onClose();
             } catch (e) {
-              setErr(e instanceof Error ? e.message : String(e));
+              setErr(errText(e));
               setBusy(false);
             }
           }}>

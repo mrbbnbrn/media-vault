@@ -3,6 +3,7 @@
 // settings…"): Automatic, Fast or Best; the ones not installed are greyed
 // with the download they come in, and in Settings a speed test per model.
 
+import { errText } from '../text';
 import { useEffect, useState } from 'react';
 import { FitWarning, useModelFit } from './ModelFit';
 import { api, type SubjectInfo, type SubjectModel, type ViewerSettings } from '../api';
@@ -58,7 +59,7 @@ export function SubjectModelChoice(props: { value?: ViewerSettings; onChange?: (
     try {
       await testSubjectSpeed(m.id);
     } catch (e) {
-      setSpeedErr((x) => ({ ...x, [m.id]: e instanceof Error ? e.message : String(e) }));
+      setSpeedErr((x) => ({ ...x, [m.id]: errText(e) }));
     } finally {
       setTesting(null);
       setTick((t) => t + 1);

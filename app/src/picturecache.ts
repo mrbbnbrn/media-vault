@@ -528,6 +528,3 @@ function hookUp() {
     t = document.hidden ? setTimeout(() => cache.dropUnheld(), 60_000) : null;
   });
 }
-
-/** For tests and measurements. */
-export const pictureCacheState = () => ({ entries: cache.size, bytes: cache.total, keys: cache.keys(), users, videos: [...warm.keys()] });

@@ -1,6 +1,7 @@
 // "47 of these are Baran — put them in his folder?" after an import
 // (facesort.ts). Move them, or make free copies (no extra space), or not.
 
+import { errText } from '../text';
 import { useCallback, useEffect, useState } from 'react';
 import { api, thumbUrl, type Item } from '../api';
 import { dismissOffer, openSortAll, useSortAllOpen, useSortOffers, useSortScope, watchImports, type Offer, type SortScope } from '../facesort';
@@ -35,7 +36,7 @@ export function FaceSortOffer(props: {
       dismissOffer(o.folder);
       props.onChanged();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }
@@ -104,7 +105,7 @@ export function SortAllDialog(props: { scope?: SortScope | null; did: (label: st
       setList(r?.offers ?? []);
       setNotScanned({ waiting: r?.waiting ?? 0, unscanned: r?.unscanned ?? 0 });
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
       setList([]);
     }
   }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -134,7 +135,7 @@ export function SortAllDialog(props: { scope?: SortScope | null; did: (label: st
       kickFaceScanner();
       await load();
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     }
   };
   const scanLine = scope && (notScanned.waiting > 0 || notScanned.unscanned > 0) && (
@@ -162,7 +163,7 @@ export function SortAllDialog(props: { scope?: SortScope | null; did: (label: st
       props.onChanged();
       await load(); // a group photo may have moved out of someone else's list
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      setErr(errText(e));
     } finally {
       setBusy(false);
     }

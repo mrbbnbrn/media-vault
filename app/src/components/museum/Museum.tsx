@@ -7,6 +7,7 @@
 // viewer over the museum, Esc steps back). Esc frees the mouse; Esc again (or
 // "Leave museum") leaves.
 
+import { errText } from '../../text';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import type { WebGLRenderer } from 'three';
 import { MuseumEngine, type Aim, type Pose, type Quality, type Sources } from './engine';
@@ -161,7 +162,7 @@ export default function Museum(props: MuseumProps) {
         setReady(true);
         setFading(false);
       } catch (e) {
-        setFailed(e instanceof Error ? e.message : String(e));
+        setFailed(errText(e));
       }
     }, 40);
     return () => {

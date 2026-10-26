@@ -123,10 +123,6 @@ export function noteFingerprintProgress() {
   listeners.forEach((l) => l());
 }
 
-export function kickFingerprints() {
-  wake?.();
-}
-
 /** Fingerprints every new picture, a little at a time. Stops on lock. */
 export function startFingerprinter(): () => void {
   if (running) return stopFn ?? (() => {});

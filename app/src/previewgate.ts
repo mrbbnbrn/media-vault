@@ -2,7 +2,6 @@
 // hidden, or the viewer covers the library (which stays underneath, frozen).
 // Players are paused where they are and carry on when the library shows again.
 
-import { useSyncExternalStore } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri } from './api';
 
@@ -53,13 +52,6 @@ export function setPreviewCover(key: string, on: boolean) {
   update();
 }
 
-export function usePreviewsPaused(): boolean {
-  return useSyncExternalStore(
-    (cb) => onPreviewsPaused(cb),
-    () => paused,
-  );
-}
-
 /** Resolves when the window can be seen again (the background maker waits for it). */
 export function whenPreviewsMayRun(stopped: () => boolean): Promise<void> {
   // Only hidden / minimised matter here: under the viewer the library is still drawn.
@@ -74,21 +66,18 @@ export function whenPreviewsMayRun(stopped: () => boolean): Promise<void> {
   });
 }
 
-// ---- videos outside the player pool (folder cards) ----------------------------------------------
+// ---- videos outside the player pool (folder banners) ----------------------------------------------
 
 const extra = new Set<HTMLVideoElement>();
 const resumeAfter = new WeakSet<HTMLVideoElement>();
 
-/** Ref callback: this video rests with the grid previews. */
+/** Ref callback: this video (a folder banner) rests with the grid previews: paused while the window is hidden. */
 export function gateVideo(v: HTMLVideoElement | null) {
   if (!v) return;
   extra.add(v);
-  v.dataset.gated = '1';
   if (paused) v.pause();
 }
-export function ungateVideo(v: HTMLVideoElement) {
-  extra.delete(v);
-}
+
 onPreviewsPaused((p) => {
   for (const v of extra) {
     if (!v.isConnected) {

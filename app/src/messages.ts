@@ -37,13 +37,6 @@ export function dismiss(id: number) {
   if (list.length !== before) changed();
 }
 
-/** When the vault locks, messages about it go. */
-export function clearMessages() {
-  if (!list.length) return;
-  list = [];
-  changed();
-}
-
 /** Problems first, then the newest. */
 export function useMessages(): Message[] {
   return useSyncExternalStore(

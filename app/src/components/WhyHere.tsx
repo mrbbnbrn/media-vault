@@ -3,6 +3,7 @@
 // (direct or through a folder), recognised people, smart-search similarity
 // and the filters it passed.
 
+import { errText } from '../text';
 import { useEffect, useState, type ReactNode } from 'react';
 import { api, thumbUrl, type Explanation, type Item, type Kind, type Ranges } from '../api';
 import { embedQuery } from '../ml/smart';
@@ -66,7 +67,7 @@ export function WhyHere({ item, query, kind, onClose }: { item: Item; query: Why
       return api.explainMatch(item.id, { tags: query.tags, names: query.names, people: query.people, kinds });
     })()
       .then((r) => { if (live) setX(r); })
-      .catch((e) => { if (live) setError(e instanceof Error ? e.message : String(e)); });
+      .catch((e) => { if (live) setError(errText(e)); });
     return () => {
       live = false;
     };

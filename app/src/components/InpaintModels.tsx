@@ -3,6 +3,7 @@
 // MI-GAN or LaMa (optional downloads; the ones not installed are greyed with
 // the download they come in), and in Settings a speed test per model.
 
+import { errText } from '../text';
 import { useEffect, useState } from 'react';
 import { FitWarning, useModelFit } from './ModelFit';
 import { api, type InpaintModel, type ViewerSettings } from '../api';
@@ -45,7 +46,7 @@ export function InpaintModelChoice(props: { value?: ViewerSettings; onChange?: (
     try {
       await testInpaintSpeed(m.id);
     } catch (e) {
-      setErr((x) => ({ ...x, [m.id]: e instanceof Error ? e.message : String(e) }));
+      setErr((x) => ({ ...x, [m.id]: errText(e) }));
     } finally {
       setTesting(null);
       setTick((t) => t + 1);

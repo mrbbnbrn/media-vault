@@ -1,6 +1,7 @@
 // Make an animation (GIF or MP4 video) from pictures with the video tool,
 // with a live preview of the order, speed and fit.
 
+import { errText } from '../text';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, onEvent, thumbUrl, type AnimationDone, type AnimationRequest, type Item, type VideoToolInfo, type VideoToolProgress } from '../api';
 import { kickThumbnails } from '../media';
@@ -18,7 +19,6 @@ const PREVIEW_W = 360;
 const PREVIEW_H = 220;
 const MAX_PICTURES = 300;
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const even = (x: number) => Math.max(2, Math.round(x / 2) * 2);
 
 export function orderPictures(items: Item[], order: Order): Item[] {

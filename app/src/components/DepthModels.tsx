@@ -4,6 +4,7 @@
 // they come in), how much detail, and in Settings a speed test per model so
 // you can see what your PC manages.
 
+import { errText } from '../text';
 import { useEffect, useState } from 'react';
 import { FitWarning, useModelFit } from './ModelFit';
 import { api, type DepthDetail, type DepthInfo, type DepthModel, type ViewerSettings } from '../api';
@@ -67,7 +68,7 @@ export function DepthModelChoice(props: { value?: ViewerSettings; onChange?: (pa
     try {
       await testSpeed(m.id, detailFor(m));
     } catch (e) {
-      setSpeedErr((x) => ({ ...x, [m.id]: e instanceof Error ? e.message : String(e) }));
+      setSpeedErr((x) => ({ ...x, [m.id]: errText(e) }));
     } finally {
       setTesting(null);
       setTick((t) => t + 1);

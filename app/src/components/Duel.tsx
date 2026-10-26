@@ -4,6 +4,7 @@
 //
 // Click or ← / → = pick, ↓ = skip, Ctrl+Z = undo, Esc = close with a summary.
 
+import { errText } from '../text';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type DuelState, type Item } from '../api';
 import { pairKey, pickPair } from '../viewerlogic';
@@ -73,7 +74,7 @@ export function Duel({ items, onClose }: { items: Item[]; onClose: () => void })
     } catch (e) {
       busy.current = false;
       setPicked(null);
-      setError(`Couldn't save that pick: ${e instanceof Error ? e.message : String(e)}`);
+      setError(`Couldn't save that pick: ${errText(e)}`);
     }
   };
 
@@ -96,7 +97,7 @@ export function Duel({ items, onClose }: { items: Item[]; onClose: () => void })
       setPicked(null);
       setSummary(false);
     } catch (e) {
-      setError(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
+      setError(`Couldn't undo: ${errText(e)}`);
     } finally {
       busy.current = false;
     }

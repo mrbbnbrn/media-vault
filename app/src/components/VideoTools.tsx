@@ -2,6 +2,7 @@
 // and the A–B loop, the bookmarks panel, the GIF maker, and the picture
 // scaling menu.
 
+import { errText } from '../text';
 import { useEffect, useRef, useState } from 'react';
 import { api, onEvent, type Bookmark, type CutDone, type ViewerSettings, type VideoToolProgress } from '../api';
 import { derivedName, GIF_MAX_FRAMES, GIF_MAX_SECONDS, makeGif } from '../clips';
@@ -15,7 +16,6 @@ import { COLS, framePosition, ROWS } from '../previews';
 import { nearestFrame } from '../viewerlogic';
 import { pushUndo } from '../undo';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Seconds with tenths: 83.46 → "1:23.4" */
 export function preciseTime(s: number): string {
@@ -174,7 +174,7 @@ export function GifMakerDialog(props: {
       props.onSaved(name);
       props.onClose();
     } catch (e) {
-      if ((e as Error).name !== 'AbortError') setErr(e instanceof Error ? e.message : String(e));
+      if ((e as Error).name !== 'AbortError') setErr(errText(e));
       setBusy(null);
     }
   };

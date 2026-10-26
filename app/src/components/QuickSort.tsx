@@ -3,13 +3,13 @@
 // name and press Enter. Most-used folders and suggestions (a recognised face,
 // folders whose pictures look alike) are one click away. "#tag" tags instead.
 
+import { fold } from '../text';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
 import { FaceIcon, FolderIcon, SparkleIcon, TagIcon, TrashIcon } from './Icons';
 import { useLayer } from '../keylayers';
 
-const fold = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/̇/g, '');
 
 type Done = { kind: 'move' | 'trash' | 'tag'; item: Item; index: number; label: string };
 

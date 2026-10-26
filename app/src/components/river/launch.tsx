@@ -3,6 +3,7 @@
 // the river, which holds still underneath: closing the viewer carries on
 // exactly where it was.
 
+import { errText } from '../../text';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useEffect, useMemo, useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, previewUrl, thumbUrl, tinyUrl, type FolderCard, type Item } from '../../api';
@@ -80,7 +81,7 @@ export async function openVaultRiver(note?: (text: string) => void) {
   try {
     openRiver('The whole vault', 'Discovery river', await api.queryItems({}), note);
   } catch (e) {
-    note?.(e instanceof Error ? e.message : String(e));
+    note?.(errText(e));
   }
 }
 
@@ -90,7 +91,7 @@ export async function openFolderRiver(f: FolderCard, note?: (text: string) => vo
     const items = f.person ? await api.queryItems({ people: [f.id] }) : await api.queryItems({ folder: f.id, recursive: true });
     openRiver(f.name, 'Discovery river', items, note);
   } catch (e) {
-    note?.(e instanceof Error ? e.message : String(e));
+    note?.(errText(e));
   }
 }
 

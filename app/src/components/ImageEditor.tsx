@@ -5,6 +5,7 @@
 // the rotation can instead be saved to the original as before (Player.tsx,
 // rotatesave.ts). The sums are in imageedit.ts.
 
+import { errText } from '../text';
 import { bitmapOffThread } from '../picturecache';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api } from '../api';
@@ -84,7 +85,7 @@ export function ImageEditor(props: {
       if (!alive) return;
       setPic(got);
       if (props.startQuarter) setEdit((e) => turnEdit(e, props.startQuarter!, full.width, full.height));
-    })().catch((e) => alive && setLoadErr(`The picture couldn't be opened for editing: ${e instanceof Error ? e.message : String(e)}`));
+    })().catch((e) => alive && setLoadErr(`The picture couldn't be opened for editing: ${errText(e)}`));
     return () => {
       alive = false;
       got?.small.close();
@@ -243,8 +244,8 @@ export function ImageEditor(props: {
       void api.diagNote('editor save: editor closed');
       diagWatch('after save');
     } catch (e) {
-      void api.diagNote(`editor save: failed · ${e instanceof Error ? e.message : String(e)}`);
-      props.onMessage(`Couldn't save the copy: ${e instanceof Error ? e.message : String(e)}`);
+      void api.diagNote(`editor save: failed · ${errText(e)}`);
+      props.onMessage(`Couldn't save the copy: ${errText(e)}`);
       setBusy(null);
     }
   };

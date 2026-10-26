@@ -2,6 +2,7 @@
 // pictures (and a GIF's first frame) to JPG / PNG / WebP. The results are
 // new items next to the originals; the originals can go to the trash.
 
+import { errText } from '../text';
 import { useEffect, useRef, useState } from 'react';
 import { api, onEvent, type ConvertDone, type ConvertTarget, type Item, type VideoToolInfo, type VideoToolProgress } from '../api';
 import { kickThumbnails } from '../media';
@@ -39,7 +40,6 @@ export function canConvert(item: Item, target: ConvertTarget): boolean {
   return !same;
 }
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 export function ConvertDialog(props: {
   items: Item[];

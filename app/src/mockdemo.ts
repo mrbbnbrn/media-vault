@@ -3,11 +3,10 @@
 // and "Why is this here?" can be tried and screenshotted. Turned on by
 // opening the page with ?demo. Nothing here runs in the real app.
 
+import { fold } from './text';
 import type { Explanation, FolderCard, Item, ItemFilter, Kind, SlotData } from './api';
 
 export const NOT_DEMO = Symbol('not demo');
-
-export const demoOn = () => typeof location !== 'undefined' && /[?&]demo\b/.test(location.search);
 
 interface DFolder { id: number; name: string; parentId: number | null; order: number; createdAt: number; pinned: boolean; person: boolean; tags: string[] }
 interface DItem extends Item { tags: string[]; faces: number[] }
@@ -83,7 +82,6 @@ function chain(id: number | null): DFolder[] {
 }
 const effTags = (it: DItem) => [...it.tags, ...chain(it.folderId).flatMap((f) => f.tags)].map((t) => t.toLowerCase());
 const isPerson = (it: DItem, p: number) => (it.folderId != null && below(p).includes(it.folderId)) || it.faces.includes(p);
-const fold = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/̇/g, '');
 
 function cards(): FolderCard[] {
   const out: FolderCard[] = [];

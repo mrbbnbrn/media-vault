@@ -2,6 +2,7 @@
 // check). Verifies with the real web engine that media decode, seek and play
 // from the encrypted vault and from ordinary files.
 
+import { errText } from './text';
 import { invoke } from '@tauri-apps/api/core';
 import { makePreviewStrip, tinyPieces } from './previews';
 import { makeVideoPreviews } from './tinyclip';
@@ -137,7 +138,7 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       lines.push(`ok    ${name}: ${await fn()}`);
     } catch (e) {
       ok = false;
-      lines.push(`FAIL  ${name}: ${e instanceof Error ? e.message : String(e)}`);
+      lines.push(`FAIL  ${name}: ${errText(e)}`);
     }
   };
   for (const it of info.items) {

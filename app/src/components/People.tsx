@@ -4,6 +4,7 @@
 // everyone else is grouped ("Person 3 · 312 photos") to be named once.
 // Naming never moves files: a person's page shows every photo of them.
 
+import { errText } from '../text';
 import { say } from '../messages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
@@ -19,7 +20,6 @@ import { PoorFacesSection } from './PoorFaces';
 import './people.css';
 import { calmly } from '../calm';
 
-const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const clock = (ms: number) => `${Math.floor(ms / 60000)}:${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}`;
 
 /** A face cut out of an item's thumbnail (videos show the whole thumbnail). Loads when scrolled into view. */

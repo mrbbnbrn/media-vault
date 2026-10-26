@@ -20,6 +20,7 @@
 //     });
 //   }}
 
+import { errText } from './text';
 import { winshell } from './api';
 
 export type DragOutResult =
@@ -38,11 +39,6 @@ export type DragOutResult =
 let confirmed = false;
 let busy = false;
 let lastError = '';
-
-/** Ask again next time (call when the vault locks). */
-export function resetDragOutConfirm() {
-  confirmed = false;
-}
 
 export function lastDragOutError(): string {
   return lastError;
@@ -121,7 +117,7 @@ export function maybeDragOut(
       }
       return await winshell.dragOut(ids, folders);
     } catch (err) {
-      lastError = err instanceof Error ? err.message : String(err);
+      lastError = errText(err);
       return 'error';
     } finally {
       busy = false;
