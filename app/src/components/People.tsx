@@ -4,7 +4,7 @@
 // everyone else is grouped ("Person 3 · 312 photos") to be named once.
 // Naming never moves files: a person's page shows every photo of them.
 
-import { RESULT_MS, useAutoDismiss } from '../autodismiss';
+import { say } from '../messages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
 import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
@@ -84,8 +84,8 @@ export function PeopleView(props: {
   const [req, setReq] = useState<ReviewRequest>({});
   const { review, err, load } = useReview(req);
   const [paused, setPaused] = useState(faceScanPaused());
-  const [msg, setMsg] = useState<string | null>(null);
-  useAutoDismiss(msg, () => setMsg(null), RESULT_MS);
+  // Results go to the app's one message stack (messages.ts).
+  const setMsg = (text: string | null) => { if (text) say(text, 'done'); };
   const [error, setError] = useState<string | null>(null);
   const [findMe, setFindMe] = useState<{ folder: number; name: string } | null>(null);
   const [naming, setNaming] = useState<UnknownGroup | null>(null);
@@ -160,7 +160,6 @@ export function PeopleView(props: {
 
       {noPack && <div className="notice people-nopack"><FaceIcon size={16} /><span>{NO_FACE_PACK}</span></div>}
       {(err || error) && <div className="error"><span style={{ flex: 1 }}>{err ?? error}</span><button type="button" className="link" onClick={() => setError(null)}>Dismiss</button></div>}
-      {msg && <div className="info row-between"><span>{msg}</span><button type="button" className="link" onClick={() => setMsg(null)}>Dismiss</button></div>}
       {engine && engine.upgradeLeft > 0 && (
         <div className="info people-upgrade">
           <span>Updating faces to the new model · {engine.upgradeLeft.toLocaleString()} left. Everything you said about who is who is kept.</span>
