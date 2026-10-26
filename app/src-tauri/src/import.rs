@@ -457,7 +457,10 @@ fn add_one(
         let _ = ctx.s.vault().delete_object(ObjectKind::Media, &id);
         return Ok(Added::Duplicate);
     }
-    insert_item(ctx, folder, name, mtime, id, &written, &tap.head)
+    insert_item(ctx, folder, name, mtime, id, &written, &tap.head).inspect_err(|_| {
+        // Not recorded: the stored file isn't left behind.
+        let _ = ctx.s.vault().delete_object(ObjectKind::Media, &id);
+    })
 }
 
 /// The same file (same SHA-256) already in this folder?
@@ -657,7 +660,12 @@ fn commit(ctx: &mut Ctx, job: &FileJob, p: Prepared) {
                 Ok(Added::Duplicate)
             } else {
                 let stored = ctx.s.vault().add_encrypted(&enc).map_err(|e| e.to_string());
-                stored.and_then(|()| insert_item(ctx, job.folder, &job.name, job.mtime, enc.id(), enc.written(), &head))
+                stored.and_then(|()| {
+                    insert_item(ctx, job.folder, &job.name, job.mtime, enc.id(), enc.written(), &head).inspect_err(|_| {
+                        // Not recorded: the stored file isn't left behind.
+                        let _ = ctx.s.vault().delete_object(ObjectKind::Media, &enc.id());
+                    })
+                })
             }
         }
     };
@@ -1015,12 +1023,17 @@ pub fn add_bytes(
         .add_object(ObjectKind::Media, bytes)
         .map_err(|e| e.to_string())?;
     let db = s.db();
-    db.execute(
+    let inserted = db.execute(
         "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at) \
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
         params![id.to_hex(), folder, kind, name, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs()],
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    if let Err(err) = inserted {
+        drop(db);
+        // Not recorded: the stored file isn't left behind.
+        let _ = s.vault().delete_object(ObjectKind::Media, &id);
+        return Err(err.to_string());
+    }
     let new_id = db.last_insert_rowid();
     drop(db);
     s.mark_dirty();

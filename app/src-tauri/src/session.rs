@@ -45,6 +45,10 @@ pub struct Session {
     save_lock: Mutex<()>,
     /// Counts changes (so work that follows changes can tell when there were none).
     changes: std::sync::atomic::AtomicU64,
+    /// Stored files replaced by new ones, removed once the library no longer
+    /// pointing at them is saved (a crash before then leaves them, not a
+    /// library pointing at nothing).
+    retired: Mutex<Vec<(vault_core::ObjectKind, vault_core::ObjectId)>>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -197,6 +201,7 @@ fn open_session(vault: Vault, needs_new_password: bool) -> Result<Session, Strin
         first_unsaved: Mutex::new(None),
         save_pending: AtomicBool::new(false),
         save_lock: Mutex::new(()),
+        retired: Mutex::new(Vec::new()),
         // Starts somewhere new for every opening (work that remembers a count from another vault never matches).
         changes: std::sync::atomic::AtomicU64::new(
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1,
@@ -263,6 +268,11 @@ impl Session {
         self.dirty_bg.store(true, Ordering::SeqCst);
     }
 
+    /// Remove this stored file after the next save (see `retired`).
+    pub fn delete_after_save(&self, kind: vault_core::ObjectKind, id: vault_core::ObjectId) {
+        self.retired.lock().unwrap_or_else(|e| e.into_inner()).push((kind, id));
+    }
+
     /// Save right away in the background (changes made while it runs are
     /// picked up by the next save). Several requests at once make one save.
     pub fn save_soon(self: &std::sync::Arc<Self>) {
@@ -316,6 +326,17 @@ impl Session {
                 self.first_unsaved_bg.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert(f);
             }
         };
+        // Files retired before this point go once this save is done.
+        let retired: Vec<_> = std::mem::take(&mut *self.retired.lock().unwrap_or_else(|e| e.into_inner()));
+        let restore_retired = |r: Vec<_>| {
+            let mut g = self.retired.lock().unwrap_or_else(|e| e.into_inner());
+            let newer = std::mem::replace(&mut *g, r);
+            g.extend(newer);
+        };
+        let restore_first = || {
+            restore_first();
+            restore_retired(retired.clone());
+        };
         // Where new encrypted files landed in the packs goes into the database too.
         let changes = self.vault().drain_index_changes();
         // The library is held only while it is copied into memory; encrypting
@@ -352,7 +373,17 @@ impl Session {
         self.vault().save_db_with(&bytes, backup).map_err(|e| {
             restore_first();
             format!("Couldn't save the library: {}", friendly(e))
-        })
+        })?;
+        if !retired.is_empty() {
+            // Taking them out of the pack index is itself a change, saved next time.
+            let v = self.vault();
+            for (kind, id) in &retired {
+                let _ = v.delete_object(*kind, id);
+            }
+            drop(v);
+            self.mark_dirty_bg();
+        }
+        Ok(())
     }
 
     /// Save your edits once they have settled for `settle` (so a burst of

@@ -159,8 +159,12 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
         s.close(); // background work stops promptly
         // Again, now that it is closed: whatever a request still running put back.
         protocol::forget_cache();
-        if s.is_dirty() {
-            let _ = s.save();
+        // Twice when needed: files replaced since the last save are removed
+        // after the first, which the second records.
+        for _ in 0..2 {
+            if s.is_dirty() {
+                let _ = s.save();
+            }
         }
         // Background work may still hold it for a moment: the vault can be opened again meanwhile.
         s.release();
@@ -1165,7 +1169,7 @@ fn store_thumb(
         // The colour sketch shown while the thumbnail loads (sketch.rs).
         let sketch = sketch::sketch_from_encoded(data).unwrap_or_default();
         let (tid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
-        let old: Option<String> = {
+        let stored = (|| -> Result<Option<String>, String> {
             let db = s.db();
             let old = db.query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).ok().flatten();
             db.execute(
@@ -1182,15 +1186,31 @@ fn store_thumb(
                 }
                 let _ = similar::reset(&db, id);
             }
-            old
+            Ok(old)
+        })();
+        let old = match stored {
+            Ok(old) => old,
+            Err(err) => {
+                // Not recorded: the new file isn't left behind.
+                let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &tid);
+                return Err(err);
+            }
         };
-        if let Some(o) = old.filter(|o| !o.is_empty())
-            && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
-        {
-            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
-        }
         s.mark_dirty_bg();
+        retire_thumbnail(s, old);
         Ok(())
+    }
+}
+
+/// A replaced thumbnail, frame strip or tiny clip goes: thumbnail pages
+/// holding a copy of it at once (no copy left behind), the file itself once
+/// the library no longer pointing at it is saved.
+fn retire_thumbnail(s: &Session, old: Option<String>) {
+    if let Some(o) = old.filter(|o| !o.is_empty())
+        && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
+    {
+        thumbpages::drop_pages_holding(s, &[oid]);
+        s.delete_after_save(vault_core::ObjectKind::Thumbnail, oid);
     }
 }
 
@@ -1363,7 +1383,7 @@ async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>)
 /// Store a preview object for an item (and its free copies), replacing the old one.
 fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Result<(), String> {
     let (pid, _) = s.vault().add_object(vault_core::ObjectKind::Thumbnail, data).map_err(|e| e.to_string())?;
-    let old: Option<String> = {
+    let stored = (|| -> Result<Option<String>, String> {
         let db = s.db();
         let old = db.query_row(&format!("SELECT {column} FROM media WHERE id = ?"), [id], |r| r.get(0)).ok().flatten();
         db.execute(
@@ -1375,14 +1395,17 @@ fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Resu
             // Smart search looks at the clip's moments too: analyse again.
             let _ = clip::reset(&db, id);
         }
-        old
+        Ok(old)
+    })();
+    let old = match stored {
+        Ok(old) => old,
+        Err(err) => {
+            let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &pid);
+            return Err(err);
+        }
     };
-    if let Some(o) = old.filter(|o| !o.is_empty())
-        && let Ok(oid) = vault_core::ObjectId::from_hex(&o)
-    {
-        let _ = s.vault().delete_object(vault_core::ObjectKind::Thumbnail, &oid);
-    }
     s.mark_dirty_bg();
+    retire_thumbnail(s, old);
     Ok(())
 }
 
@@ -2492,10 +2515,12 @@ fn start_watcher(app: AppHandle, inner: Shared) {
 pub(crate) fn save_open(app: &AppHandle) {
     let inner = app.state::<Shared>().inner().clone();
     let open = inner.session.lock().unwrap().clone();
-    if let Some(s) = open
-        && s.is_dirty()
-    {
-        let _ = s.save();
+    if let Some(s) = open {
+        for _ in 0..2 {
+            if s.is_dirty() {
+                let _ = s.save();
+            }
+        }
     }
 }
 
@@ -2922,4 +2947,56 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod store_tests {
+    use super::*;
+    use vault_core::{ObjectId, ObjectKind};
+
+    fn vault(t: &std::path::Path) -> Session {
+        session::create(t.to_str().unwrap(), "V", "long enough pw", KdfParams::TEST_ONLY).unwrap().0
+    }
+
+    fn thumb_of(s: &Session, id: i64) -> ObjectId {
+        let hex: String = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [id], |r| r.get(0)).unwrap();
+        ObjectId::from_hex(&hex).unwrap()
+    }
+
+    #[test]
+    fn a_replaced_thumbnail_goes_after_the_save() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let id = import::add_bytes(&s, None, "a.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        store_thumb(&s, id, b"first thumbnail", None, None, None, false).unwrap();
+        let first = thumb_of(&s, id);
+        store_thumb(&s, id, b"second thumbnail", None, None, None, false).unwrap();
+        assert_ne!(thumb_of(&s, id), first);
+        // Still there until the library that no longer points at it is saved.
+        let stored = |o: &ObjectId| s.vault().list_objects(ObjectKind::Thumbnail).unwrap().contains(o);
+        assert!(stored(&first));
+        s.save().unwrap();
+        assert!(!stored(&first));
+        assert!(stored(&thumb_of(&s, id)));
+    }
+
+    #[test]
+    fn files_not_recorded_are_not_left_behind() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let id = import::add_bytes(&s, None, "a.png", &[0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        let count = |k: ObjectKind| s.vault().list_objects(k).unwrap().len();
+        let (media, thumbs) = (count(ObjectKind::Media), count(ObjectKind::Thumbnail));
+        // The library refuses the change (as a full or damaged library would).
+        s.db()
+            .execute_batch(
+                "CREATE TEMP TRIGGER no_insert BEFORE INSERT ON main.media BEGIN SELECT RAISE(ABORT, 'refused'); END; \
+                 CREATE TEMP TRIGGER no_update BEFORE UPDATE ON main.media BEGIN SELECT RAISE(ABORT, 'refused'); END;",
+            )
+            .unwrap();
+        assert!(import::add_bytes(&s, None, "b.png", &[0x89, b'P', b'N', b'G', 9, 9]).is_err());
+        assert!(store_thumb(&s, id, b"a thumbnail", None, None, None, false).is_err());
+        assert!(store_preview_object(&s, id, "tiny_object_id", b"a clip").is_err());
+        assert_eq!((count(ObjectKind::Media), count(ObjectKind::Thumbnail)), (media, thumbs));
+    }
 }
