@@ -1,0 +1,88 @@
+/* The player, multi-screen, zoom and documents. */
+/* ---- player ----------------------------------------------------------------- */
+.viewer { position: fixed; inset: 0; background: #000; display: flex; }
+.player { position: relative; flex: 1; min-width: 0; min-height: 0; background: #000; overflow: hidden; color: #f0eee9; }
+.player .stage { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+.player .media { width: 100%; height: 100%; display: block; background: #000; }
+.player:not(.compact) .media { padding: 0; }
+.fade-in { animation: fadein 0.35s ease-out; }
+@keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+.media-failed { display: flex; flex-direction: column; align-items: center; gap: 10px; color: var(--faint); font-size: var(--fs-base); text-align: center; padding: 24px; }
+
+.p-top { position: absolute; top: 0; left: 0; right: 0; display: flex; align-items: center; gap: 12px; padding: 14px 18px 40px; background: linear-gradient(rgba(0, 0, 0, 0.75), transparent); transition: opacity 0.3s; }
+.p-title { display: flex; align-items: center; gap: 12px; min-width: 0; flex: 1; }
+.p-title .p-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.p-title .faint { font-size: var(--fs-sm); white-space: nowrap; }
+.p-controls { position: absolute; left: 0; right: 0; bottom: 0; padding: 40px 22px 18px; display: flex; flex-direction: column; gap: 12px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.85)); transition: opacity 0.3s; }
+.p-controls .row { flex-wrap: wrap; }
+.player.idle .p-top, .player.idle .p-controls { opacity: 0; pointer-events: none; }
+.player.idle { cursor: none; }
+.pbtn { min-width: 38px; height: 38px; padding: 0 8px; border-radius: 9px; border: none; display: inline-flex; align-items: center; justify-content: center; gap: 2px; cursor: pointer; font-size: var(--fs-sm); }
+.pbtn.lg { min-width: 44px; height: 44px; }
+.pbtn.main { width: 42px; height: 42px; border-radius: 21px; background: var(--accent); color: var(--on-accent); }
+.pbtn.wide { padding: 0 12px; }
+.pbtn small { font-size: var(--fs-2xs); font-weight: 700; }
+.btn.slideshow { min-height: 48px; border-radius: 24px; padding: 0 20px 0 16px; }
+.vsep { width: 1px; height: 28px; background: var(--line-2); margin: 0 6px; }
+.vol { width: 110px; accent-color: var(--accent); }
+.timeline { display: flex; align-items: center; gap: 12px; font-family: var(--mono); font-size: var(--fs-sm); color: #c9c7c2; }
+.timeline input { flex: 1; accent-color: var(--accent); }
+
+/* compact = a multi-screen panel */
+.player.compact .p-badges { position: absolute; top: 10px; left: 10px; right: 60px; display: flex; gap: 8px; align-items: center; transition: opacity 0.3s; }
+.player.compact .p-sound { position: absolute; top: 8px; right: 8px; width: 40px; height: 40px; border-radius: 10px; border: none; background: rgba(0, 0, 0, 0.6); color: #c9c7c2; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: opacity 0.3s; }
+.player.compact .p-sound.on { background: var(--accent); color: var(--on-accent); }
+.player.compact .p-bottom { position: absolute; left: 0; right: 0; bottom: 0; padding: 44px 12px 12px; display: flex; flex-direction: column; gap: 8px; background: linear-gradient(transparent, rgba(0, 0, 0, 0.88)); opacity: 0; transition: opacity 0.25s; }
+.player.compact .p-bottom .row { flex-wrap: wrap; }
+.player.compact:hover:not(.idle) .p-bottom { opacity: 1; }
+.player.compact .vol { width: 80px; }
+.player.compact.idle .p-badges, .player.compact.idle .p-sound { opacity: 0; }
+.multi:not(.clean) .player.compact.idle .p-badges, .multi:not(.clean) .player.compact.idle .p-sound { opacity: 1; }
+
+/* ---- multi-screen ------------------------------------------------------------ */
+.multi { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column; }
+.multi.no-cursor, .multi.no-cursor * { cursor: none !important; }
+.mbar { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; padding: 8px 14px; background: var(--panel); border-bottom: 1px solid var(--line); z-index: 5; }
+.mbar.floating { position: absolute; top: 0; left: 0; right: 0; background: rgba(17, 18, 21, 0.9); animation: fadein 0.2s; }
+.brand-sm { font-weight: 600; font-size: var(--fs-base); color: var(--accent); }
+.mgrid-panels { flex: 1; display: grid; gap: 2px; background: #000; min-height: 0; }
+.multi.clean .mgrid-panels { gap: 0; }
+.panel { position: relative; display: flex; min-width: 0; min-height: 0; background: #08090a; border: 2px dashed transparent; }
+.panel.focus { outline: 2px solid var(--accent-ring); outline-offset: -2px; }
+.panel.drop-over { border-color: var(--accent); }
+.panel-empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; text-align: center; color: var(--faint); padding: 20px; }
+.panel-empty b { color: var(--text); }
+.error-text { color: #f3b7ae; font-size: var(--fs-md); }
+
+body.clean-fs .toast { display: none; }
+
+/* ---- zoom, rectangle zoom, documents ------------------------------------------- */
+.player .zoom-layer { position: absolute; inset: 0; transform-origin: 0 0; }
+.player .stage { touch-action: none; }
+.player .stage.zoomed { cursor: grab; }
+.zoom-rect { position: absolute; border: 2px solid var(--accent); box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.38); display: flex; align-items: center; justify-content: center; pointer-events: none; }
+.zoom-rect span { padding: 4px 10px; border-radius: 6px; background: rgba(0, 0, 0, 0.7); color: #fff; font-size: var(--fs-sm); }
+.zoom-rect.drawing { box-shadow: none; border-style: dashed; background: rgba(255, 255, 255, 0.06); }
+.zoom-badge { position: absolute; top: 74px; right: 18px; z-index: 4; padding: 6px 12px; border-radius: 8px; border: none; background: rgba(0, 0, 0, 0.7); color: #fff; font-family: var(--mono); font-size: var(--fs-sm); cursor: pointer; }
+.player.compact .zoom-badge { top: 56px; right: 8px; }
+.doc-scroll { position: absolute; inset: 0; overflow: auto; padding: 76px 24px 120px; display: flex; flex-direction: column; align-items: center; gap: 16px; background: #111215; user-select: text; }
+.player.compact .doc-scroll { padding: 52px 12px 70px; }
+.textdoc { width: 100%; max-width: 1100px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono); line-height: 1.55; color: #e2e0dc; }
+.pdf-page canvas { display: block; background: #fff; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.5); }
+.doc-note { color: var(--faint); font-size: var(--fs-sm); padding: 8px; }
+.menu.context { position: fixed; top: 0; left: 0; z-index: var(--z-context); overflow-y: auto; overscroll-behavior: contain; }
+.menu-title { padding: 6px 10px 8px; font-size: var(--fs-sm); color: var(--faint); border-bottom: 1px solid var(--line); margin-bottom: 4px; max-width: 280px; }
+.fcover video, .tile video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.tile .live { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+.cover-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; max-height: 50vh; overflow: auto; padding: 2px; }
+.cover-pick { position: relative; aspect-ratio: 4 / 3; padding: 0; border: 2px solid transparent; border-radius: 8px; overflow: hidden; background: #1a1d22; cursor: pointer; color: var(--faint); }
+.cover-pick.on { border-color: var(--accent); }
+.cover-pick img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cover-pick .cover-use { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity 0.12s; }
+.cover-pick:hover .cover-use, .cover-pick:focus-within .cover-use { opacity: 1; }
+.cover-big { display: flex; flex-direction: column; gap: 10px; }
+.cover-big-media { height: 56vh; display: flex; align-items: center; justify-content: center; background: #0d0f12; border-radius: 8px; overflow: hidden; }
+.cover-big-media img, .cover-big-media video { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.cover-pick .badge { position: absolute; bottom: 6px; right: 6px; padding: 1px 5px; border-radius: 4px; background: rgba(0, 0, 0, 0.72); color: #f0eee9; font-family: var(--mono); font-size: var(--fs-2xs); }
+/* Documents: show the top of the page, not its middle. */
+.tile.doc img, .fcover.doc img, .cover-pick.doc img { object-position: top; }

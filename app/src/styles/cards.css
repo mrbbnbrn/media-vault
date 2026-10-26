@@ -1,0 +1,95 @@
+/* Grid and folder-card visuals, cover framing, scroll preview, Alt enlarge. */
+/* ==== Grid and folder-card visuals ==================================================== */
+
+/* Stacked folder cards: two pictures from inside peek out behind the cover.
+   Hovering fans them out to the sides, over the neighbouring cards (the mouse
+   passes through them, so the next card can always be hovered), and the front
+   card grows a little; holding there cycles pictures in that front card. */
+.fstack { position: absolute; inset: 0; display: block; pointer-events: none; }
+.fstack img { position: absolute; left: 9%; top: 9%; width: 82%; height: 82%; object-fit: cover; border-radius: 6px; pointer-events: none;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1.1), filter 0.32s ease, box-shadow 0.32s ease; }
+.fstack .fstack-1 { transform: rotate(-6deg) translate(-4%, 2%); filter: brightness(0.7); }
+.fstack .fstack-2 { transform: rotate(5deg) translate(4%, 1%); filter: brightness(0.8); }
+.fstack .fstack-top { left: 6%; top: 6%; width: 88%; height: 88%; }
+.fstack img.cycle { animation: fadein 0.35s ease; }
+/* Room to fan out: the cover lets the back cards out, and the hovered card
+   sits above its neighbours (and stays there until the cards are back). */
+:root[data-fan="on"] .fcover:has(> .fstack) { overflow: visible; }
+:root[data-fan="on"] .fcard:has(.fstack) { position: relative; transition: z-index 0s linear 0.34s; transition-behavior: allow-discrete; }
+:root[data-fan="on"] .fcard:has(.fstack):hover { z-index: 5; transition-delay: 0s; }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-1 { transform: translate(-56%, -2%) rotate(-11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-2 { transform: translate(56%, -2%) rotate(11deg) scale(0.8); filter: brightness(0.95); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.65); }
+:root[data-fan="on"] .fcard:hover .fstack .fstack-top { transform: scale(1.07); box-shadow: 0 14px 34px rgba(0, 0, 0, 0.75); }
+/* First and last column: fan less towards the window edge
+   (sized so they stay within the card's padding and the page margin at any
+   card size, so the page never gets a sideways scrollbar). */
+:root[data-fan="on"] .fcard:hover .fstack.edge-l .fstack-1 { transform: translate(calc(-15% - 20px), -3%) rotate(-8deg) scale(0.8); }
+:root[data-fan="on"] .fcard:hover .fstack.edge-r .fstack-2 { transform: translate(calc(15% + 20px), -3%) rotate(8deg) scale(0.8); }
+
+/* Person folders: the circle opens into the card's square while hovered
+   (the picture eases from the face close-up to the whole cover); holding
+   there cycles pictures from the folder in that square. */
+.fcover .pcard .pround { width: 80%; height: 80%; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12), 0 10px 28px rgba(0, 0, 0, 0.55);
+  transition: width 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.3s cubic-bezier(0.2, 0.8, 0.2, 1), border-radius 0.3s ease, box-shadow 0.2s; }
+.fcover .pcard .pround img { object-fit: fill; transition: width 0.3s ease, height 0.3s ease, left 0.3s ease, top 0.3s ease; }
+.fcard.fsel .pcard .pround { box-shadow: 0 0 0 2px var(--accent), 0 12px 30px rgba(0, 0, 0, 0.6); }
+.fcover .pcard .pround.open { width: 100%; height: 100%; border-radius: 10px; box-shadow: none; }
+.fcover .pcard .pround .pround-cycle { left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; transition: none; animation: fadein 0.35s ease; }
+.fcover .pcard .pround .pround-cycle.still { animation: none; }
+/* ---- cover framing (begin) ----
+   A person's video or GIF cover plays exactly over its still (same size and
+   place, so it follows the face framing and the opening on hover). */
+.pround .pround-vid { position: absolute; display: block; overflow: hidden; pointer-events: none; }
+.fcover .pcard .pround .pround-vid { transition: width 0.3s ease, height 0.3s ease, left 0.3s ease, top 0.3s ease; }
+/* A cover framed by hand ("Adjust cover…"): the box hides what spills out and
+   the picture or video inside is placed by --cpos (the point kept in view)
+   and --czoom, exactly like the editor (coverframe.ts explains the maths). */
+.cframe { position: relative; display: block; overflow: hidden; pointer-events: none; }
+.fcover > .cframe { position: absolute; inset: 0; }
+.fstack > .cframe { position: absolute; border-radius: 6px; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+  transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1.1), box-shadow 0.32s ease; }
+span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { position: absolute; left: 0; top: 0; width: 100%; height: 100%; max-width: none; border-radius: 0; box-shadow: none; filter: none;
+  object-fit: cover; object-position: var(--cpos, 50% 50%); transform: scale(var(--czoom, 1)); transform-origin: var(--cpos, 50% 50%); transition: none; }
+/* The editor: the real card shape at a big size. */
+.cfe-wrap { display: flex; justify-content: center; padding: 8px 0; }
+.cfe-stage { position: relative; border-radius: 10px; overflow: hidden; background: #1d2026; cursor: grab; touch-action: none; user-select: none;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.12), 0 12px 30px rgba(0, 0, 0, 0.55); }
+.cfe-stage:active { cursor: grabbing; }
+.cfe-stage:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.cfe-stage.round { border-radius: 50%; }
+.cfe-stage .cfe-rect { position: absolute; inset: 0; }
+.cfe-zoom { gap: 10px; align-items: center; }
+.cfe-zoom input[type="range"] { accent-color: var(--accent); }
+/* ---- cover framing (end) ---- */
+
+/* Long grids: a strip beside the scrollbar. Point at it for a preview of
+   that spot, click or drag on it to jump there. */
+.minimap { position: fixed; z-index: 8; cursor: pointer; touch-action: none; border-radius: 6px 0 0 6px; background: transparent; transition: background 0.15s; }
+.minimap:hover, .minimap.dragging { background: rgba(255, 255, 255, 0.04); }
+.minimap-hover { position: absolute; left: 4px; right: 0; height: 2px; margin-top: -1px; border-radius: 1px; background: var(--accent); opacity: 0.8; pointer-events: none; }
+.minimap-preview { position: fixed; z-index: 9; padding: 6px; border-radius: 10px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6); pointer-events: none; animation: fadein 0.12s ease-out; }
+.minimap-label { padding: 0 2px 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--text); }
+.minimap-shot { position: relative; overflow: hidden; border-radius: 6px; background: #0e1013; }
+.minimap-shot img, .minimap-shot span { position: absolute; object-fit: cover; border-radius: 2px; background: #1a1d22; }
+
+/* A wider scrollbar for the library (easier to grab). */
+.lib-main::-webkit-scrollbar { width: 14px; height: 14px; }
+.lib-main::-webkit-scrollbar-track { background: transparent; }
+.lib-main::-webkit-scrollbar-thumb { min-height: 48px; border-radius: 7px; border: 2px solid transparent; background: #343a43 padding-box; }
+.lib-main::-webkit-scrollbar-thumb:hover { background: #4a525d padding-box; }
+.lib-main::-webkit-scrollbar-thumb:active { background: color-mix(in srgb, var(--accent) 70%, transparent) padding-box; }
+.lib-main::-webkit-scrollbar-corner { background: transparent; }
+
+/* Hold Alt over a tile: its picture grows in place, uncropped, at full resolution. */
+.alt-enlarge { position: fixed; z-index: var(--z-enlarge); overflow: hidden; pointer-events: none; border-radius: 8px; background: #0b0c0e;
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 85%, transparent), 0 22px 56px rgba(0, 0, 0, 0.75);
+  transition: left 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), top 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), width 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), height 0.18s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.16s; }
+.alt-enlarge img, .alt-enlarge video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.alt-enlarge .full { opacity: 0; transition: opacity 0.15s; }
+.alt-enlarge .full.ready { opacity: 1; }
+.alt-enlarge.closing { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  .fstack img, .fcover .pcard .pround, .fcover .pcard .pround img, .fcover .pcard .pround .pround-vid, .fstack > .cframe, .alt-enlarge { transition: none; }
+}

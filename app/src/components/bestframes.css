@@ -1,6 +1,6 @@
 /* "Find the best frames…" (BestFrames.tsx). */
 .modal:has(.bf-grid) { max-width: 860px; }
-.bf-intro { margin: 0; font-size: 13px; line-height: 1.45; }
+.bf-intro { margin: 0; font-size: var(--fs-md); line-height: 1.45; }
 .bf-wait > div { width: 30% !important; animation: bf-wait 1.2s ease-in-out infinite alternate; }
 @keyframes bf-wait { from { transform: translateX(-10%); } to { transform: translateX(240%); } }
 .bf-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(176px, 1fr)); gap: 10px; }
@@ -13,10 +13,10 @@
 .bf-frame input { position: absolute; opacity: 0; pointer-events: none; }
 .bf-frame:has(input:focus-visible) { outline-color: var(--accent-text); }
 .bf-tick { position: absolute; top: 7px; right: 7px; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; font-weight: 700; color: var(--on-accent); background: rgba(0, 0, 0, 0.45); border: 1.5px solid rgba(255, 255, 255, 0.7); }
+  font-size: var(--fs-sm); font-weight: 700; color: var(--on-accent); background: rgba(0, 0, 0, 0.45); border: 1.5px solid rgba(255, 255, 255, 0.7); }
 .bf-frame.on .bf-tick { background: var(--accent); border-color: var(--accent); }
-.bf-time { position: absolute; left: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: 11.5px; }
-.bf-face { position: absolute; right: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: var(--accent-text); font-size: 11px; }
+.bf-time { position: absolute; left: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #fff; font-size: var(--fs-xs); }
+.bf-face { position: absolute; right: 7px; bottom: 7px; padding: 2px 7px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: var(--accent-text); font-size: var(--fs-xs); }
 .bf-blank { display: block; width: 100%; height: 100%; }
 .bf-ghost { cursor: default; animation: bf-pulse 1.4s ease-in-out infinite alternate; }
 .bf-ghost:hover { transform: none; }

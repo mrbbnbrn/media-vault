@@ -1,0 +1,46 @@
+/* Shared bits, menus and dialogs. */
+input[type='range'] { accent-color: var(--accent); }
+
+/* ---- shared bits ---------------------------------------------------------- */
+.stack { display: flex; flex-direction: column; gap: 14px; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.btn-danger-solid { border: none; background: #c4554a; color: #fff; font-weight: 600; }
+.btn.ghost { border-color: transparent; }
+.btn.glass, .pbtn { background: rgba(255, 255, 255, 0.08); border-color: transparent; color: #f0eee9; }
+.btn.glass:hover, .pbtn:hover { background: rgba(255, 255, 255, 0.16); }
+.btn.accent, .pbtn.on { color: var(--accent); }
+.btn.accent-soft { background: var(--accent-soft); border-color: var(--accent); color: var(--accent-text); }
+.kbd-sm { font-family: var(--mono); font-size: var(--fs-xs); opacity: 0.7; margin-left: 2px; }
+.input.small { width: 84px; min-height: 38px; }
+
+.seg { display: inline-flex; gap: 2px; padding: 3px; border-radius: 10px; background: #15171b; border: 1px solid var(--line-mid); }
+.seg button { min-width: 40px; min-height: 32px; padding: 0 10px; border-radius: 7px; border: none; background: transparent; color: var(--text-2); font-size: var(--fs-md); cursor: pointer; }
+.seg button.on { background: var(--accent); color: var(--on-accent); font-weight: 600; }
+.seg button:disabled { opacity: 0.4; cursor: default; }
+
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px 3px 10px; border-radius: 6px; background: #1d2026; color: var(--text-2); font-size: var(--fs-sm); border: 1px solid transparent; cursor: default; }
+.chip button { border: none; background: none; color: inherit; opacity: 0.7; cursor: pointer; padding: 2px; display: inline-flex; }
+.chip.accent { background: var(--accent-soft); color: var(--accent-text); }
+.chip.dashed { border: 1px dashed #3a3e46; background: transparent; color: var(--faint); cursor: pointer; padding: 3px 10px; }
+.chip-dark { display: inline-block; padding: 4px 10px; border-radius: 6px; background: rgba(0, 0, 0, 0.62); color: #e9e7e3; font-size: var(--fs-sm); max-width: 70%; }
+
+/* ---- menus & dialogs ------------------------------------------------------- */
+.dropdown { position: relative; display: inline-flex; }
+.menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: var(--z-menu); min-width: 220px; padding: 6px; border-radius: 12px; background: var(--raised); border: 1px solid var(--line-2); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6); display: flex; flex-direction: column; max-height: 60vh; overflow: auto; }
+.menu.up { top: auto; bottom: calc(100% + 6px); }
+.menu.right { left: auto; right: 0; }
+.menu-item { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 10px; border: none; border-radius: 8px; background: transparent; color: #d6d4cf; font-size: var(--fs-md); text-align: left; cursor: pointer; white-space: nowrap; }
+.menu-item:hover, .menu-item.on { background: var(--accent-soft-2); color: var(--accent-text); }
+.menu-item.danger { color: var(--danger-text); }
+.menu-item:disabled { opacity: 0.4; cursor: default; }
+.menu-item .tick { width: 14px; color: var(--accent); }
+.menu-item .hint { margin-left: auto; padding-left: 16px; font-size: var(--fs-xs); color: var(--faint); }
+
+.modal-back { position: fixed; inset: 0; z-index: var(--z-dialog); background: rgba(0, 0, 0, 0.6); display: flex; align-items: center; justify-content: center; padding: 24px; }
+.modal { width: 100%; max-width: 480px; max-height: 90vh; overflow: auto; background: var(--card); border: 1px solid var(--line-2); border-radius: 16px; padding: 24px; display: flex; flex-direction: column; gap: 16px; box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6); }
+.modal.wide { max-width: 720px; }
+.picker { display: flex; flex-direction: column; gap: 2px; max-height: 360px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; padding: 6px; background: #0f1013; }
+.picker-row { display: flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: none; border-radius: 8px; background: transparent; color: var(--text-2); font-size: var(--fs-base); text-align: left; cursor: pointer; }
+.picker-row.on { background: var(--accent-soft); color: var(--accent-text); }
+.form-grid { display: grid; grid-template-columns: max-content 1fr; gap: 14px 18px; align-items: center; font-size: var(--fs-base); }
+.form-grid > label, .form-grid > span:nth-child(odd) { color: var(--muted); }

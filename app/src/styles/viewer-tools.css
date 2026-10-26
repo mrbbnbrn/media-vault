@@ -1,0 +1,140 @@
+/* Upscaler compare, beat status, transitions, swiping, picture editor, video tools. */
+/* ---- Upscaler before/after line (components/UpscaleCompare.tsx) ------------------ */
+.cmp-line { position: absolute; left: 0; top: 0; width: 0; z-index: 2; pointer-events: none; will-change: transform; }
+.cmp-line::before { content: ''; position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background: rgba(255, 255, 255, 0.9); box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.35), 0 0 12px rgba(0, 0, 0, 0.45); }
+.cmp-knob { position: absolute; left: -13px; top: 50%; width: 26px; height: 26px; margin-top: -13px; border-radius: 50%; background: rgba(12, 14, 16, 0.72); border: 2px solid rgba(255, 255, 255, 0.92); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5); }
+.cmp-knob::before, .cmp-knob::after { content: ''; position: absolute; top: 50%; margin-top: -4px; border: 4px solid transparent; }
+.cmp-knob::before { left: 1px; border-right-color: #fff; }
+.cmp-knob::after { right: 1px; border-left-color: #fff; }
+.cmp-line.pinned .cmp-knob { background: var(--accent); border-color: #fff; }
+.cmp-line.pinned .cmp-knob::before { border-right-color: #06201d; }
+.cmp-line.pinned .cmp-knob::after { border-left-color: #06201d; }
+.cmp-tag { position: absolute; top: var(--tag-top, 12px); padding: 3px 9px; border-radius: 999px; background: rgba(0, 0, 0, 0.66); border: 1px solid rgba(255, 255, 255, 0.12); color: #f0eee9; font-size: var(--fs-sm); font-weight: 500; white-space: nowrap; transition: opacity 0.12s; }
+.cmp-tag.left { right: 10px; }
+.cmp-tag.right { left: 10px; }
+.cmp-tag.right::before { content: ''; display: inline-block; width: 6px; height: 6px; margin-right: 6px; border-radius: 50%; background: var(--accent); vertical-align: 1px; }
+.upscale-bar .up-hint { font-size: var(--fs-sm); }
+@media (max-width: 760px) { .upscale-bar .up-hint { display: none; } }
+
+/* ---- Beat sync status line (components/BeatStatus.tsx) --------------------------- */
+.beat-status { display: flex; flex-direction: column; gap: 4px; font-size: var(--fs-sm); color: var(--text-2); min-width: 0; }
+.beat-status-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.beat-status-text { overflow-wrap: anywhere; }
+.beat-status.problem .beat-status-text { color: #f2b8a0; }
+.beat-bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+.beat-bars span { width: 3px; border-radius: 1px; background: rgba(255, 255, 255, 0.16); }
+.beat-bars span:nth-child(1) { height: 4px; }
+.beat-bars span:nth-child(2) { height: 6px; }
+.beat-bars span:nth-child(3) { height: 8px; }
+.beat-bars span:nth-child(4) { height: 10px; }
+.beat-bars span:nth-child(5) { height: 12px; }
+.beat-bars span.on { background: var(--accent); }
+.beat-dot-wrap { display: inline-flex; align-items: center; gap: 5px; color: var(--faint); }
+.beat-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: rgba(255, 255, 255, 0.18); }
+.beat-dot.hit { animation: beat-hit 0.35s ease-out; }
+@keyframes beat-hit { 0% { background: var(--accent); transform: scale(1.5); box-shadow: 0 0 8px var(--accent); } 100% { background: rgba(255, 255, 255, 0.18); transform: scale(1); box-shadow: none; } }
+.beat-status .linkish { background: none; border: 0; padding: 0; margin-left: 2px; color: var(--accent); font: inherit; cursor: pointer; }
+.beat-status .linkish:hover { text-decoration: underline; }
+.beat-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; border-radius: 8px; background: rgba(255, 255, 255, 0.04); border: 1px solid rgba(255, 255, 255, 0.06); font-size: var(--fs-xs); line-height: 1.45; max-height: 150px; overflow: auto; user-select: text; }
+.beat-tip { font-size: var(--fs-sm); }
+.beat-badge.problem { color: #f2b8a0; }
+
+/* Slideshow fades follow the "Fade speed" setting (shorter with fast beat sync). */
+.player .fade-in { animation-duration: var(--fade-ms, 350ms); }
+
+/* 3D photos: the moving picture lies exactly over the still one (Depth3D.tsx). */
+.player .depth3d-host { position: absolute; inset: 0; pointer-events: none; opacity: 0; visibility: hidden; }
+.player .depth3d-host.live { opacity: 1; visibility: visible; animation: fadein var(--fade-ms, 350ms) ease-out; }
+.player .depth3d-host .depth3d { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.pbtn.depth-btn { font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em; }
+
+/* ---- Off-screen sections of long pages are skipped ----------------------------------------
+   The browser doesn't lay out or paint a section until it comes near the screen
+   (content-visibility: auto); "auto" in the size remembers its real size after the first
+   time it was drawn, so the scrollbar stays steady. Only for big sections in a plain column:
+   for the many small items of a grid or long list (folder cards, sidebar rows) it measured
+   worse — each card coming into view made the browser lay out the whole grid again, so
+   scrolling cost 3–4 times as much. The media grid only ever draws the tiles on screen. */
+.person { content-visibility: auto; contain-intrinsic-block-size: auto 320px; }
+.look-group { content-visibility: auto; contain-intrinsic-block-size: auto 220px; }
+.settings main > .section { content-visibility: auto; contain-intrinsic-block-size: auto 300px; }
+/* An open "⋯" menu inside one must be able to spill out over its neighbours. */
+.person:has(.menu), .look-group:has(.menu), .settings main > .section:has(.menu), .settings main > .section:has(.modal-back) { content-visibility: visible; }
+
+/* 3D photos settings (View ▾ → 3D photos): the motion shape chooser, a small drawing over each name. */
+.shape-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; }
+.shape-pick button { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 6px 4px; border-radius: 8px; border: 1px solid var(--line-mid); background: #15171b; color: var(--text-2); font-size: var(--fs-xs); cursor: pointer; }
+.shape-pick button:hover { border-color: var(--line-2); color: var(--text); }
+.shape-pick button.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+.depth-btns { display: inline-flex; gap: 2px; align-items: center; }
+
+/* ---- transitions between items (transitions.ts, ItemTransition.tsx) ---- */
+.player .tx-layer { position: absolute; inset: 0; backface-visibility: hidden; }
+.player .tx-ghost { position: absolute; inset: 0; pointer-events: none; backface-visibility: hidden; }
+.player .tx-ghost canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+/* Film strip: a strip with its holes runs behind the two pictures while they move along. */
+.player .stage.tx-film::before { content: ''; position: absolute; left: 0; right: 0; top: 7%; bottom: 7%; pointer-events: none; background:
+  repeating-linear-gradient(90deg, #d9d6cf 0 14px, transparent 14px 34px) top 10px left 0 / 100% 12px no-repeat,
+  repeating-linear-gradient(90deg, #d9d6cf 0 14px, transparent 14px 34px) bottom 10px left 0 / 100% 12px no-repeat,
+  #16171a; opacity: 0.9; border-radius: 4px; }
+
+/* ---- swiping: the wide strips at the far left and right (swipe.ts) ---- */
+.player .stage.at-edge { cursor: pointer; }
+.player .edge-arrow { position: absolute; top: 0; bottom: 0; width: max(80px, 12%); display: flex; align-items: center; pointer-events: none; z-index: 2; animation: fadein 0.15s ease-out; }
+.player .edge-arrow.prev { left: 0; justify-content: flex-start; padding-left: 18px; background: linear-gradient(90deg, rgba(0, 0, 0, 0.28), transparent); }
+.player .edge-arrow.next { right: 0; justify-content: flex-end; padding-right: 18px; background: linear-gradient(270deg, rgba(0, 0, 0, 0.28), transparent); }
+.player .edge-arrow span { display: flex; align-items: center; justify-content: center; width: 46px; height: 46px; border-radius: 50%; background: rgba(0, 0, 0, 0.35); color: rgba(255, 255, 255, 0.7); box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08); }
+.player .edge-arrow.end span { opacity: 0.3; }
+
+/* ---- the picture editor (ImageEditor.tsx) ---- */
+.player .img-editor { position: absolute; inset: 0; z-index: var(--z-menu); display: flex; background: #0b0c0e; color: var(--text); cursor: default; }
+.img-editor .ie-area { position: relative; flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; overflow: hidden;
+  background: repeating-conic-gradient(#121316 0 25%, #0e0f11 0 50%) 0 0 / 24px 24px; }
+.img-editor .ie-pic { position: relative; flex: none; box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6); touch-action: none; }
+.img-editor .ie-clip { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.img-editor .ie-shade { position: absolute; box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.58); }
+.img-editor .ie-pic canvas { display: block; }
+.img-editor .ie-crop { position: absolute; outline: 1px solid rgba(255, 255, 255, 0.85); cursor: move; touch-action: none; }
+.img-editor .ie-third { position: absolute; background: rgba(255, 255, 255, 0.28); pointer-events: none; }
+.img-editor .ie-third.v1, .img-editor .ie-third.v2 { top: 0; bottom: 0; width: 1px; }
+.img-editor .ie-third.v1 { left: 33.333%; }
+.img-editor .ie-third.v2 { left: 66.666%; }
+.img-editor .ie-third.h1, .img-editor .ie-third.h2 { left: 0; right: 0; height: 1px; }
+.img-editor .ie-third.h1 { top: 33.333%; }
+.img-editor .ie-third.h2 { top: 66.666%; }
+.img-editor .ie-handle { position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 3px; background: var(--accent); border: 2px solid #0b0c0e; touch-action: none; }
+.img-editor .ie-handle.nw { left: 0; top: 0; cursor: nwse-resize; }
+.img-editor .ie-handle.n { left: 50%; top: 0; cursor: ns-resize; }
+.img-editor .ie-handle.ne { left: 100%; top: 0; cursor: nesw-resize; }
+.img-editor .ie-handle.e { left: 100%; top: 50%; cursor: ew-resize; }
+.img-editor .ie-handle.se { left: 100%; top: 100%; cursor: nwse-resize; }
+.img-editor .ie-handle.s { left: 50%; top: 100%; cursor: ns-resize; }
+.img-editor .ie-handle.sw { left: 0; top: 100%; cursor: nesw-resize; }
+.img-editor .ie-handle.w { left: 0; top: 50%; cursor: ew-resize; }
+.img-editor .ie-busy { position: absolute; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 8px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.75); font-size: var(--fs-md); }
+.img-editor .ie-panel { width: 320px; flex: none; display: flex; flex-direction: column; gap: 14px; padding: 16px 16px 14px; overflow-y: auto; background: var(--panel, #131417); border-left: 1px solid var(--line); }
+.img-editor .ie-title { margin: 0; font-size: var(--fs-xl); }
+.img-editor .ie-note { margin: -6px 0 0; font-size: var(--fs-sm); }
+.img-editor section { display: flex; flex-direction: column; gap: 8px; }
+.img-editor h3 { margin: 0; font-size: var(--fs-sm); font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-2); }
+.img-editor .ie-seg { flex-wrap: wrap; }
+.img-editor .ie-seg button { min-width: 0; padding: 0 9px; }
+.img-editor .ie-small { font-size: var(--fs-sm); }
+.img-editor .ie-val { font-size: var(--fs-sm); min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
+.img-editor .ie-tools { flex-wrap: wrap; gap: 6px; }
+.img-editor .ie-slider { display: grid; grid-template-columns: 84px 1fr 36px; align-items: center; gap: 8px; font-size: var(--fs-md); }
+.img-editor input[type='range'] { width: 100%; accent-color: var(--accent); }
+.img-editor .ie-foot { margin-top: auto; display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.img-editor .ie-wide { width: 100%; justify-content: center; }
+
+/* ---- Save part as MP4: the two ways (VideoTools.tsx) ---- */
+.cut-ways { display: flex; flex-direction: column; gap: 8px; }
+.cut-way { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--line-mid); background: #15171b; cursor: pointer; }
+.cut-way.on { border-color: var(--accent); background: var(--accent-soft); }
+.cut-way input { margin-top: 3px; accent-color: var(--accent); }
+.cut-way > span { display: flex; flex-direction: column; gap: 2px; font-size: var(--fs-md); }
+.cut-way .faint { font-size: var(--fs-sm); line-height: 1.4; }
+.seg.tx-pick { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.seg.tx-pick button { padding: 0 6px; }
+.picker-path { margin-left: auto; font-size: var(--fs-sm); padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
+.lib-main.switching > * { opacity: 0.35; transition: opacity 0.12s 0.08s; pointer-events: none; }

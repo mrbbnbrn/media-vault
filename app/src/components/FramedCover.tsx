@@ -1,6 +1,6 @@
 // A box that shows a folder cover with its hand-set framing ("Adjust
 // cover…"). The picture, GIF or pooled video inside picks the framing up from
-// CSS variables (see `.cframe` in screens.css and coverframe.ts), so the card,
+// CSS variables (see `.cframe` in styles/cards.css and coverframe.ts), so the card,
 // the sidebar and the editor all draw it the same way, without measuring.
 
 import type { CSSProperties, ReactNode } from 'react';

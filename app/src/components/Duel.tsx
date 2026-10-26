@@ -10,6 +10,7 @@ import { api, mediaUrl, thumbUrl, type DuelState, type Item } from '../api';
 import { pairKey, pickPair } from '../viewerlogic';
 import { CloseIcon, UndoIcon } from './Icons';
 import { useLayer } from '../keylayers';
+import { Modal } from './Dialogs';
 
 interface Done {
   winner: number;
@@ -196,9 +197,8 @@ export function Duel({ items, onClose }: { items: Item[]; onClose: () => void })
         </>
       )}
       {summary && (
-        <div className="modal-back">
-          <div className="modal" role="dialog" aria-modal="true" aria-label="Duel summary">
-            <h2>Nice — {history.length} {history.length === 1 ? 'duel' : 'duels'}</h2>
+        // The shared dialog frame: Esc means "Keep going", and keys stay in it.
+        <Modal title={`Nice — ${history.length} ${history.length === 1 ? 'duel' : 'duels'}`} onClose={() => setSummary(false)}>
             <p className="muted" style={{ margin: 0 }}>The weights below are used whenever a slideshow plays in “Weighted random” order.</p>
             {top.length > 0 && (
               <div className="duel-top-list">
@@ -213,10 +213,9 @@ export function Duel({ items, onClose }: { items: Item[]; onClose: () => void })
             )}
             <div className="row" style={{ justifyContent: 'flex-end' }}>
               <button type="button" className="btn" onClick={() => setSummary(false)}>Keep going</button>
-              <button type="button" className="btn btn-primary" autoFocus onClick={onClose}>Close</button>
+              <button type="button" className="btn btn-primary" data-autofocus onClick={onClose}>Close</button>
             </div>
-          </div>
-        </div>
+        </Modal>
       )}
     </div>
   );

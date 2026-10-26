@@ -7,15 +7,15 @@ body.clean-fs .titlebar { display: none; }
 #root { display: flex; flex-direction: column; }
 #root > .app { flex: 1 1 auto; min-height: 0; height: auto; }
 
-.titlebar { position: relative; z-index: 66; flex: 0 0 var(--titlebar-h); height: var(--titlebar-h); display: flex; align-items: stretch; background: var(--titlebar); border-bottom: 1px solid var(--line); min-width: 0; }
+.titlebar { position: relative; z-index: var(--z-titlebar); flex: 0 0 var(--titlebar-h); height: var(--titlebar-h); display: flex; align-items: stretch; background: var(--titlebar); border-bottom: 1px solid var(--line); min-width: 0; }
 .titlebar:has(.wt-tab) { border-bottom: none; }
-.wt-mark { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 14px; color: var(--accent); font-size: 12.5px; font-weight: 600; letter-spacing: 0.02em; }
+.wt-mark { display: flex; align-items: center; gap: 8px; padding: 0 12px 0 14px; color: var(--accent); font-size: var(--fs-sm); font-weight: 600; letter-spacing: 0.02em; }
 .wt-drag { flex: 1 1 0; min-width: 48px; }
 
 /* Tabs: shrink as more open, then scroll (with a list of all of them). */
 .wt-tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; padding: 0 8px 0 4px; }
 .wt-tabs::-webkit-scrollbar { display: none; }
-.wt-tab { position: relative; container-type: inline-size; flex: 0 1 210px; width: 210px; min-width: 58px; height: calc(var(--titlebar-h) - 6px); display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--faint); font-size: 12.5px; cursor: default; }
+.wt-tab { position: relative; container-type: inline-size; flex: 0 1 210px; width: 210px; min-width: 58px; height: calc(var(--titlebar-h) - 6px); display: flex; align-items: center; gap: 7px; padding: 0 6px 0 10px; border-radius: 8px 8px 0 0; color: var(--faint); font-size: var(--fs-sm); cursor: default; }
 .wt-tab:hover { background: color-mix(in srgb, var(--panel) 55%, transparent); color: var(--text-2); }
 .wt-tab.on { background: var(--panel); color: var(--text); z-index: 1; }
 /* The active tab flows into the toolbar below (little curved feet, like a browser). */
@@ -75,7 +75,7 @@ body.clean-fs .titlebar { display: none; }
 .jobring-wrap.in-titlebar.idle:hover { opacity: 1; }
 .jobring-wrap.in-titlebar .jobring-n { left: 20px; bottom: 0; }
 .jobring.paused .jring-arc { stroke: var(--faint); }
-.jobpop-recent { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.jobpop-recent { display: flex; flex-direction: column; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); font-size: var(--fs-sm); }
 .jobrecent { display: flex; justify-content: space-between; gap: 10px; color: var(--text-2); }
 .jobrecent.failed > span:first-child { color: var(--danger); }
 .jobpop > .btn { align-self: flex-start; }

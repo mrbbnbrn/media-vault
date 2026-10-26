@@ -1,5 +1,5 @@
 /* The discovery river (components/river). Only transforms and opacity change per frame. */
-.river { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 45; overflow: hidden; user-select: none; background: #04080a; color: #e9fbf8; cursor: default; contain: strict; }
+.river { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: var(--z-fullscreen); overflow: hidden; user-select: none; background: #04080a; color: #e9fbf8; cursor: default; contain: strict; }
 .river.rv-pointing { cursor: pointer; }
 .river.rv-idle { cursor: none; }
 .river.rv-pointing { cursor: grab; }
@@ -11,7 +11,7 @@
 .rv-sky { position: absolute; inset: 0; pointer-events: none;
   background:
     radial-gradient(90% 55% at 50% 44%, rgba(34, 104, 98, 0.30), rgba(12, 40, 40, 0.10) 55%, transparent 75%),
-    radial-gradient(70% 38% at 50% 104%, rgba(46, 196, 182, 0.10), transparent 70%),
+    radial-gradient(70% 38% at 50% 104%, color-mix(in srgb, var(--accent) 10%, transparent), transparent 70%),
     radial-gradient(40% 30% at 18% 20%, rgba(90, 120, 170, 0.08), transparent 70%),
     radial-gradient(35% 28% at 84% 30%, rgba(120, 90, 160, 0.07), transparent 70%),
     radial-gradient(45% 30% at 22% 86%, rgba(200, 140, 70, 0.05), transparent 70%),
@@ -49,10 +49,10 @@
 .rv-lifted .rv-card { filter: none !important; transition-duration: 0.45s; }
 
 .rv-glow { position: absolute; inset: -1px; border-radius: 12px; opacity: 0; pointer-events: none;
-  box-shadow: 0 0 0 1px rgba(157, 226, 218, 0.55), 0 0 26px 2px rgba(46, 196, 182, 0.34), 0 0 90px 14px rgba(46, 196, 182, 0.14); }
+  box-shadow: 0 0 0 1px rgba(157, 226, 218, 0.55), 0 0 26px 2px color-mix(in srgb, var(--accent) 34%, transparent), 0 0 90px 14px color-mix(in srgb, var(--accent) 14%, transparent); }
 .rv-name { position: absolute; left: 50%; top: 100%; transform: translate(-50%, 14px); max-width: max(160%, 220px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0;
   padding: 5px 13px; border-radius: 999px; background: rgba(5, 14, 16, 0.72); border: 1px solid rgba(157, 226, 218, 0.22); backdrop-filter: blur(8px);
-  font-size: 13px; font-weight: 500; letter-spacing: 0.01em; color: #e9fbf8; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
+  font-size: var(--fs-md); font-weight: 500; letter-spacing: 0.01em; color: #e9fbf8; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45); }
 /* Videos: a small play mark. */
 .rv-video .rv-card::after { content: ''; position: absolute; left: 9px; bottom: 9px; width: 0; height: 0; border-style: solid; border-width: 5px 0 5px 8px;
   border-color: transparent transparent transparent rgba(255, 255, 255, 0.85); filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.6)); }
@@ -70,14 +70,14 @@
 .rv-top { position: absolute; left: 18px; right: 18px; top: 16px; z-index: 60; display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; pointer-events: none; transition: opacity 0.8s ease; }
 .river.rv-idle .rv-top { opacity: 0; }
 .rv-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 2px 4px; text-shadow: 0 2px 12px rgba(0, 0, 0, 0.8); }
-.rv-title b { font-size: 19px; font-weight: 600; letter-spacing: 0.01em; color: #eafaf7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rv-kicker { font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.16em; color: var(--accent-text, #9de2da); opacity: 0.8; }
+.rv-title b { font-size: var(--fs-2xl); font-weight: 600; letter-spacing: 0.01em; color: #eafaf7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rv-kicker { font-size: var(--fs-2xs); text-transform: uppercase; letter-spacing: 0.16em; color: var(--accent-text, #9de2da); opacity: 0.8; }
 .rv-leave { pointer-events: auto; background: rgba(5, 14, 16, 0.6); border-color: rgba(157, 226, 218, 0.18); backdrop-filter: blur(6px); }
 .rv-note { position: absolute; left: 50%; top: 22px; z-index: 61; transform: translateX(-50%); padding: 6px 14px; border-radius: 999px; background: rgba(5, 14, 16, 0.7); border: 1px solid rgba(157, 226, 218, 0.22);
-  backdrop-filter: blur(6px); font-size: 12.5px; color: #e9fbf8; pointer-events: none; animation: rv-note 1.4s ease forwards; }
+  backdrop-filter: blur(6px); font-size: var(--fs-sm); color: #e9fbf8; pointer-events: none; animation: rv-note 1.4s ease forwards; }
 @keyframes rv-note { 0% { opacity: 0; transform: translate(-50%, -4px); } 12% { opacity: 1; transform: translate(-50%, 0); } 75% { opacity: 1; } 100% { opacity: 0; } }
 .rv-hint { position: absolute; left: 50%; bottom: 22px; z-index: 60; transform: translateX(-50%); max-width: calc(100% - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  padding: 7px 16px; border-radius: 999px; background: rgba(5, 14, 16, 0.55); backdrop-filter: blur(6px); font-size: 12.5px; color: rgba(233, 251, 248, 0.82);
+  padding: 7px 16px; border-radius: 999px; background: rgba(5, 14, 16, 0.55); backdrop-filter: blur(6px); font-size: var(--fs-sm); color: rgba(233, 251, 248, 0.82);
   pointer-events: none; opacity: 0; transition: opacity 1.6s ease; }
 .rv-hint.on { opacity: 1; transition-duration: 0.5s; }
 
@@ -87,41 +87,41 @@
   backdrop-filter: blur(10px); box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5); opacity: 0; pointer-events: none; width: max-content;
   transition: opacity 0.35s ease, transform 0.35s ease; max-width: calc(100% - 32px); flex-wrap: wrap; justify-content: center; }
 .rv-bar.on { opacity: 1; transform: translate(-50%, 0); pointer-events: auto; }
-.rv-set { display: flex; flex-direction: column; gap: 4px; min-width: 190px; font-size: 12px; color: rgba(233, 251, 248, 0.78); cursor: default; }
+.rv-set { display: flex; flex-direction: column; gap: 4px; min-width: 190px; font-size: var(--fs-sm); color: rgba(233, 251, 248, 0.78); cursor: default; }
 .rv-set b { color: var(--accent-text, #9de2da); font-weight: 600; font-family: var(--mono); margin-left: 4px; }
 .rv-set input[type=range] { width: 100%; accent-color: var(--accent, #2ec4b6); cursor: pointer; }
-.rv-ends { display: flex; justify-content: space-between; font-size: 10.5px; color: rgba(233, 251, 248, 0.45); }
+.rv-ends { display: flex; justify-content: space-between; font-size: var(--fs-2xs); color: rgba(233, 251, 248, 0.45); }
 .rv-ends i { font-style: normal; }
 .river.rv-idle .rv-bar:not(:hover) { opacity: 0; pointer-events: none; }
 
 /* Pictures / Faces, the people picker and its list (opens above the bar). */
 .rv-modes { min-width: 0; }
 .rv-seg { display: inline-flex; padding: 2px; border-radius: 999px; background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(157, 226, 218, 0.16); }
-.rv-seg button { border: 0; background: transparent; color: rgba(233, 251, 248, 0.72); font: inherit; font-size: 12px; padding: 4px 12px; border-radius: 999px; cursor: pointer; }
+.rv-seg button { border: 0; background: transparent; color: rgba(233, 251, 248, 0.72); font: inherit; font-size: var(--fs-sm); padding: 4px 12px; border-radius: 999px; cursor: pointer; }
 .rv-seg button:hover { color: #e9fbf8; }
 .rv-seg button.on { background: var(--accent, #2ec4b6); color: #031413; font-weight: 600; }
 .rv-people { position: relative; min-width: 150px; }
 .rv-pick { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 150px; max-width: 220px; padding: 5px 10px; border-radius: 8px; cursor: pointer;
-  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(157, 226, 218, 0.18); color: #e9fbf8; font: inherit; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  background: rgba(255, 255, 255, 0.06); border: 1px solid rgba(157, 226, 218, 0.18); color: #e9fbf8; font: inherit; font-size: var(--fs-sm); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .rv-pick:hover, .rv-pick[aria-expanded=true] { border-color: var(--accent, #2ec4b6); }
 .rv-pop { position: absolute; left: 0; bottom: calc(100% + 10px); width: 240px; max-height: min(360px, 50vh); overflow-y: auto; padding: 6px; border-radius: 12px;
   background: rgba(6, 16, 18, 0.96); border: 1px solid rgba(157, 226, 218, 0.2); box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6); display: flex; flex-direction: column; gap: 2px; }
-.rv-pop-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: rgba(233, 251, 248, 0.85); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; }
+.rv-pop-row { display: flex; align-items: center; gap: 10px; width: 100%; padding: 5px 8px; border: 0; border-radius: 8px; background: transparent; color: rgba(233, 251, 248, 0.85); font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; }
 .rv-pop-row:hover { background: rgba(157, 226, 218, 0.08); }
 .rv-pop-row.on { color: var(--accent-text, #9de2da); }
 .rv-pop-row .pround { flex: none; }
-.rv-pop-all { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(157, 226, 218, 0.12); color: var(--accent-text, #9de2da); font-size: 13px; }
+.rv-pop-all { flex: none; width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; background: rgba(157, 226, 218, 0.12); color: var(--accent-text, #9de2da); font-size: var(--fs-md); }
 .rv-pop-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rv-pop-tick { width: 14px; color: var(--accent-text, #9de2da); }
-.rv-pop-none { padding: 8px; font-size: 12px; color: rgba(233, 251, 248, 0.55); }
+.rv-pop-none { padding: 8px; font-size: var(--fs-sm); color: rgba(233, 251, 248, 0.55); }
 .rv-empty { position: absolute; left: 50%; top: 46%; z-index: 59; transform: translate(-50%, -50%); max-width: min(460px, calc(100% - 32px)); text-align: center;
-  padding: 12px 20px; border-radius: 14px; background: rgba(5, 14, 16, 0.7); border: 1px solid rgba(157, 226, 218, 0.18); font-size: 13.5px; color: rgba(233, 251, 248, 0.85); }
+  padding: 12px 20px; border-radius: 14px; background: rgba(5, 14, 16, 0.7); border: 1px solid rgba(157, 226, 218, 0.18); font-size: var(--fs-md); color: rgba(233, 251, 248, 0.85); }
 
 /* A mini player opened from the river shows above it. */
-body:has(.river) .mini-frame { z-index: 47; }
+body:has(.river) .mini-frame { z-index: var(--z-fullscreen-mini); }
 
 /* The viewer over the river (the river waits underneath). */
-.river-viewer { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: 46; }
+.river-viewer { position: fixed; inset: var(--titlebar-h, 0px) 0 0 0; z-index: var(--z-fullscreen-viewer); }
 body:has(.river) .flip-ghost { display: none !important; }
 
 @media (prefers-reduced-motion: reduce) {

@@ -94,7 +94,7 @@ export function samePos(a: CoverPos | null | undefined, b: CoverPos | null | und
 
 /**
  * The CSS custom properties a `.cframe` box hands to the picture or video in
- * it (styles in screens.css), so pooled video players pick them up too.
+ * it (styles in styles/cards.css), so pooled video players pick them up too.
  */
 export function frameVars(pos: CoverPos | null | undefined): CSSProperties | undefined {
   if (!pos) return undefined;

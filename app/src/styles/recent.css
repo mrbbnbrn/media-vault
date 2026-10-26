@@ -1,0 +1,51 @@
+/* Statistics tiles, message stack, info panel, quick look, Start and backups. */
+/* Statistics tiles that open what they count. */
+button.stat-tile { font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.stat-tile:hover { border-color: var(--accent); }
+button.stat-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* One message stack for the whole app (components/Messages.tsx): above dialogs (z 50). */
+.notes.msg-stack { z-index: var(--z-float); }
+.msg-slot, .notes-lib { display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.msg-slot:empty { display: none; }
+.notes-lib > * { pointer-events: auto; }
+.notes-lib:empty { display: none; }
+.notes .notes-lib .imports { position: static; width: auto; max-width: none; }
+.msg { pointer-events: auto; }
+.msg .msg-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.msg-problem { border-color: var(--danger); background: color-mix(in srgb, var(--danger) 16%, var(--raised)); }
+.msg-done { border-color: var(--accent); }
+
+/* The viewer's info panel (I): a column on the right, over the picture. */
+.info-panel { position: absolute; right: 16px; top: 76px; max-height: calc(100% - 200px); z-index: 5; width: 300px; max-width: calc(100% - 32px); overflow: auto; padding: 14px 16px; border-radius: 14px; background: rgba(12, 13, 16, 0.86); border: 1px solid rgba(255, 255, 255, 0.08); backdrop-filter: blur(10px); color: #f0eee9; font-size: var(--fs-md); animation: pop-in 0.15s ease-out; }
+.info-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.info-head h3 { flex: 1; margin: 0; font-size: var(--fs-base); font-weight: 600; }
+.info-list { margin: 0; display: flex; flex-direction: column; gap: 7px; }
+.info-list > div { display: grid; grid-template-columns: 92px 1fr; gap: 8px; }
+.info-list dt { color: var(--faint); }
+.info-list dd { margin: 0; overflow-wrap: anywhere; }
+.info-list dd.accent { color: var(--accent); display: inline-flex; align-items: center; gap: 5px; }
+.info-list .link { color: var(--accent); padding: 0; text-align: left; }
+.info-panel section { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(255, 255, 255, 0.08); }
+.info-panel h4 { margin: 0 0 6px; font-size: var(--fs-sm); font-weight: 600; color: var(--faint); text-transform: uppercase; letter-spacing: 0.05em; }
+.info-panel p { margin: 0; }
+.info-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.info-tags .chip small { opacity: 0.7; }
+.info-note { white-space: pre-wrap; line-height: 1.5; }
+.player.idle .info-panel { opacity: 0.9; }
+@media (prefers-reduced-motion: reduce) { .info-panel { animation: none; } }
+.qlook-stage { position: relative; }
+.qlook-note { position: absolute; left: 50%; top: 24px; transform: translateX(-50%); padding: 8px 14px; border-radius: 10px; background: rgba(0, 0, 0, 0.8); color: #fff; font-size: var(--fs-md); pointer-events: none; animation: pop-in 0.15s ease-out; }
+.qlook-stage img.qlook-wait { min-width: min(60vw, 900px); filter: blur(2px); }
+/* Slideshow settings: whether this folder has its own. */
+.place-note { display: flex; flex-direction: column; gap: 8px; margin: -4px 0 14px; padding: 10px 12px; border-radius: 10px; background: var(--accent-soft); font-size: var(--fs-md); }
+.place-note .faint { color: var(--text-2); }
+
+/* Start: a small warning under the password box while Caps Lock is on. */
+.caps-warn { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; font-size: var(--fs-sm); color: var(--warn); }
+.caps-warn::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+
+/* Settings → Storage: the library backups, each with Restore. */
+.backup-list { display: flex; flex-direction: column; gap: 6px; }
+.backup-row { display: flex; align-items: center; gap: 12px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--card); }
+.backup-row .when { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.backup-row .when b { font-weight: 500; font-size: var(--fs-base); }
