@@ -456,15 +456,30 @@ impl PackStore {
     }
 
     /// Flush every pack written to since the last call. Called before the
-    /// database (which points into the packs) is saved.
+    /// database (which points into the packs) is saved. Every pack is
+    /// flushed even when one fails; those that failed stay on the list (for
+    /// the next try) and the first failure is returned.
     pub fn sync(&self) -> Result<()> {
-        let paths: Vec<PathBuf> = self.unsynced.lock().unwrap().drain().collect();
-        for p in &paths {
-            if let Ok(f) = OpenOptions::new().write(true).open(p) {
-                f.sync_all()?;
+        let paths: Vec<PathBuf> = self.unsynced.lock().unwrap_or_else(|e| e.into_inner()).drain().collect();
+        let mut first: Option<io::Error> = None;
+        let mut failed = Vec::new();
+        for p in paths {
+            let r = match OpenOptions::new().write(true).open(&p) {
+                Ok(f) => f.sync_all(),
+                // A pack that is gone (emptied and removed) has nothing to flush.
+                Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
+                Err(e) => Err(e),
+            };
+            if let Err(e) = r {
+                first.get_or_insert(e);
+                failed.push(p);
             }
         }
-        Ok(())
+        if failed.is_empty() {
+            return Ok(());
+        }
+        self.unsynced.lock().unwrap_or_else(|e| e.into_inner()).extend(failed);
+        Err(first.expect("a failure was noted").into())
     }
 
     fn open_at(&self, id: &ObjectId, loc: &Location) -> Result<Option<Slice>> {
@@ -672,4 +687,28 @@ pub struct CompactPlan {
     pub moved_bytes: u64,
     pub reclaimed_bytes: u64,
     pub retired: Vec<PathBuf>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_flushes_every_pack_and_keeps_the_ones_that_failed() {
+        let t = tempfile::tempdir().unwrap();
+        let set = PackStore::new(t.path(), true);
+        let good = t.path().join("good.pack");
+        std::fs::write(&good, b"x").unwrap();
+        // A folder can't be opened for writing: that one fails.
+        let bad = t.path().join("bad.pack");
+        std::fs::create_dir(&bad).unwrap();
+        let gone = t.path().join("gone.pack");
+        set.unsynced.lock().unwrap().extend([bad.clone(), good.clone(), gone.clone()]);
+        assert!(set.sync().is_err());
+        let left: Vec<PathBuf> = set.unsynced.lock().unwrap().iter().cloned().collect();
+        assert_eq!(left, vec![bad.clone()], "only the failed one is tried again");
+        std::fs::remove_dir(&bad).unwrap();
+        assert!(set.sync().is_ok());
+        assert!(set.unsynced.lock().unwrap().is_empty());
+    }
 }
