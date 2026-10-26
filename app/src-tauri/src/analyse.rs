@@ -102,16 +102,28 @@ fn caps() -> Caps {
     Caps { smart: o.smart && smartnative::usable(), faces: !o.faces_paused && faceid::info().available }
 }
 
+/// `here_sql` as last made (made again only when NOT_HERE changes, so the
+/// queries using it keep the same text and stay prepared).
+static HERE_SQL: Mutex<Option<String>> = Mutex::new(None);
+
 /// SQL: a picture this pass decodes itself.
 fn here_sql() -> String {
+    let mut kept = HERE_SQL.lock().unwrap_or_else(|x| x.into_inner());
+    if let Some(s) = kept.as_ref() {
+        return s.clone();
+    }
     let exts = picture::NATIVE_EXTS.iter().map(|x| format!("'{x}'")).collect::<Vec<_>>().join(", ");
-    let not = NOT_HERE.lock().unwrap();
-    let skip = if not.is_empty() {
-        String::new()
-    } else {
-        format!(" AND id NOT IN ({})", not.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", "))
-    };
-    format!("(kind IN ('image', 'gif') AND lower(IFNULL(ext, '')) IN ({exts}){skip})")
+    let not: Vec<i64> = NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).iter().copied().collect();
+    let skip = if not.is_empty() { String::new() } else { format!(" AND id NOT IN ({})", crate::util::id_list(&not)) };
+    let sql = format!("(kind IN ('image', 'gif') AND lower(IFNULL(ext, '')) IN ({exts}){skip})");
+    *kept = Some(sql.clone());
+    sql
+}
+
+/// Everything that couldn't be decoded is tried here again (another vault, or locked).
+fn forget_not_here() {
+    NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).clear();
+    *HERE_SQL.lock().unwrap_or_else(|x| x.into_inner()) = None;
 }
 
 // ---- what the window's loops leave to this pass ----------------------------------------------
@@ -271,7 +283,9 @@ pub struct ItemReport {
 }
 
 fn not_here(id: i64) {
-    NOT_HERE.lock().unwrap().insert(id);
+    if NOT_HERE.lock().unwrap_or_else(|x| x.into_inner()).insert(id) {
+        *HERE_SQL.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    }
 }
 
 /// Everything for one item except the smart-search model run.
@@ -563,7 +577,7 @@ pub fn stop() {
     if let Some(r) = RUNNER.lock().unwrap().take() {
         r.stop.store(true, Ordering::SeqCst);
     }
-    NOT_HERE.lock().unwrap().clear();
+    forget_not_here();
     *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
     kick();
     smartnative::unload();
@@ -585,7 +599,7 @@ pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
             old.stop.store(true, Ordering::SeqCst);
         }
         // Another vault: what couldn't be decoded there means nothing here.
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
         *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
         let stop = Arc::new(AtomicBool::new(false));
         *r = Some(Runner { session: s.clone(), stop: stop.clone() });
@@ -811,7 +825,7 @@ mod tests {
         assert_eq!(thumb_bad, None);
         assert!(NOT_HERE.lock().unwrap().contains(&bad));
         assert!(select(&s.db(), caps, 10, Some(&[bad])).unwrap().is_empty());
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
         // Nothing left to do for the good one.
         assert!(select(&s.db(), caps, 10, Some(&[good])).unwrap().is_empty());
     }
@@ -844,7 +858,7 @@ mod tests {
         not_here(jpg);
         assert_eq!(ids(select(&c, none, 10, None).unwrap()), vec![vid_thumb]);
         assert!(here_sql().contains(&jpg.to_string()));
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
         let _ = (heic, vid);
         // Only some ids (the self-test).
         assert_eq!(ids(select(&c, both, 10, Some(&[jpg])).unwrap()), vec![jpg]);
@@ -1007,7 +1021,7 @@ mod tests {
         assert_no_full_scan(&c, crate::sketch::BACKFILL_SQL, "media_need_sketch");
         assert_no_full_scan(&c, crate::meta::BACKFILL_SQL, "media_need_taken");
         crate::focus::set(None);
-        NOT_HERE.lock().unwrap().clear();
+        forget_not_here();
     }
 
     #[test]
