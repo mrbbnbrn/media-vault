@@ -35,7 +35,8 @@ import { viewKey } from './viewmemory';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
 import { resetGrid, whenGridShown } from './firstgrid';
-import { startFaceScanner } from './ml/facescan';
+import { followFaceScanPause, startFaceScanner } from './ml/facescan';
+import { setSettingsOpener, type SettingsPage } from './settingslink';
 import { startClipIndexer } from './ml/smart';
 import { setNativeOptions, setSmartPauser, startNativeAnalyser } from './ml/native';
 import { startPreviewMaker } from './previews';
@@ -65,7 +66,7 @@ export type Screen =
   | { name: 'newPassword' }
   | { name: 'words'; words: string[]; context: 'create' | 'reset' | 'encrypt' }
   | { name: 'library' }
-  | { name: 'settings' }
+  | { name: 'settings'; page?: SettingsPage; at?: string }
   | ViewerRoute
   | { name: 'multi'; back: LibView }
   | { name: 'player' };
@@ -200,6 +201,8 @@ export function App() {
     const s = await api.getState();
     setApp(s);
     setPrefsConfig(s.config);
+    // The face scan's Pause is remembered, like smart search's.
+    followFaceScanPause(!!s.config.facesPaused);
     applyAccent(s.config.accent);
     applyLook(s.config.look);
     lookConfig.current = s.config;
@@ -290,7 +293,7 @@ export function App() {
   // Faces are found only in what the user asked to scan; pictures are analysed
   // for smart search whenever its models are there (full package).
   useEffect(() => (open ? whenGridShown(startFaceScanner) : undefined), [open]);
-  // Smart search can be off altogether, or its analysing paused (Settings → Faces & smart search).
+  // Smart search can be off altogether (Settings → AI & 3D), or its analysing paused (Settings → Background work).
   const smartIndex = open && app?.config.smartIndex !== false && app?.config.smartEnabled !== false;
   useEffect(() => (smartIndex ? whenGridShown(startClipIndexer) : undefined), [smartIndex]);
   // The app's own analysis pass: thumbnails, fingerprints, smart search and
@@ -302,7 +305,7 @@ export function App() {
   useEffect(() => setSmartPauser(() => {
     void saveAppConfig((c) => ({ ...c, smartIndex: false })).then(() => refreshRef.current?.()).catch(() => {});
   }), []);
-  // Small preview clips for smooth grids (can be turned off in Settings → Storage).
+  // Small preview clips for smooth grids (can be turned off in Settings → Background work).
   const makePreviews = open && app?.config.makePreviews !== false;
   useEffect(() => (makePreviews ? whenGridShown(startPreviewMaker) : undefined), [makePreviews]);
   // Picture fingerprints for finding look-alikes (tiny, made from the thumbnails).
@@ -324,6 +327,8 @@ export function App() {
     }
     setScreen(s);
   };
+  // "More 3D settings…" in the viewer and the like open Settings on one page.
+  setSettingsOpener((page, at) => go({ name: 'settings', page, at }));
   const libraryShown = !!app.session && tabs.ready
     && (screen.name === 'library' || (screen.name === 'viewer' && !!screen.overLibrary));
   const nav: Nav = {
@@ -373,7 +378,7 @@ export function App() {
           history={{ back: tabs.back, forward: tabs.forward, canBack: tabs.canBack, canForward: tabs.canForward }}
           reveal={reveal} tabs={{ open: (v) => tabs.open(v), onFolders: tabs.onFolders }} />
       )}
-      {screen.name === 'settings' && <Settings nav={nav} />}
+      {screen.name === 'settings' && <Settings nav={nav} page={screen.page} at={screen.at} />}
       {viewerRoute && (
         <MiniFrame key={viewerId} mini={isMini} onExpand={expandMini}>
           <ErrorBoundary name="the viewer" onError={() => {

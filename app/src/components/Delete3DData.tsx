@@ -164,7 +164,7 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
           {which !== 'all' && (
             <span className="faint" style={{ fontSize: 12 }}>
               Only pictures already scanned for faces count{split.unscanned.length ? `: ${plural(split.unscanned.length, 'picture')} not scanned yet ${split.unscanned.length === 1 ? 'is' : 'are'} left alone` : ''}.
-              A hidden face still counts as a face; poor faces follow Settings → Faces & smart search.
+              A hidden face still counts as a face; poor faces follow Settings → AI & 3D.
             </span>
           )}
         </div>

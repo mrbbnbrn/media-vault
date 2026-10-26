@@ -1,4 +1,4 @@
-// Settings → Faces & smart search: the depth maps and outlines saved in the
+// Settings → AI & 3D: the 3D data (depth maps and outlines) saved in the
 // vault (pictures only): how many and how big, clearing them, and working
 // out the missing ones or all of them again in the background (prepare.ts),
 // with progress and Stop.
@@ -50,7 +50,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
   };
   return (
     <div className="saved-maps" style={{ marginTop: 18 }}>
-      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>Saved depth maps and outlines</h3>
+      <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>Saved 3D data</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
         Once a picture's depth or subject outline is worked out it's saved in the vault (encrypted), so it never has to
         be worked out again. Pictures only. Preparing works them out for every installed depth and outline model, and also makes the
@@ -61,7 +61,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <span>{stats ? `${pictures.toLocaleString()} ${pictures === 1 ? 'picture' : 'pictures'}, ${mb(bytes)}` : '…'}</span>
         <button type="button" className="btn btn-sm" disabled={job.running || !stats || bytes === 0} onClick={() => setAsk('clear')}>Clear them</button>
-        <button type="button" className="btn btn-sm" title="Only the pictures that don't have a saved depth map or outline yet"
+        <button type="button" className="btn btn-sm" title="Only the pictures that don't have saved 3D data yet"
           onClick={() => { setNote(null); if (prepareVault(false) === 'already') setNote('Already working on that.'); }}>Work out the missing ones</button>
         <button type="button" className="btn btn-sm" title="Only the pictures the face scan found a face in (not only poor faces); pictures not scanned yet are left out"
           onClick={() => { setNote(null); if (prepareVault(false, true) === 'already') setNote('Already working on that.'); }}>Work out the missing ones, pictures with faces only</button>
@@ -88,7 +88,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
           onDone={(text) => { setNote(text); load(); }} />
       )}
       {ask === 'clear' && (
-        <ConfirmDialog title="Clear the saved depth maps and outlines?" confirm="Clear them" danger onClose={() => setAsk(null)}
+        <ConfirmDialog title="Delete all saved 3D data?" confirm="Delete 3D data" danger onClose={() => setAsk(null)}
           onConfirm={() => { setAsk(null); void clear(); }}>
           They're worked out again when needed (pictures take a moment longer to start in 3D). Your pictures don't change.
         </ConfirmDialog>

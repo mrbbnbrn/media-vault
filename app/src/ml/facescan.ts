@@ -9,6 +9,7 @@
 import { api, mediaUrl, type FaceEngineStatus, type FaceIn, type Kind } from '../api';
 import { loopJob, updateJob } from '../jobs';
 import { giveWay } from '../bgpace';
+import { saveAppConfig } from '../prefs';
 
 /** Where to get the faces pack (shown when it isn't installed). */
 export const NO_FACE_PACK =
@@ -155,13 +156,28 @@ export function kickFaceScanner() {
 export async function stopFaceSearch(): Promise<number> {
   const n = await api.facesStop().catch(() => 0);
   // Not paused: the next "Scan for faces" runs straight away.
+  if (paused) rememberPause(false);
   paused = false;
   pauseListeners.forEach((l) => l(false));
   listeners.forEach((l) => l());
   return n;
 }
 
+/** Pause is remembered in the settings, like smart search's Pause (it stays paused after a restart). */
+function rememberPause(p: boolean) {
+  void saveAppConfig((c) => ({ ...c, facesPaused: p })).catch(() => {});
+}
+
 export function setFaceScanPaused(p: boolean) {
+  if (paused !== p) rememberPause(p);
+  paused = p;
+  pauseListeners.forEach((l) => l(p));
+  if (!p) kickFaceScanner();
+}
+
+/** The settings arrived or changed (App): the face scan follows the remembered Pause. Nothing is saved. */
+export function followFaceScanPause(p: boolean) {
+  if (paused === p) return;
   paused = p;
   pauseListeners.forEach((l) => l(p));
   if (!p) kickFaceScanner();

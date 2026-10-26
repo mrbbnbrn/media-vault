@@ -15,6 +15,12 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A small warning while Caps Lock is on (looked at on every key and when the box gets focus).
+  const [caps, setCaps] = useState(false);
+  const checkCaps = (e: React.KeyboardEvent | React.MouseEvent | React.FocusEvent) => {
+    const ev = e.nativeEvent as KeyboardEvent | MouseEvent;
+    if (typeof ev.getModifierState === 'function') setCaps(ev.getModifierState('CapsLock'));
+  };
 
   const vault = useMemo(() => app.vaults.find((v) => v.path === selected), [app.vaults, selected]);
   useEffect(() => {
@@ -189,7 +195,10 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
               <div className="field">
                 <label htmlFor="pw">Password</label>
                 <input id="pw" className="input" type="password" autoFocus autoComplete="current-password"
-                  value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy} />
+                  value={password} onChange={(e) => setPassword(e.target.value)} disabled={busy}
+                  onKeyDown={checkCaps} onKeyUp={checkCaps} onMouseDown={checkCaps} onFocus={checkCaps} onBlur={() => setCaps(false)}
+                  aria-describedby={caps ? 'pw-caps' : undefined} />
+                {caps && <span id="pw-caps" className="caps-warn" role="status">Caps Lock is on</span>}
               </div>
               <ErrorBox error={error} />
               <button type="submit" className="btn btn-primary" disabled={busy || !password}>

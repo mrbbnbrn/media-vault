@@ -7,7 +7,7 @@
 import { say } from '../messages';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
-import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
+import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, onFaceScanPaused, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
 import { openSortAll } from '../facesort';
 import { groupLabel, photos, ticks } from '../peoplelogic';
 import { plural } from '../undo';
@@ -86,6 +86,11 @@ export function PeopleView(props: {
   const [paused, setPaused] = useState(faceScanPaused());
   // Results go to the app's one message stack (messages.ts).
   const setMsg = (text: string | null) => { if (text) say(text, 'done'); };
+  // Paused or resumed somewhere else too (Settings, or remembered from last time).
+  useEffect(() => {
+    const off = onFaceScanPaused(setPaused);
+    return () => void off();
+  }, []);
   const [error, setError] = useState<string | null>(null);
   const [findMe, setFindMe] = useState<{ folder: number; name: string } | null>(null);
   const [naming, setNaming] = useState<UnknownGroup | null>(null);

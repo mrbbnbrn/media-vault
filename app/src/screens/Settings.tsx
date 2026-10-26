@@ -12,7 +12,7 @@ import { FaceSection } from '../components/FaceEngine';
 import { PoorFaceSettingsView } from '../components/PoorFaceSettings';
 import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import type { DataInfo, CacheInfo, ClipStatus, EngineInfo, SmartEngine, StorageTask } from '../api';
+import { inTauri, type DataInfo, type CacheInfo, type ClipStatus, type EngineInfo, type LibraryBackup, type SmartEngine, type StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
@@ -20,11 +20,20 @@ import { GrowthSpark } from '../components/VaultGrowth';
 import { setNotifyWhenDone } from '../jobs';
 import { setFaceBoxes, useFaceBoxes, useAppConfig, saveAppConfig } from '../prefs';
 import { useLayer } from '../keylayers';
+import type { SettingsPage } from '../settingslink';
+import { faceScanPaused, onFaceScanPaused, setFaceScanPaused } from '../ml/facescan';
 
-type Section = 'appearance' | 'viewer' | 'vault' | 'storage' | 'safety' | 'smart' | 'about';
+type Section = SettingsPage;
 
-export function Settings({ nav }: { nav: Nav }) {
-  const [section, setSection] = useState<Section>('appearance');
+export function Settings({ nav, page, at }: { nav: Nav; page?: SettingsPage; at?: string }) {
+  const [section, setSection] = useState<Section>(page ?? 'appearance');
+  // Opened on a page from somewhere else ("More 3D settings…" in the viewer): that page, scrolled to the part asked for.
+  useEffect(() => {
+    if (page) setSection(page);
+    if (!at) return;
+    const t = setTimeout(() => document.getElementById(at)?.scrollIntoView({ block: 'start' }), 60);
+    return () => clearTimeout(t);
+  }, [page, at]);
   // The shared settings (prefs.ts), not a copy: a change made elsewhere meanwhile (face boxes,
   // the mini player's sound, Pause in the jobs ring) is never written back with old values.
   const cfg: AppConfig = useAppConfig() ?? nav.app.config;
@@ -70,12 +79,12 @@ export function Settings({ nav }: { nav: Nav }) {
   const setViewer = (patch: Partial<ViewerSettings>) => update({ ...cfg, viewer: { ...viewer, ...patch } });
 
   const sections: [Section, string][] = [
-    ['appearance', 'Appearance & locking'],
-    ['viewer', 'Viewer & videos'],
-    ['vault', 'Vault & password'],
-    ['storage', 'Storage & backups'],
-    ['safety', 'Safety & export'],
-    ['smart', 'Faces & smart search'],
+    ['appearance', 'Appearance'],
+    ['viewer', 'Viewer'],
+    ['security', 'Security'],
+    ['storage', 'Storage'],
+    ['background', 'Background work'],
+    ['ai', 'AI & 3D'],
     ['about', 'About'],
   ];
   const custom = !ACCENTS.some((a) => a.hex === cfg.accent);
@@ -195,51 +204,9 @@ export function Settings({ nav }: { nav: Nav }) {
               <div className="divider" />
 
               <section className="section">
-                <h2>Auto-lock</h2>
-                {nav.app.session && !autoLocks(nav.app.session) && (
-                  <div className="info" role="note">
-                    This vault has no password, so it never locks by itself; these settings apply to vaults with a password.
-                    You can still lock it by hand with the Lock button or Ctrl + Shift + L.
-                  </div>
-                )}
-                <div className="setting">
-                  <div className="text">
-                    <label className="title" htmlFor="idle">Lock when I’m idle for</label>
-                    <span className="desc">
-                      Idle means no mouse or keyboard use <b style={{ color: '#d6d4cf', fontWeight: 500 }}>and</b> nothing playing.
-                      A running slideshow, video or multi-screen never counts as idle.
-                    </span>
-                  </div>
-                  <select id="idle" className="input" value={cfg.lock.idleMinutes}
-                    onChange={(e) => setLock({ idleMinutes: Number(e.target.value) })}>
-                    <option value={0}>Never</option>
-                    <option value={5}>5 minutes</option>
-                    <option value={15}>15 minutes</option>
-                    <option value={30}>30 minutes</option>
-                    <option value={60}>1 hour</option>
-                  </select>
-                </div>
-                <Toggle title="Lock when Windows locks or the PC sleeps" desc="Recommended. Happens even during a slideshow."
-                  on={cfg.lock.onSystemLock} set={(v) => setLock({ onSystemLock: v })} />
-                <Toggle title="Lock when the app is minimised" desc="Off by default, so minimising a playing video is fine."
-                  on={cfg.lock.onMinimize} set={(v) => setLock({ onMinimize: v })} />
-                <Toggle title="Lock after 1 hour without input, even while playing" desc="A safety net in case you fall asleep watching."
-                  on={cfg.lock.safetyNetMinutes > 0} set={(v) => setLock({ safetyNetMinutes: v ? 60 : 0 })} />
-                <div className="setting">
-                  <div className="text">
-                    <span className="title">Panic key</span>
-                    <span className="desc">Locks instantly and minimises the window, even mid-video. Works while the app is in the background.</span>
-                  </div>
-                  <span className="kbd">Ctrl + Shift + L</span>
-                </div>
-              </section>
-
-              <div className="divider" />
-
-              <section className="section">
-                <h2>Clean full screen</h2>
-                <Toggle title="Show controls while the mouse moves" desc="They fade away again after a moment. When off, only the keyboard controls playback."
-                  on={cfg.fullscreenControlsOnMouse} set={(v) => update({ ...cfg, fullscreenControlsOnMouse: v })} />
+                <h2>After unlocking</h2>
+                <Toggle title="Show Today's pick" desc="Once a day, one of your pictures or videos pops up after you unlock. Turn off if you'd rather go straight to the library."
+                  on={cfg.todaysPick !== false} set={(v) => update({ ...cfg, todaysPick: v })} />
               </section>
             </>
           )}
@@ -289,21 +256,93 @@ export function Settings({ nav }: { nav: Nav }) {
                     onChange={(e) => setViewer({ seekBigSeconds: Math.max(1, Math.min(3600, Number(e.target.value) || 30)) })} /> seconds</span>
                 </div>
               </section>
+
+              <div className="divider" />
+
+              <section className="section">
+                <h2>Clean full screen</h2>
+                <Toggle title="Show controls while the mouse moves" desc="They fade away again after a moment. When off, only the keyboard controls playback."
+                  on={cfg.fullscreenControlsOnMouse} set={(v) => update({ ...cfg, fullscreenControlsOnMouse: v })} />
+              </section>
             </>
           )}
-          {section === 'vault' && <VaultSection nav={nav} />}
-          {section === 'storage' && <StorageSection cfg={cfg} update={update} />}
-          {section === 'safety' && <SafetySection cfg={cfg} update={update} />}
-          {section === 'smart' && <SmartSection cfg={cfg} update={update} viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
+          {section === 'security' && (
+            <>
+              <section className="section">
+                <h2>Auto-lock</h2>
+                {nav.app.session && !autoLocks(nav.app.session) && (
+                  <div className="info" role="note">
+                    This vault has no password, so it never locks by itself; these settings apply to vaults with a password.
+                    You can still lock it by hand with the Lock button or Ctrl + Shift + L.
+                  </div>
+                )}
+                <div className="setting">
+                  <div className="text">
+                    <label className="title" htmlFor="idle">Lock when I’m idle for</label>
+                    <span className="desc">
+                      Idle means no mouse or keyboard use <b style={{ color: '#d6d4cf', fontWeight: 500 }}>and</b> nothing playing.
+                      A running slideshow, video or multi-screen never counts as idle.
+                    </span>
+                  </div>
+                  <select id="idle" className="input" value={cfg.lock.idleMinutes}
+                    onChange={(e) => setLock({ idleMinutes: Number(e.target.value) })}>
+                    <option value={0}>Never</option>
+                    <option value={5}>5 minutes</option>
+                    <option value={15}>15 minutes</option>
+                    <option value={30}>30 minutes</option>
+                    <option value={60}>1 hour</option>
+                  </select>
+                </div>
+                <Toggle title="Lock when Windows locks or the PC sleeps" desc="Recommended. Happens even during a slideshow."
+                  on={cfg.lock.onSystemLock} set={(v) => setLock({ onSystemLock: v })} />
+                <Toggle title="Lock when the app is minimised" desc="Off by default, so minimising a playing video is fine."
+                  on={cfg.lock.onMinimize} set={(v) => setLock({ onMinimize: v })} />
+                <Toggle title="Lock after 1 hour without input, even while playing" desc="A safety net in case you fall asleep watching."
+                  on={cfg.lock.safetyNetMinutes > 0} set={(v) => setLock({ safetyNetMinutes: v ? 60 : 0 })} />
+                <div className="setting">
+                  <div className="text">
+                    <span className="title">Panic key</span>
+                    <span className="desc">Locks instantly and minimises the window, even mid-video. Works while the app is in the background.</span>
+                  </div>
+                  <span className="kbd">Ctrl + Shift + L</span>
+                </div>
+              </section>
+
+              <div className="divider" />
+
+              <VaultSection nav={nav} />
+
+              <div className="divider" />
+
+              <PrivacySection cfg={cfg} update={update} />
+            </>
+          )}
+          {section === 'storage' && (
+            <>
+              <StorageSection cfg={cfg} />
+
+              <div className="divider" />
+
+              <CheckAndExportSection />
+            </>
+          )}
+          {section === 'background' && <BackgroundSection cfg={cfg} update={update} />}
+          {section === 'ai' && <SmartSection cfg={cfg} update={update} viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (
-            <section className="section">
-              <h2>Media Vault 0.1.0</h2>
-              <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-                Works fully offline. Vaults use AES-256-GCM encryption with an Argon2id-protected password. Each vault folder
-                contains FORMAT.md, a plain description of how it’s stored, and the app folder includes vault-export.exe,
-                which can decrypt a vault back into normal files without this app.
-              </p>
-            </section>
+            <>
+              <section className="section">
+                <h2>Media Vault 0.1.0</h2>
+                <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+                  Works fully offline. Vaults use AES-256-GCM encryption with an Argon2id-protected password. Each vault folder
+                  contains FORMAT.md, a plain description of how it’s stored, and the app folder includes vault-export.exe,
+                  which can decrypt a vault back into normal files without this app.
+                </p>
+              </section>
+
+              <div className="divider" />
+
+              <EngineSection cfg={cfg} update={update} />
+            </>
           )}
         </main>
       </div>
@@ -527,14 +566,35 @@ function VaultSection({ nav }: { nav: Nav }) {
   );
 }
 
-function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
+/** When a backup was made, e.g. "Tuesday 27 October, 14:05". */
+function backupDate(ms: number): string {
+  return new Date(ms).toLocaleString(undefined, { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit' });
+}
+
+/** "5 minutes ago", "3 hours ago", "2 days ago". */
+function timeAgo(ms: number, now = Date.now()): string {
+  const min = Math.max(0, Math.round((now - ms) / 60_000));
+  if (min < 1) return 'just now';
+  if (min < 60) return `${min} ${min === 1 ? 'minute' : 'minutes'} ago`;
+  const h = Math.round(min / 60);
+  if (h < 24) return `${h} ${h === 1 ? 'hour' : 'hours'} ago`;
+  const d = Math.round(h / 24);
+  return `${d} ${d === 1 ? 'day' : 'days'} ago`;
+}
+
+function StorageSection({ cfg }: { cfg: AppConfig }) {
   const [info, setInfo] = useState<StorageInfo | null>(null);
   const [cache, setCache] = useState<CacheInfo | null>(null);
   const [confirm, setConfirm] = useState<'deleteThumbs' | 'deletePreviews' | null>(null);
   const [data, setData] = useState<DataInfo | null>(null);
   const [dataConfirm, setDataConfirm] = useState<'faces' | 'clip' | 'backups' | null>(null);
   const [dataMsg, setDataMsg] = useState<string | null>(null);
-  const loadData = () => api.dataInfo().then(setData).catch(() => {});
+  const [backups, setBackups] = useState<LibraryBackup[]>([]);
+  const [restoring, setRestoring] = useState<LibraryBackup | null>(null);
+  const loadData = () => {
+    api.libraryBackups().then(setBackups).catch(() => {});
+    return api.dataInfo().then(setData).catch(() => {});
+  };
   const [job, setJob] = useState<StorageProgress | null>(null);
   const [done, setDone] = useState<StorageDone | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -598,8 +658,6 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
         </div>
         <button type="button" className="btn" disabled={!!job || !info?.reclaimableBytes} onClick={() => run('reclaim')}>Reclaim</button>
       </div>
-      <Toggle title="Reclaim space automatically" on={cfg.autoReclaim !== false} set={(v) => update({ ...cfg, autoReclaim: v })}
-        desc="A few seconds after something is deleted for good (from the trash, emptying it, or after 30 days), the pack files holding it are rewritten in the background, so nothing of the deleted files is left in the vault folder. Takes a moment with large packs." />
       <h2 style={{ marginTop: 18 }}>Thumbnails and preview clips</h2>
       <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
         Made by the app from your files and kept encrypted in the vault. Deleting them never touches your files.
@@ -611,12 +669,10 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Preview clips</span><b>{cache.previews.toLocaleString()} · {formatBytes(cache.previewBytes)}</b></div>
         </div>
       )}
-      <Toggle title="Make preview clips" on={cfg.makePreviews !== false} set={(v) => update({ ...cfg, makePreviews: v })}
-        desc="A few seconds of small, silent video and a strip of little frames for each video, made once in the background. Grid tiles play them straight away and switch to the real video when your PC keeps up." />
       <div className="setting">
         <div className="text">
           <span className="title">Delete preview clips</span>
-          <span className="desc">{cfg.makePreviews !== false ? 'They are made again in the background. Turn off “Make preview clips” first to keep the space free.' : 'Frees the space they use.'}</span>
+          <span className="desc">{cfg.makePreviews !== false ? 'They are made again in the background. Turn off “Make preview clips” in Background work first to keep the space free.' : 'Frees the space they use.'}</span>
         </div>
         <button type="button" className="btn" disabled={!!job || !cache?.previews} onClick={() => setConfirm('deletePreviews')}>Delete</button>
       </div>
@@ -649,18 +705,53 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
       <div className="setting">
         <div className="text">
           <span className="title">Delete smart-search data</span>
-          <span className="desc">{cfg.smartIndex !== false && cfg.smartEnabled !== false ? 'It is made again in the background while analysing is on (pause it or turn smart search off in Faces & smart search to keep it deleted).' : 'Smart search finds nothing until pictures are analysed again.'}</span>
+          <span className="desc">{cfg.smartIndex !== false && cfg.smartEnabled !== false ? 'It is made again in the background while analysing is on (pause it in Background work, or turn smart search off in AI & 3D, to keep it deleted).' : 'Smart search finds nothing until pictures are analysed again.'}</span>
         </div>
         <button type="button" className="btn" disabled={!data?.clipItems} onClick={() => setDataConfirm('clip')}>Delete</button>
       </div>
+      {dataMsg && <div className="info">{dataMsg}</div>}
+      <h2 style={{ marginTop: 18 }}>Library backups</h2>
+      <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+        The vault keeps up to 5 earlier copies of the library (your folders, tags, people… not your files), at most one
+        every 10 minutes, in case the main copy gets damaged. You can go back to one of them. They stay encrypted.
+      </p>
+      {backups.length > 0 ? (
+        <div className="backup-list">
+          {backups.map((b) => (
+            <div key={b.name} className="backup-row">
+              <span className="when">
+                <b>{backupDate(b.atMs)}</b>
+                <span className="faint" style={{ fontSize: 12 }}>{timeAgo(b.atMs)} · {formatBytes(b.bytes)}</span>
+              </span>
+              <button type="button" className="btn btn-sm" onClick={() => setRestoring(b)}>Restore…</button>
+            </div>
+          ))}
+        </div>
+      ) : (
+        <p className="faint" style={{ margin: 0 }}>No backups yet. One is made with the next change.</p>
+      )}
       <div className="setting">
         <div className="text">
           <span className="title">Delete library backups</span>
-          <span className="desc">The vault keeps up to 5 earlier copies of the library (your folders, tags, people… not your files), at most one every 10 minutes, in case the main copy gets damaged. A new one is made with the next change.</span>
+          <span className="desc">Your current library is not affected. A new backup is made with the next change.</span>
         </div>
         <button type="button" className="btn" disabled={!data?.backups} onClick={() => setDataConfirm('backups')}>Delete</button>
       </div>
-      {dataMsg && <div className="info">{dataMsg}</div>}
+      {restoring && (
+        <ConfirmDialog title="Go back to this backup?" confirm="Restore" onClose={() => setRestoring(null)}
+          onConfirm={async () => {
+            await api.restoreLibraryBackup(restoring.name);
+            // The whole window loads the library again (nothing from before stays on screen).
+            if (inTauri) location.reload();
+            else {
+              setDataMsg(`The library is back to how it was on ${backupDate(restoring.atMs)}.`);
+              await loadData();
+            }
+          }}>
+          Your library goes back to how it was on {backupDate(restoring.atMs)}. Changes since then are lost.
+          The current library is kept as a backup first. Your files in the vault are not touched.
+        </ConfirmDialog>
+      )}
       {dataConfirm && (
         <ConfirmDialog danger confirm="Delete" onClose={() => setDataConfirm(null)}
           title={dataConfirm === 'faces' ? 'Delete face recognition data?' : dataConfirm === 'clip' ? 'Delete smart-search data?' : 'Delete the library backups?'}
@@ -691,16 +782,8 @@ function StorageSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig
   );
 }
 
-function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
-  const t = useTasks();
-  const [exporting, setExporting] = useState(false);
-  const [engine, setEngine] = useState<EngineInfo | null>(null);
-  const [retried, setRetried] = useState(false);
-  useEffect(() => {
-    api.engineInfo().then(setEngine).catch(() => {});
-  }, []);
+function PrivacySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
   return (
-    <>
       <section className="section">
         <h2>Privacy</h2>
         <Toggle title="Hide this window from screenshots and screen sharing"
@@ -709,13 +792,15 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
         <Toggle title="Remove camera info, location and dates from files I export or share"
           desc="For exports, encrypted .7z files and dragging or copying to Explorer. Cleans JPEG, PNG, WebP and GIF pictures and MP4/MOV videos (turned pictures stay the right way up); other files go out as they are. Your files in the vault are never changed."
           on={!!cfg.stripMetadata} set={(v) => update({ ...cfg, stripMetadata: v })} />
-        <Toggle title="Notify me when long jobs finish"
-          desc="A Windows notification when an import, export or scan that took a while finishes while you're in another app. It only gives counts, never names."
-          on={cfg.notifyDone !== false} set={(v) => { setNotifyWhenDone(v); update({ ...cfg, notifyDone: v }); }} />
       </section>
+  );
+}
 
-      <div className="divider" />
-
+function CheckAndExportSection() {
+  const t = useTasks();
+  const [exporting, setExporting] = useState(false);
+  return (
+    <>
       <section className="section">
         <h2>Check for damage</h2>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
@@ -753,9 +838,17 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
           </div>
         )}
       </section>
+    </>
+  );
+}
 
-      <div className="divider" />
-
+function EngineSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
+  const [engine, setEngine] = useState<EngineInfo | null>(null);
+  const [retried, setRetried] = useState(false);
+  useEffect(() => {
+    api.engineInfo().then(setEngine).catch(() => {});
+  }, []);
+  return (
       <section className="section">
         <h2>Web engine</h2>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
@@ -780,6 +873,80 @@ function SafetySection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
             </button>
           </div>
         )}
+      </section>
+  );
+}
+
+/** Things the app does by itself in the background: pause them, or turn them off. */
+function BackgroundSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
+  const smartOn = cfg.smartEnabled !== false;
+  const analysing = cfg.smartIndex !== false;
+  const [clip, setClip] = useState<ClipStatus | null>(null);
+  // The face scan's Pause: the same one as on the People page (and remembered after a restart).
+  const [facesPaused, setFacesPaused] = useState(faceScanPaused());
+  useEffect(() => {
+    api.clipStatus().then(setClip).catch(() => {});
+    const off = onFaceScanPaused(setFacesPaused);
+    return () => void off();
+  }, []);
+  return (
+    <>
+      <section className="section">
+        <h2>Analysing</h2>
+        <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
+          New pictures and videos are looked at in the background, for smart search and to find faces. Paused stays paused,
+          also after the app restarts, until you resume.
+        </p>
+        {smartOn ? (
+          <div className="setting">
+            <div className="text">
+              <span className="title">{analysing ? 'Smart search: analysing new pictures' : 'Smart search: paused'}</span>
+              <span className="desc">
+                {analysing
+                  ? 'New pictures and videos are analysed in the background (also pausable from the background-jobs ring).'
+                  : 'New pictures aren’t analysed until you resume; smart search only finds what was analysed before.'}
+                {clip && clip.total > clip.done ? ` ${(clip.total - clip.done).toLocaleString()} not analysed yet.` : ''}
+              </span>
+            </div>
+            <button type="button" className={analysing ? 'btn' : 'btn btn-primary'} onClick={() => update({ ...cfg, smartIndex: !analysing })}>
+              {analysing ? 'Pause' : 'Resume'}
+            </button>
+          </div>
+        ) : (
+          <div className="setting">
+            <div className="text">
+              <span className="title">Smart search: off</span>
+              <span className="desc">Nothing is analysed for it. Turn it on in AI & 3D.</span>
+            </div>
+          </div>
+        )}
+        <div className="setting">
+          <div className="text">
+            <span className="title">{facesPaused ? 'Face scan: paused' : 'Face scan: scanning new pictures'}</span>
+            <span className="desc">
+              {facesPaused
+                ? 'No faces are looked for until you resume. Faces found so far stay.'
+                : 'Faces are looked for in the background (the People page has Pause too).'}
+            </span>
+          </div>
+          <button type="button" className={facesPaused ? 'btn btn-primary' : 'btn'}
+            onClick={() => setFaceScanPaused(!facesPaused)}>
+            {facesPaused ? 'Resume' : 'Pause'}
+          </button>
+        </div>
+      </section>
+
+      <div className="divider" />
+
+      <section className="section">
+        <h2>Other background work</h2>
+        <Toggle title="Make preview clips" on={cfg.makePreviews !== false} set={(v) => update({ ...cfg, makePreviews: v })}
+          desc="A few seconds of small, silent video and a strip of little frames for each video, made once in the background. Grid tiles play them straight away and switch to the real video when your PC keeps up." />
+        <Toggle title="Reclaim space automatically" on={cfg.autoReclaim !== false} set={(v) => update({ ...cfg, autoReclaim: v })}
+          desc="A few seconds after something is deleted for good (from the trash, emptying it, or after 30 days), the pack files holding it are rewritten in the background, so nothing of the deleted files is left in the vault folder. Takes a moment with large packs." />
+        <Toggle title="Notify me when long jobs finish"
+          desc="A Windows notification when an import, export or scan that took a while finishes while you're in another app. It only gives counts, never names."
+          on={cfg.notifyDone !== false} set={(v) => { setNotifyWhenDone(v); update({ ...cfg, notifyDone: v }); }} />
       </section>
     </>
   );
@@ -810,22 +977,9 @@ function SmartSection(props: { cfg: AppConfig; update: (c: AppConfig) => Promise
       <section className="section">
         <h2>Smart search</h2>
         <Toggle title="Smart search" on={enabled} set={(v) => update({ ...cfg, smartEnabled: v })}
-          desc={enabled ? 'Search by describing what’s in the pictures. Turn off to remove the ✦ button and stop analysing pictures for it (what’s analysed so far is kept unless you delete it in Storage & backups).' : 'Off: no ✦ button, nothing is analysed for it and its models aren’t loaded. Turn it on again any time.'} />
-        {enabled && (
-          <div className="setting">
-            <div className="text">
-              <span className="title">{analysing ? 'Analysing new pictures' : 'Analysing is paused'}</span>
-              <span className="desc">
-                {analysing
-                  ? 'New pictures and videos are analysed in the background (also pausable from the background-jobs ring).'
-                  : 'New pictures aren’t analysed until you resume; smart search only finds what was analysed before.'}
-                {clip && clip.total > clip.done ? ` ${(clip.total - clip.done).toLocaleString()} not analysed yet.` : ''}
-              </span>
-            </div>
-            <button type="button" className={analysing ? 'btn' : 'btn btn-primary'} onClick={() => update({ ...cfg, smartIndex: !analysing })}>
-              {analysing ? 'Pause' : 'Resume'}
-            </button>
-          </div>
+          desc={enabled ? 'Search by describing what’s in the pictures. Turn off to remove the ✦ button and stop analysing pictures for it (what’s analysed so far is kept unless you delete it in Storage).' : 'Off: no ✦ button, nothing is analysed for it and its models aren’t loaded. Turn it on again any time.'} />
+        {enabled && !analysing && (
+          <div className="info">Analysing new pictures is paused. Resume it in Background work.</div>
         )}
         {enabled && <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
           Turn it on with the ✦ button next to the search box, then describe what you're looking for — “dog on the beach”,
@@ -851,7 +1005,10 @@ function SmartSection(props: { cfg: AppConfig; update: (c: AppConfig) => Promise
 
       <div className="divider" />
 
-      <DepthSection viewer={props.viewer} setViewer={props.setViewer} />
+      {/* The one place for every 3D setting ("More 3D settings…" in the viewer comes here). */}
+      <div id="settings-3d" style={{ scrollMarginTop: 16 }}>
+        <DepthSection viewer={props.viewer} setViewer={props.setViewer} />
+      </div>
     </>
   );
 }

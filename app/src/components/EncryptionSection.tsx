@@ -1,4 +1,4 @@
-// Settings → Vault & password → Encryption: turn the vault's encryption off
+// Settings → Security → Encryption: turn the vault's encryption off
 // (asks for the current password when it has one) or on (a new password, or
 // none; then the new recovery key is shown once). The change runs in the
 // background with progress and Pause (encryptionjob.ts); while it runs, or

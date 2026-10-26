@@ -1452,6 +1452,16 @@ impl Vault {
         self.read_db_file(path).map(|_| ())
     }
 
+    /// Read one of the library backups (from [`Vault::db_backups`]) into
+    /// memory, to put it back. Only a file in meta-backups/ is read; it is
+    /// decrypted in memory and never written anywhere unencrypted.
+    pub fn read_db_backup(&self, path: &Path) -> Result<Zeroizing<Vec<u8>>> {
+        if !self.db_backups()?.iter().any(|b| b == path) {
+            return Err(Error::Corrupt("that library backup doesn't exist".into()));
+        }
+        self.read_db_file(path)
+    }
+
     /// Load the database. If the main copy is damaged, the newest backup that
     /// still decrypts is used instead, and its file name is returned so the
     /// app can tell the user.

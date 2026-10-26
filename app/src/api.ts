@@ -161,6 +161,10 @@ export interface AppConfig {
   autoReclaim?: boolean;
   /** Smart search at all (off: no ✦ button, nothing analysed for it). */
   smartEnabled?: boolean;
+  /** Today's pick after unlocking (off: it never pops up). */
+  todaysPick?: boolean;
+  /** The face scan is paused (remembered across restarts, like smart search's Pause). */
+  facesPaused?: boolean;
 }
 
 // ---- poor faces (begin) ----
@@ -794,6 +798,14 @@ export interface DataInfo {
   libraryBytes: number;
 }
 
+/** One of the library backups (meta-backups/ in the vault folder). */
+export interface LibraryBackup {
+  name: string;
+  /** When it was made (ms since 1970). */
+  atMs: number;
+  bytes: number;
+}
+
 export type StorageTask = 'convert' | 'reclaim' | 'deleteThumbs' | 'deletePreviews';
 
 export interface StorageProgress {
@@ -1003,6 +1015,10 @@ export const api = {
   dataInfo: () => call<DataInfo>('data_info'),
   /** Delete face data, smart-search data or library backups; returns what happened. */
   deleteData: (what: 'faces' | 'clip' | 'backups') => call<string>('delete_data', { what }),
+  /** The library backups the vault keeps, newest first. */
+  libraryBackups: () => call<LibraryBackup[]>('library_backups'),
+  /** Put a library backup back (the library now is kept as a backup first). */
+  restoreLibraryBackup: (name: string) => call<void>('restore_library_backup', { name }),
   /** Ctrl+S: write everything to disk now. */
   saveNow: () => call<void>('save_now'),
   /** Small remembered UI state for this vault (JSON text). */
@@ -1540,6 +1556,12 @@ const WORDS =
     ' ',
   );
 
+/** The preview's library backups, oldest first (made over the last few days). */
+const mockBackups: LibraryBackup[] = [5, 3, 2, 1, 0.2].map((days, i) => {
+  const at = Date.now() - days * 86_400_000;
+  return { name: `meta-${String(at).padStart(15, '0')}.db.enc`, atMs: at, bytes: 380_000 + i * 8000 };
+});
+
 const mock = {
   lockListeners: [] as ((r: LockReason) => void)[],
   state: {
@@ -1860,7 +1882,17 @@ const mock = {
       case 'ui_get':
         return null;
       case 'data_info':
-        return { faces: 0, faceBytes: 0, clipItems: 0, clipBytes: 0, backups: 0, backupBytes: 0, libraryBytes: 0 };
+        return { faces: 0, faceBytes: 0, clipItems: 0, clipBytes: 0, backups: mockBackups.length, backupBytes: mockBackups.reduce((n, b) => n + b.bytes, 0), libraryBytes: 0 };
+      case 'library_backups':
+        return [...mockBackups].reverse();
+      case 'restore_library_backup': {
+        // The library now becomes the newest backup; only 5 are kept.
+        if (!mockBackups.some((b) => b.name === a.name)) throw new Error("That backup isn't there any more.");
+        const at = Date.now();
+        mockBackups.push({ name: `meta-${String(at).padStart(15, '0')}.db.enc`, atMs: at, bytes: 412_000 });
+        while (mockBackups.length > 5) mockBackups.shift();
+        return null;
+      }
       case 'cache_info':
         return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
       case 'clip_status':

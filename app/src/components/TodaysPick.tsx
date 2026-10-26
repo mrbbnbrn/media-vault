@@ -5,6 +5,7 @@
 import { useEffect, useState } from 'react';
 import { api, thumbUrl, type Item } from '../api';
 import { HeartIcon, PlayIcon } from './Icons';
+import { useAppConfig } from '../prefs';
 
 /** Local day number (changes at local midnight). */
 export function localDay(d = new Date()): number {
@@ -17,7 +18,13 @@ function shownKey(vault: string) {
 
 export function useTodaysPick(vault: string): [Item | null, () => void] {
   const [item, setItem] = useState<Item | null>(null);
+  // Settings → Appearance can turn it off.
+  const on = useAppConfig()?.todaysPick !== false;
   useEffect(() => {
+    if (!on) {
+      setItem(null);
+      return;
+    }
     const day = localDay();
     let shown = '';
     try {
@@ -30,7 +37,7 @@ export function useTodaysPick(vault: string): [Item | null, () => void] {
       api.todaysPick(day).then((it) => it && setItem(it)).catch(() => {});
     }, 600);
     return () => clearTimeout(t);
-  }, [vault]);
+  }, [vault, on]);
   const dismiss = () => {
     try {
       localStorage.setItem(shownKey(vault), String(localDay()));
