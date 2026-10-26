@@ -161,6 +161,10 @@ export interface AppConfig {
   autoReclaim?: boolean;
   /** Smart search at all (off: no ✦ button, nothing analysed for it). */
   smartEnabled?: boolean;
+  /** Today's pick after unlocking (off: it never pops up). */
+  todaysPick?: boolean;
+  /** The face scan is paused (remembered across restarts, like smart search's Pause). */
+  facesPaused?: boolean;
 }
 
 // ---- poor faces (begin) ----

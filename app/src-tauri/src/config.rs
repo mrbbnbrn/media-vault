@@ -266,6 +266,10 @@ pub struct AppConfig {
     pub auto_reclaim: bool,
     /// Smart search at all (off: no ✦ button, nothing analysed for it, its models never load).
     pub smart_enabled: bool,
+    /// Today's pick: one picture shown after unlocking, once a day.
+    pub todays_pick: bool,
+    /// The face scan is paused (remembered like smart search's Pause).
+    pub faces_paused: bool,
 }
 
 // ---- poor faces settings (begin) ----
@@ -366,6 +370,8 @@ impl Default for AppConfig {
             poor_faces: PoorFaceSettings::default(),
             auto_reclaim: true,
             smart_enabled: true,
+            todays_pick: true,
+            faces_paused: false,
         }
     }
 }

@@ -33,7 +33,7 @@ import { viewKey } from './viewmemory';
 import { startExternalDrops } from './drop';
 import { startThumbnailer } from './media';
 import { resetGrid, whenGridShown } from './firstgrid';
-import { startFaceScanner } from './ml/facescan';
+import { followFaceScanPause, startFaceScanner } from './ml/facescan';
 import { startClipIndexer } from './ml/smart';
 import { setNativeOptions, setSmartPauser, startNativeAnalyser } from './ml/native';
 import { startPreviewMaker } from './previews';
@@ -195,6 +195,8 @@ export function App() {
     const s = await api.getState();
     setApp(s);
     setPrefsConfig(s.config);
+    // The face scan's Pause is remembered, like smart search's.
+    followFaceScanPause(!!s.config.facesPaused);
     applyAccent(s.config.accent);
     applyLook(s.config.look);
     lookConfig.current = s.config;

@@ -7,7 +7,7 @@
 import { RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, thumbUrl, type FaceReview, type FolderCard, type Item, type OwnerProposal, type ReviewRequest, type Suggestion, type UnknownGroup } from '../api';
-import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
+import { faceScanPaused, kickFaceScanner, NO_FACE_PACK, onFaceProgress, onFaceScanPaused, setFaceScanPaused, stopFaceSearch } from '../ml/facescan';
 import { openSortAll } from '../facesort';
 import { groupLabel, photos, ticks } from '../peoplelogic';
 import { plural } from '../undo';
@@ -84,6 +84,11 @@ export function PeopleView(props: {
   const [req, setReq] = useState<ReviewRequest>({});
   const { review, err, load } = useReview(req);
   const [paused, setPaused] = useState(faceScanPaused());
+  // Paused or resumed somewhere else too (Settings, or remembered from last time).
+  useEffect(() => {
+    const off = onFaceScanPaused(setPaused);
+    return () => void off();
+  }, []);
   const [msg, setMsg] = useState<string | null>(null);
   useAutoDismiss(msg, () => setMsg(null), RESULT_MS);
   const [error, setError] = useState<string | null>(null);
