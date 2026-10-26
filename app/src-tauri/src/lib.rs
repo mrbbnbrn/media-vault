@@ -1907,6 +1907,12 @@ async fn faces_needed(state: State<'_, Shared>, limit: i64) -> Result<Vec<faces:
     read_db(state.inner(), move |c| analyse::window_faces(c, limit)).await
 }
 
+/// How many of those are left (counted, not listed).
+#[tauri::command]
+async fn faces_left(state: State<'_, Shared>) -> Result<i64, String> {
+    read_db(state.inner(), analyse::window_faces_left).await
+}
+
 #[tauri::command]
 async fn faces_save(state: State<'_, Shared>, media: i64, faces: Vec<faces::FaceIn>, model: Option<i64>) -> Result<usize, String> {
     edit_db_derived(state.inner(), move |c| faces::save(c, media, &faces, model.unwrap_or(faces::ARCFACE))).await
@@ -2727,6 +2733,7 @@ pub fn run() {
             set_person_folder,
             faces_queue,
             faces_needed,
+            faces_left,
             faces_save,
             faces_failed,
             faces_status,

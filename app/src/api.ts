@@ -1043,6 +1043,8 @@ export const api = {
   facesSave: (media: number, faces: FaceIn[], model = 1) => call<number>('faces_save', { media, faces, model }),
   facesFailed: (media: number, model = 1) => call<void>('faces_failed', { media, model }),
   facesStatus: () => call<ScanStatus>('faces_status'),
+  /** How many items the window's face scan still has (what facesNeeded would list, counted). */
+  facesLeft: () => call<number>('faces_left'),
   facesReview: (request?: ReviewRequest) => call<FaceReview>('faces_review', { request: request ?? null }),
   /** Names sure faces automatically; returns how many changed. */
   facesAuto: () => call<number>('faces_auto'),
@@ -1859,6 +1861,7 @@ const mock = {
         return { tasks: [], next: Number(a.upto ?? 0) };
       case 'newest_item_id':
       case 'count_to_sharpen':
+      case 'faces_left':
         return 0;
       case 'ui_get':
         return null;

@@ -131,15 +131,32 @@ pub fn window_skips_smart() -> bool {
     running() && caps().smart
 }
 
+/// The window's part of the face scan queue (" AND NOT (…)" while this runs with the faces pack).
+fn window_faces_sql() -> String {
+    if running() && faceid::info().available { format!(" AND NOT {}", here_sql()) } else { String::new() }
+}
+
+/// How many items the window still has to scan for faces (its scan job's "left").
+pub fn window_faces_left(conn: &Connection) -> R<i64> {
+    conn.prepare_cached(&format!(
+        "SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}{}",
+        faces::off_sql(),
+        window_faces_sql()
+    ))
+    .map_err(e)?
+    .query_row([], |r| r.get(0))
+    .map_err(e)
+}
+
 /// Faces still for the window (videos, pictures only it can read).
 pub fn window_faces(conn: &Connection, limit: i64) -> R<Vec<faces::ScanTask>> {
     if !(running() && faceid::info().available) {
         return faces::needed(conn, limit);
     }
-    conn.prepare(&format!(
-        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND NOT {} ORDER BY {}id LIMIT ?",
+    conn.prepare_cached(&format!(
+        "SELECT id, kind, duration_ms FROM media WHERE faces_state = 2 AND deleted_at IS NULL{}{} ORDER BY {}id LIMIT ?",
         faces::off_sql(),
-        here_sql(),
+        window_faces_sql(),
         crate::focus::order()
     ))
     .map_err(e)?
@@ -484,6 +501,17 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
     };
     let mut last_naming = Instant::now();
     let mut named = false;
+    // How far it got, after every round (and when it runs out of work), so the
+    // window needn't keep asking. `fresh`: count what is left again.
+    let tell = |fresh: bool, nothing_left: bool| {
+        if nothing_left {
+            let _ = note_count(&s, caps(), true);
+        }
+        if let Ok(st) = status(&s, fresh && !nothing_left) {
+            let _ = app.emit("analyse-status", st);
+        }
+    };
+    let mut idle = true;
     while !stop.load(Ordering::SeqCst) && !s.is_closed() {
         let c = caps();
         let tasks = select(&s.db(), c, ROUND, None).unwrap_or_default();
@@ -495,6 +523,10 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
         }
         if tasks.is_empty() {
             BUSY.store(false, Ordering::SeqCst);
+            if !idle {
+                idle = true;
+                tell(false, true);
+            }
             if named {
                 named = false;
                 if faces::refresh(&*s).unwrap_or(0) > 0 {
@@ -505,8 +537,11 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
             continue;
         }
         BUSY.store(true, Ordering::SeqCst);
+        // New work after a rest (an import): count what is left again.
+        let woke = std::mem::replace(&mut idle, false);
         let reports = process(&s, &tasks, c, &stop, &emit);
         send(true);
+        tell(woke, false);
         if reports.iter().any(|r| r.faces.is_some_and(|n| n > 0)) {
             named = true;
         }
@@ -529,6 +564,7 @@ pub fn stop() {
         r.stop.store(true, Ordering::SeqCst);
     }
     NOT_HERE.lock().unwrap().clear();
+    *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
     kick();
     smartnative::unload();
 }
@@ -550,6 +586,7 @@ pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
         }
         // Another vault: what couldn't be decoded there means nothing here.
         NOT_HERE.lock().unwrap().clear();
+        *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
         let stop = Arc::new(AtomicBool::new(false));
         *r = Some(Runner { session: s.clone(), stop: stop.clone() });
         for c in [&DONE.items, &DONE.thumbs, &DONE.prints, &DONE.smart, &DONE.faces] {
@@ -581,14 +618,66 @@ pub struct AnalyseStatus {
     pub faces_left: i64,
 }
 
-fn status(s: &Session) -> R<AnalyseStatus> {
-    let c = caps();
+/// What is left, as last counted: counting holds the library, so it is
+/// done at most every `RECOUNT` (or when asked for a fresh count) and in
+/// between worked out from the items done since.
+struct Counted {
+    at: Instant,
+    caps: Caps,
+    done: u64,
+    faces_done: u64,
+    left: i64,
+    faces_left: i64,
+}
+static COUNTED: Mutex<Option<Counted>> = Mutex::new(None);
+const RECOUNT: Duration = Duration::from_secs(30);
+
+fn count_left(s: &Session, c: Caps) -> R<(i64, i64)> {
     let db = s.db();
-    let left = if running() { left(&db, c)? } else { 0 };
-    let faces_left = if running() && c.faces {
-        db.query_row(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND {}", faces::off_sql(), here_sql()), [], |r| r.get(0)).map_err(e)?
+    let left = left(&db, c)?;
+    let faces_left = if c.faces {
+        db.prepare_cached(&format!("SELECT COUNT(*) FROM media WHERE faces_state = 2 AND deleted_at IS NULL{} AND {}", faces::off_sql(), here_sql()))
+            .map_err(e)?
+            .query_row([], |r| r.get(0))
+            .map_err(e)?
     } else {
         0
+    };
+    Ok((left, faces_left))
+}
+
+/// Remember a count (`nothing_left`: the pass just found nothing to do, so nothing is counted).
+fn note_count(s: &Session, c: Caps, nothing_left: bool) -> R<(i64, i64)> {
+    let (left, faces_left) = if nothing_left { (0, 0) } else { count_left(s, c)? };
+    *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = Some(Counted {
+        at: Instant::now(),
+        caps: c,
+        done: DONE.items.load(Ordering::Relaxed),
+        faces_done: DONE.faces.load(Ordering::Relaxed),
+        left,
+        faces_left,
+    });
+    Ok((left, faces_left))
+}
+
+/// `fresh`: count now (otherwise the last count, less what was done since,
+/// unless it is older than `RECOUNT`).
+fn status(s: &Session, fresh: bool) -> R<AnalyseStatus> {
+    let c = caps();
+    let (left, faces_left) = if !running() {
+        (0, 0)
+    } else {
+        let kept = COUNTED.lock().unwrap_or_else(|x| x.into_inner()).as_ref().and_then(|k| {
+            (!fresh && k.caps == c && k.at.elapsed() < RECOUNT).then(|| {
+                let done = DONE.items.load(Ordering::Relaxed).saturating_sub(k.done) as i64;
+                let faces = DONE.faces.load(Ordering::Relaxed).saturating_sub(k.faces_done) as i64;
+                ((k.left - done).max(0), (k.faces_left - faces).max(0))
+            })
+        });
+        match kept {
+            Some(k) => k,
+            None => note_count(s, c, false)?,
+        }
     };
     Ok(AnalyseStatus {
         running: running(),
@@ -608,13 +697,16 @@ fn status(s: &Session) -> R<AnalyseStatus> {
 pub async fn analyse_start(app: AppHandle, state: State<'_, crate::Shared>, options: Options) -> Result<AnalyseStatus, String> {
     let s = crate::sess(&state)?;
     start(app, s.clone(), options);
-    tauri::async_runtime::spawn_blocking(move || status(&s)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || status(&s, true)).await.map_err(|e| e.to_string())?
 }
 
+/// The same as the "analyse-status" event sent after every round (the
+/// window only asks now and then, in case it missed one). Cheap: what is
+/// left was counted at most `RECOUNT` ago.
 #[tauri::command]
 pub async fn analyse_status(state: State<'_, crate::Shared>) -> Result<AnalyseStatus, String> {
     let s = crate::sess(&state)?;
-    tauri::async_runtime::spawn_blocking(move || status(&s)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || status(&s, false)).await.map_err(|e| e.to_string())?
 }
 
 /// New items (an import): look now instead of in a few seconds.
@@ -927,6 +1019,7 @@ mod tests {
         let v = add(&c, "video", "mp4", None);
         c.execute("UPDATE media SET faces_state = 2", []).unwrap();
         assert_eq!(window_faces(&c, 5).unwrap().len(), 1);
+        assert_eq!(window_faces_left(&c).unwrap(), 1);
         let _ = v;
     }
 }

@@ -203,7 +203,7 @@ export function startFaceScanner(): () => void {
   const job = loopJob('faces', {
     label: 'Scanning faces',
     long: true,
-    left: () => api.facesNeeded(1000).then((t) => t.length),
+    left: () => api.facesLeft(),
     // Stop: everything waiting leaves the queue ("Scan for faces" starts it again; People also has Pause).
     cancel: () => {
       void stopFaceSearch();
