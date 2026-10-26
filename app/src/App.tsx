@@ -1,3 +1,5 @@
+import { MessageStack } from './components/Messages';
+import { say } from './messages';
 import { watchWindowErrors } from './diagwatch';
 import { ErrorBoundary } from './components/ErrorBoundary';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -111,7 +113,8 @@ const LOCK_MESSAGES: Record<LockReason, string> = {
 export function App() {
   const [app, setApp] = useState<AppState | null>(null);
   const [screen, setScreen] = useState<Screen>({ name: 'start' });
-  const [toast, setToast] = useState<string | null>(null);
+  // Its messages go to the one message stack (messages.ts).
+  const setToast = (text: string | null) => { if (text) say(text, /fail|couldn|can't|error|retried/i.test(text) ? 'problem' : 'note'); };
   /** "Lock anyway?": what would stop (keepopen.ts). */
   const [lockAsk, setLockAsk] = useState<string[] | null>(null);
   useEffect(() => {
@@ -303,11 +306,6 @@ export function App() {
   // Picture fingerprints for finding look-alikes (tiny, made from the thumbnails).
   useEffect(() => (open ? whenGridShown(startFingerprinter) : undefined), [open]);
 
-  useEffect(() => {
-    if (!toast) return;
-    const t = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(t);
-  }, [toast]);
 
   if (fatal) return <div className="empty"><h1>Media Vault couldn't start</h1><p className="muted">{fatal}</p></div>;
   if (!app) return <div className="app" />;
@@ -437,12 +435,7 @@ export function App() {
           {lockAsk.join(', ')} {lockAsk.length === 1 ? 'is' : 'are'} still running and will stop when the vault locks.
         </ConfirmDialog>
       )}
-      {toast && (
-        <div className="toast" role="status">
-          {toast}
-          <button type="button" className="link" onClick={() => setToast(null)}>Dismiss</button>
-        </div>
-      )}
+      <MessageStack />
     </div>
     </>
   );

@@ -1175,3 +1175,18 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .seg.tx-pick button { padding: 0 6px; }
 .picker-path { margin-left: auto; font-size: 12px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .lib-main.switching > * { opacity: 0.35; transition: opacity 0.12s 0.08s; pointer-events: none; }
+/* Statistics tiles that open what they count. */
+button.stat-tile { font: inherit; color: inherit; text-align: left; cursor: pointer; }
+button.stat-tile:hover { border-color: var(--accent); }
+button.stat-tile:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* One message stack for the whole app (components/Messages.tsx): above dialogs (z 50). */
+.notes.msg-stack { z-index: 60; }
+.msg-slot, .notes-lib { display: flex; flex-direction: column; gap: 10px; pointer-events: none; }
+.msg-slot:empty { display: none; }
+.notes-lib > * { pointer-events: auto; }
+.notes-lib:empty { display: none; }
+.notes .notes-lib .imports { position: static; width: auto; max-width: none; }
+.msg { pointer-events: auto; }
+.msg .msg-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.msg-problem { border-color: var(--danger, #e5484d); background: color-mix(in srgb, var(--danger, #e5484d) 16%, var(--raised)); }
+.msg-done { border-color: var(--accent); }

@@ -1,4 +1,4 @@
-// "Separate pictures without faces…" (folder / person folder right-click):
+// "Separate pictures without faces…" (folder / person folder right-click, or a selection):
 // the folder's pictures (subfolders too, by default; GIFs and videos if
 // ticked) sorted by what the face scan found, a preview of the ones that
 // would go (click one to leave it out), then moved or free-copied into a new
@@ -16,6 +16,10 @@ export type SeparateTarget = { newName: string } | { id: number | null };
 
 export function SeparateFaces(props: {
   folder: { id: number; name: string };
+  /** A selection instead of the whole folder (the new folder is still made inside `folder`). */
+  items?: Item[];
+  /** What the selection is called in the title ("12 items"). */
+  what?: string;
   folders: FolderCard[];
   onScan: (ids: number[]) => Promise<void>;
   onApply: (items: Item[], target: SeparateTarget, copy: boolean) => Promise<void>;
@@ -43,7 +47,9 @@ export function SeparateFaces(props: {
     setSplit(null);
     void (async () => {
       try {
-        const list = await api.queryItems({ folder: props.folder.id, recursive: subfolders, kinds: moving ? ['image', 'gif', 'video'] : ['image'] });
+        const kinds = moving ? ['image', 'gif', 'video'] : ['image'];
+        const list = props.items ? props.items.filter((i) => kinds.includes(i.kind))
+          : await api.queryItems({ folder: props.folder.id, recursive: subfolders, kinds: kinds as Item['kind'][] });
         const sp = list.length ? await api.facesSplit(list.map((i) => i.id)) : { withFaces: [], noFaces: [], onlyPoor: [], unscanned: [] };
         if (!live) return;
         setItems(list);
@@ -89,9 +95,9 @@ export function SeparateFaces(props: {
   const destName = dest === 'new' ? `“${newName.trim()}” (new, inside “${props.folder.name}”)` : picked === null ? 'Top level' : `“${props.folders.find((f) => f.id === picked)?.name ?? 'folder'}”`;
 
   return (
-    <Modal title={`Separate pictures · “${props.folder.name}”`} onClose={props.onClose} wide>
+    <Modal title={`Separate pictures · ${props.what ?? `“${props.folder.name}”`}`} onClose={props.onClose} wide>
       <div className="row" style={{ gap: 18, flexWrap: 'wrap' }}>
-        <label className="check"><input type="checkbox" checked={subfolders} onChange={(e) => setSubfolders(e.target.checked)} /> Include subfolders</label>
+        {!props.items && <label className="check"><input type="checkbox" checked={subfolders} onChange={(e) => setSubfolders(e.target.checked)} /> Include subfolders</label>}
         <label className="check"><input type="checkbox" checked={moving} onChange={(e) => setMoving(e.target.checked)} /> Include GIFs and videos</label>
         <label className="check"><input type="checkbox" checked={poorAsNone} onChange={(e) => setPoorAsNone(e.target.checked)} /> Count only poor faces as no faces</label>
       </div>

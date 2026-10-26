@@ -2,7 +2,10 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
+import { MESSAGE_SLOT } from '../components/Messages';
+import { say } from '../messages';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { StatsGo } from '../components/StatsView';
 import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { gridShown } from '../firstgrid';
@@ -110,7 +113,7 @@ export type LibView =
   | { kind: 'smart'; q: string }
   | { kind: 'people' }
   /** Groups of pictures that look the same (whole library or one folder). */
-  | { kind: 'lookalikes'; folder: number | null }
+  | { kind: 'lookalikes'; folder: number | null; only?: number[]; onlyLabel?: string }
   /** Items that look like one item, most alike first. */
   | { kind: 'similar'; id: number; name: string }
   /** Videos you stopped watching part-way. */
@@ -123,6 +126,7 @@ type Dialog =
   | { t: 'moveFolder'; folder: FolderCard }
   | { t: 'deleteFolder'; folder: FolderCard }
   | { t: 'delFaces'; folder: FolderCard }
+  | { t: 'delFacesItems'; ids: number[]; what: string }
   | { t: 'folderTag'; folder: FolderCard }
   | { t: 'look'; folder: FolderCard }
   | { t: 'moveItems'; ids: number[] }
@@ -135,7 +139,7 @@ type Dialog =
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | ({ t: 'del3d' } & Delete3DTarget)
-  | { t: 'separate'; folder: { id: number; name: string } }
+  | { t: 'separate'; folder: { id: number; name: string }; items?: Item[]; what?: string }
   | { t: 'shortcuts' }
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
@@ -383,8 +387,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const cardSort: FolderSort = vp.folderSort ?? sideSort;
   const setCardSort = (o: FolderSort) => { setViewPrefs(vKey, { folderSort: o }); setPrefsTick((t) => t + 1); };
   const [dialog, setDialog] = useState<Dialog | null>(null);
+  // Problems go to the one message stack (messages.ts), above any dialog.
   const [error, setErrorRaw] = useState<string | null>(null);
   const setError = setErrorRaw;
+  useEffect(() => {
+    if (!error) return;
+    say(error, 'problem');
+    setErrorRaw(null);
+  }, [error]);
   const [loading, setLoading] = useState(false);
   const [reports, setReports] = useState<ImportReport[]>([]);
   // ---- folder banners (begin) ----
@@ -872,10 +882,12 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     return () => window.removeEventListener('keydown', onKey);
   }, [undo]);
   const [noteHover, setNoteHover] = useState(false);
+  // The library's cards show in the app's one message column (components/Messages.tsx).
+  const [noteSlot, setNoteSlot] = useState<HTMLElement | null>(null);
+  useEffect(() => setNoteSlot(document.getElementById(MESSAGE_SLOT)), []);
   // Results and problems close by themselves after a while (hovering keeps them open).
   useAutoDismiss(storageMsg, () => setStorageMsg(null), storageMsg && !storageMsg.ok ? PROBLEM_MS : RESULT_MS, noteHover);
   useAutoDismiss(reports.length ? reports[0].job : null, () => setReports((rs) => rs.slice(1)), reports[0]?.failed.length ? PROBLEM_MS : RESULT_MS, noteHover);
-  useAutoDismiss(error, () => setError(null), PROBLEM_MS, noteHover);
   useEffect(() => {
     if (!note || noteHover) return;
     const t = setTimeout(() => setNote(null), 8000);
@@ -1449,48 +1461,65 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     setNote({ text: r === 'already' ? `Already preparing ${pics}.` : r === 'queued' ? `${pics[0].toUpperCase()}${pics.slice(1)} will be prepared for 3D after the job running now.` : `Preparing ${pics} for 3D in the background (depth maps and outlines${faces ? '; pictures not scanned for faces yet are left out' : ''}). See the ring at the bottom of the sidebar.`, at: 0 });
   };
   const folderMenuRef = useRef<(f: FolderCard) => MenuItem[]>(() => []);
+  /** A submenu row (clicking it only opens the submenu). */
+  const group = (label: string, sub: (MenuItem | false | null | undefined)[], more: Partial<MenuItem> = {}): MenuItem =>
+    ({ label, subOnly: true, onSelect: () => {}, sub: sub.filter((x): x is MenuItem => !!x), ...more });
+  // About 15 rows, the rest in submenus (Play, Appearance, Faces, 3D, Share and export).
   const folderMenu = (f: FolderCard): MenuItem[] => [
     { label: 'Open', onSelect: () => openFolder(f.id) },
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
-    { label: 'Slideshow', onSelect: async () => {
-      const list = await api.queryItems({ folder: f.id, recursive: true });
-      if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
-    } },
-    { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
-    { label: 'Discovery river from here', hint: 'drift through it', onSelect: () => openFolderRiver(f, (text) => setNote({ text, at: 0 })) },
+    group('Play', [
+      { label: 'Slideshow', hint: 'Shift + middle-click', onSelect: async () => {
+        const list = await api.queryItems({ folder: f.id, recursive: true });
+        if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
+      } },
+      { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
+      { label: 'Discovery river from here', hint: 'drift through it', onSelect: () => openFolderRiver(f, (text) => setNote({ text, at: 0 })) },
+      { label: 'Speed round', hint: 'favourite fast', sepBefore: true, onSelect: () => startSpeedRound(f) },
+      { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },
+      { label: 'Slot machine', hint: 'feeling lucky?', onSelect: () => setDialog({ t: 'slots', folder: f }) },
+      { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
+    ]),
+    { label: 'Cut', hint: 'Ctrl+X', sepBefore: true, onSelect: () => clipThese('cut', [f.id], []) },
+    { label: 'Copy', hint: 'Ctrl+C', onSelect: () => clipThese('copy', [f.id], []) },
+    ...(clipboard || inTauri ? [{ label: 'Paste here', hint: 'Ctrl+V', onSelect: () => { paste(f.id).catch((err) => setError(errText(err))); } }] : []),
     { label: f.pinned ? 'Unpin from the top' : 'Pin to the top', sepBefore: true, onSelect: () => setPinned(f, !f.pinned) },
-    { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
-    { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
-    ...(f.cover != null ? [{ label: 'Adjust cover…', hint: 'drag and zoom', onSelect: () => setDialog({ t: 'coverFrame', folder: f.id }) }] : []),
-    { label: bannerOf(f.id) ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
-    ...(bannerOf(f.id) ? [{ label: 'Remove banner', onSelect: () => removeBanner(f) }] : []),
+    group('Appearance', [
+      { label: 'Colour and emoji…', onSelect: () => setDialog({ t: 'look', folder: f }) },
+      { label: 'Choose cover…', onSelect: () => setDialog({ t: 'cover', folder: f }) },
+      f.cover != null && { label: 'Adjust cover…', hint: 'drag and zoom', onSelect: () => setDialog({ t: 'coverFrame', folder: f.id }) },
+      { label: bannerOf(f.id) ? 'Change banner…' : 'Set banner…', hint: 'wide, at the top', onSelect: () => setDialog({ t: 'banner', folder: f }) },
+      !!bannerOf(f.id) && { label: 'Remove banner', onSelect: () => removeBanner(f) },
+    ]),
     { label: 'Add tag…', onSelect: () => setDialog({ t: 'folderTag', folder: f }) },
-    { label: 'Person folder', hint: 'face recognition', checked: f.person, sepBefore: true, onSelect: () => setPersonFolder(f, !f.person) },
-    ...(facesOff.has(f.id)
-      ? [{ label: 'Enable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, false) }]
-      : [
-          { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, f.name) },
-          { label: 'Disable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, true) },
-        ]),
-    { label: 'Delete face data…', hint: 'faces found in here', onSelect: () => setDialog({ t: 'delFaces', folder: f }) },
-    { label: 'Sort into person folders…', hint: 'recognised people', onSelect: () => openSortAll(true, { folder: f.id, label: `“${f.name}”` }) },
-    { label: 'Separate pictures without faces…', hint: 'move them to a folder', onSelect: () => setDialog({ t: 'separate', folder: { id: f.id, name: f.name } }) },
-    ...(f.person ? [{ label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) }] : []),
-    ...(f.person ? [{ label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) }] : []),
-    { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
-    { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
-    { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
-    { label: 'Delete 3D data…', hint: 'choose which', onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
-    { label: 'Quick sort', hint: 'send items to folders fast', sepBefore: true, onSelect: () => setDialog({ t: 'quickSort', folder: f }) },
-    { label: 'Speed round', hint: 'favourite fast', onSelect: () => startSpeedRound(f) },
-    { label: 'Duel', hint: 'pick favourites, set weights', onSelect: () => startDuel(f) },
-    { label: 'Slot machine', hint: 'feeling lucky?', onSelect: () => setDialog({ t: 'slots', folder: f }) },
     { label: 'Note…', hint: f.note ? 'has a note' : undefined, onSelect: () => setDialog({ t: 'note', folder: true, id: f.id, name: f.name, note: f.note }) },
+    group('Faces', [
+      { label: 'Person folder', hint: 'face recognition', checked: f.person, onSelect: () => setPersonFolder(f, !f.person) },
+      ...(facesOff.has(f.id)
+        ? [{ label: 'Enable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, false) }]
+        : [
+            { label: 'Scan for faces', onSelect: () => scanFaces({ folder: f.id }, `“${f.name}”`) },
+            { label: 'Disable face search for this folder', hint: 'subfolders too', onSelect: () => setFaceSearch(f, true) },
+          ]),
+      { label: 'Sort into person folders…', hint: 'recognised people', sepBefore: true, onSelect: () => openSortAll(true, { folder: f.id, label: `“${f.name}”` }) },
+      { label: 'Separate pictures without faces…', hint: 'move them to a folder', onSelect: () => setDialog({ t: 'separate', folder: { id: f.id, name: f.name } }) },
+      f.person && { label: 'Person timeline', hint: 'by date', onSelect: () => setView({ kind: 'timeline', person: f.id }) },
+      f.person && { label: 'Face time-lapse', hint: 'faces lined up, fast', onSelect: () => openFaceTool('timelapse', f.id, f.name) },
+      { label: 'Find look-alikes in here', onSelect: () => setView({ kind: 'lookalikes', folder: f.id }) },
+      { label: 'Delete face data…', hint: 'faces found in here', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'delFaces', folder: f }) },
+    ]),
+    group('3D data', [
+      { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
+      { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
+      { label: 'Delete 3D data…', hint: 'choose which', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
+    ]),
     // What the bottom bar can do with a selected folder, here too (mediaActions).
-    { label: 'Everything inside', hint: 'favourite, tags, weight…', onSelect: () => {}, subOnly: true,
-      sub: menuOf(mediaActions([f], [], null).filter((x) => ['fav', 'tags', 'weight', 'convert', 'gif'].includes(x.id))).map((x) => ({ ...x, label: x.label.replace(' (everything inside)', '') })) },
-    { label: 'Share as encrypted .7z…', sepBefore: true, onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
-    { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
+    group('Everything inside', menuOf(mediaActions([f], [], null).filter((x) => ['fav', 'tags', 'weight', 'convert', 'gif'].includes(x.id))).map((x) => ({ ...x, label: x.label.replace(' (everything inside)', '') })),
+      { hint: 'favourite, tags, weight…' }),
+    group('Share and export', [
+      { label: 'Share as encrypted .7z…', onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
+      { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
+    ]),
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
@@ -1536,6 +1565,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       const n = await api.facesDeleteFolder(f.id);
       noteFaceProgress();
       setNote({ text: n ? `Deleted ${plural(n, 'face')} found in “${f.name}”` : `No faces had been found in “${f.name}”`, at: 0 });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
+  const deleteItemFaces = async (ids: number[], what: string) => {
+    try {
+      const n = await api.facesDeleteItems(ids);
+      noteFaceProgress();
+      setNote({ text: n ? `Deleted ${plural(n, 'face')} found in ${what}` : `No faces had been found in ${what}`, at: 0 });
     } catch (e) {
       setError(errText(e));
     }
@@ -1665,14 +1703,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- cut, copy, paste, free copies, merging, notes -------------------------------------
 
   /** Ctrl+X / Ctrl+C: remember what is selected; Ctrl+C also offers it to Windows (desktop, Explorer). */
-  const clipSelection = (mode: 'cut' | 'copy') => {
+  const clipSelection = (mode: 'cut' | 'copy') => clipThese(mode, topMost(selFolders).map((f) => f.id), [...selected]);
+  const clipThese = (mode: 'cut' | 'copy', fs: number[], ids: number[]) => {
     if (inTrash || looks) return;
-    const fs = topMost(selFolders).map((f) => f.id);
-    const ids = [...selected];
     if (!fs.length && !ids.length) return;
     setClipboard({ mode, ids, folders: fs });
     const what = [fs.length ? plural(fs.length, 'folder') : '', ids.length ? plural(ids.length, 'item') : ''].filter(Boolean).join(' and ');
-    setNote({ text: mode === 'cut' ? `Cut ${what}: open a folder and press Ctrl+V to move them there` : `Copied ${what}: Ctrl+V pastes them into another folder (or on the desktop)`, at: 0 });
+    setNote({ text: mode === 'cut' ? `Cut ${what}: right-click a folder and choose Paste here (or open it and press Ctrl+V)` : `Copied ${what}: Paste here (right-click a folder) or Ctrl+V puts copies in another folder, or on the desktop`, at: 0 });
     if (mode === 'copy' && inTauri) copyOut(ids, fs).catch(() => {});
   };
   /** Where Ctrl+V puts things: a selected folder card / sidebar folder, else the folder you're in. */
@@ -1685,8 +1722,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     if (view.kind === 'folders') return null;
     return undefined;
   };
-  const paste = async () => {
-    const t = pasteTarget();
+  const paste = async (into?: number | null) => {
+    const t = into !== undefined ? into : pasteTarget();
     // Files or a picture copied outside the app are imported.
     if (inTauri) {
       const p = await readPaste().catch(() => null);
@@ -2029,6 +2066,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     bar?: boolean | 'pinned'; barLabel?: string; title?: string;
     /** Not in right-click menus (the bar only). */
     noMenu?: boolean;
+    /** In right-click menus, inside this submenu (keeps the menus short). */
+    group?: string;
+    /** In right-click menus only, not the bottom bar. */
+    menuOnly?: boolean;
     run: () => void;
   };
   /** The items inside these folders (and subfolders) plus these items, selected ones first. */
@@ -2108,6 +2149,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           : moveSub((to) => failed(!nI ? moveFolders(fs, to.id) : moveMixed(fs, ids, to.id)), fs.map((x) => x.id), [], () => openMovePicker()) },
       itemsOnly && { id: 'freeCopy', label: 'Free copy to…', hint: 'no extra space', title: 'Copies that take no extra space', bar: true,
         run: () => setDialog({ t: 'freeCopy', ids }), sub: moveSub((to) => failed(freeCopyTo(ids, to.id)), [], people, () => setDialog({ t: 'freeCopy', ids })) },
+      { id: 'cut', label: 'Cut', hint: 'Ctrl+X', sepBefore: true, run: () => clipThese('cut', fs.map((x) => x.id), ids) },
+      { id: 'copy', label: 'Copy', hint: 'Ctrl+C', run: () => clipThese('copy', fs.map((x) => x.id), ids) },
+      oneFolder && (clipboard || inTauri) && { id: 'paste', label: 'Paste here', hint: 'Ctrl+V', run: () => failed(paste(oneFolder.id)) },
       one && one.linked && { id: 'copies', label: one.copyOf != null ? 'Show the original and other copies' : 'Show its free copies', run: () => failed(showCopies(one)) },
       { id: 'rename', label: many ? `Rename ${plural(nI + nF, nF && nI ? 'thing' : nF ? 'folder' : 'item')}…` : 'Rename…', barLabel: 'Rename…', hint: 'F2', title: 'F2', bar: true, run: () => {
         const entries: RenameEntry[] = [
@@ -2123,16 +2167,26 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       home && { id: 'cover', label: `Use as cover of “${home.name}”`, barLabel: 'Set as folder cover', bar: true, run: () => coverSet(home.id, one!.id) },
       !nI && nF >= 2 && { id: 'merge', label: 'Merge into one…', hint: 'asks first', barLabel: 'Merge…', bar: true, run: () => setDialog({ t: 'merge', folders: fs }) },
       oneFolder && { id: 'qsort', label: 'Quick sort', hint: 'send items to folders fast', bar: true, run: () => setDialog({ t: 'quickSort', folder: oneFolder }) },
-      { id: 'faces', label: 'Scan for faces', sepBefore: true, bar: true, run: itemsOnly ? () => failed(scanFaces({ ids }, what)) : onAll((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) },
-      (itemsOnly || oneFolder) && { id: 'sortPeople', label: 'Sort into person folders…', hint: 'recognised people',
+      { id: 'faces', group: 'Faces', label: 'Scan for faces', sepBefore: true, bar: true, run: itemsOnly ? () => failed(scanFaces({ ids }, what)) : onAll((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) },
+      (itemsOnly || oneFolder) && { id: 'sortPeople', group: 'Faces', label: 'Sort into person folders…', hint: 'recognised people',
         run: () => openSortAll(true, itemsOnly ? { ids, label: what } : { folder: oneFolder!.id, label: what }) },
+      // Faces and look-alikes for a selection too (folders: everything inside).
+      !oneFolder && { id: 'delFaces', group: 'Faces', label: 'Delete face data…', hint: 'faces found in these', run: onAll((list) => setDialog({ t: 'delFacesItems', ids: list.map((i) => i.id), what })) },
+      !oneFolder && { id: 'separate', group: 'Faces', label: 'Separate pictures without faces…', hint: 'move them to a folder',
+        run: onAll((list) => {
+          const at = view.kind === 'folder' && view.id != null ? folders.find((f) => f.id === view.id) : folders.find((f) => f.id === list[0].folderId);
+          if (!at) return setNote({ text: 'Open a folder first: the pictures are separated into a folder inside it.', at: 0 });
+          setDialog({ t: 'separate', folder: { id: at.id, name: at.name }, items: list, what });
+        }) },
+      !oneFolder && (many || nF > 0) && { id: 'looks', group: 'Faces', label: 'Find look-alikes among these',
+        run: onAll((list) => setView({ kind: 'lookalikes', folder: null, only: list.map((i) => i.id), onlyLabel: what })) },
       one && one.thumb === 'failed' && one.kind === 'video' && { id: 'playable', label: 'Make a playable copy', hint: 'converts to MP4', run: () => setDialog({ t: 'convert', items: [one], target: 'mp4' }) },
       { id: 'convert', label: `Convert to…${inside}`, barLabel: 'Convert…', bar: true, run: itemsOnly && shownSel.length === nI ? () => setDialog({ t: 'convert', items: shownSel }) : onAll((list) => setDialog({ t: 'convert', items: list })) },
-      itemsOnly ? pics.length > 0 && { id: 'prep3d', label: 'Prepare 3D data', hint: 'in the background', run: () => prepNote(prepareItems(pics, what), what) }
-        : { id: 'prep3d', label: 'Prepare 3D data', hint: 'pictures, in the background', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0]) : prepareFolders(fRefs, plural(nF, 'folder')), what) },
-      itemsOnly ? pics.length > 0 && { id: 'prep3dFaces', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(prepareItems(pics, what, true), what, true) }
-        : { id: 'prep3dFaces', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0], true) : prepareFolders(fRefs, plural(nF, 'folder'), true), what, true) },
-      (itemsOnly ? pics.length > 0 : !nI) && { id: 'del3d', label: 'Delete 3D data…', hint: 'choose which', run: () => setDialog({ t: 'del3d', what, folders: fRefs, ids: pics }) },
+      itemsOnly ? pics.length > 0 && { id: 'prep3d', group: '3D data', label: 'Prepare 3D data', hint: 'in the background', run: () => prepNote(prepareItems(pics, what), what) }
+        : { id: 'prep3d', group: '3D data', label: 'Prepare 3D data', hint: 'pictures, in the background', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0]) : prepareFolders(fRefs, plural(nF, 'folder')), what) },
+      itemsOnly ? pics.length > 0 && { id: 'prep3dFaces', group: '3D data', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(prepareItems(pics, what, true), what, true) }
+        : { id: 'prep3dFaces', group: '3D data', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0], true) : prepareFolders(fRefs, plural(nF, 'folder'), true), what, true) },
+      (itemsOnly ? pics.length > 0 : !nI) && { id: 'del3d', group: '3D data', label: 'Delete 3D data…', hint: 'choose which', run: () => setDialog({ t: 'del3d', what, folders: fRefs, ids: pics }) },
       { id: 'gif', label: 'Create GIF or video…', barLabel: 'Create GIF…', bar: true, noMenu: itemsOnly && picList.length < 2,
         run: itemsOnly && shownSel.length === nI ? () => (picList.length < 2 ? setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 }) : setDialog({ t: 'animation', items: picList }))
           : onAll((list) => {
@@ -2140,16 +2194,16 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             if (p.length < 2) setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 });
             else setDialog({ t: 'animation', items: p });
           }) },
-      { id: 'speed', label: 'Speed round', hint: 'favourite fast', bar: true, title: 'Pictures flash by; press F to favourite',
+      { id: 'speed', group: 'More ways to play', label: 'Speed round', hint: 'favourite fast', bar: true, title: 'Pictures flash by; press F to favourite',
         run: onAll((list) => startSpeedRound(oneFolder, list)) },
-      (many || nF > 0) && { id: 'duel', label: itemsOnly ? 'Duel these' : 'Duel', hint: 'pick favourites, set weights', barLabel: 'Duel', bar: true, title: 'Pick the better of two; sets the weights',
+      (many || nF > 0) && { id: 'duel', group: 'More ways to play', label: itemsOnly ? 'Duel these' : 'Duel', hint: 'pick favourites, set weights', barLabel: 'Duel', bar: true, title: 'Pick the better of two; sets the weights',
         run: onAll((list) => startDuel(null, list)) },
-      oneFolder && { id: 'slots', label: 'Slot machine', hint: 'feeling lucky?', bar: true, title: 'Spin three reels of pictures from this folder', run: () => setDialog({ t: 'slots', folder: oneFolder }) },
-      { id: 'museum', label: 'Walk through as a museum', hint: '3D', bar: true, title: 'A 3D gallery of these pictures',
+      oneFolder && { id: 'slots', group: 'More ways to play', label: 'Slot machine', hint: 'feeling lucky?', bar: true, title: 'Spin three reels of pictures from this folder', run: () => setDialog({ t: 'slots', folder: oneFolder }) },
+      { id: 'museum', group: 'More ways to play', label: 'Walk through as a museum', hint: '3D', bar: true, title: 'A 3D gallery of these pictures',
         run: onAll((list) => openMuseum(oneFolder ? oneFolder.name : one ? one.name : 'Selection', list, (text) => setNote({ text, at: 0 }))) },
-      { id: 'share', label: 'Share as encrypted .7z…', barLabel: 'Share as .7z…', title: 'A password-protected archive', sepBefore: true, bar: true,
+      { id: 'share', group: 'Share and export', label: 'Share as encrypted .7z…', barLabel: 'Share as .7z…', title: 'A password-protected archive', sepBefore: true, bar: true,
         run: () => setDialog({ t: 'share', ids, folders: fs.map((f) => f.id), what }) },
-      { id: 'export', label: 'Export decrypted…', barLabel: 'Export…', icon: <ExportIcon />, title: 'Write unencrypted copies to a folder', bar: true,
+      { id: 'export', group: 'Share and export', label: 'Export decrypted…', barLabel: 'Export…', icon: <ExportIcon />, title: 'Write unencrypted copies to a folder', bar: true,
         run: oneFolder ? () => setDialog({ t: 'export', request: { folder: oneFolder.id }, what })
           : itemsOnly ? () => setDialog({ t: 'export', request: { ids }, what }) : onAll((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
       { id: 'delete', label: many ? `Delete ${what}…` : itemsOnly ? 'Delete' : 'Delete…', hint: itemsOnly ? 'Delete · to the trash' : 'Delete', barLabel: 'Delete', icon: <TrashIcon />,
@@ -2187,11 +2241,30 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     };
   }, []);
   /** The actions as a right-click menu. */
-  const menuOf = (acts: Act[]): MenuItem[] => acts.filter((a) => !a.noMenu).map((a) => ({
-    label: a.label, hint: a.hint, danger: a.danger, sepBefore: a.sepBefore, sub: a.sub, onSelect: a.run,
-  }));
+  const menuOf = (acts: Act[]): MenuItem[] => {
+    const out: MenuItem[] = [];
+    const groups = new Map<string, MenuItem>();
+    for (const a of acts) {
+      if (a.noMenu) continue;
+      const item: MenuItem = { label: a.label, hint: a.hint, danger: a.danger, sepBefore: a.sepBefore, sub: a.sub, onSelect: a.run };
+      if (!a.group) {
+        out.push(item);
+        continue;
+      }
+      // The first of a group puts the submenu where it stands.
+      let g = groups.get(a.group);
+      if (!g) {
+        g = { label: a.group, subOnly: true, sepBefore: a.sepBefore, sub: [], onSelect: () => {} };
+        groups.set(a.group, g);
+        out.push(g);
+      }
+      g.sub!.push({ ...item, sepBefore: false });
+    }
+    // A group of one is just that item.
+    return out.map((m) => (m.subOnly && m.sub?.length === 1 && groups.get(m.label) === m ? { ...m.sub[0], sepBefore: m.sepBefore } : m));
+  };
   /** The actions as the bottom bar's buttons. */
-  const barOf = (acts: Act[]): BarAction[] => acts.filter((a) => a.bar).map((a) => ({
+  const barOf = (acts: Act[]): BarAction[] => acts.filter((a) => a.bar && !a.menuOnly).map((a) => ({
     key: a.id, label: a.barLabel ?? a.label, icon: a.icon, title: a.title, danger: a.danger, pinned: a.bar === 'pinned', onClick: a.run,
   }));
 
@@ -2428,6 +2501,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       if (f.subfolders > 0 && !collapsed.has(f.id)) setCollapsed((c) => new Set(c).add(f.id));
       else if (f.parentId != null) e.currentTarget.querySelector<HTMLElement>(`[data-order="${f.parentId}"] > .tree-name`)?.focus();
     }
+  };
+  /** A statistics tile or row was clicked: open what it counts. */
+  const statsGo = (to: StatsGo) => {
+    if (to === 'tags') return setDialog({ t: 'tags' });
+    if (to === 'folders' || to === 'favourites' || to === 'trash' || to === 'recent') return setView({ kind: to });
+    // Everything, largest first or of one type (the view's own settings).
+    setViewPrefs(prefsKey({ kind: 'all' }), to === 'largest' ? { sort: 'largest', kind: 'any' } : typeof to === 'object' ? { kind: to.kind as Kind } : { kind: 'any' });
+    setPrefsTick((t) => t + 1);
+    setView({ kind: 'all' });
   };
   // The sidebar follows the folder you're in: its parents unfold and its row scrolls into view.
   const followId = headFolder?.id ?? null;
@@ -2686,13 +2768,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                   </span>
                 ))}
                 <button type="button" className="chip dashed" onClick={() => setDialog({ t: 'folderTag', folder })}>+ tag folder</button>
-                <button type="button" className="btn btn-sm" title="Go through this folder one by one and send each item to a folder" onClick={() => setDialog({ t: 'quickSort', folder })}>
-                  <SortIcon size={14} /> Quick sort
-                </button>
-                <button type="button" className="btn btn-sm" title="Move (or free-copy) the photos in this folder that show recognised people into those people's folders — you choose, person by person"
-                  onClick={() => openSortAll(true, { folder: folder.id, label: `“${folder.name}”` })}>
-                  <FaceIcon size={13} /> To person folders
-                </button>
                 <Dropdown className="btn btn-sm" label="Folder ▾" items={() => folderMenu(folder).slice(1)} />
               </div>
             )}
@@ -2735,29 +2810,31 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                       <SheetIcon /> Contact sheet
                     </button>
                   )}
-                  {!smart && view.kind !== 'similar' && <Dropdown label={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} ▾`}
-                    items={[
-                      ...(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) })),
-                      // Inside a folder the same menu sorts its subfolder cards.
-                      ...(view.kind === 'folder' && cards.length > 0 ? FOLDER_SORTS.map((o, k) => ({
-                        label: `Folders: ${o.label.charAt(0).toLowerCase()}${o.label.slice(1)}`, sepBefore: k === 0, checked: o.id === cardSort, onSelect: () => (o.id === cardSort ? setResort((r) => r + 1) : setCardSort(o.id)),
-                      })) : []),
-                    ]} />}
-                  <Dropdown label={`${KINDS.find((x) => x.id === kind)?.label} ▾`} items={KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))} />
-                  <div role="group" aria-label="Tile shape" className="seg">
-                    <button type="button" className={!shape && !scrollMode && !faceWall ? 'on' : ''} title="Equal tiles (edges cropped)" onClick={() => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: false }); }}>Tiles</button>
-                    <button type="button" className={shape && !scrollMode && !faceWall ? 'on' : ''} title="Every item at its true shape, nothing cropped" onClick={() => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: true }); }}>True shape</button>
-                    <button type="button" className={scrollMode && !faceWall ? 'on' : ''} title="Scroll mode: one long column of big pictures; videos play as you scroll past" onClick={() => { setFaceWallFor(null); setScrollMode(!scrollMode); }}>Scroll</button>
-                    {facePerson != null && (
-                      <button type="button" className={faceWall ? 'on' : ''} title="Face wall: just their face from every photo, oldest first" onClick={() => setFaceWallFor(faceWall ? null : facePerson)}>Faces</button>
-                    )}
-                  </div>
+                  {/* Sort, what to show, layout and size in one menu. */}
+                  <Dropdown label="View ▾" title={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} · ${KINDS.find((x) => x.id === kind)?.label} · ${faceWall ? 'face wall' : scrollMode ? 'scroll' : shape ? 'true shape' : 'tiles'}${!scrollMode && !faceWall ? ` · ${cols} per row` : ''}`}
+                    items={() => [
+                      ...(!smart && view.kind !== 'similar' ? [group(`Sort: ${(timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label ?? '').toLowerCase()}`, [
+                        ...(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) })),
+                        // Inside a folder the same menu sorts its subfolder cards.
+                        ...(view.kind === 'folder' && cards.length > 0 ? FOLDER_SORTS.map((o, k) => ({
+                          label: `Folders: ${o.label.charAt(0).toLowerCase()}${o.label.slice(1)}`, sepBefore: k === 0, checked: o.id === cardSort, onSelect: () => (o.id === cardSort ? setResort((r) => r + 1) : setCardSort(o.id)),
+                        })) : []),
+                      ])] : []),
+                      group(`Show: ${(KINDS.find((x) => x.id === kind)?.label ?? '').toLowerCase()}`, KINDS.map((o) => ({ label: o.label, checked: o.id === kind, onSelect: () => setKind(o.id) }))),
+                      { label: 'Tiles', hint: 'edges cropped', sepBefore: true, checked: !shape && !scrollMode && !faceWall, onSelect: () => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: false }); } },
+                      { label: 'True shape', hint: 'nothing cropped', checked: shape && !scrollMode && !faceWall, onSelect: () => { setFaceWallFor(null); setScrollMode(false); saveCfg({ gridShape: true }); } },
+                      { label: 'Scroll mode', hint: 'one long column', checked: scrollMode && !faceWall, onSelect: () => { setFaceWallFor(null); setScrollMode(!scrollMode); } },
+                      ...(facePerson != null ? [{ label: 'Face wall', hint: 'their face from every photo', checked: faceWall, onSelect: () => setFaceWallFor(faceWall ? null : facePerson) }] : []),
+                      ...(!scrollMode && !faceWall ? [group(`Size: ${cols} per row`, [2, 3, 4, 5, 6, 7, 8, 10, 12].map((n) => ({ label: `${n} per row`, checked: n === cols, onSelect: () => setCols(n) })),
+                        { sepBefore: true, hint: 'Ctrl + wheel' })] : []),
+                    ]} />
                 </>
               )}
               {inTrash && trash && (trash.totalItems > 0 || trash.folders.length > 0) && (
                 <button type="button" className="btn btn-sm btn-danger" onClick={() => setDialog({ t: 'emptyTrash' })}><TrashIcon /> Empty trash</button>
               )}
-              {view.kind !== 'stats' && view.kind !== 'people' && !looks && view.kind !== 'memories' && !scrollMode && !faceWall && (
+              {/* In item views the size is in View ▾ (and Ctrl + wheel). */}
+              {view.kind === 'folders' && (
                 <>
                   <label className="faint" htmlFor="tile-size" style={{ fontSize: 12 }} title="Ctrl + mouse wheel changes this too">Size · {cols} per row</label>
                   <input id="tile-size" type="range" min={2} max={12} step={1} value={cols} style={{ direction: 'rtl' }}
@@ -2767,12 +2844,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             </div>
           </div>
 
-          {error && (
-            <div className="error" role="alert">
-              <span style={{ flex: 1 }}>{error}</span>
-              <button type="button" className="link" onClick={() => setError(null)}>Dismiss</button>
-            </div>
-          )}
 
           {view.kind === 'people' && (
             <PeopleView folders={folders} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
@@ -2786,7 +2857,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             })} />
           )}
           {view.kind === 'lookalikes' && (
-            <LookAlikes folder={view.folder} folderName={folders.find((f) => f.id === view.folder)?.name ?? null}
+            <LookAlikes folder={view.folder} folderName={folders.find((f) => f.id === view.folder)?.name ?? null} only={view.only} onlyLabel={view.onlyLabel}
               smartOk={smartOn} tick={lookTick} marked={selected} setMarked={setSelected}
               onGroups={(g) => setItems(g.flat())}
               onOpen={(g, id) => playList(g, false, id, 'Look-alikes')}
@@ -2794,7 +2865,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           )}
 
           {view.kind === 'stats' && (
-            <StatsView onOpenFolder={(id) => openFolder(id)} onOpenItem={(it, list) => playList(list, false, it.id, 'Most viewed')} />
+            <StatsView onOpenFolder={(id) => openFolder(id)} onOpenItem={(it, list) => playList(list, false, it.id, 'Most viewed')} onGo={statsGo} />
           )}
 
           {inTrash && (
@@ -2912,7 +2983,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
 
       {selectionBar()}
 
-      <div className="notes" onPointerEnter={() => setNoteHover(true)} onPointerLeave={() => setNoteHover(false)}>
+      {noteSlot && createPortal(<div className="notes-lib" onPointerEnter={() => setNoteHover(true)} onPointerLeave={() => setNoteHover(false)}>
       {showNote && note && (
         <div className="undo-toast" role="status">
           <span className="ellipsis">{note.text}</span>
@@ -2943,7 +3014,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <TodaysPickCard item={pick} onClose={dismissPick} onOpen={() => { dismissPick(); openInFolder(pick); }} />
       )}
       <FaceSortOffer did={did} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} />
-      </div>
+      </div>, noteSlot)}
 
       {quick != null && (
         <QuickLook items={shown} id={quick} onClose={() => setQuick(null)}
@@ -3000,6 +3071,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           {facesOff.has(dialog.folder.id) ? ' Face search stays off here.' : ' They are scanned again only if you choose "Scan for faces" (or turn face search off here so they never are).'}
         </ConfirmDialog>
       )}
+      {dialog?.t === 'delFacesItems' && (
+        <ConfirmDialog title={`Delete face data of ${dialog.what}?`} confirm="Delete face data" danger onClose={() => setDialog(null)}
+          onConfirm={() => deleteItemFaces(dialog.ids, dialog.what)}>
+          Every face found in these is forgotten, with the names given to them.
+          The pictures and videos themselves don't change, and people found elsewhere stay.
+          They are scanned again only if you choose "Scan for faces".
+        </ConfirmDialog>
+      )}
       {dialog?.t === 'forever' && (
         <ConfirmDialog title="Delete for good?" confirm="Delete for good" danger onClose={() => setDialog(null)}
           onConfirm={async () => {
@@ -3012,7 +3091,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </ConfirmDialog>
       )}
       {dialog?.t === 'separate' && (
-        <SeparateFaces folder={dialog.folder} folders={folders} onClose={() => setDialog(null)}
+        <SeparateFaces folder={dialog.folder} items={dialog.items} what={dialog.what} folders={folders} onClose={() => setDialog(null)}
           onScan={async (ids) => { await api.facesQueue({ ids }); kickFaceScanner(); }}
           onApply={(items, target, copy) => separate(dialog.folder.id, items, target, copy)} />
       )}

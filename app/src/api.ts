@@ -1082,6 +1082,7 @@ export const api = {
   facesStop: () => call<number>('faces_stop'),
   /** "Delete face data…" for a folder and its subfolders. Returns how many faces went. */
   facesDeleteFolder: (folder: number) => call<number>('faces_delete_folder', { folder }),
+  facesDeleteItems: (ids: number[]) => call<number>('faces_delete_items', { ids }),
   /** "Who is it?": [person folder, how likely 0–99], most likely first. */
   facesMatches: (face: number) => call<[number, number][]>('faces_matches', { face }),
   facesOfMany: (media: number[]) => call<[number, FaceBox[]][]>('faces_of_many', { media }),
@@ -1878,6 +1879,7 @@ const mock = {
       case 'faces_folder_off':
       case 'faces_stop':
       case 'faces_delete_folder':
+      case 'faces_delete_items':
         return 0;
       default:
         return;

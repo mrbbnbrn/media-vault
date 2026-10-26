@@ -25,6 +25,9 @@ let lastVideos = false;
 export function LookAlikes(props: {
   folder: number | null;
   folderName: string | null;
+  /** Only look-alikes among these items (a selection), with what to call them. */
+  only?: number[];
+  onlyLabel?: string;
   /** Smart search is on and its models are there. */
   smartOk: boolean;
   /** Changes when the library changed (e.g. after moving marked ones to the trash). */
@@ -75,8 +78,11 @@ export function LookAlikes(props: {
     setBusy(true);
     setErr(null);
     (level === 'exact' ? api.exactGroups(props.folder) : api.similarGroups(level, smart, props.folder, videos))
-      .then((g) => {
+      .then((all) => {
         if (!live) return;
+        // A selection: only the groups' members that are in it, and groups still of two or more.
+        const keep = props.only ? new Set(props.only) : null;
+        const g = keep ? all.map((x) => x.filter((i) => keep.has(i.id))).filter((x) => x.length > 1) : all;
         setGroups(g);
         props.onGroups(g);
         // Everything but the best of each group starts out marked.
@@ -87,7 +93,7 @@ export function LookAlikes(props: {
     return () => {
       live = false;
     };
-  }, [level, smart, videos, props.folder, props.tick, fpTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [level, smart, videos, props.folder, props.tick, fpTick, props.only]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (id: number) => {
     const n = new Set(props.marked);
@@ -116,7 +122,12 @@ export function LookAlikes(props: {
           <input type="checkbox" checked={videos} onChange={(e) => { lastVideos = e.target.checked; setVideos(e.target.checked); }} />
           Include videos
         </label>
-        {props.folder != null && (
+        {props.only && (
+          <span className="faint" style={{ fontSize: 13 }}>
+            Only among {props.onlyLabel ?? 'the selection'} · <button type="button" className="link" onClick={props.onAllFolders}>whole library</button>
+          </span>
+        )}
+        {!props.only && props.folder != null && (
           <span className="faint" style={{ fontSize: 13 }}>
             Only in “{props.folderName}” · <button type="button" className="link" onClick={props.onAllFolders}>whole library</button>
           </span>
@@ -140,7 +151,7 @@ export function LookAlikes(props: {
       )}
       {groups && !groups.length && !busy && (
         <div className="dropzone">
-          <b>No look-alikes {props.folder != null ? 'in this folder' : 'found'}</b>
+          <b>No look-alikes {props.only ? 'among these' : props.folder != null ? 'in this folder' : 'found'}</b>
           <span className="muted">{level !== 'loose' ? 'Try “Loose” to catch more.' : 'Nothing looks alike, even with loose matching.'}</span>
         </div>
       )}

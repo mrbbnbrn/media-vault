@@ -1,5 +1,5 @@
 // Library statistics: totals, what takes the space, growth per month, and
-// what you watch most.
+// what you watch most. The tiles and rows open what they count.
 
 import { useEffect, useState } from 'react';
 import { api, thumbUrl, type Item, type Stats } from '../api';
@@ -8,7 +8,10 @@ import { GrowthChart } from './VaultGrowth';
 
 const KIND_NAMES: Record<string, string> = { image: 'Pictures', gif: 'GIFs', video: 'Videos', text: 'Text files', pdf: 'PDFs' };
 
-export function StatsView(props: { onOpenFolder: (id: number | null) => void; onOpenItem: (it: Item, list: Item[]) => void }) {
+/** Where a tile or row leads. */
+export type StatsGo = 'items' | 'largest' | 'folders' | 'tags' | 'favourites' | 'trash' | 'recent' | { kind: string };
+
+export function StatsView(props: { onOpenFolder: (id: number | null) => void; onOpenItem: (it: Item, list: Item[]) => void; onGo: (to: StatsGo) => void }) {
   const [s, setS] = useState<Stats | null>(null);
   const [err, setErr] = useState<string | null>(null);
   useEffect(() => {
@@ -20,14 +23,14 @@ export function StatsView(props: { onOpenFolder: (id: number | null) => void; on
   return (
     <div className="stats">
       <div className="stat-tiles">
-        <Tile label="Items" value={s.items.toLocaleString()} />
-        <Tile label="Size" value={formatBytes(s.bytes)} />
-        <Tile label="Folders" value={s.folders.toLocaleString()} />
-        <Tile label="Tags" value={s.tags.toLocaleString()} />
-        <Tile label="Favourites" value={s.favourites.toLocaleString()} />
+        <Tile label="Items" value={s.items.toLocaleString()} title="Show everything" onClick={() => props.onGo('items')} />
+        <Tile label="Size" value={formatBytes(s.bytes)} title="Everything, largest first" onClick={() => props.onGo('largest')} />
+        <Tile label="Folders" value={s.folders.toLocaleString()} title="All folders" onClick={() => props.onGo('folders')} />
+        <Tile label="Tags" value={s.tags.toLocaleString()} title="Rename, merge, colour or delete tags" onClick={() => props.onGo('tags')} />
+        <Tile label="Favourites" value={s.favourites.toLocaleString()} title="Show your favourites" onClick={() => props.onGo('favourites')} />
         <Tile label="Never opened" value={s.neverViewed.toLocaleString()} />
-        <Tile label="Times viewed" value={s.totalViews.toLocaleString()} />
-        <Tile label="In the trash" value={s.trashItems ? `${s.trashItems.toLocaleString()} · ${formatBytes(s.trashBytes)}` : '0'} />
+        <Tile label="Times viewed" value={s.totalViews.toLocaleString()} title="Recently viewed" onClick={() => props.onGo('recent')} />
+        <Tile label="In the trash" value={s.trashItems ? `${s.trashItems.toLocaleString()} · ${formatBytes(s.trashBytes)}` : '0'} title="Open the trash" onClick={() => props.onGo('trash')} />
       </div>
 
       <div className="stats-cols">
@@ -36,7 +39,7 @@ export function StatsView(props: { onOpenFolder: (id: number | null) => void; on
           <table className="stat-table">
             <tbody>
               {s.byKind.map((k) => (
-                <tr key={k.kind}>
+                <tr key={k.kind} className="clickable" title={`Show the ${(KIND_NAMES[k.kind] ?? k.kind).toLowerCase()}`} onClick={() => props.onGo({ kind: k.kind })}>
                   <td>{KIND_NAMES[k.kind] ?? k.kind}</td>
                   <td className="num">{k.items.toLocaleString()}</td>
                   <td className="num">{formatBytes(k.bytes)}</td>
@@ -85,11 +88,19 @@ export function StatsView(props: { onOpenFolder: (id: number | null) => void; on
   );
 }
 
-function Tile({ label, value }: { label: string; value: string }) {
+function Tile({ label, value, title, onClick }: { label: string; value: string; title?: string; onClick?: () => void }) {
+  if (!onClick) {
+    return (
+      <div className="stat-tile">
+        <span className="faint">{label}</span>
+        <b>{value}</b>
+      </div>
+    );
+  }
   return (
-    <div className="stat-tile">
+    <button type="button" className="stat-tile clickable" title={title} onClick={onClick}>
       <span className="faint">{label}</span>
       <b>{value}</b>
-    </div>
+    </button>
   );
 }
