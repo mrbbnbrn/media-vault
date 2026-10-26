@@ -1849,7 +1849,7 @@ mod tests {
         let before = l.conn().total_changes();
         assert_eq!(refresh(&l).unwrap(), 0);
         assert_eq!(l.conn().total_changes(), before);
-        assert!(LAST_REFRESH.lock().unwrap().contains(&refresh_key(&l)));
+        assert!(LAST_REFRESH.lock().unwrap_or_else(|e| e.into_inner()).contains(&refresh_key(&l)));
         let r = review(&l, &ReviewRequest::default()).unwrap();
         let g = &r.people[0];
         assert!(g.owner.is_none());

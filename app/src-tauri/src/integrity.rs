@@ -158,8 +158,12 @@ mod tests {
         let corrupt = |kind: ObjectKind, hex: &str| {
             let (path, off, len) = s.vault().object_location(kind, &ObjectId::from_hex(hex).unwrap()).unwrap();
             let mut f = std::fs::OpenOptions::new().read(true).write(true).open(path).unwrap();
+            // Changed for sure (writing a fixed byte would change nothing once in 256 runs).
+            let mut b = [0u8; 1];
             f.seek(SeekFrom::Start(off + len / 2)).unwrap();
-            f.write_all(&[0x5A]).unwrap();
+            std::io::Read::read_exact(&mut f, &mut b).unwrap();
+            f.seek(SeekFrom::Start(off + len / 2)).unwrap();
+            f.write_all(&[!b[0]]).unwrap();
         };
         let obj: String = s.db().query_row("SELECT object_id FROM media WHERE original_name = '2.jpg'", [], |r| r.get(0)).unwrap();
         corrupt(ObjectKind::Media, &obj);

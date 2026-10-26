@@ -134,7 +134,7 @@ fn panic_shortcut() -> Shortcut {
 
 /// Wipe the open vault from memory and tell the UI. Safe to call any time.
 fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
-    let taken = inner.session.lock().unwrap().take();
+    let taken = inner.session.lock().unwrap_or_else(|e| e.into_inner()).take();
     let was_open = taken.is_some();
     upscale::cancel();
     upscale::forget_all();
@@ -203,9 +203,9 @@ fn with_session<T>(
 fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     let mut info = s.info();
     info.login = Some(access::on_unlock(&s));
-    *inner.activity.lock().unwrap() = Activity::new(Instant::now());
+    *inner.activity.lock().unwrap_or_else(|e| e.into_inner()) = Activity::new(Instant::now());
     let s = Arc::new(s);
-    if let Some(old) = inner.session.lock().unwrap().replace(s.clone()) {
+    if let Some(old) = inner.session.lock().unwrap_or_else(|e| e.into_inner()).replace(s.clone()) {
         old.close();
         if old.is_dirty() {
             let _ = old.save();
@@ -218,7 +218,7 @@ fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     start_background(inner.clone(), s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
-        let mut cfg = inner.config.lock().unwrap();
+        let mut cfg = inner.config.lock().unwrap_or_else(|e| e.into_inner());
         cfg.add_vault(&info.path);
         cfg.last_vault = Some(info.path.clone());
         let _ = config::save(&inner.config_dir, &cfg);
@@ -288,14 +288,14 @@ struct AppStateDto {
 async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
     let inner = state.inner().clone();
     blocking(move || {
-        let config = inner.config.lock().unwrap().clone();
+        let config = inner.config.lock().unwrap_or_else(|e| e.into_inner()).clone();
         // Sizes take a while to add up: the window asks for them afterwards (vault_sizes).
         let vaults = config
             .vaults
             .iter()
             .map(|v| session::describe_quick(&v.path))
             .collect();
-        let session = inner.session.lock().unwrap().clone().map(|s| s.info());
+        let session = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone().map(|s| s.info());
         Ok(AppStateDto {
             config,
             vaults,
@@ -337,7 +337,7 @@ fn save_config(
     state: State<'_, Shared>,
     config: AppConfig,
 ) -> Result<AppConfig, String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     let mut next = config.sanitized();
     next.vaults = cfg.vaults.clone(); // vault list is only changed through its own commands
     next.last_vault = cfg.last_vault.clone();
@@ -356,7 +356,7 @@ fn add_vault(state: State<'_, Shared>, path: String) -> Result<VaultEntry, Strin
             "{path} is not a Media Vault folder. Choose the folder that contains vault.json."
         ));
     }
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     cfg.add_vault(&path);
     config::save(&state.config_dir, &cfg).map_err(|e| e.to_string())?;
     Ok(entry)
@@ -364,7 +364,7 @@ fn add_vault(state: State<'_, Shared>, path: String) -> Result<VaultEntry, Strin
 
 #[tauri::command]
 fn forget_vault(state: State<'_, Shared>, path: String) -> Result<(), String> {
-    let mut cfg = state.config.lock().unwrap();
+    let mut cfg = state.config.lock().unwrap_or_else(|e| e.into_inner());
     cfg.forget_vault(&path);
     config::save(&state.config_dir, &cfg).map_err(|e| e.to_string())
 }
@@ -522,7 +522,7 @@ async fn set_password(state: State<'_, Shared>, password: String) -> Result<Sess
             }
             s.vault_mut().change_password(&password).map_err(session::friendly)?;
             // Idle time counts from now, not from when the vault was opened.
-            *inner.activity.lock().unwrap() = Activity::new(Instant::now());
+            *inner.activity.lock().unwrap_or_else(|e| e.into_inner()) = Activity::new(Instant::now());
             Ok(s.info())
         })
     })
@@ -557,7 +557,7 @@ fn lock_vault(app: AppHandle, state: State<'_, Shared>) {
 #[tauri::command]
 fn report_activity(state: State<'_, Shared>, kind: String) {
     let now = Instant::now();
-    let mut a = state.activity.lock().unwrap();
+    let mut a = state.activity.lock().unwrap_or_else(|e| e.into_inner());
     match kind.as_str() {
         "playing" => a.playing(now),
         _ => a.input(now),
@@ -805,7 +805,7 @@ static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 /// good, the packs holding deleted files are rewritten in the background
 /// (never during an import), so nothing of them stays in the vault folder.
 pub(crate) fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
-    if !inner.config.lock().unwrap().auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
+    if !inner.config.lock().unwrap_or_else(|e| e.into_inner()).auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
@@ -1554,7 +1554,7 @@ fn start_import(
     let inner = state.inner().clone();
     let id = inner.next_job.fetch_add(1, Ordering::SeqCst) + 1;
     let cancel = Arc::new(AtomicBool::new(false));
-    inner.imports.lock().unwrap().insert(id, cancel.clone());
+    inner.imports.lock().unwrap_or_else(|e| e.into_inner()).insert(id, cancel.clone());
     std::thread::spawn(move || {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
         let job = import::Job {
@@ -1568,7 +1568,7 @@ fn start_import(
             // import.rs already sends at most about ten a second.
             let _ = app.emit("import-progress", p);
         });
-        inner.imports.lock().unwrap().remove(&id);
+        inner.imports.lock().unwrap_or_else(|e| e.into_inner()).remove(&id);
         let _ = app.emit("import-done", &report);
     });
     Ok(id)
@@ -1576,7 +1576,7 @@ fn start_import(
 
 #[tauri::command]
 fn cancel_import(state: State<'_, Shared>, job: u64) {
-    if let Some(c) = state.imports.lock().unwrap().get(&job) {
+    if let Some(c) = state.imports.lock().unwrap_or_else(|e| e.into_inner()).get(&job) {
         c.store(true, Ordering::SeqCst);
     }
 }
@@ -1671,7 +1671,7 @@ struct TaskProgress {
 }
 
 fn begin_task(inner: &Inner, name: &'static str) -> Result<Arc<AtomicBool>, String> {
-    let mut t = inner.tasks.lock().unwrap();
+    let mut t = inner.tasks.lock().unwrap_or_else(|e| e.into_inner());
     if t.contains_key(name) {
         return Err("That is already running.".into());
     }
@@ -1695,7 +1695,7 @@ fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> 
                 let _ = app.emit("check-progress", TaskProgress { task: "check", done, total });
             }
         });
-        inner.tasks.lock().unwrap().remove("check");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("check");
         let _ = app.emit("check-done", r.map_err(|e| e.to_string()));
     });
     Ok(())
@@ -1703,7 +1703,7 @@ fn check_damage(app: AppHandle, state: State<'_, Shared>) -> Result<(), String> 
 
 #[tauri::command]
 fn cancel_task(state: State<'_, Shared>, task: String) {
-    if let Some(c) = state.tasks.lock().unwrap().get(task.as_str()) {
+    if let Some(c) = state.tasks.lock().unwrap_or_else(|e| e.into_inner()).get(task.as_str()) {
         c.store(true, Ordering::SeqCst);
     }
 }
@@ -1712,7 +1712,7 @@ fn cancel_task(state: State<'_, Shared>, task: String) {
 #[tauri::command]
 fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter::ExportRequest) -> Result<(), String> {
     let s = sess(&state)?;
-    request.strip = state.config.lock().unwrap().strip_metadata;
+    request.strip = state.config.lock().unwrap_or_else(|e| e.into_inner()).strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "export")?;
     std::thread::spawn(move || {
@@ -1722,7 +1722,7 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter:
                 let _ = app.emit("export-progress", p);
             }
         });
-        inner.tasks.lock().unwrap().remove("export");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("export");
         let _ = app.emit("export-done", done);
     });
     Ok(())
@@ -1735,7 +1735,7 @@ fn export_start(app: AppHandle, state: State<'_, Shared>, mut request: exporter:
 #[tauri::command]
 fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z::ShareRequest) -> Result<(), String> {
     let s = sess(&state)?;
-    request.strip = state.config.lock().unwrap().strip_metadata;
+    request.strip = state.config.lock().unwrap_or_else(|e| e.into_inner()).strip_metadata;
     let inner = state.inner().clone();
     let cancel = begin_task(&inner, "share")?;
     std::thread::spawn(move || {
@@ -1745,7 +1745,7 @@ fn share_7z_start(app: AppHandle, state: State<'_, Shared>, mut request: share7z
                 let _ = app.emit("share-progress", p);
             }
         });
-        inner.tasks.lock().unwrap().remove("share");
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("share");
         let _ = app.emit("share-done", done);
     });
     Ok(())
@@ -1777,7 +1777,7 @@ fn video_task<D: Serialize + Clone + 'static>(
                 let _ = app.emit(&format!("{task}-progress"), p);
             }
         });
-        inner.tasks.lock().unwrap().remove(task);
+        inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove(task);
         let _ = app.emit(&format!("{task}-done"), done);
     });
     Ok(())
@@ -2410,12 +2410,12 @@ async fn exact_groups(state: State<'_, Shared>, folder: Option<i64>) -> Result<V
 
 #[tauri::command]
 fn selftest_info(state: State<'_, Shared>) -> Option<selftest::SelfTestInfo> {
-    state.selftest.lock().unwrap().clone()
+    state.selftest.lock().unwrap_or_else(|e| e.into_inner()).clone()
 }
 
 #[tauri::command]
 fn selftest_done(state: State<'_, Shared>, ok: bool, report: String) {
-    if state.selftest.lock().unwrap().is_some() {
+    if state.selftest.lock().unwrap_or_else(|e| e.into_inner()).is_some() {
         std::process::exit(selftest::finish(ok, &report));
     }
 }
@@ -2451,7 +2451,7 @@ fn start_watcher(app: AppHandle, inner: Shared) {
         loop {
             std::thread::sleep(Duration::from_secs(2));
             let slept = sleep.tick(SystemTime::now());
-            let Some(open) = inner.session.lock().unwrap().clone() else {
+            let Some(open) = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone() else {
                 continue;
             };
             // Save your library edits shortly after they happen: once they
@@ -2495,13 +2495,13 @@ fn start_watcher(app: AppHandle, inner: Shared) {
             if !auto_lock {
                 continue;
             }
-            let lock = inner.config.lock().unwrap().lock.clone();
+            let lock = inner.config.lock().unwrap_or_else(|e| e.into_inner()).lock.clone();
             let reason = if lock.on_system_lock && slept {
                 Some(LockReason::Sleep)
             } else if lock.on_system_lock && windows_session_locked() {
                 Some(LockReason::SystemLocked)
             } else {
-                inner.activity.lock().unwrap().check(Instant::now(), &lock)
+                inner.activity.lock().unwrap_or_else(|e| e.into_inner()).check(Instant::now(), &lock)
             };
             if let Some(r) = reason {
                 lock_now(&app, &inner, r);
@@ -2514,7 +2514,7 @@ fn start_watcher(app: AppHandle, inner: Shared) {
 #[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn save_open(app: &AppHandle) {
     let inner = app.state::<Shared>().inner().clone();
-    let open = inner.session.lock().unwrap().clone();
+    let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(s) = open {
         for _ in 0..2 {
             if s.is_dirty() {
@@ -2628,7 +2628,7 @@ pub fn run() {
                 match selftest::prepare(&inner.local) {
                     Ok((s, info)) => {
                         install_session(&inner, s);
-                        *inner.selftest.lock().unwrap() = Some(info);
+                        *inner.selftest.lock().unwrap_or_else(|e| e.into_inner()) = Some(info);
                     }
                     Err(e) => {
                         std::process::exit(selftest::finish(false, &format!("setup failed: {e}")))
@@ -2646,7 +2646,7 @@ pub fn run() {
             for (_, w) in app.webview_windows() {
                 crashguard::watch(app.handle(), &w);
             }
-            let block = inner.config.lock().unwrap().block_capture;
+            let block = inner.config.lock().unwrap_or_else(|e| e.into_inner()).block_capture;
             nocapture::apply_all(app.handle(), block);
             Ok(())
         })
@@ -2658,7 +2658,7 @@ pub fn run() {
             if let WindowEvent::CloseRequested { .. } | WindowEvent::Destroyed = event {
                 diaglog::note(&format!("window '{}': {}", window.label(), if matches!(event, WindowEvent::Destroyed) { "destroyed" } else { "closing" }));
                 let inner = window.app_handle().state::<Shared>().inner().clone();
-                let open = inner.session.lock().unwrap().clone();
+                let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(s) = open
                     && s.is_dirty()
                 {
@@ -2668,8 +2668,8 @@ pub fn run() {
             if let WindowEvent::Resized(_) = event {
                 let app = window.app_handle();
                 let inner = app.state::<Shared>().inner().clone();
-                let on_min = inner.config.lock().unwrap().lock.on_minimize;
-                let has_password = inner.session.lock().unwrap().as_ref().is_some_and(|s| s.has_password());
+                let on_min = inner.config.lock().unwrap_or_else(|e| e.into_inner()).lock.on_minimize;
+                let has_password = inner.session.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|s| s.has_password());
                 if on_min && has_password && window.is_minimized().unwrap_or(false) {
                     lock_now(app, &inner, LockReason::Minimized);
                 }
@@ -2939,7 +2939,7 @@ pub fn run() {
             if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
                 beatlisten::stop(app);
                 let inner = app.state::<Shared>().inner().clone();
-                let open = inner.session.lock().unwrap().clone();
+                let open = inner.session.lock().unwrap_or_else(|e| e.into_inner()).clone();
                 if let Some(s) = open
                     && s.is_dirty()
                 {

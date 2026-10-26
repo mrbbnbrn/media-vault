@@ -571,13 +571,13 @@ pub struct LocalAccess {
 impl LocalAccess {
     pub fn grant(&self, p: &Path) {
         if let Ok(c) = p.canonicalize() {
-            self.roots.lock().unwrap().insert(c);
+            self.roots.lock().unwrap_or_else(|e| e.into_inner()).insert(c);
         }
     }
 
     pub fn allowed(&self, p: &Path) -> Option<PathBuf> {
         let c = p.canonicalize().ok()?;
-        let roots = self.roots.lock().unwrap();
+        let roots = self.roots.lock().unwrap_or_else(|e| e.into_inner());
         roots
             .iter()
             .any(|r| c == *r || c.starts_with(r))

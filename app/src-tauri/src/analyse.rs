@@ -87,7 +87,7 @@ static DONE: Counts = Counts {
 };
 
 fn running() -> bool {
-    RUNNER.lock().unwrap().as_ref().is_some_and(|r| !r.stop.load(Ordering::SeqCst) && !r.session.is_closed())
+    RUNNER.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|r| !r.stop.load(Ordering::SeqCst) && !r.session.is_closed())
 }
 
 /// Which steps can be done here right now.
@@ -98,7 +98,7 @@ pub struct Caps {
 }
 
 fn caps() -> Caps {
-    let o = *OPTIONS.lock().unwrap();
+    let o = *OPTIONS.lock().unwrap_or_else(|e| e.into_inner());
     Caps { smart: o.smart && smartnative::usable(), faces: !o.faces_paused && faceid::info().available }
 }
 
@@ -472,16 +472,16 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
                     }
                     let (job, rep) = work(s, &tasks[i], caps, emit);
                     if let Some(j) = job {
-                        jobs.lock().unwrap().push(j);
+                        jobs.lock().unwrap_or_else(|e| e.into_inner()).push(j);
                     }
-                    reports.lock().unwrap().push(rep);
+                    reports.lock().unwrap_or_else(|e| e.into_inner()).push(rep);
                 }
             });
         }
     });
-    let mut reports = reports.into_inner().unwrap();
+    let mut reports = reports.into_inner().unwrap_or_else(|e| e.into_inner());
     if !stop.load(Ordering::SeqCst) && !s.is_closed() {
-        let done = finish_smart(s, jobs.into_inner().unwrap());
+        let done = finish_smart(s, jobs.into_inner().unwrap_or_else(|e| e.into_inner()));
         for r in reports.iter_mut() {
             r.smart = done.contains(&r.id);
         }
@@ -491,9 +491,9 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
 
 fn sleep_until_woken(ms: u64) {
     let (m, cv) = &WAKE;
-    let mut woken = m.lock().unwrap();
+    let mut woken = m.lock().unwrap_or_else(|e| e.into_inner());
     if !*woken {
-        woken = cv.wait_timeout(woken, Duration::from_millis(ms)).unwrap().0;
+        woken = cv.wait_timeout(woken, Duration::from_millis(ms)).unwrap_or_else(|e| e.into_inner()).0;
     }
     *woken = false;
 }
@@ -574,7 +574,7 @@ fn run_loop(app: AppHandle, s: Arc<Session>, stop: Arc<AtomicBool>) {
 
 /// Stop the pass (the vault locked): it ends after the item it is on.
 pub fn stop() {
-    if let Some(r) = RUNNER.lock().unwrap().take() {
+    if let Some(r) = RUNNER.lock().unwrap_or_else(|e| e.into_inner()).take() {
         r.stop.store(true, Ordering::SeqCst);
     }
     forget_not_here();
@@ -585,14 +585,14 @@ pub fn stop() {
 
 pub fn kick() {
     let (m, cv) = &WAKE;
-    *m.lock().unwrap() = true;
+    *m.lock().unwrap_or_else(|e| e.into_inner()) = true;
     cv.notify_all();
 }
 
 /// Start the pass for this session (or just take the new options).
 pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
-    *OPTIONS.lock().unwrap() = opts;
-    let mut r = RUNNER.lock().unwrap();
+    *OPTIONS.lock().unwrap_or_else(|e| e.into_inner()) = opts;
+    let mut r = RUNNER.lock().unwrap_or_else(|e| e.into_inner());
     let same = r.as_ref().is_some_and(|r| Arc::ptr_eq(&r.session, &s) && !r.stop.load(Ordering::SeqCst));
     if !same {
         if let Some(old) = r.take() {
@@ -740,7 +740,7 @@ pub async fn analyse_thumb(state: State<'_, crate::Shared>, id: i64) -> Result<b
             .query_row("SELECT kind, IFNULL(ext, ''), object_id FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
             .ok();
         let Some((kind, ext, object)) = row else { return Ok(false) };
-        if !matches!(kind.as_str(), "image" | "gif") || !picture::native_ext(&ext) || NOT_HERE.lock().unwrap().contains(&id) {
+        if !matches!(kind.as_str(), "image" | "gif") || !picture::native_ext(&ext) || NOT_HERE.lock().unwrap_or_else(|e| e.into_inner()).contains(&id) {
             return Ok(false);
         }
         let Ok(pic) = read(&s, ObjectKind::Media, &object).and_then(|b| picture::decode(&b)) else {
@@ -808,7 +808,7 @@ mod tests {
         let tasks = select(&s.db(), caps, 10, Some(&[good, bad])).unwrap();
         assert_eq!(tasks.len(), 2);
         let made = Mutex::new(Vec::new());
-        let reps = process(&s, &tasks, caps, &AtomicBool::new(false), &|id| made.lock().unwrap().push(id));
+        let reps = process(&s, &tasks, caps, &AtomicBool::new(false), &|id| made.lock().unwrap_or_else(|e| e.into_inner()).push(id));
         assert_eq!(made.into_inner().unwrap(), vec![good], "grids hear about the new thumbnail");
         let (thumb, w, h, ps): (String, i64, i64, i64) = s
             .db()
@@ -823,7 +823,7 @@ mod tests {
         assert!(reps.iter().find(|r| r.id == bad).unwrap().left_to_window);
         let thumb_bad: Option<String> = s.db().query_row("SELECT thumb_object_id FROM media WHERE id = ?", [bad], |r| r.get(0)).unwrap();
         assert_eq!(thumb_bad, None);
-        assert!(NOT_HERE.lock().unwrap().contains(&bad));
+        assert!(NOT_HERE.lock().unwrap_or_else(|e| e.into_inner()).contains(&bad));
         assert!(select(&s.db(), caps, 10, Some(&[bad])).unwrap().is_empty());
         forget_not_here();
         // Nothing left to do for the good one.

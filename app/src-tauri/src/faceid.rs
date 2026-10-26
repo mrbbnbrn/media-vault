@@ -85,10 +85,10 @@ pub fn info() -> EngineInfo {
     let Some(rt) = runtime_dir(&dir) else {
         return missing("The face recognition pack is incomplete (onnxruntime is missing).");
     };
-    if let Some(e) = BROKEN.lock().unwrap().clone() {
+    if let Some(e) = BROKEN.lock().unwrap_or_else(|e| e.into_inner()).clone() {
         return missing(&e);
     }
-    let known = *LAST_DEVICE.lock().unwrap();
+    let known = *LAST_DEVICE.lock().unwrap_or_else(|e| e.into_inner());
     let guess = if cfg!(windows) && rt.join("DirectML.dll").is_file() { "gpu" } else { "cpu" };
     EngineInfo {
         available: true,
@@ -133,14 +133,14 @@ fn load(dir: &Path, gpu: bool) -> Result<Loaded, String> {
 fn reaper() {
     std::thread::spawn(|| loop {
         std::thread::sleep(Duration::from_secs(20));
-        let idle = LAST_USE.lock().unwrap().is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
+        let idle = LAST_USE.lock().unwrap_or_else(|e| e.into_inner()).is_none_or(|t| t.elapsed() > IDLE_UNLOAD);
         if idle {
             if let Ok(mut m) = MODELS.try_lock() {
                 *m = None;
             } else {
                 continue;
             }
-            *LAST_USE.lock().unwrap() = None;
+            *LAST_USE.lock().unwrap_or_else(|e| e.into_inner()) = None;
             return;
         }
     });
@@ -159,9 +159,9 @@ pub fn unload() {
 fn with_models<T>(f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result<T, String> {
     let dir = pack_dir().filter(|d| d.is_dir()).ok_or("The face recognition pack isn't installed.")?;
     let try_gpu = cfg!(windows) && runtime_dir(&dir).is_some_and(|r| r.join("DirectML.dll").is_file());
-    let mut guard = MODELS.lock().unwrap();
+    let mut guard = MODELS.lock().unwrap_or_else(|e| e.into_inner());
     {
-        let mut last = LAST_USE.lock().unwrap();
+        let mut last = LAST_USE.lock().unwrap_or_else(|e| e.into_inner());
         if last.is_none() {
             reaper();
         }
@@ -178,12 +178,12 @@ fn with_models<T>(f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result
                 Err(_) if first => match load(&dir, false) {
                     Ok(l) => *guard = Some(l),
                     Err(e) => {
-                        *BROKEN.lock().unwrap() = Some(e.clone());
+                        *BROKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                         return Err(e);
                     }
                 },
                 Err(e) => {
-                    *BROKEN.lock().unwrap() = Some(e.clone());
+                    *BROKEN.lock().unwrap_or_else(|e| e.into_inner()) = Some(e.clone());
                     return Err(e);
                 }
             }
@@ -192,7 +192,7 @@ fn with_models<T>(f: &mut dyn FnMut(&mut Loaded) -> Result<T, String>) -> Result
         let gpu = loaded.gpu;
         match f(loaded) {
             Ok(v) => {
-                *LAST_DEVICE.lock().unwrap() = Some(gpu);
+                *LAST_DEVICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(gpu);
                 return Ok(v);
             }
             Err(_) if gpu && attempt == 0 => {
