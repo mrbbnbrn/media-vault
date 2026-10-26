@@ -52,15 +52,17 @@ const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
 const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.UpscaleCompare));
 // 3D photos (end)
 import {
-  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FaceIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
-  MiniPlayerIcon, MuteIcon, NextIcon,
+  BookmarkIcon, BrokenIcon, CameraIcon, CloseIcon, ExpandIcon, FrameBackIcon, FrameNextIcon, FullscreenIcon, GifIcon, HeartIcon, HelpIcon, LoopIcon,
+  InfoIcon, MiniPlayerIcon, MuteIcon, NextIcon,
   PauseIcon, PlayIcon, PrevIcon, RepeatIcon, RotateIcon, ShuffleIcon, SoundIcon,
-  BeatIcon, Film3DIcon, LiftIcon, OrbitIcon,
-  DepthEdgesIcon, Layered3DIcon, SubjectOnly3DIcon, SubjectPngIcon,
+  OrbitIcon,
+  SubjectPngIcon,
   SideChevronIcon, EditPictureIcon, Mp4Icon,
 } from './Icons';
 import { BestFramesDialog, BestFramesIcon } from './BestFrames';
 import { ShortcutsDialog } from './Shortcuts';
+import { DepthSettingsDialog } from './DepthSettings';
+import { InfoPanel, infoPanelWasOpen, rememberInfoPanel } from './InfoPanel';
 import { useUpscale } from './Upscale';
 import { BookmarksPanel, GifMakerDialog, Mp4CutDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 import { ImageEditor } from './ImageEditor';
@@ -77,6 +79,8 @@ export interface PlayerHandle {
   toggleMute: () => void;
   /** Where the current picture / video is drawn on screen (null if unknown). */
   mediaRect: () => Box | null;
+  /** Back to the first item of the order. */
+  restart: () => void;
 }
 
 export interface PlayerProps {
@@ -108,9 +112,15 @@ export interface PlayerProps {
   onWeight?: (item: PlayItem, weight: number, was: number) => Promise<void> | void;
   onFullscreen?: () => void;
   onClose?: () => void;
+  /** Ctrl+Z undoes anything, the same as in the library (the full viewer of the vault); otherwise only what was saved here. */
+  undoAll?: boolean;
   /** Extra line under the file name (e.g. its folder, as a link). */
   subtitle?: (item: PlayItem) => React.ReactNode;
+  /** The item's folder for the info panel (e.g. its name, as a link). */
+  folderOf?: (item: PlayItem) => React.ReactNode;
   onCurrent?: (item: PlayItem | null) => void;
+  /** While the slideshow runs: each item it shows; null when it has reached the end (repeat off). */
+  onSlideshowAt?: (item: PlayItem | null) => void;
   /** Shrink into the mini player (button and M). */
   onMinimize?: () => void;
   /** Shown as the small floating mini player, with its own little controls. */
@@ -211,6 +221,16 @@ export function Player(props: PlayerProps) {
   const [rot, setRot] = useState<Quarter>(0);
   const [rotSaving, setRotSaving] = useState(false);
   const lastTurn = useRef<UndoEntry | null>(null);
+  // The info panel (I): open as it was left last time (the full viewer only).
+  const infoAllowed = !!props.keys && !props.compact && !props.bare && !props.mini;
+  const [infoOpen, setInfoOpen] = useState(() => infoAllowed && infoPanelWasOpen());
+  /** Bumped when the item may have changed (an undo): the panel reads it again. */
+  const [infoReload, setInfoReload] = useState(0);
+  const toggleInfo = () => {
+    const on = !infoOpen;
+    setInfoOpen(on);
+    rememberInfoPanel(on);
+  };
 
   const item = cur ? { ...cur, ...overrides[cur.key] } : null;
   const isVideo = item?.kind === 'video';
@@ -237,6 +257,11 @@ export function Player(props: PlayerProps) {
   }, [s.order, s.repeat]);
 
   useEffect(() => props.onCurrent?.(item), [item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const slideshowAt = useRef(props.onSlideshowAt);
+  slideshowAt.current = props.onSlideshowAt;
+  useEffect(() => {
+    if (slideshow && item) slideshowAt.current?.(item);
+  }, [item?.key, slideshow]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // A new item starts unzoomed, without a loop.
   useEffect(() => {
@@ -301,7 +326,7 @@ export function Player(props: PlayerProps) {
       p.setItems(rest, nextKey);
       setCur(p.current());
       setGoneCount(gone.current.size);
-      setFlash('Moved to the trash · Ctrl+Z in the library undoes it');
+      setFlash(props.undoAll ? 'Moved to the trash · Ctrl+Z undoes it' : 'Moved to the trash · Ctrl+Z in the library undoes it');
     });
   };
   const go = useCallback((dir: 'next' | 'prev', auto = false, how?: { effect: Effect; fromPx: number }) => {
@@ -313,6 +338,7 @@ export function Player(props: PlayerProps) {
     if (n === null) {
       // End of the list with repeat off.
       setSlideshow(false);
+      if (auto) slideshowAt.current?.(null);
       return;
     }
     beatMark.current();
@@ -1188,6 +1214,28 @@ export function Player(props: PlayerProps) {
     saveViewerPrefs({ depthMouse: on });
     setFlash(on ? '3D: move the mouse over the picture · strength in View ▾ → 3D photos' : '3D off');
   };
+  /** The 3D photo settings window (shape, amount, speed…), from the 3D ▾ menu. */
+  const [depthSettings, setDepthSettings] = useState(false);
+  const stillOnly = item?.kind === 'image' ? undefined : 'still pictures';
+  /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons). */
+  const depthMenu = (): MenuItem[] => [
+    { label: '3D for GIFs and videos', hint: 'lets the 3D work on them too', checked: depthMoving,
+      onSelect: () => void toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it') },
+    { label: '3D to the beat', hint: prefs.depthBeat && beat3d.bpm ? `${Math.round(beat3d.bpm)} BPM` : 'pulses with music', checked: !!prefs.depthBeat,
+      onSelect: () => void toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)') },
+    { label: 'Lift-off', hint: stillOnly ?? 'the subject comes forward', checked: depthLift, disabled: !!stillOnly, sepBefore: true,
+      onSelect: () => void toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in 3D ▾ → 3D photo settings') },
+    ...(depthLift && inVault && !stillOnly ? [{ label: savingSubject ? 'Saving the subject…' : 'Save subject as PNG', hint: 'next to the original', disabled: savingSubject, onSelect: () => void saveSubject() }] : []),
+    { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
+    { label: '3D only on the subject', hint: stillOnly ?? 'background stays still', checked: depthSubjectOnly, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true }) },
+    { label: 'Layered 3D', hint: stillOnly ?? 'fills in behind the subject', checked: depthLayered, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true }) },
+    { label: '3D photo settings…', hint: 'shape, amount, speed', sepBefore: true, onSelect: () => setDepthSettings(true) },
+  ];
+  /** Something in the 3D ▾ menu is on (the button shows it). */
+  const depthMenuOn = depthMoving || !!prefs.depthBeat || depthLift || depthEdges3d || depthSubjectOnly || depthLayered;
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
   // ---- video and GIF tools ------------------------------------------------------------------
@@ -1327,6 +1375,71 @@ export function Player(props: PlayerProps) {
     }
   };
 
+  /** Items whose favourite or weight changed here (looked at again after an undo). */
+  const touched = useRef(new Set<string>());
+  /**
+   * Ctrl+Z in the full viewer: undoes the last change, wherever it was made (favourite,
+   * weight, delete, tags, a saved rotation…), and the viewer follows: an item that comes
+   * back from the trash shows again, hearts and weights show as they are now.
+   */
+  const undoHere = async () => {
+    let label: string | null;
+    try {
+      label = await undoLast();
+    } catch (e) {
+      setFlash(`Couldn't undo: ${e instanceof Error ? e.message : String(e)}`);
+      return;
+    }
+    lastTurn.current = null;
+    if (!label) {
+      setFlash('Nothing to undo');
+      return;
+    }
+    setFlash(`Undone: ${label}`);
+    noteItemsChanged(); // the library loads again when the viewer closes
+    setInfoReload((n) => n + 1);
+    const p = listRef.current;
+    if (!p) return;
+    const now = p.current();
+    const keys = new Set([...gone.current, ...touched.current, ...(now ? [now.key] : [])]);
+    const looked = await Promise.all([...keys].map(async (key) => {
+      const it = props.items.find((x) => x.key === key);
+      return it?.itemId != null ? { key, it, full: await api.getItem(it.itemId).catch(() => null) } : null;
+    }));
+    if (listRef.current !== p) return;
+    const patch: Record<string, Partial<PlayItem>> = {};
+    let back: string | null = null;
+    let left = false;
+    for (const x of looked) {
+      if (!x?.full) continue;
+      const inTrash = x.full.deletedAt != null;
+      if (gone.current.has(x.key) && !inTrash) {
+        gone.current.delete(x.key);
+        back = x.key;
+      } else if (!gone.current.has(x.key) && inTrash) {
+        // Undoing took it away (e.g. a copy made here): it leaves the list like a delete.
+        gone.current.add(x.key);
+        left = true;
+      }
+      patch[x.key] = { favourite: x.full.favourite, weight: x.full.weight };
+      x.it.weight = x.full.weight; // the play order uses it right away
+    }
+    setOverrides((o) => {
+      const n = { ...o };
+      for (const [k, v] of Object.entries(patch)) n[k] = { ...n[k], ...v };
+      return n;
+    });
+    if (back || left) {
+      const rest = props.items.filter((x) => !gone.current.has(x.key));
+      if (!rest.length) return props.onClose?.();
+      // The item that came back shows again.
+      p.setItems(rest, back ?? (now && !gone.current.has(now.key) ? now.key : rest[0].key));
+      setCur(p.current());
+      setGoneCount(gone.current.size);
+      if (back) setFlash(`Undone: ${label} · it's back`);
+    }
+  };
+
   const set = (patch: Partial<PlaybackSettings>) => {
     const next = { ...s, ...patch };
     // Turning sound on at volume 0 starts at 20%. (Dragging the slider itself to 0 stays 0.)
@@ -1350,6 +1463,14 @@ export function Player(props: PlayerProps) {
     next: () => go('next'),
     prev: () => go('prev'),
     toggleMute: () => set({ muted: !s.muted }),
+    restart: () => {
+      const p = listRef.current;
+      const first = p?.first();
+      if (!p || !first) return;
+      travel.current = 'next';
+      setFailed(false);
+      setCur(first);
+    },
     mediaRect: () => {
       const st = stageRef.current?.getBoundingClientRect();
       if (!st || !drawn) return null;
@@ -1389,7 +1510,10 @@ export function Player(props: PlayerProps) {
       const k = e.key.toLowerCase();
       const timed = isVideo || isGif;
       if ((e.ctrlKey || e.metaKey) && k === 'z' && !e.shiftKey) {
-        if (lastTurn.current && peekUndo() === lastTurn.current) {
+        if (props.undoAll) {
+          e.preventDefault();
+          void undoHere();
+        } else if (lastTurn.current && peekUndo() === lastTurn.current) {
           e.preventDefault();
           undoTurn();
         }
@@ -1441,6 +1565,7 @@ export function Player(props: PlayerProps) {
         saveViewerPrefs({ smoothZoom: !prefs.smoothZoom });
         setFlash(prefs.smoothZoom ? 'Crisp pixels when zoomed in' : 'Smooth when zoomed in');
       } else if (k === '?') setHelp(true);
+      else if (k === 'i' && infoAllowed && !e.ctrlKey && !e.altKey && !e.metaKey) toggleInfo();
       else if (k === 'm' && props.onMinimize && !e.shiftKey && !e.ctrlKey) props.onMinimize();
       else if (k === 'm') set({ muted: !s.muted });
       else if (k === 'f') props.onFullscreen?.();
@@ -1503,6 +1628,7 @@ export function Player(props: PlayerProps) {
     if (!item || !props.onFavourite) return;
     const it = item;
     const on = !fav;
+    touched.current.add(it.key);
     setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: on } }));
     Promise.resolve(props.onFavourite(it, on)).then(() => setFlash(on ? 'Added to favourites · Ctrl+Z undoes it' : 'Removed from favourites · Ctrl+Z undoes it')).catch((e) => {
       setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], favourite: !on } }));
@@ -1513,6 +1639,7 @@ export function Player(props: PlayerProps) {
     if (!item || !props.onWeight) return;
     const it = item;
     const was = weight;
+    touched.current.add(it.key);
     setOverrides((o) => ({ ...o, [it.key]: { ...o[it.key], weight: w } }));
     if (cur) cur.weight = w; // the play order uses the new weight right away
     Promise.resolve(props.onWeight(it, w, was)).catch((e) => {
@@ -1590,10 +1717,18 @@ export function Player(props: PlayerProps) {
     </div>
   );
 
+  /** The top of View ▾: fit or fill, the glow around the picture, face boxes. */
+  const viewMenu: MenuItem[] = [
+    { label: 'Fit', hint: 'the whole picture', checked: s.fit === 'contain', onSelect: () => set({ fit: 'contain' }) },
+    { label: 'Fill', hint: 'crops the edges', checked: s.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
+    { label: 'Soft glow around', hint: 'instead of black', checked: !!prefs.ambient, sepBefore: true, onSelect: () => saveViewerPrefs({ ambient: !prefs.ambient }) },
+    ...(faceCapable ? [{ label: 'Face boxes', hint: 'boxes around faces', checked: prefs.faceBoxes, onSelect: () => setFaceBoxes(!prefs.faceBoxes) }] : []),
+  ];
+
   const speedButton = (
     <div role="group" aria-label="Playback speed" className="seg">
       {SPEEDS.map((sp) => (
-        <button key={sp} type="button" className={sp === s.speed ? 'on' : ''} disabled={item?.kind !== 'video'}
+        <button key={sp} type="button" className={sp === s.speed ? 'on' : ''}
           onClick={() => set({ speed: sp })}>{sp === 1 ? '1×' : `${sp}×`}</button>
       ))}
     </div>
@@ -1726,6 +1861,10 @@ export function Player(props: PlayerProps) {
       )}
       {up.bar}
       {flash && <div className="p-flash" role="status">{flash}</div>}
+      {infoOpen && infoAllowed && item && (
+        <InfoPanel item={item} natural={natural} playedSeconds={isVideo ? time.dur : 0} folder={props.folderOf?.(item)}
+          reload={infoReload} onClose={toggleInfo} />
+      )}
       {resumed != null && !mini && (
         <div className="resume-chip" role="status">
           Resumed at {formatTime(resumed * 1000)} ·{' '}
@@ -1748,7 +1887,7 @@ export function Player(props: PlayerProps) {
           ...(isVideo && inVault ? [{ label: 'Find the best frames…', hint: 'save as pictures', sepBefore: true, onSelect: () => { setMenu(null); setPaused(true); setBestFrames(true); } }] : []),
           ...(faceCapable ? [
             { label: 'Show faces', hint: 'for a moment', sepBefore: true, onSelect: () => { setMenu(null); flashFaces(); } },
-            { label: `Look for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
+            { label: `Scan for faces in this ${what}`, onSelect: () => { setMenu(null); scanFaces(); } },
             { label: "Show 'not important' faces too", checked: hiddenFaces, onSelect: () => { setMenu(null); toggleHiddenFaces(); } },
             { label: 'Show poor faces too', hint: 'small, blurry, turned', checked: poorFaces, onSelect: () => { setMenu(null); togglePoorFaces(); } },
             { label: 'Reset faces and scan again…', hint: 'mark them again', onSelect: () => { setMenu(null); setResetAsk(true); } },
@@ -1758,7 +1897,7 @@ export function Player(props: PlayerProps) {
           ...(inVault && item?.itemId != null ? [
             ...(props.onFavourite ? [{ label: fav ? 'Remove from favourites' : 'Add to favourites', sepBefore: true, onSelect: () => { setMenu(null); toggleFavourite(); } }] : []),
             ...libMenu.map((m, k) => (k === 0 ? { ...m, sepBefore: false } : m)),
-            ...(!props.compact ? [{ label: 'Delete', hint: 'Delete · to the trash', danger: true, sepBefore: true, onSelect: () => { setMenu(null); deleteCurrent(); } }] : []),
+            ...(!props.compact ? [{ label: 'Move to trash', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => { setMenu(null); deleteCurrent(); } }] : []),
           ] : []),
         ]} />
       )}
@@ -1796,8 +1935,11 @@ export function Player(props: PlayerProps) {
               <button type="button" className={`btn btn-icon glass${fav ? ' accent' : ''}`} aria-label={fav ? 'Remove from favourites' : 'Add to favourites'}
                 aria-pressed={fav} onClick={toggleFavourite}><HeartIcon filled={fav} size={18} /></button>
             )}
-            <ScalingMenu prefs={prefs} />
             {props.topRight}
+            {infoAllowed && (
+              <button type="button" className={`btn btn-icon btn-sm glass${infoOpen ? ' accent' : ''}`} aria-pressed={infoOpen} aria-label="Info (I)"
+                title="Info: size, dates, folder, tags and note (I)" onClick={toggleInfo}><InfoIcon /></button>
+            )}
             {props.keys && (
               <button type="button" className="btn btn-icon btn-sm glass" aria-label="Shortcuts" title="Keyboard and mouse shortcuts (?)" onClick={() => setHelp(true)}>
                 <HelpIcon />
@@ -1862,7 +2004,7 @@ export function Player(props: PlayerProps) {
               aria-label={s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}>
               <RepeatIcon />{timedTools ? (s.repeat === 'one' ? ' 1' : '') : ` ${s.repeat === 'off' ? 'Repeat off' : s.repeat === 'all' ? 'Repeat all' : 'Repeat one'}`}
             </button>
-            {speedButton}
+            {isVideo && speedButton}
             {beatBadge}
             <div className="row" style={{ marginLeft: 'auto', gap: 8 }}>
               {canEdit && (
@@ -1884,66 +2026,27 @@ export function Player(props: PlayerProps) {
               {(isPicture || isVideo3d) && !failed && !props.compact && (
                 <div className="depth-btns" role="group" aria-label="3D">
                   <button type="button" className={`pbtn lg${depthAuto ? ' on' : ''}`} aria-pressed={depthAuto} aria-label="Gentle 3D motion"
-                    title={depthAuto ? 'Gentle 3D motion is on (shape, amount and speed in View ▾ → 3D photo settings) · click to turn off' : 'Gentle 3D motion: pictures move gently in depth (GIFs and videos too when their 3D switch is on)'}
+                    title={depthAuto ? 'Gentle 3D motion is on (shape, amount and speed in 3D ▾ → 3D photo settings) · click to turn off' : 'Gentle 3D motion: pictures move gently in depth (GIFs and videos too when their 3D switch is on)'}
                     onClick={() => toggleDepth({ depthAuto: !depthAuto }, !depthAuto, depthAuto ? 'Gentle 3D motion off' : 'Gentle 3D motion on')}>
                     <OrbitIcon size={18} />
                   </button>
-                  {(animated || isVideo3d) && (
-                    <button type="button" className={`pbtn lg${depthMoving ? ' on' : ''}`} aria-pressed={depthMoving} aria-label="3D for GIFs and videos"
-                      title={depthMoving ? '3D for GIFs and videos is on: the gentle motion, the 3D mouse and 3D to the beat work on them too · click to turn off' : '3D for GIFs and videos: lets the gentle motion, the 3D mouse and 3D to the beat work on GIFs and videos too (turns nothing else on)'}
-                      onClick={() => toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it')}>
-                      <Film3DIcon size={18} />
-                    </button>
-                  )}
                   <button type="button" className={`pbtn lg depth-btn${prefs.depthMouse ? ' on' : ''}`} aria-pressed={!!prefs.depthMouse}
-                    aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in View ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
+                    aria-label="3D with the mouse" title={prefs.depthMouse ? '3D on: move the mouse over the picture (strength in 3D ▾ → 3D photo settings) · click to turn off' : '3D: the picture moves in depth with your mouse'}
                     onClick={toggleDepthMouse}>
                     3D
                   </button>
-                  <button type="button" className={`pbtn lg${prefs.depthBeat ? ' on' : ''}`} aria-pressed={!!prefs.depthBeat} aria-label="3D to the beat"
-                    title={prefs.depthBeat ? `3D to the beat is on${beat3d.silent ? ' (no music heard yet)' : beat3d.bpm ? ` · ${Math.round(beat3d.bpm)} BPM` : ''} · push or bounce in View ▾ → 3D photo settings · click to turn off` : '3D to the beat: with music playing, the 3D picture pulses on each beat'}
-                    onClick={() => toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)')}>
-                    <BeatIcon size={18} />
-                  </button>
-                  {item?.kind === 'image' && (
-                    <>
-                      <button type="button" className={`pbtn lg${depthLift ? ' on' : ''}`} aria-pressed={depthLift} aria-label="Lift-off"
-                        title={depthLift ? 'Lift-off is on: the subject comes forward a little (amount in View ▾ → 3D photo settings) · click to turn off' : 'Lift-off: the subject comes forward a little, with a soft shadow behind it (still pictures)'}
-                        onClick={() => toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in View ▾ → 3D photo settings')}>
-                        <LiftIcon size={18} />
-                      </button>
-                      {depthLift && inVault && (
-                        <button type="button" className="pbtn" aria-label="Save subject as PNG" disabled={savingSubject}
-                          title="Save the subject cut out (a PNG with a transparent background) next to the original · Ctrl+Z undoes it"
-                          onClick={() => void saveSubject()}>
-                          <SubjectPngIcon size={16} />
-                        </button>
-                      )}
-                      <button type="button" className={`pbtn lg${depthEdges3d ? ' on' : ''}`} aria-pressed={depthEdges3d} aria-label="Sharper depth edges"
-                        title={depthEdges3d ? 'Sharper depth edges are on: the depth follows the subject\'s outline (strength in View ▾ → 3D photo settings) · click to turn off' : 'Sharper depth edges: the depth follows the subject\'s outline, so it doesn\'t smear at the edges (works with every 3D mode)'}
-                        onClick={() => toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true })}>
-                        <DepthEdgesIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthSubjectOnly ? ' on' : ''}`} aria-pressed={depthSubjectOnly} aria-label="3D only on the subject"
-                        title={depthSubjectOnly ? '3D only on the subject is on: the background stays still · click to turn off' : '3D only on the subject: the background stays completely still, only the subject moves in 3D'}
-                        onClick={() => toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true })}>
-                        <SubjectOnly3DIcon size={18} />
-                      </button>
-                      <button type="button" className={`pbtn lg${depthLayered ? ' on' : ''}`} aria-pressed={depthLayered} aria-label="Layered 3D"
-                        title={depthLayered ? 'Layered 3D is on: the background behind the subject is filled in (fill in View ▾ → 3D photo settings) · click to turn off' : 'Layered 3D: the background behind the subject is filled in, so moving the camera shows background instead of stretched edges'}
-                        onClick={() => toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true })}>
-                        <Layered3DIcon size={18} />
-                      </button>
-                    </>
+                  {/* The other 3D switches, together in one menu. */}
+                  <Dropdown up className={`pbtn lg wide${depthMenuOn ? ' on' : ''}`} label="3D ▾" title="More 3D: GIFs and videos, the beat, Lift-off, layers" items={depthMenu} />
+                  {depthLift && inVault && item?.kind === 'image' && (
+                    <button type="button" className="pbtn" aria-label="Save subject as PNG" disabled={savingSubject}
+                      title="Save the subject cut out (a PNG with a transparent background) next to the original · Ctrl+Z undoes it"
+                      onClick={() => void saveSubject()}>
+                      <SubjectPngIcon size={16} />
+                    </button>
                   )}
                 </div>
               )}
-              {faceCapable && (
-                <button type="button" className={`pbtn lg${prefs.faceBoxes ? ' on' : ''}`} aria-pressed={prefs.faceBoxes}
-                  aria-label="Face boxes" title={prefs.faceBoxes ? 'Hide face boxes' : 'Show boxes around faces'} onClick={() => setFaceBoxes(!prefs.faceBoxes)}>
-                  <FaceIcon size={18} />
-                </button>
-              )}
+              <ScalingMenu prefs={prefs} up className="pbtn lg wide" first={viewMenu} />
               <button type="button" className="pbtn lg" aria-label={muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
                 title={beatQuiet ? 'Slideshow videos stay muted while the slideshow follows the beat' : muted ? `Unmute (${muteKey})` : `Mute (${muteKey})`}
                 onClick={() => set({ muted: !s.muted })}>
@@ -1990,6 +2093,7 @@ export function Player(props: PlayerProps) {
         <BestFramesDialog item={item} rot={rot} onClose={() => setBestFrames(false)} onMessage={setFlash} onSaved={() => { lastTurn.current = peekUndo(); }} />
       )}
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
+      {depthSettings && <DepthSettingsDialog prefs={prefs} onClose={() => setDepthSettings(false)} />}
     </div>
   );
 }

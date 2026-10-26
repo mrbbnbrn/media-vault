@@ -7,7 +7,7 @@ import { api, onEvent, type Bookmark, type CutDone, type ViewerSettings, type Vi
 import { derivedName, GIF_MAX_FRAMES, GIF_MAX_SECONDS, makeGif } from '../clips';
 import { formatTime } from '../media';
 import { saveViewerPrefs } from '../prefs';
-import { Dropdown, Modal } from './Dialogs';
+import { Dropdown, Modal, type MenuItem } from './Dialogs';
 import { CloseIcon } from './Icons';
 import { DepthSettingsDialog } from './DepthSettings';
 import { depthPack } from '../depth';
@@ -332,14 +332,19 @@ export function Mp4CutDialog(props: {
 }
 
 /** Picture scaling, like IrfanView's "Use Resample for fitting / zooming". */
-export function ScalingMenu({ prefs }: { prefs: ViewerSettings }) {
+/**
+ * The viewer's View ▾ menu (in the bar at the bottom): `first` comes at the top (fit or fill,
+ * the glow, face boxes), then how pictures are drawn and the 3D photos.
+ */
+export function ScalingMenu({ prefs, first = [], up, className }: { prefs: ViewerSettings; first?: MenuItem[]; up?: boolean; className?: string }) {
   // 3D photos (begin): the switch, and a window with its shape, amount and speed (DepthSettings.tsx).
   const [depth, setDepth] = useState(false);
   // 3D photos (end)
   return (
     <>
-      <Dropdown className="btn btn-sm glass" label="View ▾" title="How pictures are shown" items={[
-        { label: 'Smooth when shrinking to fit', hint: 'better quality', checked: prefs.smoothFit, onSelect: () => saveViewerPrefs({ smoothFit: !prefs.smoothFit }) },
+      <Dropdown up={up} className={className ?? 'btn btn-sm glass'} label="View ▾" title="How pictures are shown" items={[
+        ...first,
+        { label: 'Smooth when shrinking to fit', sepBefore: first.length > 0, hint: 'better quality', checked: prefs.smoothFit, onSelect: () => saveViewerPrefs({ smoothFit: !prefs.smoothFit }) },
         { label: 'Smooth when zoomed in', hint: 'off = crisp pixels (P)', checked: prefs.smoothZoom, onSelect: () => saveViewerPrefs({ smoothZoom: !prefs.smoothZoom }) },
         { label: 'Sharpen after smoothing', checked: prefs.sharpen, onSelect: () => saveViewerPrefs({ sharpen: !prefs.sharpen }) },
         { label: 'Swipe and edge clicks', hint: 'drag beside the picture, or click at the far left / right, to move on', checked: prefs.swipeNav !== false, onSelect: () => saveViewerPrefs({ swipeNav: prefs.swipeNav === false }) },

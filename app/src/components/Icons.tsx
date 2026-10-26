@@ -217,6 +217,14 @@ export const HelpIcon = ({ size = 16 }: P) => (
     <path d="M12 17h.01" />
   </svg>
 );
+/** An "i" in a circle: the viewer's info panel. */
+export const InfoIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 11v6" />
+    <path d="M12 7.5h.01" />
+  </svg>
+);
 export const ClockIcon = ({ size = 15 }: P) => (
   <svg {...base(size)}>
     <circle cx="12" cy="12" r="9" />

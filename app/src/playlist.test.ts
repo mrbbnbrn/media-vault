@@ -177,3 +177,13 @@ describe('date sorts use the picture date; Recently added uses when it was added
     expect(sorted(list, 'added').map((x) => x.key)).toEqual(['c', 'a', 'b']);
   });
 });
+
+describe('first', () => {
+  it('goes back to the start of the order (a resumed slideshow starting over)', () => {
+    const p = new Playlist(items, 'nameAsc', 'all', 'b2.jpg');
+    expect(p.current()?.name).toBe('b2.jpg');
+    expect(p.first()?.name).toBe('a2.jpg');
+    expect(p.next()?.name).toBe('a10.jpg');
+    expect(p.prev()?.name).toBe('a2.jpg');
+  });
+});

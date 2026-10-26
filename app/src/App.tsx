@@ -24,7 +24,7 @@ import { RecoveryWords } from './screens/RecoveryWords';
 import { Recover } from './screens/Recover';
 import { NewPassword } from './screens/NewPassword';
 import type { LibView } from './screens/Library';
-import type { TitleCard } from './screens/Viewer';
+import type { ShowPlace, TitleCard } from './screens/Viewer';
 import { lazyPart, preloadParts } from './lazypart';
 import { MiniFrame } from './components/MiniFrame';
 import { TitleBar } from './components/TitleBar';
@@ -90,6 +90,8 @@ export interface ViewerRoute {
   person?: number | null;
   /** Opened from the library, which stays mounted (frozen) under the viewer. Set by go(). */
   overLibrary?: boolean;
+  /** A folder's slideshow: its own settings and where you stopped are remembered. */
+  place?: ShowPlace | null;
 }
 
 export interface Nav {
@@ -382,6 +384,7 @@ export function App() {
           <Viewer nav={nav} items={viewerRoute.items} startKey={viewerRoute.startKey} title={viewerRoute.title} auto={viewerRoute.auto} order={viewerRoute.order}
             fromRect={viewerRoute.fromRect} kenBurns={viewerRoute.kenBurns} titleCard={viewerRoute.titleCard} speedRound={viewerRoute.speedRound}
             person={viewerRoute.person}
+            place={viewerRoute.place}
             mini={isMini}
             onBack={(last, close) => {
               setMini(null);

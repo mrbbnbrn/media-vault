@@ -273,6 +273,17 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     case 'set_favourite':
       for (const it of items) if ((a.ids as number[]).includes(it.id)) it.favourite = !!a.on;
       return;
+    case 'set_weight':
+      for (const it of items) if ((a.ids as number[]).includes(it.id)) it.weight = a.weight as number;
+      return;
+    // To the trash and back (Delete and Ctrl+Z).
+    case 'delete_items':
+    case 'restore_items': {
+      const ids = a.ids as number[];
+      const hit = items.filter((i) => ids.includes(i.id));
+      for (const it of hit) it.deletedAt = cmd === 'delete_items' ? Date.now() : null;
+      return hit.length;
+    }
     case 'folder_banner': {
       const b = banners.get(a.folder as number);
       const it = b && items.find((i) => i.id === b.media && i.deletedAt == null);

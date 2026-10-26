@@ -215,6 +215,15 @@ export class Playlist<T extends Entry = Entry> {
     return this.current();
   }
 
+  /** Back to the start of the order (random modes: a fresh pick). */
+  first(): T | null {
+    if (!this.items.length) return null;
+    this.ahead = [];
+    this.pos = isRandomish(this.order) ? this.pick(-1) : 0;
+    if (this.pos >= 0) this.history.push(this.pos);
+    return this.current();
+  }
+
   /** Jump straight to an item (e.g. clicked in the grid). */
   jump(key: string): T | null {
     this.ahead = [];

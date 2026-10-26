@@ -185,7 +185,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
                 {/* Picture layers (still pictures with an outline). */}
         <span style={{ alignSelf: 'start', paddingTop: 12, fontWeight: 600 }}>Picture layers</span>
         <span className="faint" style={{ fontSize: 12, paddingTop: 12 }}>
-          {subjectOk === false ? NO_SUBJECT_PACK : 'For still pictures, using the subject outline. Each is also a button next to the 3D buttons.'}
+          {subjectOk === false ? NO_SUBJECT_PACK : 'For still pictures, using the subject outline. Each is also in the viewer’s 3D ▾ menu.'}
         </span>
         <span />
         <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>

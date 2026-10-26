@@ -77,6 +77,7 @@ import { noLayerOpen, setScreenNav } from '../keylayers';
 import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { requestLock } from '../keepopen';
 import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
+import { loadShows } from '../slideshowmemory';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -382,6 +383,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   }, []);
   // Folder sorting: the sidebar (every level and the pinned list) and the folder cards (foldersort.ts).
   const fprefs = useFolderPrefs(s.path);
+  // Folder slideshows' own settings and where they stopped, ready before a slideshow starts.
+  useEffect(() => void loadShows(s.path), [s.path]);
   const sideSort = fprefs.side;
   const cardSort: FolderSort = vp.folderSort ?? sideSort;
   const setCardSort = (o: FolderSort) => { setViewPrefs(vKey, { folderSort: o }); setPrefsTick((t) => t + 1); };
@@ -1321,6 +1324,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       fromRect,
       person: view.kind === 'folder' && folder?.person ? folder.id : view.kind === 'timeline' ? view.person
         : view.kind === 'search' && view.people?.length === 1 ? view.people[0] : null,
+      // In a folder: its slideshow settings and where you stopped are remembered.
+      place: view.kind === 'folder' ? { key: view.id == null ? 'top' : `f${view.id}`, name: view.id == null ? 'Top level' : folder?.name ?? 'this folder' } : null,
     });
   };
   // Closing the viewer: bring the item's tile into view (instantly, still under
@@ -1412,7 +1417,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   /** Shift + middle-click a folder: play it as a slideshow. */
   const playFolder = async (f: FolderCard) => {
     const list = await api.queryItems({ folder: f.id, recursive: true });
-    if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
+    if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null, place: { key: `f${f.id}`, name: f.name } });
     else setNote({ text: `“${f.name}” is empty`, at: 0 });
   };
   const middle = (f: FolderCard) => ({
@@ -1470,7 +1475,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     group('Play', [
       { label: 'Slideshow', hint: 'Shift + middle-click', onSelect: async () => {
         const list = await api.queryItems({ folder: f.id, recursive: true });
-        if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null });
+        if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null, place: { key: `f${f.id}`, name: f.name } });
       } },
       { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
       { label: 'Discovery river from here', hint: 'drift through it', onSelect: () => openFolderRiver(f, (text) => setNote({ text, at: 0 })) },
@@ -3018,7 +3023,18 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <QuickLook items={shown} id={quick} onClose={() => setQuick(null)}
           onMove={(id) => { setQuick(id); setCursor(id); setSelected(new Set([id])); setAnchor(id); }}
           onOpen={(it) => { setQuick(null); playItems(false, it.id); }}
-          onShowFolder={view.kind === 'folder' ? undefined : (it) => { setQuick(null); showInFolder(it); }} />
+          onShowFolder={view.kind === 'folder' ? undefined : (it) => { setQuick(null); showInFolder(it); }}
+          onFavourite={view.kind === 'trash' ? undefined : (it) => void setFav([it.id], !it.favourite)}
+          onDelete={view.kind === 'trash' ? undefined : (it, next) => {
+            // The next one shows straight away; back to this one if it didn't go (cancelled, or failed).
+            const go = (id: number | null) => {
+              setQuick(id);
+              if (id != null) { setCursor(id); setSelected(new Set([id])); setAnchor(id); }
+            };
+            go(next?.id ?? null);
+            trashRef.current(it.id).then((ok) => { if (!ok) go(it.id); }, () => go(it.id));
+          }}
+          onUndo={() => void undo()} />
       )}
 
       {dialog?.t === 'newFolder' && (

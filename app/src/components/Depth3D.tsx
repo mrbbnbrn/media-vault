@@ -563,7 +563,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       <DepthModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
       <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Subject outline model</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
-        For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow). It is a button next to the 3D buttons in the viewer, for
+        For <b>Lift-off</b> (the subject comes forward a little, with a soft shadow). It is in the viewer’s <b>3D ▾</b> menu, for
         still pictures. The outline of each picture is worked out offline and saved in the vault (encrypted), so it is only worked out once.
       </p>
       <SubjectModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
