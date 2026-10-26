@@ -1175,3 +1175,8 @@ span.cframe > img, .fcover span.cframe > img, span.cframe .vslot video { positio
 .seg.tx-pick button { padding: 0 6px; }
 .picker-path { margin-left: auto; font-size: 12px; padding-left: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50%; }
 .lib-main.switching > * { opacity: 0.35; transition: opacity 0.12s 0.08s; pointer-events: none; }
+
+/* Start: a small warning under the password box while Caps Lock is on. */
+.caps-warn { display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; font-size: 12.5px; color: var(--warn); }
+.caps-warn::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--warn); }
+
