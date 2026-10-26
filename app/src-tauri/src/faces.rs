@@ -402,17 +402,23 @@ fn take_dirty(conn: &Connection) -> R<Vec<i64>> {
 }
 
 /// A model's graph from the library (or worked out anew): every fingerprint
-/// read in one go, then only faces new since it was saved are compared.
-fn load_graph(conn: &Connection, model: i64, present: &HashSet<i64>) -> R<Graph> {
-    let mut current: HashMap<i64, Vec<f32>> = HashMap::with_capacity(present.len());
-    let mut st = conn.prepare("SELECT id, descriptor FROM faces WHERE model = ?").map_err(e)?;
-    for row in st.query_map([model], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))).map_err(e)? {
-        let (id, b) = row.map_err(e)?;
-        if present.contains(&id) {
-            current.insert(id, from_blob(&b));
+/// read in one go, then only faces new since it was saved are compared. The
+/// library is held only while reading; the comparisons (which can take a
+/// while) run after it is let go.
+fn load_graph(lib: &dyn Lib, model: i64, present: &HashSet<i64>) -> R<Graph> {
+    let (mut current, saved) = {
+        let conn = lib.conn();
+        let mut current: HashMap<i64, Vec<f32>> = HashMap::with_capacity(present.len());
+        let mut st = conn.prepare("SELECT id, descriptor FROM faces WHERE model = ?").map_err(e)?;
+        for row in st.query_map([model], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Vec<u8>>(1)?))).map_err(e)? {
+            let (id, b) = row.map_err(e)?;
+            if present.contains(&id) {
+                current.insert(id, from_blob(&b));
+            }
         }
-    }
-    let saved: Option<Vec<u8>> = conn.query_row("SELECT data FROM face_graph WHERE model = ?", [model], |r| r.get(0)).optional().map_err(e)?;
+        let saved: Option<Vec<u8>> = conn.query_row("SELECT data FROM face_graph WHERE model = ?", [model], |r| r.get(0)).optional().map_err(e)?;
+        (current, saved)
+    };
     let mut graph = saved.and_then(|b| Graph::from_bytes(model, &b, &mut current)).unwrap_or_else(|| Graph::new(model));
     let mut rest: Vec<(i64, Vec<f32>)> = current.into_iter().collect();
     rest.sort_unstable_by_key(|x| x.0);
@@ -627,7 +633,7 @@ fn analyse_all(lib: &dyn Lib) -> R<(Vec<ModelView>, Facts)> {
             std::collections::hash_map::Entry::Occupied(o) => o.into_mut(),
             std::collections::hash_map::Entry::Vacant(v) => {
                 // Changes since it was saved count from 0 (none = nothing to save).
-                v.insert(ModelState { graph: load_graph(&lib.conn(), model, &present)?, last: None, saved_version: 0 })
+                v.insert(ModelState { graph: load_graph(lib, model, &present)?, last: None, saved_version: 0 })
             }
         };
         st.graph.forget(&dirty);
