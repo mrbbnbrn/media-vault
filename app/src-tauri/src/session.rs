@@ -119,14 +119,33 @@ fn dir_size(path: &Path) -> u64 {
     total
 }
 
+/// Vault sizes worked out before (adding up a vault's files takes a while
+/// on a big or slow drive), so the start screen shows them straight away.
+static SIZES: Mutex<Vec<(String, u64)>> = Mutex::new(Vec::new());
+
+fn known_size(path: &str) -> Option<u64> {
+    SIZES.lock().unwrap_or_else(|e| e.into_inner()).iter().find(|(p, _)| p == path).map(|(_, s)| *s)
+}
+
+/// A vault in the list, with its size.
 pub fn describe(path: &str) -> VaultEntry {
+    let mut v = describe_quick(path);
+    if v.status == "ready" {
+        v.size_bytes = Some(vault_size(path));
+    }
+    v
+}
+
+/// A vault in the list, at once: its size only if it was worked out before
+/// (`vault_size` adds it up).
+pub fn describe_quick(path: &str) -> VaultEntry {
     let p = Path::new(path);
     let (status, size) = if !p.exists() {
         ("missing", None)
     } else if !vault_core::is_vault(p) {
         ("notVault", None)
     } else {
-        ("ready", Some(dir_size(p)))
+        ("ready", known_size(path))
     };
     let header = if status == "ready" { vault_core::read_header(p).ok() } else { None };
     let passwordless = header.as_ref().is_some_and(|h| h.is_passwordless());
@@ -139,6 +158,15 @@ pub fn describe(path: &str) -> VaultEntry {
         passwordless,
         encrypted,
     }
+}
+
+/// Add up a vault folder's files (and remember the answer for `describe_quick`).
+pub fn vault_size(path: &str) -> u64 {
+    let size = dir_size(Path::new(path));
+    let mut known = SIZES.lock().unwrap_or_else(|e| e.into_inner());
+    known.retain(|(p, _)| p != path);
+    known.push((path.to_string(), size));
+    size
 }
 
 pub fn check_password(pw: &str) -> Result<(), String> {
@@ -601,6 +629,10 @@ mod tests {
         let d = describe(&p);
         assert_eq!(d.status, "ready");
         assert!(d.size_bytes.unwrap() > 0);
+        // Quick: no adding up, but a size worked out before is shown.
+        let q = describe_quick(&p);
+        assert_eq!((q.status.as_str(), q.size_bytes), ("ready", d.size_bytes));
+        assert_eq!(describe_quick(&format!("{parent}/nope")).size_bytes, None);
         assert_eq!(describe(&format!("{parent}/nope")).status, "missing");
         assert_eq!(describe(parent).status, "notVault");
     }

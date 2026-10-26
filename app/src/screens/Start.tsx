@@ -17,6 +17,15 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
   const [error, setError] = useState<string | null>(null);
 
   const vault = useMemo(() => app.vaults.find((v) => v.path === selected), [app.vaults, selected]);
+  // Sizes are added up after the list shows (they take a while on a big or slow drive).
+  const [sizes, setSizes] = useState<Record<string, number | null>>({});
+  useEffect(() => {
+    let live = true;
+    api.vaultSizes().then((list) => {
+      if (live) setSizes(Object.fromEntries(list.map((x) => [x.path, x.sizeBytes])));
+    }).catch(() => {});
+    return () => { live = false; };
+  }, [app.vaults]);
   useEffect(() => {
     setPassword('');
     setError(null);
@@ -111,7 +120,7 @@ export function Start({ nav, select }: { nav: Nav; select?: string }) {
                 <span className="path">{v.path}</span>
               </span>
               <span className="status">
-                {v.status === 'ready' ? formatBytes(v.sizeBytes) : v.status === 'missing' ? 'Drive not connected' : 'Not a vault'}
+                {v.status === 'ready' ? formatBytes(sizes[v.path] ?? v.sizeBytes) : v.status === 'missing' ? 'Drive not connected' : 'Not a vault'}
               </span>
               {vaultBadge(v) === 'lock' && (
                 <span className="vault-lock" aria-label="Has a password"><LockIcon size={14} /></span>

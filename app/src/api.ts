@@ -842,7 +842,9 @@ export const api = {
     inTauri ? call<ModelFit[]>('models_fit') : Promise.resolve([{ model: 'birefnet', needMb: 10650, cardMb: 6860, fits: false }, { model: 'da3-mono-large', needMb: 2460, cardMb: 6860, fits: true }]),
   /** The user is using the window (or a video plays): the backend's background loops wait between items (bgpace.ts). */
   setUserBusy: (busy: boolean, video: boolean) => call<void>('set_user_busy', { busy, video }),
+  /** The vault list comes without sizes the first time (adding them up takes a while): they come here. */
   getState: () => call<AppState>('get_state'),
+  vaultSizes: () => call<{ path: string; sizeBytes: number | null }[]>('vault_sizes'),
   saveConfig: (config: AppConfig) => call<AppConfig>('save_config', { config }),
   addVault: (path: string) => call<VaultEntry>('add_vault', { path }),
   forgetVault: (path: string) => call<void>('forget_vault', { path }),
@@ -1628,6 +1630,8 @@ const mock = {
     switch (cmd) {
       case 'get_state':
         return structuredClone(s);
+      case 'vault_sizes':
+        return s.vaults.map((v) => ({ path: v.path, sizeBytes: v.sizeBytes }));
       case 'save_config':
         s.config = { ...(a.config as AppConfig), vaults: s.config.vaults, lastVault: s.config.lastVault };
         return s.config;

@@ -284,10 +284,11 @@ async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
     let inner = state.inner().clone();
     blocking(move || {
         let config = inner.config.lock().unwrap().clone();
+        // Sizes take a while to add up: the window asks for them afterwards (vault_sizes).
         let vaults = config
             .vaults
             .iter()
-            .map(|v| session::describe(&v.path))
+            .map(|v| session::describe_quick(&v.path))
             .collect();
         let session = inner.session.lock().unwrap().clone().map(|s| s.info());
         Ok(AppStateDto {
@@ -296,6 +297,31 @@ async fn get_state(state: State<'_, Shared>) -> Result<AppStateDto, String> {
             session,
             min_password_chars: session::MIN_PASSWORD_CHARS,
         })
+    })
+    .await
+}
+
+/// The size of each vault in the list (adding up their files), for the
+/// start screen after it has shown the list. Vaults that aren't there: none.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct VaultSize {
+    path: String,
+    size_bytes: Option<u64>,
+}
+
+#[tauri::command]
+async fn vault_sizes(state: State<'_, Shared>) -> Result<Vec<VaultSize>, String> {
+    let inner = state.inner().clone();
+    blocking(move || {
+        let paths: Vec<String> = inner.config.lock().unwrap_or_else(|e| e.into_inner()).vaults.iter().map(|v| v.path.clone()).collect();
+        Ok(paths
+            .into_iter()
+            .map(|path| {
+                let size_bytes = session::describe(&path).size_bytes;
+                VaultSize { path, size_bytes }
+            })
+            .collect())
     })
     .await
 }
@@ -2593,6 +2619,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_state,
+            vault_sizes,
             save_config,
             add_vault,
             forget_vault,
