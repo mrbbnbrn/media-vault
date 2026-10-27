@@ -2,6 +2,10 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
+import { SORTS, minimapLabel, KINDS, PREVIEWS, viewTitle, NO_SEARCH, foldName, searchTitle, groupBy, saveColsLater, findAnchor } from './library/helpers';
+import { FolderCover, SmartProgressNote } from './library/FolderCover';
+import { TagItemsDialog, ArchivePasswordDialog, ImportSummary, CoverPicker } from './library/LibraryDialogs';
+import { SearchBar } from './library/SearchBars';
 import { errText } from '../text';
 import { MESSAGE_SLOT } from '../components/Messages';
 import { say } from '../messages';
@@ -10,22 +14,14 @@ import type { StatsGo } from '../components/StatsView';
 import { createPortal } from 'react-dom';
 import { open } from '@tauri-apps/plugin-dialog';
 import { gridShown } from '../firstgrid';
-import {
-  api, DEFAULT_LOOK, inTauri, mediaUrl, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind,
-  type ClipStatus, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView, type FolderBanner,
-  takeLogin,
-} from '../api';
+import { api, DEFAULT_LOOK, inTauri, onEvent, thumbUrl, type DropSummary, type FolderCard, type ImportReport, type Item, type Kind, type CopyLinks, type ExportRequest, type FaceBox, type Merged, type Extracted, type LoginInfo, type StorageDone, type StorageInfo, type StorageProgress, type TagCount, type TrashView, type FolderBanner, takeLogin } from '../api';
 import type { Nav } from '../App';
 import { ActionBar, type BarAction } from '../components/ActionBar';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
-import {
-  ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LeaveIcon, LockIcon, MoveIcon, PinIcon,
-  ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SearchIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon,
-} from '../components/Icons';
+import { ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LeaveIcon, LockIcon, MoveIcon, PinIcon, ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon } from '../components/Icons';
 import { FaceSortOffer } from '../components/FaceSort';
 import { openSortAll } from '../facesort';
-import { peopleInText } from '../peoplelogic';
 import type { RenameEntry } from '../components/RenameDialog';
 import type { Memory } from '../components/Memories';
 import { ShareDialog } from '../components/ShareDialog';
@@ -39,15 +35,14 @@ import { maybeDragOut, lastDragOutError } from '../dragout';
 import { openRect, revealInGrid, setLibraryReveal, sourceElement, visibleRect } from '../viewerflip';
 import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
-import { CoverImg, leaveCard, setHoveredCard, useCardHovered, useFolderSamples, useHoverCycle } from '../components/CoverImg';
+import { CoverImg, leaveCard, setHoveredCard } from '../components/CoverImg';
 import { kickFaceScanner, noteFaceProgress } from '../ml/facescan';
-import { embedQuery, onClipProgress, smartAvailable } from '../ml/smart';
+import { embedQuery, smartAvailable } from '../ml/smart';
 import { useTaskPart } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
 import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
 import { SeparateFaces, type SeparateTarget } from '../components/SeparateFaces';
 import { MediaGrid } from '../components/MediaGrid';
-import { CoverVideo } from '../components/VideoPreview';
 import { Framed } from '../components/FramedCover';
 import { CoverFrameEditor } from '../components/CoverFrameEditor';
 import { BannerPicker, FolderBannerView, useFolderBanner } from '../components/FolderBanner'; // folder banners
@@ -62,14 +57,13 @@ import {
   getAnchor, getScroll, getSideScroll, lastPlace, setAnchor as setScrollAnchor, loadViewPrefs, prefsKey, rememberPlace, setScroll, setSideScroll, setViewPrefs, viewKey, viewPrefsFor,
   rememberSelection, takeSelection, type LastPlace,
 } from '../viewmemory';
-import type { ScrollAnchor } from '../viewmemory';
 import { monthGroups } from '../gridlayout';
 import { fromItem, kickThumbnails, onItemsChanged, onThumb } from '../media';
 import { beginStep, dropStep, endStep, whenImagesShown } from '../perf';
 import { calmly, reuseSame, shallowSame, useStableList } from '../calm';
 import { useEvent } from '../useevent';
 import { sorted, type Order } from '../playlist';
-import { saveAppConfig, saveViewerPrefs, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
+import { saveAppConfig, setFaceBoxes, useFaceBoxes, useViewerPrefs } from '../prefs';
 import { formatBytes } from '../theme';
 import { clearUndo, plural, pushUndo, undoLast, useUndoTop } from '../undo';
 import { lazyPart } from '../lazypart';
@@ -164,109 +158,7 @@ type Dialog =
   | { t: 'slots'; folder: FolderCard | null }
   | { t: 'why'; item: Item; query: WhyQuery };
 
-const SORTS: { id: Order; label: string }[] = [
-  { id: 'newest', label: 'Newest first' },
-  { id: 'oldest', label: 'Oldest first' },
-  { id: 'added', label: 'Recently added' },
-  { id: 'nameAsc', label: 'Name A–Z' },
-  { id: 'nameDesc', label: 'Name Z–A' },
-  { id: 'largest', label: 'Largest first' },
-];
-
-/** What the minimap preview says at an item: its month when sorted by date, its first letter when by name. */
-const monthFmt = new Intl.DateTimeFormat(undefined, { month: 'long', year: 'numeric' });
-function minimapLabel(sort: Order | null): ((it: Item) => string | null) | undefined {
-  if (sort === 'newest' || sort === 'oldest') return (it) => monthFmt.format(new Date(it.takenAt * 1000));
-  if (sort === 'added') return (it) => `Added ${monthFmt.format(new Date(it.importedAt * 1000))}`;
-  if (sort === 'nameAsc' || sort === 'nameDesc') return (it) => {
-    const c = it.name.trim().charAt(0).toLocaleUpperCase();
-    return !c ? null : /\d/.test(c) ? '0–9' : c;
-  };
-  return undefined;
-}
-
-const KINDS: { id: Kind | 'any'; label: string }[] = [
-  { id: 'any', label: 'All types' },
-  { id: 'image', label: 'Pictures' },
-  { id: 'gif', label: 'GIFs' },
-  { id: 'video', label: 'Videos' },
-  { id: 'text', label: 'Text files' },
-  { id: 'pdf', label: 'PDFs' },
-];
-
-const PREVIEWS: { id: 'all' | 'hover' | 'off'; label: string; hint: string }[] = [
-  { id: 'all', label: 'Play everything on screen', hint: 'muted' },
-  { id: 'hover', label: 'Play what I hover', hint: 'muted' },
-  { id: 'off', label: 'No previews', hint: 'still pictures' },
-];
-
-
-function viewTitle(v: LibView, folder: FolderCard | null): string {
-  switch (v.kind) {
-    case 'folders': return 'All folders';
-    case 'folder': return v.id === null ? 'Top level' : folder?.name ?? 'Folder';
-    case 'all': return 'All media';
-    case 'favourites': return 'Favourites';
-    case 'recent': return 'Recently added';
-    case 'timeline': return 'Timeline';
-    case 'trash': return 'Trash';
-    case 'stats': return 'Statistics';
-    case 'search': return 'Search';
-    case 'smart': return `Smart search: “${v.q}”`;
-    case 'people': return 'People';
-    case 'lookalikes': return 'Look-alikes';
-    case 'similar': return `Similar to “${v.name}”`;
-    case 'continue': return 'Continue watching';
-    case 'memories': return 'Memories';
-  }
-}
-
-type SearchValue = { tags: string[]; names: string[]; people: number[] };
-const NO_SEARCH: SearchValue = { tags: [], names: [], people: [] };
-
-/** Lower-case for matching names: Turkish İ/I/ı/i all match. */
-const foldName = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '');
-
-function searchTitle(v: SearchValue, folders: FolderCard[]) {
-  const parts = [
-    ...v.people.map((p) => folders.find((f) => f.id === p)?.name ?? 'person'),
-    ...v.tags.map((t) => `tagged “${t}”`),
-    ...v.names.map((n) => `name contains “${n}”`),
-  ];
-  return parts.join(' + ');
-}
-
-/** Group ids by a value, e.g. previous folder or previous weight (for undo). */
-function groupBy<K>(ids: number[], key: (id: number) => K): Map<K, number[]> {
-  const m = new Map<K, number[]>();
-  for (const id of ids) {
-    const k = key(id);
-    m.set(k, [...(m.get(k) ?? []), id]);
-  }
-  return m;
-}
-
-let colsTimer: ReturnType<typeof setTimeout> | null = null;
-function saveColsLater(n: number) {
-  if (colsTimer) clearTimeout(colsTimer);
-  colsTimer = setTimeout(() => saveViewerPrefs({ gridColumns: n }), 700);
-}
-
 let resumeOfferedFor: string | null = null;
-
-/** The first tile or folder card at the top of the scroller, and its distance from the top edge. */
-function findAnchor(sc: HTMLElement): ScrollAnchor | null {
-  const top = sc.getBoundingClientRect().top;
-  let best: { el: HTMLElement; y: number } | null = null;
-  for (const el of sc.querySelectorAll<HTMLElement>('[data-item], [data-card]')) {
-    const r = el.getBoundingClientRect();
-    if (r.bottom <= top + 1) continue;
-    if (!best || r.top < best.y - 1 || (Math.abs(r.top - best.y) <= 1 && r.left < best.el.getBoundingClientRect().left)) best = { el, y: r.top };
-  }
-  if (!best) return null;
-  const sel = best.el.dataset.item != null ? `[data-item="${best.el.dataset.item}"]` : `[data-card="${best.el.dataset.card}"]`;
-  return { sel, offset: best.y - top };
-}
 
 export function Library({ nav, view, setView, history, reveal, tabs, frozen = false }: {
   nav: Nav; view: LibView; setView: (v: LibView) => void;
@@ -2847,7 +2739,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             </div>
           </div>
 
-
           {view.kind === 'people' && (
             <PeopleView folders={folders} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
               onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
@@ -3274,536 +3165,3 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   );
 }
 
-function SearchBar(props: {
-  tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void;
-  smart: boolean; smartQuery: string; onSmart: (q: string) => void; onEscape: () => void;
-}) {
-  if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} onEscape={props.onEscape} />;
-  return <TagNameBar {...props} />;
-}
-
-/** Smart search: type a description, Enter to search. */
-function SmartBar(props: { query: string; onSearch: (q: string) => void; onEscape: () => void }) {
-  const [text, setText] = useState(props.query);
-  useEffect(() => setText(props.query), [props.query]);
-  return (
-    <div className="search smart">
-      <SparkleIcon />
-      <label htmlFor="lib-search" className="sr-only">Smart search</label>
-      <input id="lib-search" value={text} autoComplete="off" placeholder="Describe what you're looking for… (any language)"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); props.onSearch(text.trim()); }
-          else if (e.key === 'Escape') {
-            // Esc clears the box; Esc on an empty box leaves the search.
-            if (text) setText('');
-            else {
-              (e.target as HTMLInputElement).blur();
-              props.onEscape();
-            }
-          }
-        }} />
-      {text && (
-        <button type="button" className="link" aria-label="Clear" onClick={() => { setText(''); props.onSearch(''); }}><CloseIcon size={12} /></button>
-      )}
-    </div>
-  );
-}
-
-function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void; onEscape: () => void }) {
-  const [text, setText] = useState('');
-  const [focus, setFocus] = useState(false);
-  const [hi, setHi] = useState(0);
-  const fold = (x: string) => x.toLocaleLowerCase('tr').replace(/ı/g, 'i').replace(/\u0307/g, '');
-  const q = fold(text.trim());
-  const { tags, names, people } = props.value;
-  const starts = (x: string) => Number(!fold(x).startsWith(q));
-  const tagHits = props.tags
-    .filter((t) => !tags.some((v) => v.toLowerCase() === t.name.toLowerCase()))
-    .filter((t) => !q || fold(t.name).includes(q))
-    .sort((a, b) => starts(a.name) - starts(b.name))
-    .slice(0, 8);
-  // People (person folders) and other folders whose name matches.
-  const personHits = props.folders
-    .filter((f) => f.person && !people.includes(f.id) && (!q || fold(f.name).includes(q)))
-    .sort((a, b) => starts(a.name) - starts(b.name))
-    .slice(0, q ? 5 : 3);
-  const folderHits = q
-    ? props.folders.filter((f) => !f.person && fold(f.name).includes(q)).sort((a, b) => starts(a.name) - starts(b.name)).slice(0, 5)
-    : [];
-  // "Baran + Ayşe": photos with both of them.
-  const together = (peopleInText(text, props.folders) ?? []).filter((id) => !people.includes(id));
-  type Opt =
-    | { t: 'people'; ids: number[]; name: string; hint: string }
-    | { t: 'person'; id: number; name: string; hint: string }
-    | { t: 'tag'; name: string; hint: string }
-    | { t: 'folder'; id: number; name: string; hint: string }
-    | { t: 'name'; text: string };
-  const opts: Opt[] = [
-    ...(together.length >= 2 ? [{ t: 'people', ids: together, name: together.map((id) => props.folders.find((f) => f.id === id)?.name ?? '').join(' + '), hint: 'together in a photo' } as Opt] : []),
-    ...personHits.map((f): Opt => ({ t: 'person', id: f.id, name: f.name, hint: 'person' })),
-    ...tagHits.map((t): Opt => ({
-      t: 'tag', name: t.name,
-      hint: `${t.items ? `${t.items} items` : ''}${t.items && t.folders ? ' · ' : ''}${t.folders ? `${t.folders} folders` : ''}`,
-    })),
-    ...folderHits.map((f): Opt => ({ t: 'folder', id: f.id, name: f.name, hint: f.path.length ? f.path.map((c) => c.name).join(' › ') : 'open folder' })),
-    ...(q ? [{ t: 'name', text: text.trim() } as Opt] : []),
-  ];
-  const choose = (o: Opt | undefined) => {
-    if (!o) return;
-    if (o.t === 'people') props.onChange({ tags, names, people: [...people, ...o.ids] });
-    else if (o.t === 'person') props.onChange({ tags, names, people: [...people, o.id] });
-    else if (o.t === 'tag') props.onChange({ tags: [...tags, o.name], names, people });
-    else if (o.t === 'folder') props.onOpenFolder(o.id);
-    else props.onChange({ tags, names: [...names, o.text], people });
-    setText('');
-    setHi(0);
-  };
-  const any = tags.length || names.length || people.length;
-  const personName = (id: number) => props.folders.find((f) => f.id === id)?.name ?? 'person';
-  return (
-    <div className="search">
-      <SearchIcon />
-      {people.map((p) => (
-        <span key={`p${p}`} className="chip accent"><FaceIcon size={11} /> {personName(p)}
-          <button type="button" aria-label={`Remove ${personName(p)}`} onClick={() => props.onChange({ tags, names, people: people.filter((x) => x !== p) })}><CloseIcon size={11} /></button>
-        </span>
-      ))}
-      {tags.map((t) => (
-        <span key={`t${t}`} className="chip accent"><TagIcon size={11} /> {t}
-          <button type="button" aria-label={`Remove tag ${t}`} onClick={() => props.onChange({ tags: tags.filter((x) => x !== t), names, people })}><CloseIcon size={11} /></button>
-        </span>
-      ))}
-      {names.map((n) => (
-        <span key={`n${n}`} className="chip name">“{n}” in name
-          <button type="button" aria-label={`Remove ${n}`} onClick={() => props.onChange({ tags, names: names.filter((x) => x !== n), people })}><CloseIcon size={11} /></button>
-        </span>
-      ))}
-      <label htmlFor="lib-search" className="sr-only">Search people, tags, folders or file names</label>
-      <input id="lib-search" value={text} placeholder={any ? 'Narrow down…' : 'Search people, tags, folders or file names…'} autoComplete="off"
-        onFocus={() => setFocus(true)} onBlur={() => setTimeout(() => setFocus(false), 150)}
-        onChange={(e) => { setText(e.target.value); setHi(0); }}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); choose(opts[hi]); }
-          else if (e.key === 'ArrowDown') { e.preventDefault(); setHi((h) => Math.min(h + 1, opts.length - 1)); }
-          else if (e.key === 'ArrowUp') { e.preventDefault(); setHi((h) => Math.max(h - 1, 0)); }
-          else if (e.key === 'Backspace' && !text && any) {
-            if (names.length) props.onChange({ tags, names: names.slice(0, -1), people });
-            else if (tags.length) props.onChange({ tags: tags.slice(0, -1), names, people });
-            else props.onChange({ tags, names, people: people.slice(0, -1) });
-          } else if (e.key === 'Escape') {
-            // Esc clears what you typed; Esc again leaves the search.
-            if (text) setText('');
-            else {
-              (e.target as HTMLInputElement).blur();
-              props.onEscape();
-            }
-          }
-        }} />
-      {focus && opts.length > 0 && (
-        <div className="menu suggest" role="listbox">
-          {opts.map((o, i) => (
-            <button key={o.t === 'name' ? 'name' : o.t === 'people' ? 'people' : `${o.t}${'id' in o ? o.id : o.name}`} type="button" role="option" aria-selected={i === hi}
-              className={`menu-item${i === hi ? ' on' : ''}`} onMouseDown={(e) => { e.preventDefault(); choose(o); }}>
-              {o.t === 'person' || o.t === 'people' ? <><FaceIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
-                : o.t === 'tag' ? <><TagIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
-                : o.t === 'folder' ? <><FolderIcon size={13} /> {o.name}<span className="hint">{o.hint}</span></>
-                : <><SearchIcon size={13} /> File name contains “{o.text}”</>}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function TagItemsDialog(props: {
-  ids: number[]; all: TagCount[]; onClose: () => void; onDone: () => Promise<void>;
-  did: (label: string, undo: () => Promise<unknown>) => void;
-}) {
-  const [own, setOwn] = useState<string[]>([]);
-  const [inherited, setInherited] = useState<[string, string][]>([]);
-  const [text, setText] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const single = props.ids.length === 1;
-  const load = useCallback(async () => {
-    if (!single) return;
-    const t = await api.itemTags(props.ids[0]);
-    setOwn(t.own);
-    setInherited(t.inherited);
-  }, [props.ids, single]);
-  useEffect(() => { load(); }, [load]);
-  const add = async () => {
-    const list = text.split(',').map((t) => t.trim()).filter(Boolean);
-    if (!list.length) return;
-    try {
-      const added = await api.tagItems(props.ids, list);
-      const real = added.filter(([, ids]) => ids.length);
-      if (real.length)
-        props.did(`Tagged ${plural(new Set(real.flatMap(([, ids]) => ids)).size, 'item')} “${real.map(([t]) => t).join('”, “')}”`, async () => {
-          for (const [t, ids] of real) await api.untagItems(ids, t);
-        });
-      setText('');
-      await load();
-      await props.onDone();
-    } catch (e) { setErr(String(e)); }
-  };
-  const remove = async (t: string) => {
-    const had = await api.untagItems(props.ids, t);
-    if (had.length) props.did(`Removed tag “${t}” from ${plural(had.length, 'item')}`, () => api.tagItems(had, [t]));
-    await load();
-    await props.onDone();
-  };
-  return (
-    <Modal title={single ? 'Tags' : `Tag ${props.ids.length} items`} onClose={props.onClose}>
-      {single && (
-        <div className="stack" style={{ gap: 8 }}>
-          <div className="row" style={{ gap: 6 }}>
-            {own.length ? own.map((t) => (
-              <span key={t} className="chip">{t}<button type="button" aria-label={`Remove ${t}`} onClick={() => remove(t)}><CloseIcon size={11} /></button></span>
-            )) : <span className="faint">No tags of its own yet.</span>}
-          </div>
-          {inherited.length > 0 && (
-            <div className="faint" style={{ fontSize: 13 }}>
-              Also tagged through folders: {inherited.map(([t, f]) => `${t} (from ${f})`).join(', ')}
-            </div>
-          )}
-        </div>
-      )}
-      <form className="row" onSubmit={(e) => { e.preventDefault(); add(); }}>
-        <input className="input" style={{ flex: 1 }} list="known-tags" value={text} autoFocus aria-label="New tags"
-          placeholder="Add tags, separated by commas" onChange={(e) => setText(e.target.value)} />
-        <datalist id="known-tags">{props.all.map((t) => <option key={t.name} value={t.name} />)}</datalist>
-        <button type="submit" className="btn btn-primary">Add</button>
-      </form>
-      {!single && (
-        <form className="row" onSubmit={async (e) => {
-          e.preventDefault();
-          const t = (new FormData(e.currentTarget).get('rm') as string).trim();
-          if (t) { await remove(t); (e.currentTarget as HTMLFormElement).reset(); }
-        }}>
-          <input name="rm" className="input" style={{ flex: 1 }} list="known-tags" placeholder="Remove a tag from all of them" aria-label="Tag to remove" />
-          <button type="submit" className="btn">Remove</button>
-        </form>
-      )}
-      {err && <div className="error">{err}</div>}
-      <div className="row" style={{ justifyContent: 'flex-end' }}>
-        <button type="button" className="btn" onClick={props.onClose}>Done</button>
-      </div>
-    </Modal>
-  );
-}
-
-function ArchivePasswordDialog(props: { summary: DropSummary; onClose: () => void; onImport: (pw: string) => Promise<void> }) {
-  const [pw, setPw] = useState('');
-  const [err, setErr] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const locked = props.summary.archives.filter((a) => a.needsPassword);
-  return (
-    <Modal title="Archive password" onClose={props.onClose}>
-      <p className="muted" style={{ margin: 0, fontSize: 14, lineHeight: 1.6 }}>
-        {locked.length === 1 ? `“${locked[0].name}” is` : `${locked.length} archives are`} password-protected.
-        Files are decrypted in memory and go straight into the vault — nothing is extracted to disk.
-        The password is not saved.
-      </p>
-      <ul className="faint" style={{ margin: 0, paddingLeft: 18, fontSize: 13 }}>
-        {props.summary.archives.map((a) => (
-          <li key={a.path}>{a.name}{a.parts > 1 ? ` (${a.parts} parts)` : ''}{a.error ? ` — ${a.error}` : ''}</li>
-        ))}
-      </ul>
-      <form className="stack" onSubmit={async (e) => {
-        e.preventDefault();
-        setBusy(true);
-        setErr(null);
-        try {
-          for (const a of locked) await api.checkArchivePassword(a.path, pw);
-          await props.onImport(pw);
-          props.onClose();
-        } catch (x) {
-          setErr(errText(x));
-        } finally {
-          setBusy(false);
-        }
-      }}>
-        <div className="field">
-          <label htmlFor="arch-pw">Password{locked.length > 1 ? ' (tried on all of them)' : ''}</label>
-          <input id="arch-pw" className="input" type="password" value={pw} autoFocus onChange={(e) => setPw(e.target.value)} />
-        </div>
-        {err && <div className="error" role="alert">{err}</div>}
-        <div className="row" style={{ justifyContent: 'flex-end' }}>
-          <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
-          <button type="submit" className="btn btn-primary" disabled={!pw || busy}>{busy ? 'Checking…' : 'Import'}</button>
-        </div>
-      </form>
-    </Modal>
-  );
-}
-
-function ImportSummary({ r, onClose }: { r: ImportReport; onClose: () => void }) {
-  const [more, setMore] = useState(false);
-  return (
-    <div className="icard">
-      <div className="row-between">
-        <b>{r.cancelled ? 'Import cancelled' : 'Import finished'}</b>
-        <button type="button" className="link" onClick={onClose}>Dismiss</button>
-      </div>
-      <div style={{ fontSize: 13, lineHeight: 1.6 }}>
-        {r.imported.toLocaleString()} imported ({formatBytes(r.bytes)} in {Math.max(1, Math.round(r.seconds))} s)
-        {r.duplicates > 0 && <> · {r.duplicates} already in that folder</>}
-        {r.skippedCount > 0 && <> · {r.skippedCount} not media, skipped</>}
-      </div>
-      {r.failed.length > 0 && (
-        <div className="error" style={{ flexDirection: 'column', gap: 4 }}>
-          {(more ? r.failed : r.failed.slice(0, 3)).map(([n, why], i) => <span key={i}>{n}: {why}</span>)}
-          {r.failed.length > 3 && !more && <button type="button" className="link" onClick={() => setMore(true)}>Show all {r.failed.length}</button>}
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** Where "Choose cover…" looks: this folder, the person's photos anywhere, or the whole library. */
-type CoverSource = 'here' | 'person' | 'all';
-/**
- * A folder card's picture: a round face for person folders, a playing video/GIF
- * cover, a stack of three with the cover on top, or the cover alone. While hovered
- * it cycles through pictures from inside (its own counter: nothing else redraws).
- */
-function FolderCover({ f, preview, whole, edge }: {
-  f: FolderCard; preview: 'all' | 'hover' | 'off'; whole: boolean; edge: string;
-}) {
-  // Hovering redraws only this card (CoverImg.tsx), not the library.
-  const hovered = useCardHovered(f.id);
-  const list = useFolderSamples(f.id, hovered);
-  const cycle = useHoverCycle(hovered);
-  // Person folders: a round cover centred on the face; hovering opens it
-  // into the card's square, and holding there cycles pictures from inside.
-  if (f.person && f.cover) {
-    const others = list?.filter((x) => x !== f.cover) ?? [];
-    const cycling = hovered && others.length > 0 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
-    const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
-    return <span className={`pcard${hovered ? ' open' : ''}`}><RoundCover folder={f} open={hovered} cycle={cycling} before={before}
-      play={preview === 'all' || (preview === 'hover' && hovered)} /></span>;
-  }
-  const playing = preview === 'all' || (preview === 'hover' && hovered);
-  const animated = f.coverKind === 'video' || f.coverKind === 'gif';
-  if (f.cover && playing && animated) {
-    const still = <CoverImg id={f.cover} />;
-    // "Show the whole video on hover": the hovered card's video/GIF also shows uncropped.
-    if (hovered && whole) return <><WholeCover id={f.cover} kind={f.coverKind === 'gif' ? 'gif' : 'video'} />{still}</>;
-    if (f.coverPos) return <Framed pos={f.coverPos}>{f.coverKind === 'video' ? <>{still}<CoverVideo id={f.cover} /></> : <img src={mediaUrl(f.cover)} alt="" draggable={false} />}</Framed>;
-    if (f.coverKind === 'video') return <>{still}<CoverVideo id={f.cover} /></>;
-    return <img src={mediaUrl(f.cover)} alt="" draggable={false} />;
-  }
-  // Stacked card: two more pictures from inside peek out behind the cover;
-  // hovering fans them out over the neighbouring cards (the mouse passes
-  // through them), the front card grows a little and then cycles through
-  // the folder. Cards in the first or last column fan less towards the edge.
-  const behind = f.cover ? f.samples.filter((x) => x !== f.cover).slice(0, 2) : [];
-  if (behind.length) {
-    const others = list?.filter((x) => !behind.includes(x)) ?? [];
-    const cycling = hovered && others.length > 1 && cycle > 0 ? others[(cycle - 1) % others.length] : null;
-    // The picture before stays underneath while the next one fades in.
-    const before = hovered && others.length > 1 && cycle > 1 ? others[(cycle - 2) % others.length] : null;
-    return (
-      <span className={`fstack${edge}`}>
-        {behind.map((x, k) => <CoverImg key={x} id={x} className={`fstack-${k + 1}`} />)}
-        {f.coverPos
-          ? <Framed pos={f.coverPos} className="fstack-top"><CoverImg id={f.cover!} /></Framed>
-          : <CoverImg id={f.cover!} className="fstack-top" />}
-        {before != null && <img key={`b${before}`} className="fstack-top" src={thumbUrl(before)} alt="" draggable={false} />}
-        {cycling != null && <img key={cycling} className="fstack-top cycle" src={thumbUrl(cycling)} alt="" draggable={false} />}
-      </span>
-    );
-  }
-  if (hovered && list && list.length > 1 && cycle > 0) {
-    const id = list[(cycle - 1) % list.length];
-    return <img key={id} className="cycle" src={thumbUrl(id)} alt="" draggable={false} />;
-  }
-  if (!f.cover) return <FolderIcon size={40} />;
-  if (f.coverPos) return <Framed pos={f.coverPos}><CoverImg id={f.cover} /></Framed>;
-  return <CoverImg id={f.cover} />;
-}
-
-/** Smart search results while pictures are still being analysed (only this redraws as it moves on). */
-function SmartProgressNote() {
-  const [clip, setClip] = useState<ClipStatus | null>(null);
-  useEffect(() => {
-    const upd = () => api.clipStatus().then(setClip).catch(() => {});
-    upd();
-    return onClipProgress(upd);
-  }, []);
-  if (!clip || clip.done + clip.failed >= clip.total) return null;
-  return (
-    <div className="info" style={{ marginBottom: 12 }}>
-      Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
-    </div>
-  );
-}
-
-const COVER_PAGE = 600;
-
-function CoverPicker(props: { folder: FolderCard; onClose: () => void; onPicked: (id: number | null) => Promise<void> }) {
-  const f = props.folder;
-  // A person folder opens on that person's photos (they may live anywhere, or the folder may be empty).
-  const [source, setSource] = useState<CoverSource>(f.person ? 'person' : 'here');
-  const [q, setQ] = useState('');
-  const [favs, setFavs] = useState(false);
-  const [items, setItems] = useState<Item[] | null>(null);
-  const [limit, setLimit] = useState(COVER_PAGE);
-  const [err, setErr] = useState<string | null>(null);
-  /** The picture being looked at big (an index into the list), or null. */
-  const [big, setBig] = useState<number | null>(null);
-  useEffect(() => {
-    let alive = true;
-    setItems(null);
-    setBig(null);
-    setLimit(COVER_PAGE);
-    const media: Kind[] = ['image', 'gif', 'video'];
-    const words = q.trim().split(/\s+/).filter(Boolean);
-    const t = setTimeout(() => {
-      const filter = source === 'here' ? { folder: f.id, recursive: true }
-        : source === 'person' ? { people: [f.id], kinds: media }
-        : { kinds: media, names: words.length ? words : undefined, favouritesOnly: favs || undefined };
-      api.queryItems(filter).then((x) => alive && setItems(x)).catch((e) => alive && setErr(String(e)));
-    }, source === 'all' && words.length ? 250 : 0);
-    return () => {
-      alive = false;
-      clearTimeout(t);
-    };
-  }, [source, q, favs, f.id]);
-  const pick = async (id: number | null) => {
-    try {
-      await props.onPicked(id);
-      props.onClose();
-    } catch (e) {
-      setErr(errText(e));
-    }
-  };
-  const shown = items?.slice(0, limit) ?? [];
-  const cur = big != null ? shown[big] : undefined;
-  // Looking at one big: ←/→ step through, Enter uses it (Esc goes back to the list, see Modal's close below).
-  useEffect(() => {
-    if (big == null) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-        e.preventDefault();
-        e.stopPropagation();
-        const n = shown.length;
-        if (n) setBig((i) => (i == null ? i : (i + (e.key === 'ArrowRight' ? 1 : n - 1)) % n));
-      } else if (e.key === 'Enter' && cur) {
-        e.preventDefault();
-        e.stopPropagation();
-        pick(cur.id);
-      }
-    };
-    window.addEventListener('keydown', onKey, true);
-    return () => window.removeEventListener('keydown', onKey, true);
-  }); // eslint-disable-line react-hooks/exhaustive-deps
-  const closeRef = useRef<() => void>(() => {});
-  closeRef.current = () => (big != null ? setBig(null) : props.onClose());
-  const close = useCallback(() => closeRef.current(), []);
-  const tabs: [CoverSource, string][] = [
-    ['here', 'In this folder'],
-    ...(f.person ? [['person', `Photos of ${f.name}`] as [CoverSource, string]] : []),
-    ['all', 'Whole library'],
-  ];
-  return (
-    <Modal title={`Cover for “${f.name}”`} onClose={close} wide>
-      <div className="row" style={{ gap: 8, flexWrap: 'wrap' }}>
-        <div role="tablist" aria-label="Where to choose from" className="seg">
-          {tabs.map(([k, label]) => (
-            <button key={k} type="button" role="tab" aria-selected={source === k} className={source === k ? 'on' : ''} onClick={() => setSource(k)}>{label}</button>
-          ))}
-        </div>
-        {source === 'all' && (
-          <>
-            <input className="input" style={{ flex: 1, minWidth: 160 }} placeholder="Search by name…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search by name" />
-            <label className="check"><input type="checkbox" checked={favs} onChange={(e) => setFavs(e.target.checked)} /> Favourites only</label>
-          </>
-        )}
-      </div>
-      <p className="faint" style={{ margin: 0, fontSize: 13 }}>
-        {source === 'person' ? `Every picture, GIF and video where ${f.name} is recognised, wherever it is. ` : source === 'all' ? 'Any picture, GIF or video in the vault. ' : 'Pictures, GIFs and videos in this folder (and its subfolders). '}
-        Click one to look at it big (←/→ to go through them), or <b>Use</b> to pick it straight away. The cover doesn't have to be inside the folder.
-      </p>
-      {err && <div className="error">{err}</div>}
-      {cur ? (
-        <div className="cover-big">
-          <div className="cover-big-media">
-            {cur.kind === 'video' ? <video key={cur.id} src={mediaUrl(cur.id)} autoPlay muted loop playsInline controls />
-              : cur.kind === 'image' || cur.kind === 'gif' ? <img key={cur.id} src={mediaUrl(cur.id)} alt={cur.name} />
-              : <img key={cur.id} src={thumbUrl(cur.id)} alt={cur.name} />}
-          </div>
-          <div className="row" style={{ gap: 8 }}>
-            <button type="button" className="btn" onClick={() => setBig(null)}>← Back to the list</button>
-            <button type="button" className="btn ghost" aria-label="Previous" onClick={() => setBig((i) => (i == null ? i : (i + shown.length - 1) % shown.length))}>‹</button>
-            <span className="faint" style={{ fontSize: 12 }}>{(big ?? 0) + 1} of {shown.length.toLocaleString()} · {cur.name}</span>
-            <button type="button" className="btn ghost" aria-label="Next" onClick={() => setBig((i) => (i == null ? i : (i + 1) % shown.length))}>›</button>
-            <button type="button" className="btn btn-primary" style={{ marginLeft: 'auto' }} onClick={() => pick(cur.id)}>Use as cover</button>
-          </div>
-        </div>
-      ) : (
-        <div className="cover-grid">
-          {source === 'here' && (
-            <button type="button" className={`cover-pick${f.cover == null ? ' on' : ''}`} onClick={() => pick(null)}>
-              <span className="tile-msg">Automatic<br />(first picture)</span>
-            </button>
-          )}
-          {shown.map((it, i) => (
-            <div key={it.id} className={`cover-pick${f.cover === it.id ? ' on' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}`} title={it.name}
-              role="button" tabIndex={0} onClick={() => setBig(i)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setBig(i); } }}>
-              {it.thumb === 'ok' ? <img src={thumbUrl(it.id)} alt={it.name} loading="lazy" /> : <span className="tile-msg">{it.name}</span>}
-              {it.kind !== 'image' && <span className="badge">{it.kind === 'video' ? 'VIDEO' : it.kind.toUpperCase()}</span>}
-              <button type="button" className="btn btn-sm cover-use" onClick={(e) => { e.stopPropagation(); pick(it.id); }}>Use</button>
-            </div>
-          ))}
-          {!items && <span className="faint">Loading…</span>}
-          {items && !items.length && <span className="faint">{source === 'person' ? `No photos of ${f.name} found yet.` : 'Nothing here.'}</span>}
-        </div>
-      )}
-      <div className="row" style={{ justifyContent: 'flex-end', gap: 8 }}>
-        {!cur && items && items.length > limit && (
-          <button type="button" className="btn" style={{ marginRight: 'auto' }} onClick={() => setLimit((n) => n + COVER_PAGE)}>
-            Show more ({(items.length - limit).toLocaleString()} left)
-          </button>
-        )}
-        <button type="button" className="btn" onClick={props.onClose}>Close</button>
-      </div>
-    </Modal>
-  );
-}
-
-/**
- * A folder card's video or GIF cover shown whole while hovered: at the same
- * scale as on the card, growing in the direction that was cut off, kept
- * inside the window (like "Show the whole video on hover" in the grid).
- */
-function WholeCover(props: { id: number; kind: 'video' | 'gif' }) {
-  const anchor = useRef<HTMLSpanElement>(null);
-  const [nat, setNat] = useState<{ w: number; h: number } | null>(null);
-  const [box, setBox] = useState<{ left: number; top: number; w: number; h: number } | null>(null);
-  useEffect(() => {
-    const card = anchor.current?.parentElement;
-    if (!card || !nat) return;
-    const r = card.getBoundingClientRect();
-    const sc = Math.max(r.width / nat.w, r.height / nat.h);
-    const w = nat.w * sc;
-    const h = nat.h * sc;
-    if (w <= r.width + 2 && h <= r.height + 2) return setBox(null);
-    const left = Math.max(4, Math.min(window.innerWidth - 4 - w, r.left + (r.width - w) / 2));
-    const top = Math.max(40, Math.min(window.innerHeight - 4 - h, r.top + (r.height - h) / 2));
-    setBox({ left, top, w, h });
-  }, [nat]);
-  const media = props.kind === 'video'
-    ? <video src={mediaUrl(props.id)} autoPlay muted loop playsInline crossOrigin="anonymous" onLoadedMetadata={(e) => setNat({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })} />
-    : <img src={mediaUrl(props.id)} alt="" draggable={false} onLoad={(e) => setNat({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />;
-  return (
-    <span ref={anchor} className="whole-anchor" aria-hidden="true">
-      {createPortal(
-        <div className="whole-pop whole-card" style={box ? { left: box.left, top: box.top, width: box.w, height: box.h } : { left: -9999, top: 0, width: 10, height: 10, opacity: 0 }}>{media}</div>,
-        document.body,
-      )}
-    </span>
-  );
-}

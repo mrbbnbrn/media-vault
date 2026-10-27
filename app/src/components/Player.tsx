@@ -11,8 +11,10 @@
 // beside the picture (or in the wide strips at the far left and right) goes to
 // the previous / next item; a click in those strips too (swipe.ts).
 
+import { GifBar } from './GifBar';
+import { audioRoute } from './playeraudio';
 import { errText } from '../text';
-import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, useSyncExternalStore, type MutableRefObject, type ReactNode, type Ref } from 'react';
+import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
@@ -2099,42 +2101,3 @@ export function Player(props: PlayerProps) {
   );
 }
 
-/** Sound of a video through a short delay (or straight through again): once routed, a video's sound always goes this way. */
-const routes = new WeakMap<HTMLVideoElement, { ctx: AudioContext; delay: DelayNode }>();
-/** One sound engine for every video (a new one per video kept running, one more each video). */
-let sharedAudio: AudioContext | null = null;
-function audioRoute(v: HTMLVideoElement, on: boolean): ((on: boolean) => void) | null {
-  let r = routes.get(v);
-  if (!r) {
-    if (!on) return null;
-    try {
-      const ctx = (sharedAudio ??= new AudioContext());
-      const src = ctx.createMediaElementSource(v);
-      const delay = ctx.createDelay(1);
-      src.connect(delay).connect(ctx.destination);
-      r = { ctx, delay };
-      routes.set(v, r);
-    } catch {
-      return null;
-    }
-  }
-  const set = (yes: boolean) => {
-    r!.delay.delayTime.value = yes ? 0.1 : 0;
-    if (yes) void r!.ctx.resume().catch(() => {});
-  };
-  set(on);
-  return set;
-}
-
-
-/** The GIF's frame bar: draws again on each frame by itself (the rest of the viewer doesn't). */
-function GifBar(props: { at: MutableRefObject<number>; subs: Set<() => void>; count: number; onSeek: (i: number) => void; loop: { a: number | null; b: number | null } }) {
-  const index = useSyncExternalStore(
-    (cb) => {
-      props.subs.add(cb);
-      return () => props.subs.delete(cb);
-    },
-    () => props.at.current,
-  );
-  return <PositionBar at={index} dur={props.count - 1} onSeek={props.onSeek} bookmarks={[]} loop={props.loop} frames={{ index, count: props.count }} />;
-}
