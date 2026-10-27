@@ -408,7 +408,7 @@ pub async fn derived_remove(state: State<'_, crate::Shared>, items: Vec<i64>, wh
     let s2 = s.clone();
     let n = tauri::async_runtime::spawn_blocking(move || remove(&s, &items, &which)).await.map_err(|x| x.to_string())??;
     if n > 0 {
-        crate::reclaim_soon(state.inner().clone(), s2);
+        crate::cmd_library::reclaim_soon(state.inner().clone(), s2);
     }
     Ok(n)
 }
