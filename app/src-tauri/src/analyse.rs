@@ -302,7 +302,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
             Ok(pic) => {
                 if t.make_thumb {
                     match picture::thumbnail(&pic) {
-                        Ok((_, webp)) => match crate::store_thumb(s, t.id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, false) {
+                        Ok((_, webp)) => match crate::cmd_media::store_thumb(s, t.id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, false) {
                             Ok(()) => {
                                 DONE.thumbs.fetch_add(1, Ordering::Relaxed);
                                 rep.thumb = true;
@@ -739,7 +739,7 @@ pub async fn analyse_thumb(state: State<'_, crate::Shared>, id: i64) -> Result<b
             return Ok(false);
         };
         let (_, webp) = picture::thumbnail(&pic)?;
-        crate::store_thumb(&s, id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, true)?;
+        crate::cmd_media::store_thumb(&s, id, &webp, Some(pic.w as i64), Some(pic.h as i64), None, true)?;
         Ok(true)
     })
     .await
@@ -1008,7 +1008,7 @@ mod tests {
         let left = format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql()));
         assert_no_full_scan(&c, &left, "media_need_print");
         assert_no_full_scan(&c, &faces::needed_sql().replace('?', "5"), "media_faces_queued");
-        assert_no_full_scan(&c, &crate::thumbs_needed_sql().replace('?', "5"), "media_need_thumb");
+        assert_no_full_scan(&c, &crate::cmd_media::thumbs_needed_sql().replace('?', "5"), "media_need_thumb");
         assert_no_full_scan(&c, crate::sketch::BACKFILL_SQL, "media_need_sketch");
         assert_no_full_scan(&c, crate::meta::BACKFILL_SQL, "media_need_taken");
         crate::focus::set(None);
