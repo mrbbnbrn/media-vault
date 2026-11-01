@@ -149,6 +149,59 @@ pub fn delete_cache(s: &Session, thumbs: bool) -> Result<String, String> {
     ))
 }
 
+/// "Delete preview clips here": the frame strips and tiny clips of the videos
+/// in these folders and everything inside them. A clip shared with a free
+/// copy outside them stays (only the reference here goes). Returns how many
+/// videos lost their clips and how many stored files were deleted.
+pub fn delete_folder_previews(s: &Session, folders: &[i64]) -> Result<(usize, usize), String> {
+    let e = |x: rusqlite::Error| x.to_string();
+    let (videos, gone) = {
+        let db = s.db();
+        let tree = crate::library::descendants(&db, folders)?;
+        if tree.is_empty() {
+            return Ok((0, 0));
+        }
+        let list = crate::util::id_list(&tree);
+        let mut objects: Vec<String> = Vec::new();
+        for column in ["preview_object_id", "tiny_object_id"] {
+            let mut st = db
+                .prepare(&format!("SELECT DISTINCT {column} FROM media WHERE folder_id IN ({list}) AND IFNULL({column}, '') <> ''"))
+                .map_err(e)?;
+            objects.extend(st.query_map([], |r| r.get::<_, String>(0)).map_err(e)?.flatten());
+        }
+        let videos = db
+            .execute(
+                &format!("UPDATE media SET preview_object_id = NULL, tiny_object_id = NULL WHERE folder_id IN ({list}) AND (preview_object_id IS NOT NULL OR tiny_object_id IS NOT NULL)"),
+                [],
+            )
+            .map_err(e)?;
+        // Only files nothing else points to any more.
+        let mut gone = Vec::new();
+        for o in objects {
+            let used: i64 = db
+                .query_row("SELECT COUNT(*) FROM media WHERE preview_object_id = ?1 OR tiny_object_id = ?1", [&o], |r| r.get(0))
+                .map_err(e)?;
+            if used == 0
+                && let Ok(id) = ObjectId::from_hex(&o)
+            {
+                gone.push(id);
+            }
+        }
+        (videos, gone)
+    };
+    if videos == 0 {
+        return Ok((0, 0));
+    }
+    // The library first, so nothing points at a deleted file if saving fails.
+    s.mark_dirty();
+    s.save()?;
+    let v = s.vault();
+    for o in &gone {
+        let _ = v.delete_object(ObjectKind::Thumbnail, o);
+    }
+    Ok((videos, gone.len()))
+}
+
 #[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct DataInfo {
@@ -356,6 +409,37 @@ mod tests {
     use super::*;
     use crate::{import, library, session};
     use std::sync::atomic::AtomicBool;
+
+    #[test]
+    fn a_folders_preview_clips_go_but_ones_shared_outside_stay() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let (top, sub, other) = {
+            let c = s.db();
+            let top = library::create_folder(&c, None, "Top").unwrap();
+            let sub = library::create_folder(&c, Some(top), "Sub").unwrap();
+            let other = library::create_folder(&c, None, "Other").unwrap();
+            let add = |folder: i64, strip: &str, tiny: &str| {
+                c.execute(
+                    "INSERT INTO media(object_id, thumb_object_id, preview_object_id, tiny_object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) \
+                     VALUES (lower(hex(randomblob(16))), lower(hex(randomblob(16))), ?2, ?3, ?1, 'video', 'v.mp4', 'mp4', 1, 'h', 0)",
+                    rusqlite::params![folder, strip, tiny],
+                )
+                .unwrap();
+            };
+            let shared = "11111111111111111111111111111111";
+            add(top, "22222222222222222222222222222222", "33333333333333333333333333333333");
+            add(sub, shared, "44444444444444444444444444444444");
+            add(other, shared, "55555555555555555555555555555555"); // a free copy elsewhere shares the strip
+            (top, sub, other)
+        };
+        let (videos, files) = delete_folder_previews(&s, &[top]).unwrap();
+        assert_eq!(videos, 2, "the folder and its subfolder");
+        assert_eq!(files, 3, "the shared strip stays for the copy outside");
+        let c = s.db();
+        let left = |f: i64| c.query_row("SELECT COUNT(*) FROM media WHERE folder_id = ? AND preview_object_id IS NOT NULL", [f], |r| r.get::<_, i64>(0)).unwrap();
+        assert_eq!((left(top), left(sub), left(other)), (0, 0, 1));
+    }
 
     #[test]
     fn thumbnails_and_preview_clips_can_be_counted_and_deleted() {

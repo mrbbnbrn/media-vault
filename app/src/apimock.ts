@@ -9,6 +9,9 @@ import type {
 
 import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 
+/** Folders with preview clips turned off (the preview's own list). */
+const previewsOff = new Set<number>();
+
 /** Browser preview: send an event to the window. */
 export function mockEmit(name: string, payload: unknown) {
   noteEvent(name);
@@ -374,6 +377,16 @@ export const mock = {
         return { folder: null, subfolders: [], items: [] };
       case 'faces_off_folders':
         return [];
+      case 'previews_off_folders':
+        return [...previewsOff];
+      case 'previews_delete_folders':
+        return 3;
+      case 'previews_folder_off':
+        for (const f of a.folders as number[]) {
+          if (a.off) previewsOff.add(f);
+          else previewsOff.delete(f);
+        }
+        return null;
       case 'faces_folder_off':
       case 'faces_stop':
       case 'faces_delete_folder':

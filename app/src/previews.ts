@@ -147,6 +147,12 @@ async function makeFor(t: { id: number; durationMs: number | null; needStrip: bo
 }
 
 /** Makes strips and tiny clips one video at a time in the background. Stops on lock. */
+/** Set by App: the ring's "Stop" turns "Make preview clips" off (Settings → Background work turns it on again). */
+let stopAsker: (() => void) | null = null;
+export function setPreviewStopper(f: (() => void) | null) {
+  stopAsker = f;
+}
+
 export function startPreviewMaker(): () => void {
   if (running) return stopFn ?? (() => {});
   running = true;
@@ -159,7 +165,10 @@ export function startPreviewMaker(): () => void {
         r();
       };
     });
-  const job = loopJob('previews', { label: 'Making preview clips', unit: '', left: () => jobsApi.backgroundLeft().then((l) => l.previews) });
+  const job = loopJob('previews', {
+    label: 'Making preview clips', unit: '', left: () => jobsApi.backgroundLeft().then((l) => l.previews),
+    cancel: () => stopAsker?.(), cancelLabel: 'Stop',
+  });
   (async () => {
     while (!stopped) {
       let tasks: { id: number; durationMs: number | null; needStrip: boolean; needTiny: boolean }[] = [];

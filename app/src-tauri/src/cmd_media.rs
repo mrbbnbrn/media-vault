@@ -12,7 +12,7 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::session::Session;
-use crate::{Shared, begin_task, blocking, edit_db_derived, read_db, sess};
+use crate::{Shared, begin_task, blocking, edit_db, edit_db_derived, read_db, sess};
 use crate::{analyse, binbody, clip, exporter, focus, import, picture, protocol, rotate, share7z, similar, sketch, throttle, thumbpages, videotool};
 
 #[derive(serde::Deserialize)]
@@ -301,10 +301,12 @@ fn preview_task(r: &rusqlite::Row) -> rusqlite::Result<PreviewTask> {
 pub(crate) async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer: Vec<i64>) -> Result<Vec<PreviewTask>, String> {
     read_db(state.inner(), move |c| {
         let e = |x: rusqlite::Error| x.to_string();
+        // Not in folders where preview clips are turned off (previewsoff.rs).
+        let off = crate::previewsoff::off_sql(c)?;
         let mut out: Vec<PreviewTask> = Vec::new();
         for id in prefer.iter().take(64) {
             if let Ok(t) = c.query_row(
-                &format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE id = ? AND {PREVIEW_TASK_WHERE}"),
+                &format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE id = ? AND {PREVIEW_TASK_WHERE}{off}"),
                 [id],
                 preview_task,
             ) {
@@ -315,7 +317,7 @@ pub(crate) async fn previews_needed(state: State<'_, Shared>, limit: i64, prefer
             }
         }
         let mut st = c
-            .prepare(&format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE {PREVIEW_TASK_WHERE} ORDER BY id DESC LIMIT ?"))
+            .prepare(&format!("SELECT {PREVIEW_TASK_COLS} FROM media WHERE {PREVIEW_TASK_WHERE}{off} ORDER BY id DESC LIMIT ?"))
             .map_err(e)?;
         for t in st.query_map([limit], preview_task).map_err(e)?.flatten() {
             if out.len() as i64 >= limit {
@@ -672,6 +674,31 @@ pub(crate) struct BackgroundLeft {
     previews: i64,
 }
 
+/// "Don't make preview clips here" / "Make preview clips here again" (folder right-click; subfolders too).
+#[tauri::command]
+pub(crate) async fn previews_folder_off(state: State<'_, Shared>, folders: Vec<i64>, off: bool) -> Result<(), String> {
+    edit_db(state.inner(), move |c| crate::previewsoff::set_off(c, &folders, off)).await
+}
+
+/// "Delete preview clips here" (folder right-click; subfolders too). Returns
+/// how many videos lost their clips; the space comes back with the next reclaim.
+#[tauri::command]
+pub(crate) async fn previews_delete_folders(state: State<'_, Shared>, folders: Vec<i64>) -> Result<usize, String> {
+    let s = sess(state.inner())?;
+    let s2 = s.clone();
+    let (videos, files) = blocking(move || crate::storage::delete_folder_previews(&s2, &folders)).await?;
+    if files > 0 {
+        crate::cmd_library::reclaim_soon(state.inner().clone(), s);
+    }
+    Ok(videos)
+}
+
+/// The folders where preview clips are turned off (for the folder menus).
+#[tauri::command]
+pub(crate) async fn previews_off_folders(state: State<'_, Shared>) -> Result<Vec<i64>, String> {
+    read_db(state.inner(), crate::previewsoff::off_folders).await
+}
+
 #[tauri::command]
 pub(crate) async fn background_left(state: State<'_, Shared>) -> Result<BackgroundLeft, String> {
     read_db(state.inner(), |c| {
@@ -679,7 +706,7 @@ pub(crate) async fn background_left(state: State<'_, Shared>) -> Result<Backgrou
         Ok(BackgroundLeft {
             // The window's share (the native analysis pass counts its own).
             thumbs: one(&format!("SELECT COUNT(*) FROM media WHERE thumb_object_id IS NULL{}", analyse::window_thumbs_sql()))?,
-            previews: one(&format!("SELECT COUNT(*) FROM media WHERE {PREVIEW_TASK_WHERE}"))?,
+            previews: one(&format!("SELECT COUNT(*) FROM media WHERE {PREVIEW_TASK_WHERE}{}", crate::previewsoff::off_sql(c)?))?,
         })
     })
     .await

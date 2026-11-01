@@ -292,6 +292,11 @@ export const api = {
   facesFolderOff: (folder: number, off: boolean) => call<number>('faces_folder_off', { folder, off }),
   /** The folders where face search was turned off. */
   facesOffFolders: () => call<number[]>('faces_off_folders'),
+  /** "Don't make preview clips here" (subfolders too) / on again. */
+  previewsFolderOff: (folders: number[], off: boolean) => call<void>('previews_folder_off', { folders, off }),
+  previewsOffFolders: () => call<number[]>('previews_off_folders'),
+  /** "Delete preview clips here" (subfolders too): how many videos lost their clips. */
+  previewsDeleteFolders: (folders: number[]) => call<number>('previews_delete_folders', { folders }),
   /** "Stop face search": everything waiting to be scanned leaves the queue. Returns how many. */
   facesStop: () => call<number>('faces_stop'),
   /** "Delete face data…" for a folder and its subfolders. Returns how many faces went. */

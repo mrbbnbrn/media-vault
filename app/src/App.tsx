@@ -9,7 +9,7 @@ const inTauriNow = () => inTauri;
 import { applyAccent } from './theme';
 import { requestLock, setLockAsker, startKeepOpen } from './keepopen';
 import { ConfirmDialog } from './components/Dialogs';
-import { saveAppConfig, setPrefsConfig } from './prefs';
+import { saveAppConfig, setPrefsConfig, useAppConfig } from './prefs';
 import { applyLook, setZoom, zoomKey } from './look';
 import { clearUndo } from './undo';
 import { clearViewMemory } from './viewmemory';
@@ -39,7 +39,7 @@ import { followFaceScanPause, startFaceScanner } from './ml/facescan';
 import { setSettingsOpener, type SettingsPage } from './settingslink';
 import { startClipIndexer } from './ml/smart';
 import { setNativeOptions, setSmartPauser, startNativeAnalyser } from './ml/native';
-import { startPreviewMaker } from './previews';
+import { setPreviewStopper, startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
 import type { PlayItem } from './media';
 import type { Order } from './playlist';
@@ -305,8 +305,19 @@ export function App() {
   useEffect(() => setSmartPauser(() => {
     void saveAppConfig((c) => ({ ...c, smartIndex: false })).then(() => refreshRef.current?.()).catch(() => {});
   }), []);
-  // Small preview clips for smooth grids (can be turned off in Settings → Background work).
-  const makePreviews = open && app?.config.makePreviews !== false;
+  // Small preview clips for smooth grids (can be turned off in Settings → Background work,
+  // or with Stop in the jobs ring, which turns that switch off).
+  useEffect(() => {
+    setPreviewStopper(() => {
+      void saveAppConfig((c) => ({ ...c, makePreviews: false })).then(() => {
+        refreshRef.current?.();
+        say('Preview clips are no longer made. Turn “Make preview clips” on in Settings → Background work to start again.', 'done');
+      }).catch(() => {});
+    });
+    return () => setPreviewStopper(null);
+  }, []);
+  const liveCfg = useAppConfig();
+  const makePreviews = open && (liveCfg ?? app?.config)?.makePreviews !== false;
   useEffect(() => (makePreviews ? whenGridShown(startPreviewMaker) : undefined), [makePreviews]);
   // Picture fingerprints for finding look-alikes (tiny, made from the thumbnails).
   useEffect(() => (open ? whenGridShown(startFingerprinter) : undefined), [open]);

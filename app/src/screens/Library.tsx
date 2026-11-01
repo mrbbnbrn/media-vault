@@ -122,6 +122,7 @@ type Dialog =
   | { t: 'deleteFolder'; folder: FolderCard }
   | { t: 'delFaces'; folder: FolderCard }
   | { t: 'delFacesItems'; ids: number[]; what: string }
+  | { t: 'delPreviews'; folders: FolderCard[] }
   | { t: 'folderTag'; folder: FolderCard }
   | { t: 'look'; folder: FolderCard }
   | { t: 'moveItems'; ids: number[] }
@@ -299,6 +300,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [facesOff, setFacesOff] = useState<Set<number>>(() => new Set());
   useEffect(() => {
     api.facesOffFolders().then((l) => setFacesOff(new Set(l))).catch(() => {});
+  }, []);
+  // Folders where preview clips are turned off (their subfolders too; previewsoff.rs).
+  const [previewsOff, setPreviewsOff] = useState<Set<number>>(() => new Set());
+  useEffect(() => {
+    api.previewsOffFolders().then((l) => setPreviewsOff(new Set(l))).catch(() => {});
   }, []);
   const bannerEdit = banner != null && bannerEditOf === banner.media;
   useEffect(() => setBannerEditOf(null), [view]);
@@ -1327,34 +1333,51 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   });
   // Type to jump: the first folder card or item whose name starts with what you type.
   const jumpBuf = useRef({ text: '', at: 0 });
+  // Typing a letter in the folder list (left side) jumps to the next folder whose name starts
+  // with it, like Explorer: E → "Easy", E again → "Emine", then "Ezgi"; F → "Felek". Letters typed
+  // quickly one after another spell the start of a name ("em" → "Emine"). Folded folders are
+  // skipped. In the right-hand side (the folder's contents) letters do nothing.
+  const sideZone = useRef(false);
   const typeJump = (k: string) => {
+    const focus = document.activeElement;
+    if (focus?.closest('.lib-main') || (!sideZone.current && !focus?.closest('.side-col'))) return;
     const now = Date.now();
     const b = jumpBuf.current;
-    b.text = now - b.at > 900 ? k : b.text + k;
+    const fresh = now - b.at > 900;
     b.at = now;
+    // The same letter again cycles; a different one quickly after spells a longer start.
+    b.text = fresh || b.text === k || (b.text.length === 1 && foldName(b.text) === foldName(k)) ? k : b.text + k;
     const q = foldName(b.text);
-    const card = cards.find((f) => foldName(f.name).startsWith(q));
-    if (card) {
-      // Selected, like an item you jump to (the ring shows where you are).
-      document.querySelector<HTMLElement>(`[data-card="${card.id}"]`)?.scrollIntoView({ block: 'nearest' });
-      setSelected(new Set());
-      setSelFolders(new Set([card.id]));
-      setFolderAnchor(card.id);
-      return;
+    const rows = [...document.querySelectorAll<HTMLElement>('.side-col .side-row.tree[data-order], .side-col .rail-folder[data-order]')];
+    if (!rows.length) return;
+    const nameOf = (el: HTMLElement) => folders.find((f) => f.id === Number(el.dataset.order))?.name ?? '';
+    const focused = document.activeElement?.closest<HTMLElement>('[data-order]');
+    const at = focused ? rows.indexOf(focused) : -1;
+    // A single letter starts after the folder you're on; a longer start may match that folder itself.
+    const from = q.length === 1 ? at + 1 : Math.max(0, at);
+    const order = [...rows.slice(from), ...rows.slice(0, from)];
+    let hit = order.find((el) => foldName(nameOf(el)).startsWith(q));
+    if (!hit && q.length > 1) {
+      // No name starts like that: the new letter on its own (E then F quickly → "Felek").
+      b.text = k;
+      const one = foldName(k);
+      const next = [...rows.slice(at + 1), ...rows.slice(0, at + 1)];
+      hit = next.find((el) => foldName(nameOf(el)).startsWith(one));
     }
-    const it = shown.find((i) => foldName(i.name).startsWith(q));
-    if (it) {
-      setSelFolders(new Set());
-      setSelected(new Set([it.id]));
-      setAnchor(it.id);
-      setCursor(it.id);
-      showItem(it.id);
-    }
+    if (!hit) return;
+    const btn = hit.matches('button') ? hit : hit.querySelector<HTMLElement>('.tree-name');
+    btn?.focus({ preventScroll: true });
+    hit.scrollIntoView({ block: 'nearest' });
+    const id = Number(hit.dataset.order);
+    setSelected(new Set());
+    setSelFolders(new Set([id]));
+    setFolderAnchor(id);
   };
   /** What "Prepare 3D data" says it did. */
-  const prepNote = (r: 'started' | 'queued' | 'already', what: string, faces = false) => {
+  const prepNote = (r: 'started' | 'queued' | 'already', what: string, faces = false, inUse = false) => {
     const pics = faces ? `the pictures with faces in ${what}` : `the pictures in ${what}`;
-    setNote({ text: r === 'already' ? `Already preparing ${pics}.` : r === 'queued' ? `${pics[0].toUpperCase()}${pics.slice(1)} will be prepared for 3D after the job running now.` : `Preparing ${pics} for 3D in the background (depth maps and outlines${faces ? '; pictures not scanned for faces yet are left out' : ''}). See the ring at the bottom of the sidebar.`, at: 0 });
+    const models = inUse ? 'for the models in use' : 'for every installed model';
+    setNote({ text: r === 'already' ? `Already preparing ${pics}.` : r === 'queued' ? `${pics[0].toUpperCase()}${pics.slice(1)} will be prepared for 3D (${models}) after the job running now.` : `Preparing ${pics} for 3D in the background, ${models}${faces ? '; pictures not scanned for faces yet are left out' : ''}. See the ring in the title bar.`, at: 0 });
   };
   const folderMenuRef = useRef<(f: FolderCard) => MenuItem[]>(() => []);
   /** A submenu row (clicking it only opens the submenu). */
@@ -1405,10 +1428,22 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       { label: 'Delete face data…', hint: 'faces found in here', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'delFaces', folder: f }) },
     ]),
     group('3D data', [
-      { label: 'Prepare 3D data', hint: 'pictures, in the background', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
-      { label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
+      // "Models in use": only the depth and outline models chosen in the 3D settings (quicker, less space).
+      { label: 'Prepare 3D data, models in use', hint: 'the ones chosen in 3D settings', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, false, true), `“${f.name}”`, false, true) },
+      { label: 'Prepare 3D data, every installed model', hint: 'takes longer', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
+      { label: 'Pictures with faces only, models in use', hint: 'scanned ones', sepBefore: true, onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true, true), `“${f.name}”`, true, true) },
+      { label: 'Pictures with faces only, every installed model', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
       { label: 'Delete 3D data…', hint: 'choose which', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
     ]),
+    (() => {
+      const at = previewsOffAt(f);
+      return at === f
+        ? { label: 'Make preview clips here again', hint: 'subfolders too', onSelect: () => setPreviewClips([f], false) }
+        : at
+          ? { label: 'Preview clips are off here', hint: `set on “${at.name}”`, disabled: true, onSelect: () => {} }
+          : { label: "Don't make preview clips here", hint: 'subfolders too', onSelect: () => setPreviewClips([f], true) };
+    })(),
+    { label: 'Delete preview clips here…', hint: 'subfolders too', onSelect: () => setDialog({ t: 'delPreviews', folders: [f] }) },
     // What the bottom bar can do with a selected folder, here too (mediaActions).
     group('Everything inside', menuOf(mediaActions([f], [], null).filter((x) => ['fav', 'tags', 'weight', 'convert', 'gif'].includes(x.id))).map((x) => ({ ...x, label: x.label.replace(' (everything inside)', '') })),
       { hint: 'favourite, tags, weight…' }),
@@ -1434,6 +1469,45 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       if (n) setNote({ text: `Scanning ${plural(n, 'item')} in “${f.name}” for faces. See People.`, at: 0 });
     }
   });
+  /** The folder (itself or one it is inside) where preview clips were turned off, if any. */
+  const previewsOffAt = (f: FolderCard): FolderCard | null => {
+    if (previewsOff.has(f.id)) return f;
+    const up = [...f.path].reverse().find((c) => previewsOff.has(c.id));
+    return up ? folders.find((x) => x.id === up.id) ?? null : null;
+  };
+  /** "Don't make preview clips here" / "Make preview clips here again" (subfolders too), undoable. */
+  const setPreviewClips = (fs: FolderCard[], off: boolean) => act(async () => {
+    const ids = fs.map((f) => f.id);
+    const change = async (to: boolean) => {
+      await api.previewsFolderOff(ids, to);
+      setPreviewsOff((cur) => {
+        const next = new Set(cur);
+        for (const id of ids) {
+          if (to) next.add(id);
+          else next.delete(id);
+        }
+        return next;
+      });
+    };
+    await change(off);
+    const what = fs.length === 1 ? `“${fs[0].name}”` : plural(fs.length, 'folder');
+    did(off ? `No preview clips are made in ${what} (subfolders too)` : `Preview clips are made in ${what} again`, () => change(!off));
+  });
+  const [previewsAlsoOff, setPreviewsAlsoOff] = useState(true);
+  const deletePreviewClips = async (fs: FolderCard[], alsoOff: boolean) => {
+    try {
+      if (alsoOff) {
+        await api.previewsFolderOff(fs.map((f) => f.id), true);
+        setPreviewsOff((cur) => new Set([...cur, ...fs.map((f) => f.id)]));
+      }
+      const n = await api.previewsDeleteFolders(fs.map((f) => f.id));
+      const where = fs.length === 1 ? `“${fs[0].name}”` : plural(fs.length, 'folder');
+      setNote({ text: n ? `Deleted the preview clips of ${plural(n, 'video')} in ${where}${alsoOff ? '; no new ones are made there' : ''}.` : `There were no preview clips in ${where}.`, at: 0 });
+      void reload({ quiet: true });
+    } catch (e) {
+      setError(errText(e));
+    }
+  };
   const setFaceSearch = (f: FolderCard, off: boolean) => act(async () => {
     const n = await api.facesFolderOff(f.id, off);
     setFacesOff((cur) => {
@@ -2078,11 +2152,19 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         run: onAll((list) => setView({ kind: 'lookalikes', folder: null, only: list.map((i) => i.id), onlyLabel: what })) },
       one && one.thumb === 'failed' && one.kind === 'video' && { id: 'playable', label: 'Make a playable copy', hint: 'converts to MP4', run: () => setDialog({ t: 'convert', items: [one], target: 'mp4' }) },
       { id: 'convert', label: `Convert to…${inside}`, barLabel: 'Convert…', bar: true, run: itemsOnly && shownSel.length === nI ? () => setDialog({ t: 'convert', items: shownSel }) : onAll((list) => setDialog({ t: 'convert', items: list })) },
-      itemsOnly ? pics.length > 0 && { id: 'prep3d', group: '3D data', label: 'Prepare 3D data', hint: 'in the background', run: () => prepNote(prepareItems(pics, what), what) }
-        : { id: 'prep3d', group: '3D data', label: 'Prepare 3D data', hint: 'pictures, in the background', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0]) : prepareFolders(fRefs, plural(nF, 'folder')), what) },
-      itemsOnly ? pics.length > 0 && { id: 'prep3dFaces', group: '3D data', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(prepareItems(pics, what, true), what, true) }
-        : { id: 'prep3dFaces', group: '3D data', label: 'Prepare 3D data, pictures with faces only', hint: 'scanned ones', run: () => prepNote(nF === 1 ? prepareFolder(fRefs[0], true) : prepareFolders(fRefs, plural(nF, 'folder'), true), what, true) },
+      // "Models in use": only the depth and outline models chosen in the 3D settings.
+      ...([[false, true], [false, false], [true, true], [true, false]] as const).map(([faces, inUse], k) => {
+        const label = `${faces ? 'Pictures with faces only' : 'Prepare 3D data'}, ${inUse ? 'models in use' : 'every installed model'}`;
+        const hint = faces ? 'scanned ones' : inUse ? 'the ones chosen in 3D settings' : 'takes longer';
+        const go = () => prepNote(itemsOnly ? prepareItems(pics, what, faces, inUse)
+          : nF === 1 ? prepareFolder(fRefs[0], faces, inUse) : prepareFolders(fRefs, plural(nF, 'folder'), faces, inUse), what, faces, inUse);
+        return (itemsOnly ? pics.length > 0 : true) && { id: `prep3d-${k}`, group: '3D data', label, hint, sepBefore: k === 2, run: go };
+      }),
       (itemsOnly ? pics.length > 0 : !nI) && { id: 'del3d', group: '3D data', label: 'Delete 3D data…', hint: 'choose which', run: () => setDialog({ t: 'del3d', what, folders: fRefs, ids: pics }) },
+      // Several folders: preview clips off / on for all of them (one folder: its own menu has it).
+      nF > 1 && !nI && { id: 'previewsOff', label: "Don't make preview clips here", hint: 'subfolders too', sepBefore: true, run: () => setPreviewClips(fs, true) },
+      nF > 1 && !nI && fs.some((f) => previewsOff.has(f.id)) && { id: 'previewsOn', label: 'Make preview clips here again', hint: 'subfolders too', run: () => setPreviewClips(fs, false) },
+      nF > 1 && !nI && { id: 'previewsDel', label: 'Delete preview clips here…', hint: 'subfolders too', run: () => setDialog({ t: 'delPreviews', folders: fs }) },
       { id: 'gif', label: 'Create GIF or video…', barLabel: 'Create GIF…', bar: true, noMenu: itemsOnly && picList.length < 2,
         run: itemsOnly && shownSel.length === nI ? () => (picList.length < 2 ? setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 }) : setDialog({ t: 'animation', items: picList }))
           : onAll((list) => {
@@ -2154,7 +2236,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         groups.set(a.group, g);
         out.push(g);
       }
-      g.sub!.push({ ...item, sepBefore: false });
+      g.sub!.push({ ...item, sepBefore: g.sub!.length > 0 && !!item.sepBefore });
     }
     // A group of one is just that item.
     return out.map((m) => (m.subOnly && m.sub?.length === 1 && groups.get(m.label) === m ? { ...m.sub[0], sepBefore: m.sepBefore } : m));
@@ -2492,7 +2574,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
 
       <div className="lib-body">
-        <div className="side-col" onKeyDown={sideKeys}>
+        <div className="side-col" onKeyDown={sideKeys} onPointerDown={() => { sideZone.current = true; }}>
         <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
           <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
             aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
@@ -2581,7 +2663,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </div>
         </div>
 
-        <main className={`lib-main${switching ? ' switching' : ''}`} ref={scroller} onPointerDown={rubberBand} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
+        <main className={`lib-main${switching ? ' switching' : ''}`} ref={scroller} onPointerDown={(e) => { sideZone.current = false; rubberBand(e); }} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
           {login && <LoginBanner login={login} onClose={() => setLogin(null)} />}
           {s.restoredFromBackup && (
             <div className="notice">The library database was damaged, so the most recent backup was used. Recent changes may be missing.</div>
@@ -2974,6 +3056,18 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           Every face found in the items of this folder and its subfolders is forgotten, with the names given to them.
           The pictures and videos themselves don't change, and people found elsewhere stay.
           {facesOff.has(dialog.folder.id) ? ' Face search stays off here.' : ' They are scanned again only if you choose "Scan for faces" (or turn face search off here so they never are).'}
+        </ConfirmDialog>
+      )}
+      {dialog?.t === 'delPreviews' && (
+        <ConfirmDialog title={`Delete the preview clips in ${dialog.folders.length === 1 ? `“${dialog.folders[0].name}”` : plural(dialog.folders.length, 'folder')}?`}
+          confirm="Delete preview clips" danger onClose={() => setDialog(null)}
+          onConfirm={() => deletePreviewClips(dialog.folders, previewsAlsoOff)}>
+          The small moving previews of the videos in {dialog.folders.length === 1 ? 'this folder' : 'these folders'} and their subfolders are
+          deleted to free the space. The videos themselves don't change.
+          <label className="check" style={{ marginTop: 10 }}>
+            <input type="checkbox" checked={previewsAlsoOff} onChange={(e) => setPreviewsAlsoOff(e.target.checked)} />
+            Don't make them again here (otherwise they are made again in the background)
+          </label>
         </ConfirmDialog>
       )}
       {dialog?.t === 'delFacesItems' && (

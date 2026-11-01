@@ -2,6 +2,7 @@
 //! vault core. All crypto happens here in Rust; the UI never sees keys.
 
 mod access;
+mod previewsoff; // "Don't make preview clips here" (folders)
 mod encryption; // turning a vault's encryption off or on
 mod plainfiles; // vaults without encryption: ordinary files in folders
 mod activity;
@@ -802,6 +803,9 @@ pub fn run() {
             slots::slot_machine_data,
             // background jobs, vault growth
             cmd_media::background_left,
+            cmd_media::previews_folder_off,
+            cmd_media::previews_off_folders,
+            cmd_media::previews_delete_folders,
             cmd_vault::vault_growth,
             // offline AI upscaler (upscale.rs)
             upscale::upscale_info,

@@ -20,6 +20,9 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
   const [stats, setStats] = useState<DerivedStats | null>(null);
   const [ask, setAsk] = useState<'clear' | 'again' | null>(null);
   const [del, setDel] = useState(false);
+  // Only the models in use (remembered on this computer); untick for every installed model.
+  const [inUse, setInUseRaw] = useState(() => { try { return localStorage.getItem('mv-prep-inuse') !== '0'; } catch { return true; } });
+  const setInUse = (v: boolean) => { setInUseRaw(v); try { localStorage.setItem('mv-prep-inuse', v ? '1' : '0'); } catch { /* fine */ } };
   const [note, setNote] = useState<string | null>(null);
   const job = useSyncExternalStore(onRebuild, rebuildState);
   const load = () => void api.derivedStats().then(setStats).catch(() => setStats(null));
@@ -54,18 +57,23 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       <h3 style={{ margin: '0 0 4px', fontSize: 14 }}>Saved 3D data</h3>
       <p className="muted" style={{ margin: '0 0 8px', lineHeight: 1.6 }}>
         Once a picture's depth or subject outline is worked out it's saved in the vault (encrypted), so it never has to
-        be worked out again. Pictures only. Preparing works them out for every installed depth and outline model, and also makes the
+        be worked out again. Pictures only. Preparing works them out for the depth and outline models in use (the ones chosen in
+        the 3D settings) or, if you untick that below, for every installed one; it also makes the
         layers Lift-off and Layered 3D draw (the subject on its own and the filled-in background, for the models and fill chosen now),
         so those start at once. To prepare one folder or person, right-click it and
-        choose Prepare 3D data. It all runs in the background (see the ring at the bottom of the sidebar).
+        choose 3D data ›. It all runs in the background (see the ring in the title bar).
       </p>
+      <label className="check" style={{ marginBottom: 8 }} title="Unticked: every installed depth and outline model gets its own data (takes longer and more space)">
+        <input type="checkbox" checked={inUse} onChange={(e) => setInUse(e.target.checked)} />
+        Only the models in use (the ones chosen in the 3D settings)
+      </label>
       <div className="row" style={{ gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
         <span>{stats ? `${pictures.toLocaleString()} ${pictures === 1 ? 'picture' : 'pictures'}, ${mb(bytes)}` : '…'}</span>
         <button type="button" className="btn btn-sm" disabled={job.running || !stats || bytes === 0} onClick={() => setAsk('clear')}>Clear them</button>
         <button type="button" className="btn btn-sm" title="Only the pictures that don't have saved 3D data yet"
-          onClick={() => { setNote(null); if (prepareVault(false) === 'already') setNote('Already working on that.'); }}>Work out the missing ones</button>
+          onClick={() => { setNote(null); if (prepareVault(false, false, inUse) === 'already') setNote('Already working on that.'); }}>Work out the missing ones</button>
         <button type="button" className="btn btn-sm" title="Only the pictures the face scan found a face in (not only poor faces); pictures not scanned yet are left out"
-          onClick={() => { setNote(null); if (prepareVault(false, true) === 'already') setNote('Already working on that.'); }}>Work out the missing ones, pictures with faces only</button>
+          onClick={() => { setNote(null); if (prepareVault(false, true, inUse) === 'already') setNote('Already working on that.'); }}>Work out the missing ones, pictures with faces only</button>
         <button type="button" className="btn btn-sm" disabled={job.running} onClick={() => setAsk('again')}>Work them all out again</button>
         <button type="button" className="btn btn-sm" disabled={!stats || bytes === 0} title="Choose which models, and which pictures (for example only those without faces, like screenshots)" onClick={() => setDel(true)}>Delete 3D data…</button>
       </div>
@@ -96,9 +104,9 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
       )}
       {ask === 'again' && (
         <ConfirmDialog title="Work them all out again?" confirm="Clear and work them out" onClose={() => setAsk(null)}
-          onConfirm={() => { setAsk(null); setNote(null); prepareVault(true); }}>
+          onConfirm={() => { setAsk(null); setNote(null); prepareVault(true, false, inUse); }}>
           The saved ones are cleared, then every picture in the vault gets its depth maps and outlines worked out again in
-          the background, for every installed model. It can take a while; you can stop it at any time.
+          the background, {inUse ? 'for the models in use' : 'for every installed model'}. It can take a while; you can stop it at any time.
         </ConfirmDialog>
       )}
     </div>

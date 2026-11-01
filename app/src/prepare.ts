@@ -9,6 +9,7 @@
 //   cleared first), or the pictures of one folder or person folder (its
 //   right-click menu). Every installed depth and outline model gets its own
 //   maps (one model after another, so models aren't swapped back and forth),
+//   or ("models in use") only the depth and outline models chosen in the 3D settings,
 //   at the detail and edge settings in use. One job at a time, the rest wait their turn; progress
 //   shows in Settings and in the background-jobs ring, with Stop.
 //
@@ -116,6 +117,8 @@ export interface PrepareRequest {
   onlyFaces?: boolean;
   /** Clear every saved map first and work everything out again. */
   again?: boolean;
+  /** Only the depth and outline models chosen in the 3D settings (not every installed one). */
+  inUse?: boolean;
 }
 
 let state: RebuildState = { running: false, done: 0, total: 0, what: null, waiting: 0, note: null };
@@ -148,23 +151,23 @@ export function stopRebuild() {
 }
 
 /** The whole vault: only the pictures missing a saved map, or (again) everything after clearing. */
-export function prepareVault(again: boolean, onlyFaces = false): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what: 'the whole vault', filters: [{ kinds: ['image'] }], again, onlyFaces });
+export function prepareVault(again: boolean, onlyFaces = false, inUse = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what: 'the whole vault', filters: [{ kinds: ['image'] }], again, onlyFaces, inUse });
 }
 
 /** One folder (and its subfolders); a person folder also gets the pictures their face was recognised in. */
-export function prepareFolder(f: { id: number; name: string; person: boolean }, onlyFaces = false): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what: `“${f.name}”`, filters: folderFilters([f], true), onlyFaces });
+export function prepareFolder(f: { id: number; name: string; person: boolean }, onlyFaces = false, inUse = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what: `“${f.name}”`, filters: folderFilters([f], true), onlyFaces, inUse });
 }
 
 /** Several folders (and their subfolders; person folders also get the pictures their face was recognised in). */
-export function prepareFolders(fs: { id: number; name: string; person: boolean }[], what: string, onlyFaces = false): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what, filters: folderFilters(fs, true), onlyFaces });
+export function prepareFolders(fs: { id: number; name: string; person: boolean }[], what: string, onlyFaces = false, inUse = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: folderFilters(fs, true), onlyFaces, inUse });
 }
 
 /** Pictures picked one by one (the selection). */
-export function prepareItems(ids: number[], what: string, onlyFaces = false): 'started' | 'queued' | 'already' {
-  return prepareInBackground({ what, filters: [], ids, onlyFaces });
+export function prepareItems(ids: number[], what: string, onlyFaces = false, inUse = false): 'started' | 'queued' | 'already' {
+  return prepareInBackground({ what, filters: [], ids, onlyFaces, inUse });
 }
 
 /** The filters that find the pictures of these folders; `people`: a person folder also gets its recognised pictures elsewhere. */
@@ -177,8 +180,8 @@ export function folderFilters(fs: { id: number; person: boolean }[], people: boo
 
 /** Adds a request (started at once when nothing runs). */
 export function prepareInBackground(r: PrepareRequest): 'started' | 'queued' | 'already' {
-  if (state.what === r.what && state.running && !stopAsked && !r.again && !!running?.onlyFaces === !!r.onlyFaces) return 'already';
-  if (queue.some((q) => q.what === r.what && !!q.again === !!r.again && !!q.onlyFaces === !!r.onlyFaces)) return 'already';
+  if (state.what === r.what && state.running && !stopAsked && !r.again && !!running?.onlyFaces === !!r.onlyFaces && !!running?.inUse === !!r.inUse) return 'already';
+  if (queue.some((q) => q.what === r.what && !!q.again === !!r.again && !!q.onlyFaces === !!r.onlyFaces && !!q.inUse === !!r.inUse)) return 'already';
   queue.push(r);
   if (state.running) {
     set({ waiting: queue.length });
@@ -226,6 +229,18 @@ async function allPasses(): Promise<Pass[]> {
     const setup = subjectSetupOf(await api.subjectInfo(m.id).catch(() => null));
     if (setup && !out.some((o) => o.kind === 'outline' && o.tag === subjectTag(setup))) out.push({ kind: 'outline', setup, tag: subjectTag(setup), name: m.name });
   }
+  return out;
+}
+
+/** Only the depth and outline models chosen in the 3D settings (the ones the viewer uses). */
+async function passesInUse(): Promise<Pass[]> {
+  if (!depthSetup()) await depthPack().catch(() => null);
+  if (!subjectSetup()) await subjectPack().catch(() => null);
+  const out: Pass[] = [];
+  const d = depthSetup();
+  const o = subjectSetup();
+  if (d) out.push({ kind: 'depth', setup: d, tag: depthTag(d), name: 'depth' });
+  if (o) out.push({ kind: 'outline', setup: o, tag: subjectTag(o), name: 'outline' });
   return out;
 }
 
@@ -297,7 +312,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
   stopAsked = false;
   running = r;
   set({ running: true, done: 0, total: 0, what: r.what, waiting: queue.length, note: r.again ? 'Clearing the saved ones…' : 'Finding the pictures…' });
-  beginJob({ id: JOB, label: 'Preparing 3D data', detail: r.onlyFaces ? `${r.what}, pictures with faces` : r.what, long: true, unit: 'maps', cancel: stopRebuild, cancelLabel: 'Stop' });
+  beginJob({ id: JOB, label: 'Preparing 3D data', detail: `${r.what}${r.onlyFaces ? ', pictures with faces' : ''}${r.inUse ? ', models in use' : ''}`, long: true, unit: 'maps', cancel: stopRebuild, cancelLabel: 'Stop' });
   let ok = true;
   try {
     if (r.again) {
@@ -307,7 +322,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
       forgetSubjects();
       forgetLayers();
     }
-    const passes = await allPasses();
+    const passes = r.inUse ? await passesInUse() : await allPasses();
     if (!passes.length) {
       set({ note: r.again ? 'Cleared. No depth or outline model is installed, so nothing was worked out.' : 'No depth or outline model is installed, so there is nothing to work out.' });
       ok = false;
