@@ -100,14 +100,13 @@ jobs:
       # use those instructions everywhere. Only here: the tests above and
       # vault-export.exe (the recovery tool, which must run on anything) keep
       # the plain x86-64 baseline. AES and carry-less multiply (encryption)
-      # and F16C (smart search) are picked at run time either way.
+      # are picked at run time either way.
       #
       # Profile-guided optimisation (PGO) was looked at and left out for now:
       # it needs the release build twice (an instrumented build, a profiling
       # run, then the optimised build), which adds well over 10 minutes to
       # this job, and the only representative workload that exists is the
-      # self-test in the real window, which needs the models and the web
-      # engine. The plan, when it is worth it: `rustup component add
+      # self-test in the real window, which needs the web engine. The plan, when it is worth it: `rustup component add
       # llvm-tools`, build with RUSTFLAGS="-Cprofile-generate=$PWD/pgo",
       # run a headless workload (create a demo vault, import a few hundred
       # generated pictures and a big file, read everything back, search),
@@ -123,24 +122,6 @@ jobs:
       - name: Build vault-export.exe
         run: cargo build --release --locked -p vault-export
 
-      - name: Smart-search models (from the models-v2 release of this repo, else models-v1)
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-          mkdir -p target/release/models
-          if gh release view models-v2 --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release download models-v2 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
-            # Its ONNX Runtime too (kept out of the packaged folders), so the self-test analyses natively.
-            mkdir -p ortdl
-            gh release download models-v2 --repo "$GITHUB_REPOSITORY" --dir ortdl --pattern onnxruntime.dll --pattern DirectML.dll
-            echo "MV_ORT_DIR=$(cygpath -w "$PWD/ortdl")" >> "$GITHUB_ENV"
-            ls -la ortdl
-          else
-            gh release download models-v1 --repo "$GITHUB_REPOSITORY" --dir target/release/models --pattern 'clip-*'
-          fi
-          ls -la target/release/models
       - name: Face recognition pack for the self-test (the newest faces-* release, if any)
         shell: bash
         env:
@@ -191,7 +172,7 @@ jobs:
           Copy-Item $v.FullName "target\release\WebView2" -Recurse
           Set-Content "target\release\WebView2\VERSION.txt" $v.Name
           "Copied WebView2 $($v.Name): $([math]::Round((Get-ChildItem target\release\WebView2 -Recurse | Measure-Object Length -Sum).Sum / 1MB)) MB"
-      - name: Test pictures for faces and smart search
+      - name: Test pictures for faces
         shell: bash
         run: |
           mkdir -p extra
@@ -199,7 +180,7 @@ jobs:
           for f in baboon fruits building; do curl -fsSL -o extra/$f.jpg https://raw.githubusercontent.com/opencv/opencv/4.x/samples/data/$f.jpg; done
           ls -la extra
 
-      - name: Self-test — media, safety tools, faces, smart search and the built-in engine, in the real Windows app
+      - name: Self-test — media, safety tools, faces and the built-in engine, in the real Windows app
         shell: pwsh
         run: |
           $env:MV_SELFTEST = "1"
@@ -221,7 +202,7 @@ jobs:
           mkdir -p dist/MediaVault
           cp target/release/MediaVault.exe target/release/vault-export.exe dist/MediaVault/
           cp crates/vault-core/FORMAT.md tools/reference_decrypt.py packaging/README.txt dist/MediaVault/
-      - name: Publish a release (app, plus engine and models only when they are new)
+      - name: Publish a release (app, plus engine and video tool only when they are new)
         if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
         shell: bash
         env:
@@ -253,13 +234,6 @@ jobs:
           utag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^upscaler-' | sort -r | head -1 || true)
           # The face recognition pack likewise (facepack.yml).
           ftag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^faces-' | sort -r | head -1 || true)
-          # The models with the native engine (modelspack.yml) once that release exists.
-          mtag=models-v1
-          v2note=""
-          if gh release view models-v2 >/dev/null 2>&1; then
-            mtag=models-v2
-            v2note="  (have the models from models-v1? download this once more: it adds the engine that analyses pictures on the graphics card)"
-          fi
           # And the 3D photos (depth) pack (depthpack.yml).
           dtag=$(gh release list --limit 200 --json tagName -q '.[].tagName' | grep '^depth-' | sort -r | head -1 || true)
           printf '%s\n' \
@@ -267,15 +241,12 @@ jobs:
             "" \
             "**First time:** also download, once, and unzip into the same place:" \
             "- the web engine: $repo/tag/$etag (MediaVault-engine-windows.zip)" \
-            "- the smart-search models: $repo/tag/$mtag (MediaVault-models-windows.zip)" \
-            ${v2note:+"$v2note"} \
-            "  (already have the models from before? just add MediaVault-models-english-addon.zip from the same page)" \
             "- the video tool, for converting and animations: $repo/tag/$ttag (MediaVault-videotool-windows.zip)" \
             ${utag:+"- the AI upscaler for pictures (optional, large): $repo/tag/$utag (MediaVault-upscaler-windows.zip)"} \
             ${ftag:+"- face recognition for People (optional, personal use): $repo/tag/$ftag (MediaVault-faces-windows.zip)"} \
             ${dtag:+"- 3D photos, gentle depth motion in slideshows (optional): $repo/tag/$dtag (MediaVault-depth-windows.zip)"} \
             "" \
-            "Without them the app still works: it then uses the web engine that comes with Windows, smart search is off, and converting isn't available." > notes.md
+            "Without them the app still works: it then uses the web engine that comes with Windows, and converting isn't available." > notes.md
           gh release create "$tag" MediaVault-app-windows.zip --target "$GITHUB_SHA" --title "Media Vault (build ${GITHUB_RUN_NUMBER})" --draft --notes-file notes.md
 
   # Publish the draft release only when the tests passed as well; otherwise remove it.

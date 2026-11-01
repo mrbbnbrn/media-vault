@@ -148,7 +148,7 @@ jobs:
             "Media Vault subject outline model: $NAME ($TITLE)" \
             "" \
             "Unzip into the same place as the app: this adds MediaVault\\tools\\subject-$ID." \
-            "Then choose it in View > 3D photo settings (in the viewer) or Settings > Faces & smart search." \
+            "Then choose it in View > 3D photo settings (in the viewer) or Settings > AI & 3D." \
             "With nothing chosen, Best is used when it's there, else Fast." \
             "" \
             "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
@@ -170,7 +170,7 @@ jobs:
           zip_name="MediaVault-subject-$ID-windows.zip"
           (cd z && zip -qr -6 "../$zip_name" MediaVault)
           ls -la "$zip_name"
-          notes="Optional subject outline models (BiRefNet, MIT). Unzip into the same place as the app, then choose the model in View ▾ → 3D photo settings or Settings → Faces & smart search. Fast = subject-birefnet-lite; Best = subject-birefnet."
+          notes="Optional subject outline models (BiRefNet, MIT). Unzip into the same place as the app, then choose the model in View ▾ → 3D photo settings or Settings → AI & 3D. Fast = subject-birefnet-lite; Best = subject-birefnet."
           if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
           else

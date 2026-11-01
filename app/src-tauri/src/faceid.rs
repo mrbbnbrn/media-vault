@@ -44,12 +44,22 @@ pub fn pack_dir() -> Option<PathBuf> {
     Some(std::env::current_exe().ok()?.parent()?.join("tools").join("faces"))
 }
 
-/// Where ONNX Runtime comes from: the faces pack itself, else another pack that has it.
+/// Where ONNX Runtime comes from: the faces pack itself, else another
+/// folder that has it: MV_ORT_DIR (while developing), `tools/onnxruntime`
+/// (it came with the old models download) or the upscaler pack.
 fn runtime_dir(pack: &Path) -> Option<PathBuf> {
     if upscale::runtime_in(pack).is_some() {
         return Some(pack.to_path_buf());
     }
-    crate::smartnative::runtime_dir()
+    let mut others = Vec::new();
+    if let Some(d) = std::env::var_os("MV_ORT_DIR") {
+        others.push(PathBuf::from(d));
+    }
+    if let Some(exe) = std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)) {
+        others.push(exe.join("tools").join("onnxruntime"));
+    }
+    others.extend(upscale::pack_dir());
+    others.into_iter().find(|d| upscale::runtime_in(d).is_some())
 }
 
 #[derive(Debug, Clone, Serialize)]

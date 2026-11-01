@@ -4,7 +4,7 @@
 
 import { noteEvent } from './perf';
 import type {
-  AnalyseStatus, AppConfig, AppState, BeatStatus, DepthBenchmark, DepthDetail, DepthInfo, DepthMap, DepthModel, DerivedGroup, DerivedKind, DerivedStats, FaceSplit, Growth, GrowthMonth, InpaintBenchmark, InpaintInfo, InpaintModel, InpaintRequest, Item, LibraryBackup, Rgba, SessionInfo, SmartEngine, SubjectBenchmark, SubjectInfo, SubjectMask, SubjectModel, UpscaleRequest, UpscaleSaved, UpscalerInfo,
+  AnalyseStatus, AppConfig, AppState, BeatStatus, DepthBenchmark, DepthDetail, DepthInfo, DepthMap, DepthModel, DerivedGroup, DerivedKind, DerivedStats, FaceSplit, Growth, GrowthMonth, InpaintBenchmark, InpaintInfo, InpaintModel, InpaintRequest, Item, LibraryBackup, Rgba, SessionInfo, SubjectBenchmark, SubjectInfo, SubjectMask, SubjectModel, UpscaleRequest, UpscaleSaved, UpscalerInfo,
 } from './api';
 
 import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
@@ -26,6 +26,9 @@ export const mockBackups: LibraryBackup[] = [5, 3, 2, 1, 0.2].map((days, i) => {
   return { name: `meta-${String(at).padStart(15, '0')}.db.enc`, atMs: at, bytes: 380_000 + i * 8000 };
 });
 
+/** What smart search (no longer in the app) left in the preview's library, until deleted in Settings → Storage. */
+const mockSmartData = { items: 1284, bytes: 1284 * 1024 };
+
 export const mock = {
   state: {
     config: {
@@ -38,9 +41,7 @@ export const mock = {
       gridShape: false,
       viewer: { smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0, ambient: false, faceBoxes: false },
       builtinEngine: true,
-      smartSearch: false,
       makePreviews: true,
-      smartIndex: true,
       blockCapture: true,
       look: { sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [] },
       stripMetadata: false,
@@ -322,11 +323,9 @@ export const mock = {
       case 'bookmarks':
       case 'folder_samples':
       case 'faces_needed':
-      case 'clip_needed':
       case 'similar_needed':
       case 'faces_of':
       case 'river_faces':
-      case 'smart_search':
         return [];
       case 'engine_info':
         return { mode: 'system', available: false, version: null };
@@ -348,7 +347,14 @@ export const mock = {
       case 'ui_get':
         return null;
       case 'data_info':
-        return { faces: 0, faceBytes: 0, clipItems: 0, clipBytes: 0, backups: mockBackups.length, backupBytes: mockBackups.reduce((n, b) => n + b.bytes, 0), libraryBytes: 0 };
+        return { faces: 0, faceBytes: 0, clipItems: mockSmartData.items, clipBytes: mockSmartData.bytes, backups: mockBackups.length, backupBytes: mockBackups.reduce((n, b) => n + b.bytes, 0), libraryBytes: 0 };
+      case 'smart_data_delete': {
+        // The library shrinks by about what the analysis took.
+        const freed = mockSmartData.items ? mockSmartData.bytes + 40_960 : 0;
+        mockSmartData.items = 0;
+        mockSmartData.bytes = 0;
+        return freed;
+      }
       case 'library_backups':
         return [...mockBackups].reverse();
       case 'restore_library_backup': {
@@ -361,13 +367,9 @@ export const mock = {
       }
       case 'cache_info':
         return { thumbs: 0, thumbBytes: 0, previews: 0, previewBytes: 0 };
-      case 'clip_status':
-        return { total: 0, done: 0, failed: 0 };
-      case 'smart_engine':
-        return { models: true, native: true, device: 'gpu', deviceKnown: false, problem: null } satisfies SmartEngine;
       case 'analyse_start':
       case 'analyse_status':
-        return { running: false, busy: false, done: 0, thumbs: 0, prints: 0, smart: 0, faces: 0, left: 0, facesLeft: 0 } satisfies AnalyseStatus;
+        return { running: false, busy: false, done: 0, thumbs: 0, prints: 0, faces: 0, left: 0, facesLeft: 0 } satisfies AnalyseStatus;
       case 'analyse_thumb':
         return false;
       case 'folder_view':

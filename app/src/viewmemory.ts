@@ -73,7 +73,7 @@ let saveTimer: ReturnType<typeof setTimeout> | null = null;
 /** The settings key of a view: each folder its own, searches share one. */
 export function prefsKey(v: LibView): string {
   if (v.kind === 'folder') return `f${v.id ?? 'top'}`;
-  if (v.kind === 'search' || v.kind === 'smart') return 'search';
+  if (v.kind === 'search') return 'search';
   return v.kind;
 }
 

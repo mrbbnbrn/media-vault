@@ -24,13 +24,6 @@ What's in the full package
               and plays videos), so Windows updates can't change how things
               play. If it ever fails to start, the app uses the one that
               comes with Windows instead and says so in Settings.
-  models\     Offline smart-search models (find pictures by describing
-              them, in 50+ languages). Without this folder smart search is
-              simply turned off; everything else works.
-  tools\onnxruntime\
-              The engine that analyses pictures for smart search on the
-              graphics card (or all of the processor), from the newer models
-              download. Without it pictures are analysed in the window, slowly.
   tools\      The video tool (ffmpeg, LGPL build; licence and source in the
               folder) for converting items and making animations. It works
               in memory: nothing decrypted is written to disk. Without this

@@ -1,6 +1,6 @@
 //! "Why is this here?": explains why an item is in a search's results, using
 //! the search's own rules (library::query_items for people, tags, file names
-//! and filters; clip::search for smart search), so the two can't drift apart.
+//! and filters), so the two can't drift apart.
 //! The tests check that the explanation's verdict always agrees with the
 //! search itself.
 
@@ -10,7 +10,6 @@ use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
 use tauri::State;
 
-use crate::clip;
 use crate::library::{self, Item, ItemFilter, R};
 
 use crate::util::sql_err as e;
@@ -66,22 +65,6 @@ pub struct FilterCheck {
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-pub struct SmartMatch {
-    /// Similarity to the words (CLIP cosine, about 0.15–0.40 in practice).
-    pub score: Option<f32>,
-    /// The best match's score.
-    pub best: f32,
-    /// Results need at least this score, unless they are among the first few.
-    pub cut: f32,
-    /// Always kept: this many best matches.
-    pub min_results: usize,
-    /// 1 = best match (among items smart search could show).
-    pub rank: Option<usize>,
-    pub kept: bool,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 pub struct Explanation {
     pub item: Item,
     /// Does it pass every rule of the search? (The same answer the search gives.)
@@ -92,7 +75,6 @@ pub struct Explanation {
     pub tags: Vec<TagMatch>,
     pub people: Vec<PersonMatch>,
     pub filters: Vec<FilterCheck>,
-    pub smart: Option<SmartMatch>,
 }
 
 /// Fold one character at a time, remembering which original character each
@@ -159,9 +141,8 @@ fn kind_word(k: &str) -> &str {
     }
 }
 
-/// Explain why `id` is (or isn't) in the results of `filter`, plus smart
-/// search with the query vector `smart` (searched in `smart_folder`) if given.
-pub fn explain(conn: &Connection, id: i64, filter: &ItemFilter, smart: Option<&[f32]>, smart_folder: Option<i64>) -> R<Explanation> {
+/// Explain why `id` is (or isn't) in the results of `filter`.
+pub fn explain(conn: &Connection, id: i64, filter: &ItemFilter) -> R<Explanation> {
     let item = library::get_item(conn, id)?;
     let chain = folder_chain(conn, item.folder_id)?;
     let path_folded = library::fold(&chain.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join(" "));
@@ -283,38 +264,6 @@ pub fn explain(conn: &Connection, id: i64, filter: &ItemFilter, smart: Option<&[
         );
     }
 
-    // Smart search: ask the search itself whether it keeps this item.
-    let smart = match smart {
-        Some(vec) => {
-            let q = clip::query_vector(vec)?;
-            let scored = clip::score_all(conn, &q)?;
-            let hits = clip::search(conn, vec, smart_folder, 300)?;
-            let kept = hits.iter().any(|h| h.item.id == id);
-            if !kept {
-                matched = false;
-            }
-            let best = scored.first().map(|s| s.1).unwrap_or(0.0);
-            // Rank among the items the search could show (what its results are counted in).
-            let showable: HashSet<i64> = library::query_items(
-                conn,
-                &ItemFilter { folder: smart_folder.map(Some), recursive: smart_folder.is_some(), ..Default::default() },
-            )?
-            .into_iter()
-            .map(|i| i.id)
-            .collect();
-            let rank = scored.iter().filter(|(k, _)| showable.contains(k)).position(|(k, _)| *k == id).map(|r| r + 1);
-            Some(SmartMatch {
-                score: scored.iter().find(|(k, _)| *k == id).map(|s| s.1),
-                best,
-                cut: best - clip::CUT_BELOW_BEST,
-                min_results: clip::MIN_RESULTS,
-                rank,
-                kept,
-            })
-        }
-        None => None,
-    };
-
     Ok(Explanation {
         folder_path: chain.into_iter().map(|(_, n)| n).collect(),
         item,
@@ -323,7 +272,6 @@ pub fn explain(conn: &Connection, id: i64, filter: &ItemFilter, smart: Option<&[
         tags,
         people,
         filters,
-        smart,
     })
 }
 
@@ -332,10 +280,8 @@ pub async fn explain_match(
     state: State<'_, crate::Shared>,
     id: i64,
     filter: ItemFilter,
-    smart: Option<Vec<f32>>,
-    smart_folder: Option<i64>,
 ) -> Result<Explanation, String> {
-    crate::read_db(state.inner(), move |c| explain(c, id, &filter, smart.as_deref(), smart_folder)).await
+    crate::read_db(state.inner(), move |c| explain(c, id, &filter)).await
 }
 
 #[cfg(test)]
@@ -424,7 +370,7 @@ mod tests {
         for f in filters(&l) {
             let hits: HashSet<i64> = library::query_items(&l.c, &f).unwrap().into_iter().map(|i| i.id).collect();
             for id in &l.items {
-                let x = explain(&l.c, *id, &f, None, None).unwrap();
+                let x = explain(&l.c, *id, &f).unwrap();
                 assert_eq!(x.matched, hits.contains(id), "item {id} with {f:?}: {x:?}");
             }
         }
@@ -435,74 +381,40 @@ mod tests {
         let l = lib();
         let [a, b, _, v, _] = l.items[..] else { panic!() };
         let f = ItemFilter { names: vec!["SUNSET".into()], ..Default::default() };
-        let x = explain(&l.c, a, &f, None, None).unwrap();
+        let x = explain(&l.c, a, &f).unwrap();
         assert!(x.matched);
         assert_eq!(x.names[0].in_name, vec![(9, 15)]);
         assert!(x.names[0].in_note.is_empty());
         assert_eq!(x.folder_path, vec!["Trips".to_string(), "Antalya beach".to_string()]);
         // Found in the note only.
-        let x = explain(&l.c, v, &f, None, None).unwrap();
+        let x = explain(&l.c, v, &f).unwrap();
         assert!(x.matched && x.names[0].in_name.is_empty());
         assert_eq!(x.names[0].in_note, vec![(4, 10)]);
         // Turkish letters: "istanbul" matches "İstanbul" (one character in the original).
-        let x = explain(&l.c, b, &ItemFilter { names: vec!["istanbul".into()], ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, b, &ItemFilter { names: vec!["istanbul".into()], ..Default::default() }).unwrap();
         assert!(x.matched);
         assert_eq!(x.names[0].in_name, vec![(0, 8)]);
         // A word only in the folder path is not a match, but is mentioned.
-        let x = explain(&l.c, a, &ItemFilter { names: vec!["antalya".into()], ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, a, &ItemFilter { names: vec!["antalya".into()], ..Default::default() }).unwrap();
         assert!(!x.matched && x.names[0].in_folder_path && !x.names[0].found);
 
         // Tags: own vs through a folder.
-        let x = explain(&l.c, a, &ItemFilter { tags: vec!["summer".into(), "travel".into()], ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, a, &ItemFilter { tags: vec!["summer".into(), "travel".into()], ..Default::default() }).unwrap();
         assert!(x.matched);
         assert!(x.tags[0].own && x.tags[0].from_folders.is_empty());
         assert!(!x.tags[1].own && x.tags[1].from_folders == vec!["Trips".to_string()]);
 
         // People: by face, and by folder.
-        let x = explain(&l.c, a, &ItemFilter { people: vec![l.bahar], ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, a, &ItemFilter { people: vec![l.bahar], ..Default::default() }).unwrap();
         assert!(x.matched && x.people[0].faces == 1 && !x.people[0].in_folder && x.people[0].name == "Bahar");
-        let x = explain(&l.c, l.items[2], &ItemFilter { people: vec![l.bahar], ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, l.items[2], &ItemFilter { people: vec![l.bahar], ..Default::default() }).unwrap();
         assert!(x.matched && x.people[0].in_folder && x.people[0].faces == 0);
         let _ = l.people;
 
         // Filters say what they wanted.
-        let x = explain(&l.c, a, &ItemFilter { kinds: vec!["video".into()], favourites_only: true, ..Default::default() }, None, None).unwrap();
+        let x = explain(&l.c, a, &ItemFilter { kinds: vec!["video".into()], favourites_only: true, ..Default::default() }).unwrap();
         assert!(!x.matched);
         let kinds: Vec<_> = x.filters.iter().map(|c| (c.filter.as_str(), c.passed)).collect();
         assert_eq!(kinds, vec![("trash", true), ("kind", false), ("favourites", false)]);
-    }
-
-    #[test]
-    fn smart_search_verdict_agrees_and_reports_scores() {
-        let l = lib();
-        let unit = |i: usize, j: usize, mix: f32| {
-            let mut v = vec![0.0; clip::DIM];
-            v[i] = 1.0;
-            v[j] += mix;
-            v
-        };
-        // Ten items close to the query, one far away.
-        let mut ids = l.items.clone();
-        for k in 0..6 {
-            ids.push(add(&l.c, &format!("x{k}.jpg"), None, "image"));
-        }
-        for (k, id) in ids.iter().enumerate() {
-            let mix = if k == 0 { 0.0 } else if k == ids.len() - 1 { 9.0 } else { 0.05 + k as f32 * 0.01 };
-            clip::save(&l.c, *id, &unit(0, 1, mix)).unwrap();
-        }
-        let q = unit(0, 1, 0.0);
-        let hits: HashSet<i64> = clip::search(&l.c, &q, None, 300).unwrap().into_iter().map(|h| h.item.id).collect();
-        for id in &ids {
-            let x = explain(&l.c, *id, &ItemFilter::default(), Some(&q), None).unwrap();
-            let s = x.smart.clone().unwrap();
-            assert_eq!(s.kept, hits.contains(id));
-            assert_eq!(x.matched, s.kept);
-            assert!(s.score.is_some());
-        }
-        let best = explain(&l.c, ids[0], &ItemFilter::default(), Some(&q), None).unwrap().smart.unwrap();
-        assert_eq!(best.rank, Some(1));
-        assert!((best.score.unwrap() - 1.0).abs() < 1e-4 && (best.cut - (1.0 - clip::CUT_BELOW_BEST)).abs() < 1e-4);
-        let far = explain(&l.c, *ids.last().unwrap(), &ItemFilter::default(), Some(&q), None).unwrap().smart.unwrap();
-        assert!(!far.kept && far.score.unwrap() < far.cut);
     }
 }

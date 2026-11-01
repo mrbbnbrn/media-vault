@@ -1,9 +1,5 @@
-/* Smart search, people, safety, quick look, messages, look-alikes, rename. */
-/* ---- batch 3: smart search, people, safety ---------------------------------------------- */
-.search.smart { border-color: var(--accent-border); color: var(--accent); }
-.search.smart input::placeholder { color: var(--faint); }
-.smart-toggle.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
-.smart-toggle:disabled { opacity: 0.4; }
+/* People, safety, quick look, messages, look-alikes, rename. */
+/* ---- batch 3: people, safety ---------------------------------------------- */
 
 .people { display: flex; flex-direction: column; gap: 18px; }
 .people-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }

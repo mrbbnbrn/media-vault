@@ -17,7 +17,7 @@ import {
 import '../titlebar.css';
 
 const ICONS: Record<TabIconKind, (p: { size?: number }) => React.ReactElement> = {
-  folder: FolderIcon, folders: FolderIcon, person: FaceIcon, heart: HeartIcon, search: SearchIcon, smart: SparkleIcon, clock: ClockIcon,
+  folder: FolderIcon, folders: FolderIcon, person: FaceIcon, heart: HeartIcon, search: SearchIcon, clock: ClockIcon,
   trash: TrashIcon, chart: ChartIcon, face: FaceIcon, twin: TwinIcon, play: PlayIcon, sparkle: SparkleIcon, images: ImagesIcon, recent: ImportIcon,
 };
 

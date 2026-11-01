@@ -1,6 +1,8 @@
 //! Storage housekeeping: how many files the vault uses, converting vaults
 //! from the one-file-per-item layout to pack files, and reclaiming the space
-//! left inside packs by deleted items.
+//! left inside packs by deleted items. Also deleting data the app made
+//! (face recognition, library backups, and what smart search left behind:
+//! smart search no longer exists, but older libraries still hold its analysis).
 
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -155,7 +157,8 @@ pub struct DataInfo {
     /// Faces found by face recognition and the space their data takes.
     pub faces: i64,
     pub face_bytes: u64,
-    /// Items analysed for smart search.
+    /// Items smart search analysed before it was removed (its saved
+    /// analysis is still in older libraries until deleted).
     pub clip_items: i64,
     pub clip_bytes: u64,
     /// Copies of the library kept in meta-backups/.
@@ -178,13 +181,11 @@ pub fn data_info(s: &Session) -> Result<DataInfo, String> {
             )
             .map_err(e)?;
         (d.clip_items, d.clip_bytes) = db
-            .query_row("SELECT COUNT(*), IFNULL(SUM(length(vec)) + COUNT(*) * 16, 0) FROM clip", [], |r| {
+            .query_row("SELECT COUNT(*), IFNULL(SUM(length(vec)), 0) FROM clip", [], |r| {
                 Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
             })
             .map_err(e)?;
-        let pages: i64 = db.query_row("PRAGMA page_count", [], |r| r.get(0)).map_err(e)?;
-        let size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).map_err(e)?;
-        d.library_bytes = (pages * size).max(0) as u64;
+        d.library_bytes = library_bytes(&db)?;
     }
     let backups = s.vault().db_backups().map_err(|x| x.to_string())?;
     d.backups = backups.len();
@@ -192,7 +193,7 @@ pub fn data_info(s: &Session) -> Result<DataInfo, String> {
     Ok(d)
 }
 
-/// Delete face-recognition data, smart-search data or the library backups.
+/// Delete face-recognition data or the library backups.
 /// Your folders, person folders and files are not touched.
 pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
     let e = |x: rusqlite::Error| x.to_string();
@@ -210,12 +211,6 @@ pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
             crate::faces::forget_cache();
             format!("Deleted {n} faces. Person folders stay; scan again to find faces.")
         }
-        "clip" => {
-            let db = s.db();
-            let n: i64 = db.query_row("SELECT COUNT(*) FROM clip", [], |r| r.get(0)).map_err(e)?;
-            db.execute_batch("DELETE FROM clip; UPDATE media SET clip_state = 0; VACUUM;").map_err(e)?;
-            format!("Deleted smart-search data for {n} items.")
-        }
         "backups" => {
             let list = s.vault().db_backups().map_err(|x| x.to_string())?;
             let mut freed = 0u64;
@@ -230,6 +225,39 @@ pub fn delete_data(s: &Session, what: &str) -> Result<String, String> {
     s.mark_dirty();
     s.save()?;
     Ok(msg)
+}
+
+/// The library's own size in memory (what is encrypted and saved).
+fn library_bytes(db: &rusqlite::Connection) -> Result<u64, String> {
+    let e = |x: rusqlite::Error| x.to_string();
+    let pages: i64 = db.query_row("PRAGMA page_count", [], |r| r.get(0)).map_err(e)?;
+    let size: i64 = db.query_row("PRAGMA page_size", [], |r| r.get(0)).map_err(e)?;
+    Ok((pages * size).max(0) as u64)
+}
+
+/// Delete everything smart search left in the library: its saved analysis
+/// of every picture, and the "analysed" mark on each item (back to 0, as if
+/// never analysed). The table and the column stay, so older versions of the
+/// app still open the library. The library is then compacted (VACUUM) and
+/// saved, so the file really shrinks. Returns the bytes freed (0, and
+/// nothing done, when there is nothing left).
+pub fn smart_data_delete(s: &Session) -> Result<u64, String> {
+    let e = |x: rusqlite::Error| x.to_string();
+    let freed = {
+        let db = s.db();
+        let left: i64 = db
+            .query_row("SELECT EXISTS(SELECT 1 FROM clip) OR EXISTS(SELECT 1 FROM media WHERE clip_state <> 0)", [], |r| r.get(0))
+            .map_err(e)?;
+        if left == 0 {
+            return Ok(0);
+        }
+        let before = library_bytes(&db)?;
+        db.execute_batch("DELETE FROM clip; UPDATE media SET clip_state = 0 WHERE clip_state <> 0; VACUUM;").map_err(e)?;
+        before.saturating_sub(library_bytes(&db)?)
+    };
+    s.mark_dirty();
+    s.save()?;
+    Ok(freed)
 }
 
 /// Move items stored as separate files into packs. Safe to interrupt: the
@@ -407,7 +435,7 @@ mod tests {
             )
             .unwrap();
         s.db().execute("INSERT INTO faces(media_id, x, y, w, h, score, descriptor, person_id) VALUES (1, 0, 0, 1, 1, 0.9, ?, 1)", [vec![0u8; 512]]).unwrap();
-        s.db().execute("INSERT INTO clip(media_id, vec) VALUES (1, ?)", [vec![0u8; 2048]]).unwrap();
+        s.db().execute("INSERT INTO clip(media_id, vec) VALUES (1, ?)", [vec![7u8; 2048]]).unwrap();
         s.save().unwrap();
         s.save().unwrap(); // a backup copy exists now
         let d = data_info(&s).unwrap();
@@ -415,7 +443,8 @@ mod tests {
         assert!(d.face_bytes >= 512 && d.clip_bytes >= 2048 && d.backups >= 1 && d.library_bytes > 0);
 
         delete_data(&s, "faces").unwrap();
-        delete_data(&s, "clip").unwrap();
+        assert!(delete_data(&s, "clip").is_err(), "smart search data has its own command");
+        smart_data_delete(&s).unwrap();
         delete_data(&s, "backups").unwrap();
         let d = data_info(&s).unwrap();
         assert_eq!((d.faces, d.clip_items, d.backups), (0, 0, 0));
@@ -425,6 +454,46 @@ mod tests {
             .unwrap();
         assert_eq!((person, fs, cs), (1, 0, 0), "person folders stay; items can be scanned again");
         assert!(delete_data(&s, "everything").is_err());
+    }
+
+    #[test]
+    fn past_smart_search_data_is_deleted_and_the_library_shrinks() {
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let path = s.info().path;
+        {
+            let db = s.db();
+            for i in 1..=600i64 {
+                db.execute(
+                    "INSERT INTO media(id, object_id, kind, original_name, ext, size, sha256, imported_at, clip_state) VALUES (?1, ?2, 'image', 'a.jpg', 'jpg', 1, 'h', 0, ?3)",
+                    rusqlite::params![i, format!("{i:032x}"), if i % 50 == 0 { -1 } else { 1 }],
+                )
+                .unwrap();
+                db.execute("INSERT INTO clip(media_id, vec, f16) VALUES (?, ?, 1)", rusqlite::params![i, vec![(i % 251) as u8; 1024]]).unwrap();
+            }
+        }
+        s.mark_dirty();
+        s.save().unwrap();
+        let d = data_info(&s).unwrap();
+        assert_eq!((d.clip_items, d.clip_bytes), (600, 600 * 1024));
+        let before = d.library_bytes;
+
+        let freed = smart_data_delete(&s).unwrap();
+        assert!(freed >= 500 * 1024, "only {freed} bytes freed");
+        let d = data_info(&s).unwrap();
+        assert_eq!((d.clip_items, d.clip_bytes), (0, 0));
+        assert_eq!(d.library_bytes, before - freed);
+        assert!(!s.is_dirty(), "saved straight away");
+        // The table and the column stay (older versions still open the library); nothing is left in them.
+        drop(s);
+        let s = session::unlock(&path, "long enough pw").unwrap();
+        let (rows, marked): (i64, i64) = s
+            .db()
+            .query_row("SELECT (SELECT COUNT(*) FROM clip), (SELECT COUNT(*) FROM media WHERE clip_state <> 0)", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!((rows, marked), (0, 0));
+        // Nothing there: nothing to free, and it says so.
+        assert_eq!(smart_data_delete(&s).unwrap(), 0);
     }
 
     #[test]

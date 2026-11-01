@@ -4,15 +4,13 @@
 //!
 //! The window makes a fingerprint of each thumbnail once: a 64-bit
 //! perceptual hash (pHash) and a sharpness score. Two pictures are alike when
-//! few bits differ. With smart search on, pictures can instead be compared by
-//! what they show (their smart-search vectors).
+//! few bits differ.
 
 use std::collections::HashMap;
 
 use rusqlite::{Connection, params};
 use serde::Serialize;
 
-use crate::clip::{self, Hit};
 use crate::library::{self, Item, R};
 
 use crate::util::sql_err as e;
@@ -25,6 +23,14 @@ pub struct FpTask {
 }
 
 const KINDS: &str = "('image', 'gif', 'video')";
+
+/// An item that looks like the one asked about, with how alike it is (0–1).
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hit {
+    pub item: Item,
+    pub score: f32,
+}
 
 /// Items whose fingerprint still has to be made (they need a thumbnail first).
 pub fn needed(conn: &Connection, limit: i64) -> R<Vec<FpTask>> {
@@ -86,8 +92,7 @@ pub fn distance(a: u64, b: u64) -> u32 {
     (a ^ b).count_ones()
 }
 
-/// Strict, normal or loose: the most bits that may differ (as in Baro Alarm),
-/// or how alike in meaning two pictures must be with smart search.
+/// Strict, normal or loose: the most bits that may differ (as in Baro Alarm).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Level {
     Strict,
@@ -110,13 +115,6 @@ impl Level {
             Level::Loose => 14,
         }
     }
-    fn meaning(self) -> f32 {
-        match self {
-            Level::Strict => 0.95,
-            Level::Normal => 0.92,
-            Level::Loose => 0.88,
-        }
-    }
 }
 
 struct Fp {
@@ -131,43 +129,6 @@ fn fingerprints(conn: &Connection) -> R<HashMap<i64, Fp>> {
         .map_err(e)?
         .collect::<rusqlite::Result<HashMap<_, _>>>()
         .map_err(e)
-}
-
-/// One vector per item for comparing pictures with each other: the average
-/// of its smart-search vectors (videos have several), unit length.
-fn meanings(conn: &Connection) -> R<HashMap<i64, Vec<f32>>> {
-    let live: std::collections::HashSet<i64> = conn
-        .prepare("SELECT id FROM media WHERE deleted_at IS NULL")
-        .map_err(e)?
-        .query_map([], |r| r.get(0))
-        .map_err(e)?
-        .collect::<rusqlite::Result<_>>()
-        .map_err(e)?;
-    // From the vectors kept in memory (clip.rs), not the library.
-    let rows: Vec<(i64, Vec<f32>)> =
-        clip::with_index(conn, |idx| idx.ids().filter(|id| live.contains(id)).filter_map(|id| Some((id, idx.vectors(id)?))).collect())?;
-    let mut out = HashMap::new();
-    for (id, v) in rows {
-        if v.is_empty() || !v.len().is_multiple_of(clip::DIM) {
-            continue;
-        }
-        let mut m = vec![0f32; clip::DIM];
-        for chunk in v.chunks(clip::DIM) {
-            for (a, b) in m.iter_mut().zip(chunk) {
-                *a += b;
-            }
-        }
-        let n = m.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if n > 1e-6 {
-            m.iter_mut().for_each(|x| *x /= n);
-            out.insert(id, m);
-        }
-    }
-    Ok(out)
-}
-
-fn dot(a: &[f32], b: &[f32]) -> f32 {
-    a.iter().zip(b).map(|(x, y)| x * y).sum()
 }
 
 /// The best picture of a group first: favourite, then clearly bigger
@@ -252,10 +213,9 @@ pub struct Data {
     /// Item → stored file: free copies of one file are not look-alikes.
     objects: HashMap<i64, String>,
     fps: HashMap<i64, Fp>,
-    means: HashMap<i64, Vec<f32>>,
 }
 
-pub fn load(conn: &Connection, smart: bool, folder: Option<i64>) -> R<Data> {
+pub fn load(conn: &Connection, folder: Option<i64>) -> R<Data> {
     Ok(Data {
         items: library::query_items(
             conn,
@@ -269,66 +229,39 @@ pub fn load(conn: &Connection, smart: bool, folder: Option<i64>) -> R<Data> {
             .collect::<rusqlite::Result<_>>()
             .map_err(e)?,
         fps: fingerprints(conn)?,
-        means: if smart { meanings(conn)? } else { HashMap::new() },
     })
 }
 
 /// Groups of look-alikes, biggest group first, each with its best picture first.
 ///
-/// Fingerprints: every pair within the limit is linked, so A~B and B~C put
-/// A, B and C together (as in Baro Alarm). Smart search: each group is built
-/// around one picture, so groups can't chain into one huge group.
-pub fn group(data: Data, level: Level, smart: bool, videos: bool) -> Vec<Vec<Item>> {
-    let Data { items, objects, fps, means } = data;
+/// Every pair within the limit is linked, so A~B and B~C put A, B and C
+/// together (as in Baro Alarm).
+pub fn group(data: Data, level: Level, videos: bool) -> Vec<Vec<Item>> {
+    let Data { items, objects, fps } = data;
     let mut seen = std::collections::HashSet::new();
     let items: Vec<Item> = items.into_iter().filter(|i| objects.get(&i.id).is_none_or(|o| seen.insert(o.clone()))).collect();
     let sharp: HashMap<i64, f64> = fps.iter().map(|(id, f)| (*id, f.sharp)).collect();
     let wanted = |i: &Item| i.kind == "image" || i.kind == "gif" || (videos && i.kind == "video");
-    let mut out: Vec<Vec<Item>> = Vec::new();
-    if smart {
-        let list: Vec<(Item, &Vec<f32>)> =
-            items.into_iter().filter(|i| wanted(i)).filter_map(|i| means.get(&i.id).map(|v| (i, v))).collect();
-        let t = level.meaning();
-        let mut taken = vec![false; list.len()];
-        for a in 0..list.len() {
-            if taken[a] {
-                continue;
-            }
-            let mut g = vec![a];
-            for b in a + 1..list.len() {
-                if !taken[b] && dot(list[a].1, list[b].1) >= t {
-                    g.push(b);
-                }
-            }
-            if g.len() > 1 {
-                for &k in &g {
-                    taken[k] = true;
-                }
-                out.push(g.into_iter().map(|k| list[k].0.clone()).collect());
-            }
-        }
-    } else {
-        let list: Vec<(Item, u64)> =
-            items.into_iter().filter(|i| wanted(i)).filter_map(|i| fps.get(&i.id).map(|f| (i, f.hash))).collect();
-        let max = level.bits();
-        let mut parent: Vec<usize> = (0..list.len()).collect();
-        for a in 0..list.len() {
-            for b in a + 1..list.len() {
-                if distance(list[a].1, list[b].1) <= max {
-                    let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
-                    if ra != rb {
-                        parent[rb] = ra;
-                    }
+    let list: Vec<(Item, u64)> =
+        items.into_iter().filter(|i| wanted(i)).filter_map(|i| fps.get(&i.id).map(|f| (i, f.hash))).collect();
+    let max = level.bits();
+    let mut parent: Vec<usize> = (0..list.len()).collect();
+    for a in 0..list.len() {
+        for b in a + 1..list.len() {
+            if distance(list[a].1, list[b].1) <= max {
+                let (ra, rb) = (find(&mut parent, a), find(&mut parent, b));
+                if ra != rb {
+                    parent[rb] = ra;
                 }
             }
         }
-        let mut by_root: HashMap<usize, Vec<Item>> = HashMap::new();
-        for (k, (item, _)) in list.into_iter().enumerate() {
-            let r = find(&mut parent, k);
-            by_root.entry(r).or_default().push(item);
-        }
-        out = by_root.into_values().filter(|g| g.len() > 1).collect();
     }
+    let mut by_root: HashMap<usize, Vec<Item>> = HashMap::new();
+    for (k, (item, _)) in list.into_iter().enumerate() {
+        let r = find(&mut parent, k);
+        by_root.entry(r).or_default().push(item);
+    }
+    let mut out: Vec<Vec<Item>> = by_root.into_values().filter(|g| g.len() > 1).collect();
     for g in &mut out {
         best_first(g, &sharp);
     }
@@ -337,38 +270,15 @@ pub fn group(data: Data, level: Level, smart: bool, videos: bool) -> Vec<Vec<Ite
 }
 
 #[cfg(test)]
-fn groups(conn: &Connection, level: Level, smart: bool, folder: Option<i64>, videos: bool) -> R<Vec<Vec<Item>>> {
-    Ok(group(load(conn, smart, folder)?, level, smart, videos))
+fn groups(conn: &Connection, level: Level, folder: Option<i64>, videos: bool) -> R<Vec<Vec<Item>>> {
+    Ok(group(load(conn, folder)?, level, videos))
 }
 
 /// Items that look like this one, most alike first (not including itself).
-/// With `smart`, by what they show (falls back to the fingerprint if this
-/// item hasn't been analysed for smart search yet).
-pub fn similar_to(conn: &Connection, id: i64, smart: bool, limit: usize) -> R<Vec<Hit>> {
+pub fn similar_to(conn: &Connection, id: i64, limit: usize) -> R<Vec<Hit>> {
     let items = library::query_items(conn, &library::ItemFilter::default())?;
     let by_id: HashMap<i64, &Item> = items.iter().map(|i| (i.id, i)).collect();
     let visual = |i: &&&Item| i.kind == "image" || i.kind == "gif" || i.kind == "video";
-    if smart {
-        let means = meanings(conn)?;
-        if let Some(q) = means.get(&id) {
-            let mut scored: Vec<(i64, f32)> =
-                means.iter().filter(|(k, _)| **k != id).map(|(k, v)| (*k, dot(q, v))).collect();
-            scored.sort_by(|a, b| b.1.total_cmp(&a.1));
-            // Unrelated pictures still score around 0.5–0.7; keep what is really
-            // close, and near the best match.
-            let cut = scored.first().map(|s| (s.1 - 0.10).max(0.72)).unwrap_or(1.0);
-            let mut out = Vec::new();
-            for (k, score) in scored {
-                if out.len() >= limit || score < cut {
-                    break;
-                }
-                if let Some(it) = by_id.get(&k).filter(visual) {
-                    out.push(Hit { item: (*it).clone(), score });
-                }
-            }
-            return Ok(out);
-        }
-    }
     let fps = fingerprints(conn)?;
     let Some(me) = fps.get(&id) else {
         return Err("This item doesn't have a fingerprint yet. It is made in the background; try again in a moment.".into());
@@ -421,45 +331,24 @@ mod tests {
         let st = status(&c).unwrap();
         assert_eq!((st.total, st.done), (5, 5));
 
-        let g = groups(&c, Level::Normal, false, None, false).unwrap();
+        let g = groups(&c, Level::Normal, None, false).unwrap();
         assert_eq!(g.len(), 1);
         let ids: Vec<i64> = g[0].iter().map(|i| i.id).collect();
         assert_eq!(ids, vec![b, cc, a], "sharpest first");
         // Strict: 4 bits is still within 5, so a~b~c still link.
-        assert_eq!(groups(&c, Level::Strict, false, None, false).unwrap()[0].len(), 3);
+        assert_eq!(groups(&c, Level::Strict, None, false).unwrap()[0].len(), 3);
 
         // A clearly bigger copy wins over a sharper-looking small one.
         c.execute("UPDATE media SET width = 400, height = 400 WHERE id = ?", [cc]).unwrap();
-        assert_eq!(groups(&c, Level::Normal, false, None, false).unwrap()[0][0].id, cc);
+        assert_eq!(groups(&c, Level::Normal, None, false).unwrap()[0][0].id, cc);
         // A favourite wins over everything.
         c.execute("UPDATE media SET favourite = 1 WHERE id = ?", [a]).unwrap();
-        assert_eq!(groups(&c, Level::Normal, false, None, false).unwrap()[0][0].id, a);
+        assert_eq!(groups(&c, Level::Normal, None, false).unwrap()[0][0].id, a);
 
-        let hits = similar_to(&c, a, false, 10).unwrap();
+        let hits = similar_to(&c, a, 10).unwrap();
         assert_eq!(hits.iter().map(|h| h.item.id).collect::<Vec<_>>(), vec![b, cc]);
 
         reset(&c, a).unwrap();
         assert_eq!(needed(&c, 10).unwrap().len(), 1);
-    }
-
-    #[test]
-    fn smart_groups_dont_chain() {
-        let c = db::create_empty().unwrap();
-        let ids: Vec<i64> = (0..3).map(|k| add(&c, &format!("p{k}"), 10, false)).collect();
-        // p0·p1 and p1·p2 are alike, p0·p2 is not: smart groups are built around one picture.
-        let v = |x: f32, y: f32| {
-            let mut v = vec![0f32; clip::DIM];
-            v[0] = x;
-            v[1] = y;
-            v
-        };
-        clip::save(&c, ids[0], &v(1.0, 0.0)).unwrap();
-        clip::save(&c, ids[1], &v(0.96, 0.28)).unwrap();
-        clip::save(&c, ids[2], &v(0.85, 0.53)).unwrap();
-        let g = groups(&c, Level::Normal, true, None, false).unwrap();
-        assert_eq!(g.len(), 1);
-        assert_eq!(g[0].len(), 2);
-        let hits = similar_to(&c, ids[0], true, 10).unwrap();
-        assert_eq!(hits[0].item.id, ids[1]);
     }
 }

@@ -135,11 +135,10 @@ pub async fn library_backups(state: State<'_, Shared>) -> Result<Vec<LibraryBack
 pub async fn restore_library_backup(state: State<'_, Shared>, name: String) -> Result<(), String> {
     let s = sess(&state)?;
     blocking(move || {
-        // Nothing worked out from the library now stays in memory (faces, smart search, pictures).
+        // Nothing worked out from the library now stays in memory (faces, pictures).
         crate::analyse::stop();
         crate::faces::forget_cache();
         crate::facecrops::forget();
-        crate::clip::forget_index();
         crate::protocol::forget_cache();
         restore(&s, &name)?;
         crate::protocol::forget_cache();
@@ -148,9 +147,6 @@ pub async fn restore_library_backup(state: State<'_, Shared>, name: String) -> R
         // Read again in the background, like after unlocking.
         let s2 = s.clone();
         std::thread::spawn(move || {
-            if !s2.is_closed() {
-                let _ = crate::clip::warm(&*s2);
-            }
             if !s2.is_closed() {
                 let _ = crate::faces::warm(&*s2);
             }

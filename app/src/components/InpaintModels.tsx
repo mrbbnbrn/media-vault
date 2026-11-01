@@ -1,5 +1,5 @@
 // Layered 3D's "Background fill" chooser (the viewer's View ▾ → "3D photo
-// settings…", and Settings → Faces & smart search): Simple (no download),
+// settings…", and Settings → AI & 3D): Simple (no download),
 // MI-GAN or LaMa (optional downloads; the ones not installed are greyed with
 // the download they come in), and in Settings a speed test per model.
 

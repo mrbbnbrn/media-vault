@@ -1,13 +1,13 @@
 // Quick sort: go through a folder one item at a time and send each one to
 // another folder. The search box always has the focus: type part of a folder
-// name and press Enter. Most-used folders and suggestions (a recognised face,
-// folders whose pictures look alike) are one click away. "#tag" tags instead.
+// name and press Enter. Most-used folders and suggestions (the person folder
+// of a recognised face) are one click away. "#tag" tags instead.
 
 import { fold } from '../text';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, mediaUrl, thumbUrl, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
-import { FaceIcon, FolderIcon, SparkleIcon, TagIcon, TrashIcon } from './Icons';
+import { FaceIcon, FolderIcon, TagIcon, TrashIcon } from './Icons';
 import { useLayer } from '../keylayers';
 
 
@@ -242,9 +242,9 @@ export function QuickSort(props: {
       <div className="qsort-chips">
         {suggest.map((s) => byId.get(s.folder) && (
           <button key={`s${s.folder}`} type="button" className="qchip suggest" onClick={() => send(s.folder, byId.get(s.folder)!.name)}
-            title={s.reason === 'face' ? 'A face in it looks like this person' : 'Looks like the pictures in this folder'}>
-            {s.reason === 'face' ? <FaceIcon size={13} /> : <SparkleIcon size={13} />}
-            {s.reason === 'face' ? `Looks like ${byId.get(s.folder)!.name}` : byId.get(s.folder)!.name}
+            title="A face in it looks like this person">
+            <FaceIcon size={13} />
+            {`Looks like ${byId.get(s.folder)!.name}`}
           </button>
         ))}
         {frequent.filter((f) => !suggest.some((s) => s.folder === f.id)).map((f) => (

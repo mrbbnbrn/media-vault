@@ -1,7 +1,7 @@
 // Making a video's preview pictures in one pass, in memory (nothing decrypted
 // ever reaches the disk):
-//  - the frame strip (48 small frames in one WebP picture: flip-books, seek-bar
-//    previews, smart search), and
+//  - the frame strip (48 small frames in one WebP picture: flip-books and
+//    seek-bar previews), and
 //  - the tiny clip (a few seconds of small silent video that grid tiles play
 //    straight away), encoded with WebCodecs and written as WebM (webm.ts).
 //

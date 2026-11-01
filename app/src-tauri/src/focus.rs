@@ -1,5 +1,5 @@
 //! What the window is showing (the open folder and the items on screen), so
-//! background work (thumbnails, fingerprints, smart search, faces; the
+//! background work (thumbnails, fingerprints, faces; the
 //! native analysis pass and the window's own loops) does those first.
 
 use std::sync::Mutex;

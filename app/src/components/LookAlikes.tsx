@@ -6,7 +6,6 @@
 import { useEffect, useState } from 'react';
 import { api, thumbUrl, type Item, type SimilarLevel } from '../api';
 import { onFingerprintProgress } from '../fingerprint';
-import { onClipProgress } from '../ml/smart';
 import { formatBytes } from '../theme';
 import { plural } from '../undo';
 
@@ -19,7 +18,6 @@ const LEVELS: { id: SimilarLevel | 'exact'; label: string; hint: string }[] = [
 
 // Kept while the app is open.
 let lastLevel: SimilarLevel | 'exact' = 'normal';
-let lastSmart = false;
 let lastVideos = false;
 
 export function LookAlikes(props: {
@@ -28,8 +26,6 @@ export function LookAlikes(props: {
   /** Only look-alikes among these items (a selection), with what to call them. */
   only?: number[];
   onlyLabel?: string;
-  /** Smart search is on and its models are there. */
-  smartOk: boolean;
   /** Changes when the library changed (e.g. after moving marked ones to the trash). */
   tick: number;
   marked: Set<number>;
@@ -39,14 +35,11 @@ export function LookAlikes(props: {
   onAllFolders: () => void;
 }) {
   const [level, setLevelState] = useState<SimilarLevel | 'exact'>(lastLevel);
-  const [smartWanted, setSmart] = useState(lastSmart);
   const [videos, setVideos] = useState(lastVideos);
-  const smart = smartWanted && props.smartOk;
   const [groups, setGroups] = useState<Item[][] | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [fp, setFp] = useState<{ total: number; done: number } | null>(null);
-  const [clip, setClip] = useState<{ total: number; done: number; failed: number } | null>(null);
   const [fpTick, setFpTick] = useState(0);
 
   const setLevel = (l: SimilarLevel | 'exact') => {
@@ -64,20 +57,14 @@ export function LookAlikes(props: {
         wasDone = s.done;
       }).catch(() => {});
     upd();
-    const a = onFingerprintProgress(upd);
-    const b = onClipProgress(() => api.clipStatus().then(setClip).catch(() => {}));
-    api.clipStatus().then(setClip).catch(() => {});
-    return () => {
-      a();
-      b();
-    };
+    return onFingerprintProgress(upd);
   }, []);
 
   useEffect(() => {
     let live = true;
     setBusy(true);
     setErr(null);
-    (level === 'exact' ? api.exactGroups(props.folder) : api.similarGroups(level, smart, props.folder, videos))
+    (level === 'exact' ? api.exactGroups(props.folder) : api.similarGroups(level, props.folder, videos))
       .then((all) => {
         if (!live) return;
         // A selection: only the groups' members that are in it, and groups still of two or more.
@@ -93,7 +80,7 @@ export function LookAlikes(props: {
     return () => {
       live = false;
     };
-  }, [level, smart, videos, props.folder, props.tick, fpTick, props.only]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [level, videos, props.folder, props.tick, fpTick, props.only]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const toggle = (id: number) => {
     const n = new Set(props.marked);
@@ -103,7 +90,6 @@ export function LookAlikes(props: {
   };
   const markedBytes = (groups ?? []).flat().filter((i) => props.marked.has(i.id)).reduce((a, i) => a + i.size, 0);
   const pending = fp && fp.done < fp.total;
-  const clipPending = smart && clip && clip.done + clip.failed < clip.total;
 
   return (
     <div className="looks">
@@ -113,12 +99,7 @@ export function LookAlikes(props: {
             <button key={l.id} type="button" className={level === l.id ? 'on' : ''} title={l.hint} onClick={() => setLevel(l.id)}>{l.label}</button>
           ))}
         </div>
-        <label className="check" title={props.smartOk ? 'Compare what the pictures show instead of their pixels: also finds crops, mirrored copies and the same scene from another angle.'
-          : 'Turn smart search on (the ✦ button at the top) to use this.'}>
-          <input type="checkbox" checked={smart} disabled={!props.smartOk} onChange={(e) => { lastSmart = e.target.checked; setSmart(e.target.checked); }} />
-          Use smart-search analysis
-        </label>
-        <label className="check" title={smart ? 'Videos are compared by what they show' : 'Videos are compared by their thumbnail'}>
+        <label className="check" title="Videos are compared by their thumbnail">
           <input type="checkbox" checked={videos} onChange={(e) => { lastVideos = e.target.checked; setVideos(e.target.checked); }} />
           Include videos
         </label>
@@ -137,9 +118,6 @@ export function LookAlikes(props: {
 
       {pending && (
         <div className="info">Making picture fingerprints: {fp!.done.toLocaleString()} of {fp!.total.toLocaleString()}. Groups update when it's done.</div>
-      )}
-      {clipPending && (
-        <div className="info">Still analysing for smart search: {clip!.done.toLocaleString()} of {clip!.total.toLocaleString()}. Pictures not analysed yet are left out.</div>
       )}
       {err && <div className="error" role="alert">{err}</div>}
 

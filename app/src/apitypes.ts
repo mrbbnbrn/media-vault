@@ -136,12 +136,8 @@ export interface AppConfig {
   viewer: ViewerSettings;
   /** Use the web engine shipped next to the app (full package). */
   builtinEngine: boolean;
-  /** The smart-search switch next to the search box. */
-  smartSearch: boolean;
   /** Make small preview clips of videos in the background. */
   makePreviews: boolean;
-  /** Analyse pictures for smart search in the background. */
-  smartIndex: boolean;
   /** Hide the app's windows from screenshots, screen recording and screen sharing. */
   blockCapture: boolean;
   look: LookSettings;
@@ -155,11 +151,9 @@ export interface AppConfig {
   poorFaces?: PoorFaceSettings;
   /** After deleting for good, the space deleted files leave in the packs is reclaimed in the background. */
   autoReclaim?: boolean;
-  /** Smart search at all (off: no ✦ button, nothing analysed for it). */
-  smartEnabled?: boolean;
   /** Today's pick after unlocking (off: it never pops up). */
   todaysPick?: boolean;
-  /** The face scan is paused (remembered across restarts, like smart search's Pause). */
+  /** The face scan is paused (remembered across restarts). */
   facesPaused?: boolean;
 }
 
@@ -500,21 +494,6 @@ export interface SortOffers {
   offers: { folder: number; name: string; items: Item[] }[];
 }
 
-export interface ClipStatus {
-  total: number;
-  done: number;
-  failed: number;
-}
-
-/** Smart search's picture side: natively (graphics card / processor) or in the window (slow). */
-export interface SmartEngine {
-  models: boolean;
-  native: boolean;
-  device: 'gpu' | 'cpu' | null;
-  deviceKnown: boolean;
-  problem: string | null;
-}
-
 /** The native analysis pass (analyse.rs). */
 export interface AnalyseStatus {
   running: boolean;
@@ -523,7 +502,6 @@ export interface AnalyseStatus {
   done: number;
   thumbs: number;
   prints: number;
-  smart: number;
   faces: number;
   /** Items still with something to do. */
   left: number;
@@ -534,7 +512,6 @@ export interface AnalyseReport {
   id: number;
   thumb: boolean;
   print: string | null;
-  smart: boolean;
   faces: number | null;
   leftToWindow: boolean;
   ms: number;
@@ -787,6 +764,7 @@ export interface CacheInfo {
 export interface DataInfo {
   faces: number;
   faceBytes: number;
+  /** What smart search (no longer in the app) left in the library: items and bytes. */
   clipItems: number;
   clipBytes: number;
   backups: number;

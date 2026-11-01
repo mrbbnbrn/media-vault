@@ -87,7 +87,7 @@ pub fn prepare(local: &LocalAccess) -> Result<(Session, SelfTestInfo), String> {
             report.failed
         ));
     }
-    // Extra pictures from the build check (faces, smart search), if any.
+    // Extra pictures from the build check (faces), if any.
     if let Some(extra) = std::env::var_os("MV_SELFTEST_EXTRA") {
         import::run(
             &s,

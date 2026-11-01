@@ -2,8 +2,8 @@
 //
 // Every video gets two small things, made once in the background and kept
 // encrypted with the thumbnails:
-//  - a frame strip: 48 little frames in one picture (WebP; older ones JPEG) (flip-books, seek-bar
-//    previews, smart search), and
+//  - a frame strip: 48 little frames in one picture (WebP; older ones JPEG) (flip-books and
+//    seek-bar previews), and
 //  - a tiny clip: a few seconds of small silent video, made of short pieces
 //    spread through the video (tinyclip.ts in the window, or the video tool).
 // A tile shows, as each becomes ready: thumbnail → flip-book → tiny clip →

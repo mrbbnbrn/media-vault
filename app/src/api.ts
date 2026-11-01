@@ -13,7 +13,7 @@ import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 let mockLoad: Promise<typeof import('./apimock')> | null = null;
 const demo = () => (mockLoad ??= import('./apimock'));
 import type {
-  AppConfig, VaultEntry, SessionInfo, LoginInfo, ExportRequest, ShareRequest, EngineInfo, ScanRequest, ScanStatus, FaceIn, FaceBox, PersonFace, FaceMeasure, FaceEngineStatus, FaceReview, ReviewRequest, OwnerProposal, SortOffers, ClipStatus, SmartEngine, AnalyseStatus, AnalyseReport, AppState, Kind, Item, FolderCard, FolderBanner, FolderView, ItemFilter, Extracted, TrashView, Stats, Bookmark, TagCount, Named, DropSummary, LocalSet, StorageInfo, CacheInfo, DataInfo, LibraryBackup, StorageTask, LockReason,
+  AppConfig, VaultEntry, SessionInfo, LoginInfo, ExportRequest, ShareRequest, EngineInfo, ScanRequest, ScanStatus, FaceIn, FaceBox, PersonFace, FaceMeasure, FaceEngineStatus, FaceReview, ReviewRequest, OwnerProposal, SortOffers, AnalyseStatus, AnalyseReport, AppState, Kind, Item, FolderCard, FolderBanner, FolderView, ItemFilter, Extracted, TrashView, Stats, Bookmark, TagCount, Named, DropSummary, LocalSet, StorageInfo, CacheInfo, DataInfo, LibraryBackup, StorageTask, LockReason,
 } from './apitypes';
 
 let lastLogin: LoginInfo | null = null;
@@ -172,7 +172,7 @@ export const api = {
   setTagColor: (name: string, color: string | null) => call<string | null>('set_tag_color', { name, color }),
   setNote: (folder: boolean, id: number, note: string | null) => call<string | null>('set_note', { folder, id, note }),
   continueWatching: () => call<Item[]>('continue_watching'),
-  suggestFolders: (item: number) => call<{ folder: number; reason: 'face' | 'look'; score: number }[]>('suggest_folders', { item }),
+  suggestFolders: (item: number) => call<{ folder: number; reason: 'face'; score: number }[]>('suggest_folders', { item }),
   exactGroups: (folder: number | null) => call<Item[][]>('exact_groups', { folder }),
   itemTags: (id: number) => call<{ own: string[]; inherited: [string, string][] }>('item_tags', { id }),
   /** Returns, per tag, the items that newly got it. */
@@ -209,8 +209,10 @@ export const api = {
   storageTask: (task: StorageTask) => call<void>('storage_task', { task }),
   cacheInfo: () => call<CacheInfo>('cache_info'),
   dataInfo: () => call<DataInfo>('data_info'),
-  /** Delete face data, smart-search data or library backups; returns what happened. */
-  deleteData: (what: 'faces' | 'clip' | 'backups') => call<string>('delete_data', { what }),
+  /** Delete face data or library backups; returns what happened. */
+  deleteData: (what: 'faces' | 'backups') => call<string>('delete_data', { what }),
+  /** Delete what smart search (removed from the app) left in the library; returns the bytes freed. */
+  smartDataDelete: () => call<number>('smart_data_delete'),
   /** The library backups the vault keeps, newest first. */
   libraryBackups: () => call<LibraryBackup[]>('library_backups'),
   /** Put a library backup back (the library now is kept as a backup first). */
@@ -303,33 +305,22 @@ export const api = {
   setResume: (id: number, ms: number | null) => call<void>('set_resume', { id, ms }),
   facesUnsure: (person: number) => call<Item[]>('faces_unsure', { person }),
 
-  // smart search
-  clipNeeded: (limit: number) => call<{ id: number; kind: Kind; preview: boolean }[]>('clip_needed', { limit }),
-  /** The vectors go as raw little-endian 32-bit floats. */
-  clipSave: (media: number, vec: Float32Array | number[]) =>
-    callRaw<void>('clip_save', { media }, new Uint8Array(Float32Array.from(vec).buffer)),
-  clipFailed: (media: number) => call<void>('clip_failed', { media }),
-  clipStatus: () => call<ClipStatus>('clip_status'),
-  /** Where pictures are analysed for smart search (Settings). */
-  smartEngine: () => call<SmartEngine>('smart_engine'),
-  // the native analysis pass: thumbnails, fingerprints, smart search and faces from one decode
-  analyseStart: (options: { smart: boolean; facesPaused: boolean }) => call<AnalyseStatus>('analyse_start', { options }),
+  // the native analysis pass: thumbnails, fingerprints and faces from one decode
+  analyseStart: (options: { facesPaused: boolean }) => call<AnalyseStatus>('analyse_start', { options }),
   analyseStatus: () => call<AnalyseStatus>('analyse_status'),
   analyseKick: () => call<void>('analyse_kick'),
   /** Remake one thumbnail natively; false when the window has to. */
   analyseThumb: (id: number) => call<boolean>('analyse_thumb', { id }),
   /** The self-test: the whole pass now for these items. */
-  analyseNow: (ids: number[], smart: boolean) => call<AnalyseReport[]>('analyse_now', { ids, smart }),
-  smartSearch: (vec: number[], folder: number | null, limit?: number) =>
-    call<{ item: Item; score: number }[]>('smart_search', { vec, folder, limit }),
+  analyseNow: (ids: number[]) => call<AnalyseReport[]>('analyse_now', { ids }),
   similarNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('similar_needed', { limit }),
   similarSave: (id: number, hash: string, sharpness: number) => call<void>('similar_save', { id, hash, sharpness }),
   similarFailed: (id: number) => call<void>('similar_failed', { id }),
   similarStatus: () => call<{ total: number; done: number }>('similar_status'),
   /** Groups of look-alikes, biggest first, each with its best picture first. */
-  similarGroups: (level: SimilarLevel, smart: boolean, folder: number | null, videos: boolean) =>
-    call<Item[][]>('similar_groups', { level, smart, folder, videos }),
-  similarTo: (id: number, smart: boolean) => call<{ item: Item; score: number }[]>('similar_to', { id, smart }),
+  similarGroups: (level: SimilarLevel, folder: number | null, videos: boolean) =>
+    call<Item[][]>('similar_groups', { level, folder, videos }),
+  similarTo: (id: number) => call<{ item: Item; score: number }[]>('similar_to', { id }),
 
   // video tool (ffmpeg): convert, animation from pictures
   videoToolInfo: () => call<VideoToolInfo | undefined>('video_tool_info'),
@@ -356,9 +347,7 @@ export const api = {
   duelRestore: (states: DuelState[]) => call<void>('duel_restore', { states }),
 
   // "Why is this here?" (explain.rs): the search's own rules, item by item.
-  // `smart` is the smart-search query vector (searched in `smartFolder`).
-  explainMatch: (id: number, filter: ItemFilter, smart?: number[] | null, smartFolder?: number | null) =>
-    call<Explanation>('explain_match', { id, filter, smart: smart ?? null, smartFolder: smartFolder ?? null }),
+  explainMatch: (id: number, filter: ItemFilter) => call<Explanation>('explain_match', { id, filter }),
   // the slot machine (slots.rs): pictures of a folder and its subfolders, with people and tag groups
   slotData: (folder: number | null) => call<SlotData>('slot_machine_data', { folder }),
   // offline AI upscaler (Rust: upscale.rs; window side: components/Upscale.tsx)
@@ -473,7 +462,6 @@ export interface Explanation {
   tags: { tag: string; found: boolean; own: boolean; fromFolders: string[] }[];
   people: { id: number; name: string; found: boolean; inFolder: boolean; faces: number }[];
   filters: { filter: 'kind' | 'favourites' | 'recent' | 'folder' | 'trash'; passed: boolean; wants: string; has: string }[];
-  smart: { score: number | null; best: number; cut: number; minResults: number; rank: number | null; kept: boolean } | null;
 }
 
 export interface SlotData {
@@ -673,7 +661,6 @@ export function smallEnough(w: number, h: number, pw: number | null | undefined,
 export const previewUrl = (id: number) => proto('vault', `preview/${id}`);
 export const tinyUrl = (id: number) => proto('vault', `tiny/${id}`);
 export const localUrl = (key: string) => proto('local', `f/${key}`);
-export const modelUrl = (name: string) => proto('models', name);
 
 export async function pickFolder(title: string): Promise<string | null> {
   if (!inTauri) return (await demo()).mock.pickFolder();

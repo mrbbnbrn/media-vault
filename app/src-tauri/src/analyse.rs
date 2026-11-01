@@ -1,19 +1,17 @@
-//! The native analysis pass: "decode once, use four times".
+//! The native analysis pass: "decode once, use it for everything".
 //!
 //! Each picture the app can read itself (JPEG, PNG, WebP, GIF: picture.rs)
 //! is decrypted and decoded once, in memory, and from those pixels come its
-//! thumbnail, its look-alike fingerprint, its smart-search vector (CLIP,
-//! smartnative.rs, gathered from several pictures) and its faces (faceid.rs, with the
-//! faces pack). Fingerprints and smart-search vectors of every item (videos
-//! too) are made from its stored thumbnail (and a video's preview clip), as
-//! the window made them. Nothing decrypted is ever written anywhere.
+//! thumbnail and its faces (faceid.rs, with the faces pack). The look-alike
+//! fingerprint of every item (videos too) is made from its stored
+//! thumbnail, as the window made it. Nothing decrypted is ever written anywhere.
 //!
 //! It runs in the background while a vault is open (started by the window),
 //! on low-priority threads (all cores but one), and can be stopped at any
 //! time. Each step keeps its own state in the library (thumb_object_id,
-//! phash_state, clip_state, faces_state), so a step that fails is retried or
+//! phash_state, faces_state), so a step that fails is retried or
 //! marked exactly as before. What it can't do (videos, other picture
-//! formats, a missing model) the window's loops still do; while this runs
+//! formats, a missing faces pack) the window's loops still do; while this runs
 //! they leave the rest to it (`window_*` below), so nothing is done twice.
 
 use std::collections::BTreeSet;
@@ -28,18 +26,13 @@ use vault_core::{ObjectId, ObjectKind};
 use zeroize::Zeroizing;
 
 use crate::library::R;
-use crate::picture::{self, Rgb};
+use crate::picture;
 use crate::session::Session;
-use crate::{clip, faceid, faces, similar, smartnative};
+use crate::{faceid, faces, similar};
 
 /// Items looked at per round.
 const ROUND: i64 = 16;
 const KINDS: &str = "('image', 'gif', 'video')";
-/// A video's preview clip: 8 × 6 small frames (previews.ts); smart search
-/// also looks at frames 0, 12, 24 and 36 (smart.ts `embedVideo`).
-const STRIP_COLS: f64 = 8.0;
-const STRIP_ROWS: f64 = 6.0;
-const STRIP_FRAMES: [usize; 4] = [0, 12, 24, 36];
 
 use crate::util::sql_err as e;
 
@@ -49,8 +42,6 @@ use crate::util::sql_err as e;
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Options {
-    /// Settings → "Analyse pictures for smart search".
-    pub smart: bool,
     /// People → "Pause scanning".
     #[serde(default)]
     pub faces_paused: bool,
@@ -62,7 +53,7 @@ struct Runner {
 }
 
 static RUNNER: Mutex<Option<Runner>> = Mutex::new(None);
-static OPTIONS: Mutex<Options> = Mutex::new(Options { smart: true, faces_paused: false });
+static OPTIONS: Mutex<Options> = Mutex::new(Options { faces_paused: false });
 static WAKE: crate::util::Wake = crate::util::Wake::new();
 /// Pictures this pass couldn't decode (left to the window until the app restarts).
 static NOT_HERE: Mutex<BTreeSet<i64>> = Mutex::new(BTreeSet::new());
@@ -73,14 +64,12 @@ struct Counts {
     items: AtomicU64,
     thumbs: AtomicU64,
     prints: AtomicU64,
-    smart: AtomicU64,
     faces: AtomicU64,
 }
 static DONE: Counts = Counts {
     items: AtomicU64::new(0),
     thumbs: AtomicU64::new(0),
     prints: AtomicU64::new(0),
-    smart: AtomicU64::new(0),
     faces: AtomicU64::new(0),
 };
 
@@ -91,13 +80,12 @@ fn running() -> bool {
 /// Which steps can be done here right now.
 #[derive(Debug, Clone, Copy, PartialEq, Default)]
 pub struct Caps {
-    pub smart: bool,
     pub faces: bool,
 }
 
 fn caps() -> Caps {
     let o = *OPTIONS.lock().unwrap_or_else(|e| e.into_inner());
-    Caps { smart: o.smart && smartnative::usable(), faces: !o.faces_paused && faceid::info().available }
+    Caps { faces: !o.faces_paused && faceid::info().available }
 }
 
 /// `here_sql` as last made (made again only when NOT_HERE changes, so the
@@ -134,11 +122,6 @@ pub fn window_thumbs_sql() -> String {
 /// Fingerprints are all made here while this runs.
 pub fn window_skips_prints() -> bool {
     running()
-}
-
-/// Smart search: all made here while this runs with a working model.
-pub fn window_skips_smart() -> bool {
-    running() && caps().smart
 }
 
 /// The window's part of the face scan queue (" AND NOT (…)" while this runs with the faces pack).
@@ -181,27 +164,23 @@ pub fn window_faces(conn: &Connection, limit: i64) -> R<Vec<faces::ScanTask>> {
 #[derive(Debug, Clone)]
 struct Task {
     id: i64,
-    kind: String,
     object: String,
     thumb: Option<String>,
-    preview: Option<String>,
     make_thumb: bool,
     print: bool,
-    smart: bool,
     faces: bool,
 }
 
 /// The ids with something to do here: one part per step, each reading only
 /// the items waiting for that step (the partial indexes in db.rs, "speed
 /// indexes"), instead of one big OR that has to look at every item.
-/// ?1 = smart search on, ?2 = faces on.
+/// ?1 = faces on.
 fn todo_sql(here: &str) -> String {
     let off = faces::off_sql();
     format!(
         "SELECT id AS qid FROM media WHERE thumb_object_id IS NULL AND {here} \
          UNION SELECT id FROM media WHERE phash_state = 0 AND IFNULL(thumb_object_id, '') <> '' AND deleted_at IS NULL AND kind IN {KINDS} \
-         UNION SELECT id FROM media WHERE ?1 AND clip_state = 0 AND thumb_object_id IS NOT NULL AND deleted_at IS NULL AND kind IN {KINDS} \
-         UNION SELECT id FROM media WHERE ?2 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}"
+         UNION SELECT id FROM media WHERE ?1 AND faces_state = 2 AND deleted_at IS NULL AND {here}{off}"
     )
 }
 
@@ -211,12 +190,11 @@ fn select_sql(only: Option<&[i64]>) -> String {
     let ids = only.map(|ids| format!(" WHERE m.id IN ({})", crate::util::id_list(ids))).unwrap_or_default();
     // The waiting ids first (CROSS JOIN keeps them first), then their rows.
     format!(
-        "SELECT m.id, m.kind, m.object_id, m.thumb_object_id, m.preview_object_id, \
+        "SELECT m.id, m.object_id, m.thumb_object_id, \
            (m.thumb_object_id IS NULL AND {here}), \
            (m.phash_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
-           (?1 AND m.clip_state = 0 AND m.deleted_at IS NULL AND m.kind IN {KINDS}), \
-           (?2 AND m.faces_state = 2 AND m.deleted_at IS NULL AND {here}{off}) \
-         FROM ({}) AS q CROSS JOIN media AS m ON m.id = q.qid{ids} ORDER BY {}m.id DESC LIMIT ?3",
+           (?1 AND m.faces_state = 2 AND m.deleted_at IS NULL AND {here}{off}) \
+         FROM ({}) AS q CROSS JOIN media AS m ON m.id = q.qid{ids} ORDER BY {}m.id DESC LIMIT ?2",
         todo_sql(&here),
         crate::focus::order()
     )
@@ -226,17 +204,14 @@ fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<
     // The text only changes with what is on screen, so the prepared query is kept.
     conn.prepare_cached(&select_sql(only))
         .map_err(e)?
-        .query_map(params![caps.smart, caps.faces, limit], |r| {
+        .query_map(params![caps.faces, limit], |r| {
             Ok(Task {
                 id: r.get(0)?,
-                kind: r.get(1)?,
-                object: r.get(2)?,
-                thumb: r.get(3)?,
-                preview: r.get::<_, Option<String>>(4)?.filter(|p| !p.is_empty()),
-                make_thumb: r.get(5)?,
-                print: r.get(6)?,
-                smart: r.get(7)?,
-                faces: r.get(8)?,
+                object: r.get(1)?,
+                thumb: r.get(2)?,
+                make_thumb: r.get(3)?,
+                print: r.get(4)?,
+                faces: r.get(5)?,
             })
         })
         .map_err(e)?
@@ -248,7 +223,7 @@ fn select(conn: &Connection, caps: Caps, limit: i64, only: Option<&[i64]>) -> R<
 fn left(conn: &Connection, caps: Caps) -> R<i64> {
     conn.prepare_cached(&format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql())))
         .map_err(e)?
-        .query_row(params![caps.smart, caps.faces], |r| r.get(0))
+        .query_row(params![caps.faces], |r| r.get(0))
         .map_err(e)
 }
 
@@ -259,14 +234,6 @@ fn read(s: &Session, kind: ObjectKind, hex: &str) -> Result<Zeroizing<Vec<u8>>, 
     s.vault().read_object(kind, &id).map_err(|e| e.to_string())
 }
 
-/// A picture ready for the smart-search model.
-struct ClipJob {
-    id: i64,
-    /// One or more 3 × 224 × 224 inputs, one after another.
-    input: Vec<f32>,
-    frames: usize,
-}
-
 /// What happened, for the self-test.
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -274,7 +241,6 @@ pub struct ItemReport {
     pub id: i64,
     pub thumb: bool,
     pub print: Option<String>,
-    pub smart: bool,
     pub faces: Option<usize>,
     pub left_to_window: bool,
     pub ms: u64,
@@ -286,13 +252,13 @@ fn not_here(id: i64) {
     }
 }
 
-/// Everything for one item except the smart-search model run.
-fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJob>, ItemReport) {
+/// Everything for one item.
+fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> ItemReport {
     let start = Instant::now();
     let mut rep = ItemReport { id: t.id, ..Default::default() };
     let mut thumb_bytes: Option<Zeroizing<Vec<u8>>> = None;
     let mut thumb_id = t.thumb.clone();
-    let (mut print, mut smart) = (t.print, t.smart && caps.smart);
+    let mut print = t.print;
     if t.make_thumb || (t.faces && caps.faces) {
         match read(s, ObjectKind::Media, &t.object).and_then(|b| picture::decode(&b)) {
             Err(_) => {
@@ -309,17 +275,14 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
                                 emit(t.id);
                                 thumb_bytes = Some(webp);
                                 thumb_id = Some("new".into());
-                                // A new thumbnail: its fingerprint and smart-search vector are made again.
+                                // A new thumbnail: its fingerprint is made again.
                                 let db = s.db();
-                                if let Ok((p, c)) = db.query_row(
-                                    &format!(
-                                        "SELECT phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS}, clip_state = 0 AND deleted_at IS NULL AND kind IN {KINDS} FROM media WHERE id = ?"
-                                    ),
+                                if let Ok(p) = db.query_row(
+                                    &format!("SELECT phash_state = 0 AND deleted_at IS NULL AND kind IN {KINDS} FROM media WHERE id = ?"),
                                     [t.id],
-                                    |r| Ok((r.get::<_, bool>(0)?, r.get::<_, bool>(1)?)),
+                                    |r| r.get::<_, bool>(0),
                                 ) {
                                     print = p;
-                                    smart = c && caps.smart;
                                 }
                             }
                             Err(_) => {
@@ -354,8 +317,7 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
             }
         }
     }
-    let mut job = None;
-    if print || smart {
+    if print {
         let thumb = match (&thumb_bytes, thumb_id.as_deref()) {
             (Some(j), _) => picture::decode(j),
             (None, Some(hex)) if !hex.is_empty() => read(s, ObjectKind::Thumbnail, hex).and_then(|b| picture::decode(&b)),
@@ -363,79 +325,24 @@ fn work(s: &Session, t: &Task, caps: Caps, emit: &dyn Fn(i64)) -> (Option<ClipJo
         };
         match thumb {
             Ok(th) => {
-                if print {
-                    let (hash, sharp) = picture::fingerprint(&th);
-                    let _ = similar::save(&s.db(), t.id, &hash, sharp);
-                    s.mark_dirty_bg();
-                    DONE.prints.fetch_add(1, Ordering::Relaxed);
-                    rep.print = Some(hash);
-                }
-                if smart {
-                    job = Some(clip_job(s, t, &th));
-                }
+                let (hash, sharp) = picture::fingerprint(&th);
+                let _ = similar::save(&s.db(), t.id, &hash, sharp);
+                s.mark_dirty_bg();
+                DONE.prints.fetch_add(1, Ordering::Relaxed);
+                rep.print = Some(hash);
             }
             Err(_) => {
-                let db = s.db();
                 // An empty thumbnail (the window couldn't make one) isn't fingerprinted at all.
-                if print && thumb_id.as_deref().is_some_and(|h| !h.is_empty()) {
-                    let _ = similar::failed(&db, t.id);
+                if thumb_id.as_deref().is_some_and(|h| !h.is_empty()) {
+                    let _ = similar::failed(&s.db(), t.id);
+                    s.mark_dirty_bg();
                 }
-                if smart {
-                    let _ = clip::failed(&db, t.id);
-                }
-                s.mark_dirty_bg();
             }
         }
     }
     DONE.items.fetch_add(1, Ordering::Relaxed);
     rep.ms = start.elapsed().as_millis() as u64;
-    (job, rep)
-}
-
-/// The thumbnail, and for videos with a preview clip four of its moments.
-fn clip_job(s: &Session, t: &Task, thumb: &Rgb) -> ClipJob {
-    let mut input = picture::clip_input(thumb, None);
-    let mut frames = 1;
-    if t.kind == "video"
-        && let Some(p) = &t.preview
-        && let Ok(strip) = read(s, ObjectKind::Thumbnail, p).and_then(|b| picture::decode(&b))
-    {
-        let (cw, ch) = (strip.w as f64 / STRIP_COLS, strip.h as f64 / STRIP_ROWS);
-        for i in STRIP_FRAMES {
-            let (x, y) = ((i % 8) as f64 * cw, (i / 8) as f64 * ch);
-            input.extend(picture::clip_input(&strip, Some((x, y, cw, ch))));
-            frames += 1;
-        }
-    }
-    ClipJob { id: t.id, input, frames }
-}
-
-/// Run the smart-search model over the prepared pictures and store the
-/// vectors; returns the items done.
-fn finish_smart(s: &Session, jobs: Vec<ClipJob>) -> Vec<i64> {
-    if jobs.is_empty() {
-        return Vec::new();
-    }
-    let n: usize = jobs.iter().map(|j| j.frames).sum();
-    let mut all = Vec::with_capacity(n * 3 * picture::CLIP_SIZE * picture::CLIP_SIZE);
-    for j in &jobs {
-        all.extend_from_slice(&j.input);
-    }
-    // A model that can't run: left as they are (the window takes over).
-    let Ok(vecs) = smartnative::embed(&all, n) else { return Vec::new() };
-    let mut k = 0;
-    let db = s.db();
-    let mut done = Vec::new();
-    for j in &jobs {
-        let v: Vec<f32> = vecs[k..k + j.frames].iter().flatten().copied().collect();
-        k += j.frames;
-        if clip::save(&db, j.id, &v).is_ok() {
-            done.push(j.id);
-        }
-        DONE.smart.fetch_add(1, Ordering::Relaxed);
-    }
-    s.mark_dirty_bg();
-    done
+    rep
 }
 
 /// Background threads are polite: lower priority (and on Windows lower disk priority too).
@@ -452,10 +359,9 @@ fn workers() -> usize {
     std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2).saturating_sub(1).clamp(1, 6)
 }
 
-/// One round: the tasks on all cores but one, then the smart-search model.
+/// One round: the tasks on all cores but one.
 fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(dyn Fn(i64) + Sync)) -> Vec<ItemReport> {
     let next = AtomicUsize::new(0);
-    let jobs: Mutex<Vec<ClipJob>> = Mutex::new(Vec::new());
     let reports: Mutex<Vec<ItemReport>> = Mutex::new(Vec::new());
     std::thread::scope(|sc| {
         for _ in 0..workers().min(tasks.len()) {
@@ -468,23 +374,13 @@ fn process(s: &Session, tasks: &[Task], caps: Caps, stop: &AtomicBool, emit: &(d
                     if i >= tasks.len() || stop.load(Ordering::SeqCst) || s.is_closed() {
                         break;
                     }
-                    let (job, rep) = work(s, &tasks[i], caps, emit);
-                    if let Some(j) = job {
-                        jobs.lock().unwrap_or_else(|e| e.into_inner()).push(j);
-                    }
+                    let rep = work(s, &tasks[i], caps, emit);
                     reports.lock().unwrap_or_else(|e| e.into_inner()).push(rep);
                 }
             });
         }
     });
-    let mut reports = reports.into_inner().unwrap_or_else(|e| e.into_inner());
-    if !stop.load(Ordering::SeqCst) && !s.is_closed() {
-        let done = finish_smart(s, jobs.into_inner().unwrap_or_else(|e| e.into_inner()));
-        for r in reports.iter_mut() {
-            r.smart = done.contains(&r.id);
-        }
-    }
-    reports
+    reports.into_inner().unwrap_or_else(|e| e.into_inner())
 }
 
 fn sleep_until_woken(ms: u64) {
@@ -573,7 +469,6 @@ pub fn stop() {
     forget_not_here();
     *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
     kick();
-    smartnative::unload();
 }
 
 pub fn kick() {
@@ -594,7 +489,7 @@ pub fn start(app: AppHandle, s: Arc<Session>, opts: Options) {
         *COUNTED.lock().unwrap_or_else(|x| x.into_inner()) = None;
         let stop = Arc::new(AtomicBool::new(false));
         *r = Some(Runner { session: s.clone(), stop: stop.clone() });
-        for c in [&DONE.items, &DONE.thumbs, &DONE.prints, &DONE.smart, &DONE.faces] {
+        for c in [&DONE.items, &DONE.thumbs, &DONE.prints, &DONE.faces] {
             c.store(0, Ordering::SeqCst);
         }
         let _ = std::thread::Builder::new().name("analyse".into()).spawn(move || run_loop(app, s, stop));
@@ -615,7 +510,6 @@ pub struct AnalyseStatus {
     pub done: u64,
     pub thumbs: u64,
     pub prints: u64,
-    pub smart: u64,
     pub faces: u64,
     /// Items still with something to do here.
     pub left: i64,
@@ -690,7 +584,6 @@ fn status(s: &Session, fresh: bool) -> R<AnalyseStatus> {
         done: DONE.items.load(Ordering::Relaxed),
         thumbs: DONE.thumbs.load(Ordering::Relaxed),
         prints: DONE.prints.load(Ordering::Relaxed),
-        smart: DONE.smart.load(Ordering::Relaxed),
         faces: DONE.faces.load(Ordering::Relaxed),
         left,
         faces_left,
@@ -746,18 +639,12 @@ pub async fn analyse_thumb(state: State<'_, crate::Shared>, id: i64) -> Result<b
     .map_err(|e| e.to_string())?
 }
 
-/// Smart search's engine, for Settings.
-#[tauri::command]
-pub fn smart_engine() -> smartnative::SmartEngine {
-    smartnative::info()
-}
-
 /// The self-test: everything this pass does, now, for these items.
 #[tauri::command]
-pub async fn analyse_now(state: State<'_, crate::Shared>, ids: Vec<i64>, smart: bool) -> Result<Vec<ItemReport>, String> {
+pub async fn analyse_now(state: State<'_, crate::Shared>, ids: Vec<i64>) -> Result<Vec<ItemReport>, String> {
     let s = crate::sess(&state)?;
     tauri::async_runtime::spawn_blocking(move || -> Result<Vec<ItemReport>, String> {
-        let c = Caps { smart: smart && smartnative::usable(), faces: faceid::info().available };
+        let c = Caps { faces: faceid::info().available };
         let tasks = select(&s.db(), c, ids.len().max(1) as i64, Some(&ids))?;
         let out = process(&s, &tasks, c, &AtomicBool::new(false), &|_| {});
         s.mark_dirty();
@@ -830,19 +717,16 @@ mod tests {
         let vid = add(&c, "video", "mp4", None);
         let vid_thumb = add(&c, "video", "mp4", Some("aa"));
         let done = add(&c, "image", "png", Some("bb"));
-        c.execute("UPDATE media SET phash_state = 1, clip_state = 1 WHERE id = ?", [done]).unwrap();
+        c.execute("UPDATE media SET phash_state = 1 WHERE id = ?", [done]).unwrap();
         let ids = |t: Vec<Task>| t.into_iter().map(|t| t.id).collect::<Vec<_>>();
         let none = Caps::default();
-        // Without smart search: thumbnails of pictures it reads, fingerprints of anything with a thumbnail.
+        // Thumbnails of pictures it reads, fingerprints of anything with a thumbnail; the done picture isn't picked.
         assert_eq!(ids(select(&c, none, 10, None).unwrap()), vec![vid_thumb, jpg]);
         let t = select(&c, none, 10, None).unwrap();
-        assert!(t[1].make_thumb && !t[1].smart && t[0].print && !t[0].make_thumb);
-        // Smart search too: the done picture still isn't picked.
-        let smart = Caps { smart: true, faces: false };
-        assert_eq!(ids(select(&c, smart, 10, None).unwrap()), vec![vid_thumb, jpg]);
+        assert!(t[1].make_thumb && t[0].print && !t[0].make_thumb);
         // Faces queued: only for pictures it reads.
         c.execute("UPDATE media SET faces_state = 2", []).unwrap();
-        let both = Caps { smart: true, faces: true };
+        let both = Caps { faces: true };
         assert_eq!(ids(select(&c, both, 10, None).unwrap()), vec![done, vid_thumb, jpg]);
         assert_eq!(left(&c, both).unwrap(), 3);
         // A picture it couldn't decode goes to the window.
@@ -855,30 +739,21 @@ mod tests {
         assert_eq!(ids(select(&c, both, 10, Some(&[jpg])).unwrap()), vec![jpg]);
     }
 
-    /// The whole pass on real pictures with the real smart-search model (and
-    /// the faces pack when MV_FACES is set), timed, written as JSON for
-    /// comparing with the window's results:
-    /// MV_MODELS_DIR=<models> MV_ORT_DIR=<folder with libonnxruntime.so.*>
+    /// The whole pass on real pictures (with the faces pack when MV_FACES is
+    /// set), timed, written as JSON for comparing with the window's results:
     /// MV_NATIVE_PICS=<pictures> MV_NATIVE_OUT=<out.json>
     /// cargo test real_pass -- --ignored --nocapture
     #[test]
     #[ignore]
     fn real_pass() {
         let dir = std::env::var("MV_NATIVE_PICS").expect("MV_NATIVE_PICS");
-        assert!(smartnative::usable(), "{:?}", smartnative::info());
         let mut files: Vec<std::path::PathBuf> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).collect();
         files.sort();
         let faces_on = faceid::info().available;
         let mut out = Vec::new();
-        let mut inputs: Vec<f32> = Vec::new();
-        let (mut t_decode, mut t_thumb, mut t_print, mut t_clip, mut t_faces, mut n) = (0u128, 0u128, 0u128, 0u128, 0u128, 0);
-        // Warm the model up (loading isn't per picture).
-        smartnative::embed(&vec![0.0; 3 * 224 * 224], 1).unwrap();
+        let (mut t_decode, mut t_thumb, mut t_print, mut t_faces, mut n) = (0u128, 0u128, 0u128, 0u128, 0);
         for p in &files {
             let name = p.file_name().unwrap().to_string_lossy().into_owned();
-            if name == "strip.jpg" {
-                continue;
-            }
             let bytes = std::fs::read(p).unwrap();
             let t = Instant::now();
             let pic = picture::decode(&bytes).unwrap();
@@ -891,10 +766,6 @@ mod tests {
             let (hash, sharp) = picture::fingerprint(&back);
             let pr = t.elapsed();
             let t = Instant::now();
-            let input = picture::clip_input(&back, None);
-            let v = smartnative::embed(&input, 1).unwrap().remove(0);
-            let cl = t.elapsed();
-            let t = Instant::now();
             let nfaces = if faces_on {
                 let (rgba, w, h) = picture::faces_input(&pic);
                 faceid::faces_in(&rgba, w, h, 0).unwrap().len() as i64
@@ -902,80 +773,49 @@ mod tests {
                 -1
             };
             let fa = t.elapsed();
-            eprintln!(
-                "{name:34} {}×{} decode {d:?} thumb {th:?} print {pr:?} smart {cl:?} faces {nfaces} in {fa:?}",
-                pic.w, pic.h
-            );
+            eprintln!("{name:34} {}×{} decode {d:?} thumb {th:?} print {pr:?} faces {nfaces} in {fa:?}", pic.w, pic.h);
             t_decode += d.as_micros();
             t_thumb += th.as_micros();
             t_print += pr.as_micros();
-            t_clip += cl.as_micros();
             t_faces += fa.as_micros();
             n += 1;
-            inputs.extend_from_slice(&input);
             out.push(serde_json::json!({ "name": name, "w": pic.w, "h": pic.h, "tw": thumb.w, "th": thumb.h, "hash": hash, "sharp": sharp,
-                "emb": v, "jpeg": hex::encode(&*jpeg), "faces": nfaces }));
+                "jpeg": hex::encode(&*jpeg), "faces": nfaces }));
         }
-        // Several pictures in one call give the same vectors as one at a time.
-        let k = out.len().min(8);
-        let batch = smartnative::embed(&inputs[..k * 3 * 224 * 224], k).unwrap();
-        for (i, b) in batch.iter().enumerate() {
-            let one: Vec<f32> = serde_json::from_value(out[i]["emb"].clone()).unwrap();
-            let c: f32 = one.iter().zip(b).map(|(x, y)| x * y).sum();
-            assert!(c > 0.9999, "batch differs: {c}");
-        }
-        let t = Instant::now();
-        let _ = smartnative::embed(&inputs[..k * 3 * 224 * 224], k).unwrap();
-        let per_batched = t.elapsed().as_micros() / k as u128;
         let n = n.max(1) as u128;
         eprintln!(
-            "per picture (ms): decode {:.1}, thumbnail {:.1}, fingerprint {:.1}, smart {:.1} (8 in one call: {:.1} each), faces {:.1}; device {:?}",
+            "per picture (ms): decode {:.1}, thumbnail {:.1}, fingerprint {:.1}, faces {:.1}",
             t_decode as f64 / n as f64 / 1000.0, t_thumb as f64 / n as f64 / 1000.0, t_print as f64 / n as f64 / 1000.0,
-            t_clip as f64 / n as f64 / 1000.0, per_batched as f64 / 1000.0, t_faces as f64 / n as f64 / 1000.0, smartnative::info().device
+            t_faces as f64 / n as f64 / 1000.0
         );
-        // Strip cells (a video's preview clip), as the window cuts them.
-        let strip = std::path::Path::new(&dir).join("strip.jpg");
-        let mut cells = Vec::new();
-        if strip.is_file() {
-            let s = picture::decode(&std::fs::read(&strip).unwrap()).unwrap();
-            let (cw, ch) = (s.w as f64 / STRIP_COLS, s.h as f64 / STRIP_ROWS);
-            for i in STRIP_FRAMES {
-                let inp = picture::clip_input(&s, Some(((i % 8) as f64 * cw, (i / 8) as f64 * ch, cw, ch)));
-                cells.push(smartnative::embed(&inp, 1).unwrap().remove(0));
-            }
-        }
         // The whole pass in a real vault: one decode, everything stored.
         {
             let t = tempfile::tempdir().unwrap();
             let s = crate::session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap().0;
             let ids: Vec<i64> = files
                 .iter()
-                .filter(|p| !p.ends_with("strip.jpg"))
                 .take(4)
                 .map(|p| crate::import::add_bytes(&s, None, &p.file_name().unwrap().to_string_lossy(), &std::fs::read(p).unwrap()).unwrap())
                 .collect();
             if faces_on {
                 faces::queue(&s.db(), &faces::ScanRequest { ids: ids.clone(), folder: None, all: false, again: true }).unwrap();
             }
-            let c = Caps { smart: true, faces: faces_on };
+            let c = Caps { faces: faces_on };
             let t0 = Instant::now();
             let tasks = select(&s.db(), c, 10, Some(&ids)).unwrap();
             let reps = process(&s, &tasks, c, &AtomicBool::new(false), &|_| {});
             eprintln!("pass over {} pictures in a vault: {:?} ({:?})", ids.len(), t0.elapsed(), reps);
             for id in &ids {
-                let (cs, ps, fs): (i64, i64, i64) = s
+                let (ps, fs): (i64, i64) = s
                     .db()
-                    .query_row("SELECT clip_state, phash_state, faces_state FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                    .query_row("SELECT phash_state, faces_state FROM media WHERE id = ?", [id], |r| Ok((r.get(0)?, r.get(1)?)))
                     .unwrap();
-                assert_eq!((cs, ps), (1, 1), "item {id}");
-                assert!(reps.iter().any(|r| r.id == *id && r.smart));
+                assert_eq!(ps, 1, "item {id}");
                 assert!(!faces_on || fs == 1, "faces of item {id}: {fs}");
             }
         }
         if let Ok(path) = std::env::var("MV_NATIVE_OUT") {
-            std::fs::write(&path, serde_json::to_vec(&serde_json::json!({ "items": out, "strip": cells })).unwrap()).unwrap();
-            let raw: Vec<u8> = inputs.iter().flat_map(|f| f.to_le_bytes()).collect();
-            std::fs::write(format!("{path}.inputs.bin"), raw).unwrap();
+            std::fs::write(&path, serde_json::to_vec(&serde_json::json!({ "items": out })).unwrap()).unwrap();
         }
     }
 
@@ -1002,7 +842,7 @@ mod tests {
         not_here(999_997);
         let all = select_sql(None).replace("?3", "5");
         assert_no_full_scan(&c, &all, "media_need_thumb");
-        for index in ["media_need_print", "media_need_smart", "media_faces_queued"] {
+        for index in ["media_need_print", "media_faces_queued"] {
             assert_no_full_scan(&c, &all, index);
         }
         let left = format!("SELECT COUNT(*) FROM ({})", todo_sql(&here_sql()));
@@ -1019,7 +859,7 @@ mod tests {
     fn the_window_keeps_what_it_alone_can_do() {
         // Not running: the window does everything as before.
         assert_eq!(window_thumbs_sql(), "");
-        assert!(!window_skips_prints() && !window_skips_smart());
+        assert!(!window_skips_prints());
         let c = db::create_empty().unwrap();
         let v = add(&c, "video", "mp4", None);
         c.execute("UPDATE media SET faces_state = 2", []).unwrap();

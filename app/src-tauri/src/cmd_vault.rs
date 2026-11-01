@@ -330,6 +330,15 @@ pub(crate) async fn delete_data(state: State<'_, Shared>, what: String) -> Resul
     blocking(move || storage::delete_data(&s, &what)).await
 }
 
+/// Settings → Storage → "Delete all past smart search data": the analysis
+/// smart search left in the library (it no longer exists in the app).
+/// Returns the bytes freed.
+#[tauri::command]
+pub(crate) async fn smart_data_delete(state: State<'_, Shared>) -> Result<u64, String> {
+    let s = sess(state.inner())?;
+    blocking(move || storage::smart_data_delete(&s)).await
+}
+
 // ---- storage ------------------------------------------------------------------------
 
 #[tauri::command]

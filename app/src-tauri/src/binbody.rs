@@ -1,5 +1,5 @@
 //! Commands that carry bytes (thumbnails, preview clips, files made in the
-//! window, smart-search vectors) get them as one raw request body instead of
+//! window) get them as one raw request body instead of
 //! JSON, where every byte would travel as a number written out in text
 //! (about 3.5 times the size, and slow to parse on both sides).
 //!
@@ -23,14 +23,6 @@ pub fn request<'a, T: DeserializeOwned>(request: &'a tauri::ipc::Request<'_>) ->
         return Err("The data didn't arrive (it was sent the old way).".into());
     };
     split(body)
-}
-
-/// Little-endian 32-bit floats.
-pub fn floats(b: &[u8]) -> Result<Vec<f32>, String> {
-    if !b.len().is_multiple_of(4) {
-        return Err("The data didn't arrive whole.".into());
-    }
-    Ok(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
 }
 
 #[cfg(test)]
@@ -64,7 +56,5 @@ mod tests {
         assert!(split::<Args>(&body(r#"{"id":1}"#, &[])[..8]).is_err());
         assert!(split::<Args>(&[255, 255, 255, 255, 1]).is_err());
         assert!(split::<Args>(&body("{}", &[1])).is_err(), "missing id");
-        assert_eq!(floats(&[0, 0, 128, 63, 0, 0, 0, 64]).unwrap(), vec![1.0, 2.0]);
-        assert!(floats(&[0, 0, 128]).is_err());
     }
 }

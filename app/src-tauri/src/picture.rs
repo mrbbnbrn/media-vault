@@ -2,8 +2,8 @@
 //! JPEG, PNG, WebP and GIF (first frame), turned the right way up from their
 //! EXIF orientation like the window does, transparent parts on black like
 //! the window's thumbnails. Then everything the pass makes from one decode:
-//! the thumbnail, the look-alike fingerprint, the smart-search input and the
-//! picture the face finder looks at. Nothing is ever written anywhere.
+//! the thumbnail, the look-alike fingerprint and the picture the face
+//! finder looks at. Nothing is ever written anywhere.
 //!
 //! Other formats (HEIC, AVIF, BMP…) and anything that fails here go the
 //! window's way, as before.
@@ -38,14 +38,6 @@ pub const SMALL_WEBP_QUALITY: f32 = 84.0;
 const WEBP_METHOD: i32 = 4;
 /// The face finder gets the picture at most this big (as facescan.ts sent it).
 pub const FACES_MAX: usize = 1600;
-/// Smart search (CLIP) looks at SIZE × SIZE.
-pub const CLIP_SIZE: usize = 224;
-// Written exactly as in clipcore.ts (CLIP's own numbers).
-#[allow(clippy::excessive_precision)]
-const CLIP_MEAN: [f32; 3] = [0.48145466, 0.4578275, 0.40821073];
-#[allow(clippy::excessive_precision)]
-const CLIP_STD: [f32; 3] = [0.26862954, 0.26130258, 0.27577711];
-
 /// An RGB picture (8 bits per channel, row by row), wiped from memory when dropped.
 pub struct Rgb {
     pub w: usize,
@@ -404,31 +396,6 @@ pub fn faces_input(src: &Rgb) -> (Zeroizing<Vec<u8>>, usize, usize) {
     (rgba, p.w, p.h)
 }
 
-// ---- smart search input -----------------------------------------------------------------
-
-/// The part (x, y, w, h) of `src`, scaled to cover 224 × 224 and centred
-/// (CLIP's resize and crop, clipcore.ts `coverRect`), normalised the CLIP
-/// way, planar (3 × 224 × 224). The window's canvas samples bilinearly when
-/// shrinking a little and averages when shrinking more; this does the same,
-/// so the results match what was stored before.
-pub fn clip_input(src: &Rgb, part: Option<(f64, f64, f64, f64)>) -> Vec<f32> {
-    let (px, py, pw, ph) = part.unwrap_or((0.0, 0.0, src.w as f64, src.h as f64));
-    let s = CLIP_SIZE as f64 / pw.min(ph);
-    let (vw, vh) = (CLIP_SIZE as f64 / s, CLIP_SIZE as f64 / s);
-    let region = (px + (pw - vw) / 2.0, py + (ph - vh) / 2.0, vw, vh);
-    let f = if s > 0.55 { Filter::Bilinear } else { Filter::Triangle };
-    let v = resample(src, region, CLIP_SIZE, CLIP_SIZE, f);
-    let plane = CLIP_SIZE * CLIP_SIZE;
-    let mut out = vec![0.0f32; 3 * plane];
-    for i in 0..plane {
-        for c in 0..3 {
-            let x = v[i * 3 + c].round().clamp(0.0, 255.0);
-            out[c * plane + i] = (x / 255.0 - CLIP_MEAN[c]) / CLIP_STD[c];
-        }
-    }
-    out
-}
-
 // ---- look-alike fingerprints (fingerprint.ts, exactly) -----------------------------------
 
 /// Half the size, each pixel the average of 2 × 2 (one mipmap level).
@@ -574,24 +541,6 @@ mod tests {
         assert_eq!((t.w, t.h), (640, 384));
         assert_eq!(&t.px[0..3], &[0, 0, 0]);
         assert_eq!(&t.px[639 * 3..640 * 3], &[255, 255, 255]);
-        let c = clip_input(&p, None);
-        assert_eq!(c.len(), 3 * 224 * 224);
-        let want = (10.0 / 255.0 - CLIP_MEAN[0]) / CLIP_STD[0];
-        assert!(c[..224 * 224].iter().all(|v| (v - want).abs() < 1e-5));
-    }
-
-    #[test]
-    fn clip_crop_is_the_centre() {
-        // Left third red, middle green, right third blue (wide): the crop shows only green.
-        let p = solid(672, 224, |x, _| if x < 224 { [255, 0, 0] } else if x < 448 { [0, 255, 0] } else { [0, 0, 255] });
-        let c = clip_input(&p, None);
-        let g = (1.0 - CLIP_MEAN[1]) / CLIP_STD[1];
-        assert!(c[224 * 224..2 * 224 * 224].iter().all(|v| (v - g).abs() < 1e-5));
-        // A part of a strip (a video's preview clip): only that cell.
-        let strip = solid(400, 100, |x, _| if x < 200 { [0, 0, 0] } else { [255, 255, 255] });
-        let c = clip_input(&strip, Some((200.0, 0.0, 200.0, 100.0)));
-        let white = (1.0 - CLIP_MEAN[0]) / CLIP_STD[0];
-        assert!(c[..224 * 224].iter().all(|v| (v - white).abs() < 1e-5));
     }
 
     fn encode(img: image::DynamicImage, f: ImageFormat) -> Vec<u8> {

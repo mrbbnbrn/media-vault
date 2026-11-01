@@ -2,7 +2,7 @@
 // (library, viewer, settings…) while something runs, and fades to a faint
 // ring once everything finished. Click it for a small list of the jobs with
 // their bars and a way to stop each one that can be stopped, "Pause background
-// work" (thumbnails, previews, faces, smart search… wait until resumed), and
+// work" (thumbnails, previews, faces… wait until resumed), and
 // what finished recently with its result. The open list closes on any click
 // elsewhere (that click still goes through).
 
@@ -18,7 +18,7 @@ import { useLayer } from '../keylayers';
 let demoStarted = false;
 
 /** The jobs "Pause background work" holds (they wait between items, bgpace.ts). */
-const BACKGROUND = /^(thumbs|previews|fingerprints|sharpen|thumbWebp|faces|smart|prepare)/;
+const BACKGROUND = /^(thumbs|previews|fingerprints|sharpen|thumbWebp|faces|prepare)/;
 const usePaused = () => useSyncExternalStore(onBackgroundPause, backgroundPaused);
 const ago = (at: number, now: number) => {
   const m = Math.round((now - at) / 60_000);
@@ -129,7 +129,7 @@ export function ActivityRing(props: { notify?: boolean; rail?: boolean; titlebar
             <span className="faint">{running.length ? `${running.length} running` : shown.length ? 'all finished' : 'nothing running'}</span>
           </div>
           <button type="button" className={`btn btn-sm${paused ? ' accent-soft' : ''}`} aria-pressed={paused}
-            title="Thumbnails, preview clips, face scanning, smart-search analysis, fingerprints and 3D preparing wait until you resume. Imports, exports and other jobs you started keep going."
+            title="Thumbnails, preview clips, face scanning, fingerprints and 3D preparing wait until you resume. Imports, exports and other jobs you started keep going."
             onClick={() => setBackgroundPaused(!paused)}>
             <PauseIcon size={12} /> {paused ? 'Resume background work' : 'Pause background work'}
           </button>

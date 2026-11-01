@@ -403,9 +403,9 @@ pub fn free_idle() {
     crate::upscale::unload_if_idle();
 }
 
-/// Face recognition and smart search load their models on the card too (they
-/// are small). Before they load: if they wouldn't fit beside the 3D models,
-/// free the 3D models that aren't running (they load again when wanted).
+/// Face recognition loads its models on the card too (they are small).
+/// Before they load: if they wouldn't fit beside the 3D models, free the 3D
+/// models that aren't running (they load again when wanted).
 pub fn room_for_other(need: u64) {
     let Some((used, budget)) = card_memory() else { return };
     if !fits(used, need, budget) {

@@ -22,11 +22,4 @@ describe('bytes sent to the backend', () => {
     expect(raw).toBeLessThan(thumb.length + 100);
     expect(json / raw).toBeGreaterThan(3);
   });
-
-  it('carry smart-search vectors as little-endian floats', () => {
-    const v = new Float32Array([1, -2.5, 0.125]);
-    const [, bytes] = split(rawBody({ media: 3 }, new Uint8Array(Float32Array.from(v).buffer)));
-    const back = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-    expect([0, 1, 2].map((i) => back.getFloat32(i * 4, true))).toEqual([1, -2.5, 0.125]);
-  });
 });

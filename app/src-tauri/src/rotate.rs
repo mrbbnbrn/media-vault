@@ -296,12 +296,11 @@ fn turn_faces(conn: &Connection, ids: &[i64], quarter: u8) -> Result<(), String>
     Ok(())
 }
 
-/// After the picture changed: look-alike fingerprint and smart search again,
+/// After the picture changed: look-alike fingerprint again,
 /// and faces looked for again (when they were looked for before).
 fn analyse_again(conn: &Connection, ids: &[i64]) -> Result<(), String> {
     for &id in ids {
         crate::similar::reset(conn, id)?;
-        crate::clip::reset(conn, id)?;
         conn.execute("UPDATE media SET faces_state = 2 WHERE id = ? AND faces_state <> 0", [id]).map_err(e)?;
     }
     Ok(())
@@ -698,7 +697,7 @@ mod tests {
         let (thumb, _) = s.vault().add_object(ObjectKind::Thumbnail, &b"thumb bytes"[..]).unwrap();
         let db = s.db();
         db.execute(
-            "UPDATE media SET width = 16, height = 8, thumb_object_id = ?1, phash = 'abc', phash_state = 1, faces_state = 1, clip_state = 1 WHERE id = ?2",
+            "UPDATE media SET width = 16, height = 8, thumb_object_id = ?1, phash = 'abc', phash_state = 1, faces_state = 1 WHERE id = ?2",
             params![thumb.to_hex(), id],
         )
         .unwrap();

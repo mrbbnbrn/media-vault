@@ -229,7 +229,10 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 - `clip(media_id, vec, f16)` — smart-search vectors of an item: one or more groups of 512
   values (each unit length, CLIP ViT-B/32 space); videos have the thumbnail plus moments
   from their preview clip. `f16` = 1 (v13 on): little-endian IEEE 754 half-precision
-  (16-bit) floats; 0: little-endian float32
+  (16-bit) floats; 0: little-endian float32. Smart search was removed from the app: nothing
+  writes this table (or `media.clip_state`) any more, but both stay so older versions still open
+  the library. Settings → Storage → "Delete all past smart search data" empties the table and
+  sets every `clip_state` back to 0.
 - `folder_stats(folder_id, items, bytes)` (v13) — how many items (not in the trash) are
   directly in each folder and their total size, kept up to date by triggers on `media`
 - `face_graph(model, data)` (v13) — which faces look alike (each face's closest look-alikes

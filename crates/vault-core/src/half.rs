@@ -1,6 +1,7 @@
-//! IEEE 754 half-precision (16-bit) floats, for storing smart-search vectors
-//! at half the size. Plenty for unit vectors: each value keeps about three
-//! and a half significant digits, so similarity scores move by about 0.0001.
+//! IEEE 754 half-precision (16-bit) floats, as the v13 migration stores the
+//! old smart-search vectors (half the size; smart search itself is gone).
+//! Plenty for unit vectors: each value keeps about three and a half
+//! significant digits, so similarity scores move by about 0.0001.
 
 /// The nearest half-precision value (ties to even), as its bits.
 pub fn to_f16(x: f32) -> u16 {

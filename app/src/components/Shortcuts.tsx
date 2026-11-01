@@ -36,7 +36,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Delete', 'Move what is selected to the trash (asks first for folders; Enter confirms)'],
       ['Right-click', 'Options for an item or folder (the same everywhere: grid, timeline, search, face wall, the viewer; the bar at the bottom has them too)'],
       ['Choose the folder sort again', 'Sort again now (folders keep their places while background work changes their numbers)'],
-      ['Right-click › Find similar', 'Pictures that look like this one (by meaning when smart search is on)'],
+      ['Right-click › Find similar', 'Pictures that look like this one'],
       ['Drag onto a folder', 'Move items or folders there (also onto “Top level” or the folder path)'],
       ['?', 'This list'],
       ['Ctrl+Shift+T (anywhere)', 'Timing panel: how long things take on this PC (Copy report to send it)'],

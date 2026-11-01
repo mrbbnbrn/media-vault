@@ -161,7 +161,7 @@ export async function stopFaceSearch(): Promise<number> {
   return n;
 }
 
-/** Pause is remembered in the settings, like smart search's Pause (it stays paused after a restart). */
+/** Pause is remembered in the settings (it stays paused after a restart). */
 function rememberPause(p: boolean) {
   void saveAppConfig((c) => ({ ...c, facesPaused: p })).catch(() => {});
 }
