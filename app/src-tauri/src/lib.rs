@@ -8,10 +8,9 @@ mod plainfiles; // vaults without encryption: ordinary files in folders
 mod activity;
 mod banner; // folder banners
 // The native analysis pass: decode each picture once for its thumbnail,
-// fingerprint, smart-search vector and faces (picture.rs, smartnative.rs).
+// fingerprint and faces (picture.rs).
 mod analyse;
 mod picture;
-mod smartnative;
 // Beat detection from the computer's own sound (analysis is plain Rust; the
 // capture side is Windows-only).
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -28,7 +27,6 @@ mod binbody;
 mod loopback_win;
 // Hiding the windows from screenshots and screen sharing.
 mod nocapture;
-mod clip;
 mod config;
 // "3D photos": depth maps for gentle parallax in slideshows (the optional depth pack).
 mod depth;
@@ -97,7 +95,7 @@ mod cmd_faces;
 mod cmd_library;
 mod cmd_media;
 mod cmd_misc;
-mod cmd_smart;
+mod cmd_similar;
 mod cmd_vault;
 #[cfg(test)]
 mod folder_order_tests;
@@ -153,7 +151,6 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     }
     faces::forget_cache();
     facecrops::forget();
-    clip::forget_index();
     focus::set(None);
     faceid::unload();
     analyse::stop();
@@ -256,15 +253,12 @@ fn start_background(inner: Shared, s: Arc<Session>) {
             s2.mark_dirty();
         }
     });
-    // The grid comes first: the heavy parts (every smart-search vector, the
-    // face look-alike graphs) are read just after, in the background, a
-    // batch at a time so the library stays free for the window.
+    // The grid comes first: the heavy part (the face look-alike graphs) is
+    // read just after, in the background, a batch at a time so the library
+    // stays free for the window.
     let s3 = s.clone();
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(400));
-        if !s3.is_closed() {
-            let _ = clip::warm(&*s3);
-        }
         if !s3.is_closed() {
             let _ = faces::warm(&*s3);
         }
@@ -337,7 +331,7 @@ async fn edit_db_bg<T: Send + 'static>(
 }
 
 /// A change from background work that can always be made again (thumbnail
-/// failures, fingerprints, smart-search vectors, face scans): saved with your
+/// failures, fingerprints, face scans): saved with your
 /// next edit, or within a minute (session::BACKGROUND_SAVE_EVERY).
 async fn edit_db_derived<T: Send + 'static>(
     inner: &Shared,
@@ -525,9 +519,6 @@ pub fn run() {
                 responder.respond(protocol::serve_vault(s.as_deref(), &req));
             });
         })
-        .register_asynchronous_uri_scheme_protocol("models", |_ctx, req, responder| {
-            std::thread::spawn(move || responder.respond(protocol::serve_models(&req)));
-        })
         .register_asynchronous_uri_scheme_protocol("local", |ctx, req, responder| {
             let inner = ctx.app_handle().state::<Shared>().inner().clone();
             std::thread::spawn(move || {
@@ -679,6 +670,7 @@ pub fn run() {
             cmd_vault::save_now,
             cmd_vault::data_info,
             cmd_vault::delete_data,
+            cmd_vault::smart_data_delete,
             restore::library_backups,
             restore::restore_library_backup,
             cmd_library::extract_folder,
@@ -743,20 +735,15 @@ pub fn run() {
             analyse::analyse_kick,
             analyse::analyse_thumb,
             analyse::analyse_now,
-            analyse::smart_engine,
             cmd_library::set_resume,
-            cmd_smart::clip_needed,
-            cmd_smart::clip_save,
-            cmd_smart::set_focus,
+            cmd_similar::set_focus,
             cmd_faces::person_item_ids,
-            cmd_smart::clip_failed,
-            cmd_smart::clip_status,
-            cmd_smart::similar_needed,
-            cmd_smart::similar_save,
-            cmd_smart::similar_failed,
-            cmd_smart::similar_status,
-            cmd_smart::similar_groups,
-            cmd_smart::similar_to,
+            cmd_similar::similar_needed,
+            cmd_similar::similar_save,
+            cmd_similar::similar_failed,
+            cmd_similar::similar_status,
+            cmd_similar::similar_groups,
+            cmd_similar::similar_to,
             cmd_library::free_copy,
             cmd_library::item_copies,
             cmd_library::free_copies_of,
@@ -777,8 +764,7 @@ pub fn run() {
             cmd_library::folder_note,
             cmd_library::continue_watching,
             cmd_library::suggest_folders,
-            cmd_smart::exact_groups,
-            cmd_smart::smart_search,
+            cmd_similar::exact_groups,
             // video tool
             cmd_media::video_tool_info,
             cmd_media::convert_start,

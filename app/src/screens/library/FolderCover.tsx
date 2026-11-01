@@ -1,12 +1,9 @@
-// A folder card's picture (with its living preview and hover cycle), and the
-// note shown while smart search is still analysing.
+// A folder card's picture (with its living preview and hover cycle).
 
 import { WholeCover } from './LibraryDialogs';
-import { useEffect, useState } from 'react';
-import { api, mediaUrl, thumbUrl, type FolderCard, type ClipStatus } from '../../api';
+import { mediaUrl, thumbUrl, type FolderCard } from '../../api';
 import { FolderIcon } from '../../components/Icons';
 import { CoverImg, useCardHovered, useFolderSamples, useHoverCycle } from '../../components/CoverImg';
-import { onClipProgress } from '../../ml/smart';
 import { CoverVideo } from '../../components/VideoPreview';
 import { Framed } from '../../components/FramedCover';
 import { RoundCover } from '../../components/RoundCover';
@@ -70,20 +67,4 @@ export function FolderCover({ f, preview, whole, edge }: {
   if (!f.cover) return <FolderIcon size={40} />;
   if (f.coverPos) return <Framed pos={f.coverPos}><CoverImg id={f.cover} /></Framed>;
   return <CoverImg id={f.cover} />;
-}
-
-/** Smart search results while pictures are still being analysed (only this redraws as it moves on). */
-export function SmartProgressNote() {
-  const [clip, setClip] = useState<ClipStatus | null>(null);
-  useEffect(() => {
-    const upd = () => api.clipStatus().then(setClip).catch(() => {});
-    upd();
-    return onClipProgress(upd);
-  }, []);
-  if (!clip || clip.done + clip.failed >= clip.total) return null;
-  return (
-    <div className="info" style={{ marginBottom: 12 }}>
-      Still analysing pictures for smart search: {clip.done.toLocaleString()} of {clip.total.toLocaleString()} done. Results get better as it finishes.
-    </div>
-  );
 }

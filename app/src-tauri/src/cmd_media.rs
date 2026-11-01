@@ -13,7 +13,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::session::Session;
 use crate::{Shared, begin_task, blocking, edit_db, edit_db_derived, read_db, sess};
-use crate::{analyse, binbody, clip, exporter, focus, import, picture, protocol, rotate, share7z, similar, sketch, throttle, thumbpages, videotool};
+use crate::{analyse, binbody, exporter, focus, import, picture, protocol, rotate, share7z, similar, sketch, throttle, thumbpages, videotool};
 
 #[derive(serde::Deserialize)]
 struct FileBytesArgs {
@@ -105,7 +105,7 @@ struct IdArgs {
 
 /// Store a new thumbnail for an item (from the window, or made natively by
 /// the analysis pass). `same_picture`: a sharper copy of the same picture,
-/// so its analysis (smart search, look-alike fingerprint) stays valid.
+/// so its look-alike fingerprint stays valid.
 pub(crate) fn store_thumb(
     s: &Session,
     id: i64,
@@ -131,9 +131,6 @@ pub(crate) fn store_thumb(
             .map_err(|e| e.to_string())?;
             // A replaced thumbnail may show something else: analyse it again.
             if !same_picture {
-                if old.as_deref().is_some_and(|o: &str| !o.is_empty()) {
-                    let _ = clip::reset(&db, id);
-                }
                 let _ = similar::reset(&db, id);
             }
             Ok(old)
@@ -273,7 +270,7 @@ pub(crate) async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<()
 
 // ---- preview clips (made by the window, or by the video tool) -----------------------------
 // Two kinds per video: the frame strip (one picture holding 48 small frames — WebP, older ones JPEG — for
-// flip-books, seek-bar previews and smart search) and the tiny clip (a silent
+// flip-books and seek-bar previews) and the tiny clip (a silent
 // ~240p video of a few seconds that grid tiles play straight away). Both are
 // stored encrypted with the thumbnails. NULL = not made yet, '' = couldn't be.
 
@@ -343,10 +340,6 @@ fn store_preview_object(s: &Session, id: i64, column: &str, data: &[u8]) -> Resu
             rusqlite::params![pid.to_hex(), id],
         )
         .map_err(|e| e.to_string())?;
-        if column == "preview_object_id" {
-            // Smart search looks at the clip's moments too: analyse again.
-            let _ = clip::reset(&db, id);
-        }
         Ok(old)
     })();
     let old = match stored {

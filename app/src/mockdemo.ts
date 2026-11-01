@@ -1,6 +1,7 @@
 // Browser preview only (no Tauri): a small sample library with folders,
-// people, faces and tags, so the sidebar, folder sorting, the slot machine
-// and "Why is this here?" can be tried and screenshotted. Turned on by
+// people, faces and tags, so the sidebar, folder sorting, the slot machine,
+// look-alikes, "Find similar" and "Why is this here?" can be tried and
+// screenshotted. Turned on by
 // opening the page with ?demo. Nothing here runs in the real app.
 
 import { fold } from './text';
@@ -155,7 +156,7 @@ function explain(id: number, f: ItemFilter): Explanation {
   const filters: Explanation['filters'] = [{ filter: 'trash', passed: true, wants: 'not in the trash', has: 'not in the trash' }];
   if (f.kinds?.length) filters.push({ filter: 'kind', passed: f.kinds.includes(it.kind), wants: f.kinds.map((k) => `${k}s`).join(' or '), has: `a ${it.kind}` });
   const matched = query({ ...f, folder: undefined }).some((x) => x.id === id);
-  return { item: it, matched, folderPath: path, names, tags, people, filters, smart: null };
+  return { item: it, matched, folderPath: path, names, tags, people, filters };
 }
 
 function slotData(folder: number | null): SlotData {
@@ -225,7 +226,28 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     }
     case 'faces_of_many':
     case 'similar_needed':
+    case 'exact_groups':
       return [];
+    // Look-alikes and "Find similar": pictures next to each other in one folder pass for look-alikes.
+    case 'similar_status': {
+      const n = items.filter((i) => i.deletedAt == null && i.kind !== 'video').length;
+      return { total: n, done: n };
+    }
+    case 'similar_groups': {
+      const kinds = a.videos ? ['image', 'gif', 'video'] : ['image', 'gif'];
+      const pool = query(a.folder == null ? {} : { folder: a.folder as number, recursive: true }).filter((i) => kinds.includes(i.kind));
+      const byFolder = new Map<number | null, DItem[]>();
+      for (const it of pool) byFolder.set(it.folderId, [...(byFolder.get(it.folderId) ?? []), it]);
+      const out: DItem[][] = [];
+      for (const list of byFolder.values()) for (let k = 0; k + 1 < list.length && out.length < 8; k += 5) out.push(list.slice(k, k + (a.level === 'loose' ? 3 : 2)));
+      return out;
+    }
+    case 'similar_to': {
+      const me = items.find((i) => i.id === a.id);
+      if (!me) throw new Error('That item no longer exists.');
+      return items.filter((i) => i.id !== me.id && i.deletedAt == null && i.folderId === me.folderId && i.kind !== 'video')
+        .slice(0, 12).map((item, k) => ({ item, score: 0.95 - k * 0.03 }));
+    }
     case 'set_folder_order': {
       const ids = a.ids as number[];
       const before = ids.map((id) => [id, folders.find((f) => f.id === id)?.order ?? 0]);

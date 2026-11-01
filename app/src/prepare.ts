@@ -5,7 +5,7 @@
 //   IDLE_MS, the pictures being viewed are worked out (and saved) one at a
 //   time, stopping as soon as there's input;
 // - in the background, on request: the pictures missing a saved map (whole
-//   vault, Settings → Faces & smart search), every picture again (saved ones
+//   vault, Settings → AI & 3D), every picture again (saved ones
 //   cleared first), or the pictures of one folder or person folder (its
 //   right-click menu). Every installed depth and outline model gets its own
 //   maps (one model after another, so models aren't swapped back and forth),

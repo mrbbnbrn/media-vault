@@ -3,7 +3,7 @@
 // vault it is saved there (encrypted, like everything else), so it never has
 // to be worked out again; before working one out, the saved one is tried.
 // Each is saved for one model (and size), so maps from different models
-// never mix. Settings → Faces & smart search shows how many there are, and
+// never mix. Settings → AI & 3D shows how many there are, and
 // can clear them or work them all out again (prepare.ts).
 //
 // Which pictures can be saved: those the viewer was given as vault items

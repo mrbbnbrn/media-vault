@@ -1,7 +1,7 @@
 // Background work steps aside: the window's own background loops (thumbnails,
-// preview clips, fingerprints, face scanning, smart-search analysis, 3D
-// preparing) wait between items while you are using the window, go slower
-// while a video plays, and otherwise run when the window has a free moment.
+// preview clips, fingerprints, face scanning, 3D preparing) wait between
+// items while you are using the window, go slower while a video plays, and
+// otherwise run when the window has a free moment.
 // The backend's own analysis pass is told the same (api.setUserBusy).
 
 import { api, inTauri } from './api';

@@ -56,7 +56,6 @@ export function viewTitle(v: LibView, folder: FolderCard | null): string {
     case 'trash': return 'Trash';
     case 'stats': return 'Statistics';
     case 'search': return 'Search';
-    case 'smart': return `Smart search: “${v.q}”`;
     case 'people': return 'People';
     case 'lookalikes': return 'Look-alikes';
     case 'similar': return `Similar to “${v.name}”`;

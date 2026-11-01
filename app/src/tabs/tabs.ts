@@ -203,7 +203,7 @@ export function serializeTabs(s: TabsState): string {
 }
 
 const KINDS = new Set([
-  'folders', 'folder', 'all', 'favourites', 'recent', 'timeline', 'trash', 'stats', 'search', 'smart', 'people', 'lookalikes', 'similar', 'continue', 'memories',
+  'folders', 'folder', 'all', 'favourites', 'recent', 'timeline', 'trash', 'stats', 'search', 'people', 'lookalikes', 'similar', 'continue', 'memories',
 ]);
 const isId = (x: unknown) => typeof x === 'number' && Number.isSafeInteger(x);
 const isStrings = (x: unknown) => Array.isArray(x) && x.every((y) => typeof y === 'string');
@@ -221,7 +221,6 @@ export function cleanView(x: unknown): LibView | null {
       return isStrings(v.tags) && isStrings(v.names) && Array.isArray(people) && people.every(isId)
         ? { kind: 'search', tags: v.tags as string[], names: v.names as string[], people: people as number[] } : null;
     }
-    case 'smart': return typeof v.q === 'string' ? { kind: 'smart', q: v.q } : null;
     case 'lookalikes': return v.folder === null || isId(v.folder) ? { kind: 'lookalikes', folder: v.folder as number | null } : null;
     case 'similar': return isId(v.id) && typeof v.name === 'string' ? { kind: 'similar', id: v.id as number, name: v.name } : null;
     default: return { kind: v.kind } as LibView;
@@ -260,7 +259,7 @@ export function restoreTabs(raw: string | null | undefined): TabsState | null {
 
 // ---- how a tab looks ---------------------------------------------------------------------
 
-export type TabIconKind = 'folder' | 'folders' | 'person' | 'heart' | 'search' | 'smart' | 'clock' | 'trash' | 'chart' | 'face' | 'twin' | 'play' | 'sparkle' | 'images' | 'recent';
+export type TabIconKind = 'folder' | 'folders' | 'person' | 'heart' | 'search' | 'clock' | 'trash' | 'chart' | 'face' | 'twin' | 'play' | 'sparkle' | 'images' | 'recent';
 
 export interface FolderName {
   id: number;
@@ -309,7 +308,6 @@ export function tabLook(v: LibView, folders: Map<number, FolderName>): { title: 
       const t = parts.join(' + ') || 'Search';
       return { title: t, icon: v.people?.length && !v.tags.length && !v.names.length ? 'person' : 'search', path: `Search: ${t}` };
     }
-    case 'smart': return { title: v.q || 'Smart search', icon: 'smart', path: `Smart search: “${v.q}”` };
     case 'people': return { title: 'People', icon: 'face', path: 'People' };
     case 'lookalikes': {
       const t = v.folder == null ? 'Look-alikes' : `Look-alikes · ${name(v.folder, 'folder')}`;

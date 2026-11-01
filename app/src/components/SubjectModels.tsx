@@ -1,5 +1,5 @@
 // The subject outline model chooser for Lift-off and the other subject effects (Settings
-// → Faces & smart search → 3D photos, and the viewer's View ▾ → "3D photo
+// → AI & 3D → 3D photos, and the viewer's View ▾ → "3D photo
 // settings…"): Automatic, Fast or Best; the ones not installed are greyed
 // with the download they come in, and in Settings a speed test per model.
 

@@ -466,7 +466,7 @@ fn cover_face(conn: &Connection, media: i64, person: i64) -> Option<[f32; 4]> {
 /// What the person covers are worked out from, in a few cheap numbers: the
 /// named faces (and their names, hidden and automatic marks), the person
 /// folders, the trash and the items still without a thumbnail (a cover needs
-/// one). Other background work (fingerprints, smart search, scans that
+/// one). Other background work (fingerprints, scans that
 /// find no named faces) changes none of these, so the covers are kept.
 fn person_covers_key(conn: &Connection) -> R<String> {
     conn.query_row(

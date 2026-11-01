@@ -37,8 +37,7 @@ import { startThumbnailer } from './media';
 import { resetGrid, whenGridShown } from './firstgrid';
 import { followFaceScanPause, startFaceScanner } from './ml/facescan';
 import { setSettingsOpener, type SettingsPage } from './settingslink';
-import { startClipIndexer } from './ml/smart';
-import { setNativeOptions, setSmartPauser, startNativeAnalyser } from './ml/native';
+import { startNativeAnalyser } from './ml/native';
 import { setPreviewStopper, startPreviewMaker } from './previews';
 import { startFingerprinter } from './fingerprint';
 import type { PlayItem } from './media';
@@ -201,7 +200,7 @@ export function App() {
     const s = await api.getState();
     setApp(s);
     setPrefsConfig(s.config);
-    // The face scan's Pause is remembered, like smart search's.
+    // The face scan's Pause is remembered across restarts.
     followFaceScanPause(!!s.config.facesPaused);
     applyAccent(s.config.accent);
     applyLook(s.config.look);
@@ -290,21 +289,12 @@ export function App() {
   // All of it starts once the library has shown its first page (firstgrid.ts).
   useEffect(() => (open ? undefined : resetGrid()), [open]);
   useEffect(() => (open ? whenGridShown(startThumbnailer) : undefined), [open]);
-  // Faces are found only in what the user asked to scan; pictures are analysed
-  // for smart search whenever its models are there (full package).
+  // Faces are found only in what the user asked to scan.
   useEffect(() => (open ? whenGridShown(startFaceScanner) : undefined), [open]);
-  // Smart search can be off altogether (Settings → AI & 3D), or its analysing paused (Settings → Background work).
-  const smartIndex = open && app?.config.smartIndex !== false && app?.config.smartEnabled !== false;
-  useEffect(() => (smartIndex ? whenGridShown(startClipIndexer) : undefined), [smartIndex]);
-  // The app's own analysis pass: thumbnails, fingerprints, smart search and
-  // faces of the pictures it reads, each decoded once (the loops above and
-  // below only do the rest).
-  useEffect(() => (open ? whenGridShown(() => startNativeAnalyser(smartIndex)) : undefined), [open]);
-  useEffect(() => setNativeOptions({ smart: smartIndex }), [smartIndex]);
-  // "Pause" on the analysis in the jobs ring pauses smart-search analysing (resume in Settings).
-  useEffect(() => setSmartPauser(() => {
-    void saveAppConfig((c) => ({ ...c, smartIndex: false })).then(() => refreshRef.current?.()).catch(() => {});
-  }), []);
+  // The app's own analysis pass: thumbnails, fingerprints and faces of the
+  // pictures it reads, each decoded once (the loops above and below only do
+  // the rest).
+  useEffect(() => (open ? whenGridShown(startNativeAnalyser) : undefined), [open]);
   // Small preview clips for smooth grids (can be turned off in Settings → Background work,
   // or with Stop in the jobs ring, which turns that switch off).
   useEffect(() => {

@@ -239,12 +239,8 @@ pub struct AppConfig {
     pub viewer: ViewerSettings,
     /// Use the web engine shipped next to the app (when there is one).
     pub builtin_engine: bool,
-    /// The smart-search switch next to the search box.
-    pub smart_search: bool,
     /// Make small preview clips of videos in the background (smooth grids).
     pub make_previews: bool,
-    /// Analyse pictures for smart search in the background.
-    pub smart_index: bool,
     /// Hide the app's windows from screenshots, screen recording and screen
     /// sharing (on Windows they show up black).
     pub block_capture: bool,
@@ -264,11 +260,9 @@ pub struct AppConfig {
     /// deleted files leave inside the pack files is reclaimed in the
     /// background, so nothing of them is left in the vault folder.
     pub auto_reclaim: bool,
-    /// Smart search at all (off: no ✦ button, nothing analysed for it, its models never load).
-    pub smart_enabled: bool,
     /// Today's pick: one picture shown after unlocking, once a day.
     pub todays_pick: bool,
-    /// The face scan is paused (remembered like smart search's Pause).
+    /// The face scan is paused (remembered across restarts).
     pub faces_paused: bool,
 }
 
@@ -358,9 +352,7 @@ impl Default for AppConfig {
             grid_shape: false,
             viewer: ViewerSettings::default(),
             builtin_engine: true,
-            smart_search: false,
             make_previews: true,
-            smart_index: true,
             block_capture: true,
             look: LookSettings::default(),
             strip_metadata: false,
@@ -369,7 +361,6 @@ impl Default for AppConfig {
             last_vault: None,
             poor_faces: PoorFaceSettings::default(),
             auto_reclaim: true,
-            smart_enabled: true,
             todays_pick: true,
             faces_paused: false,
         }
@@ -604,6 +595,17 @@ mod tests {
         assert_eq!(c.accent, DEFAULT_ACCENT);
         assert_eq!(c.lock.idle_minutes, 5);
         assert!(c.lock.on_system_lock);
+    }
+
+    #[test]
+    fn config_files_from_before_smart_search_was_removed_still_load() {
+        let c: AppConfig = serde_json::from_str(
+            r#"{"smartSearch":true,"smartIndex":false,"smartEnabled":true,"makePreviews":false,"todaysPick":false}"#,
+        )
+        .unwrap();
+        assert!(!c.make_previews && !c.todays_pick, "the other settings are kept");
+        let saved = serde_json::to_string(&c).unwrap();
+        assert!(!saved.contains("smart"), "and the smart-search ones are gone: {saved}");
     }
 
     #[test]

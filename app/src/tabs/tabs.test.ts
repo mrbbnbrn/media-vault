@@ -190,6 +190,18 @@ describe('saving and restoring', () => {
     const big = JSON.stringify({ v: 1, active: 50, tabs: [{ view: { kind: 'all' } }] });
     expect(activeTab(restoreTabs(big)!).view).toEqual({ kind: 'all' });
   });
+
+  it('drops smart-search tabs saved before smart search was removed', () => {
+    const raw = JSON.stringify({
+      v: 1, active: 1, tabs: [
+        { view: { kind: 'all' }, back: [{ kind: 'smart', q: 'beach' }, { kind: 'folder', id: 2 }] },
+        { view: { kind: 'smart', q: 'sunset' } },
+      ],
+    });
+    const r = restoreTabs(raw)!;
+    expect(r.tabs.map((t) => t.view)).toEqual([{ kind: 'all' }]);
+    expect(r.tabs[0].back).toEqual([{ kind: 'folder', id: 2 }]);
+  });
 });
 
 describe('tab names', () => {

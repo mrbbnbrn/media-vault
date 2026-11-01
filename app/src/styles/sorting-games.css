@@ -88,11 +88,7 @@
 .why-icon { flex: none; display: inline-flex; padding-top: 3px; color: var(--faint); }
 .why-text { min-width: 0; }
 .why-quote { color: var(--text); word-break: break-word; }
-.why-small { display: block; font-size: var(--fs-sm); margin-top: 2px; }
 .why-dot { width: 6px; height: 6px; margin: 4px 3px 0; border-radius: 50%; background: var(--faint); }
-.why-meter { position: relative; display: block; width: 100%; max-width: 280px; height: 6px; margin: 6px 0 2px; border-radius: 3px; background: var(--raised); }
-.why-meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
-.why-meter-cut { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text-2); }
 /* ---- grid extras: progress lines, round person covers (scroll preview and Alt enlarge: see the end) ---- */
 
 .tile .tile-progress { position: absolute; left: 0; right: 0; bottom: 0; height: 3px; background: rgba(0, 0, 0, 0.55); pointer-events: none; }

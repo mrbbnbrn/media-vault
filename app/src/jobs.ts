@@ -1,8 +1,7 @@
 // One place for everything that runs in the background: imports, exports,
-// shares, conversions, copies, the damage check, face scanning, smart-search
-// analysis, thumbnails, preview clips and picture fingerprints. Each reports
-// here; the activity ring in the sidebar shows them, the Windows taskbar
-// button shows the long ones, and a notification says when a long one
+// shares, conversions, copies, the damage check, face scanning, thumbnails,
+// preview clips and picture fingerprints. Each reports here; the activity
+// ring in the sidebar shows them, the Windows taskbar button shows the long ones, and a notification says when a long one
 // finished while the window was in the background (counts only, never names:
 // notifications show on the lock screen).
 
@@ -325,7 +324,7 @@ export function listenForJobs() {
   });
 }
 
-// ---- background loops (thumbnails, clips, faces, smart search, fingerprints) ----------------
+// ---- background loops (thumbnails, clips, faces, fingerprints) ----------------
 
 export interface LoopJob {
   /** The loop found work: (re)counts what is left. */

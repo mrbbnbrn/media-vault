@@ -1,5 +1,5 @@
 // After unlocking, the grid comes first: background work (thumbnails, faces,
-// smart search, previews, fingerprints, the native analysis pass) starts
+// previews, fingerprints, the native analysis pass) starts
 // once the library has shown its first page, or after a short wait at most,
 // so it doesn't compete with that first load.
 

@@ -46,8 +46,8 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         let orig = original_of(&tx, id)?;
         tx.execute(
             &format!(
-                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, tiny_object_id, folder_id, original_name, copy_of, clip_state, faces_state, faces_model, {COPY_COLS}) \
-                 SELECT object_id, thumb_object_id, preview_object_id, tiny_object_id, ?2, original_name, ?3, clip_state, faces_state, faces_model, {COPY_COLS} FROM media WHERE id = ?1"
+                "INSERT INTO media(object_id, thumb_object_id, preview_object_id, tiny_object_id, folder_id, original_name, copy_of, faces_state, faces_model, {COPY_COLS}) \
+                 SELECT object_id, thumb_object_id, preview_object_id, tiny_object_id, ?2, original_name, ?3, faces_state, faces_model, {COPY_COLS} FROM media WHERE id = ?1"
             ),
             params![id, folder, orig],
         )
@@ -55,7 +55,6 @@ pub fn free_copy(conn: &Connection, ids: &[i64], folder: Option<i64>) -> R<Vec<i
         let new_id = tx.last_insert_rowid();
         copy_tags(&tx, id, new_id)?;
         // What the app already found out about the picture applies to the copy too.
-        tx.execute("INSERT INTO clip(media_id, vec, f16) SELECT ?2, vec, f16 FROM clip WHERE media_id = ?1", params![id, new_id]).map_err(e)?;
         tx.execute(
             "INSERT INTO faces(media_id, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden) \
              SELECT ?2, frame_ms, x, y, w, h, score, descriptor, person_id, model, auto, named_at, hidden FROM faces WHERE media_id = ?1",
@@ -638,65 +637,19 @@ pub fn continue_watching(conn: &Connection) -> R<Vec<Item>> {
 #[serde(rename_all = "camelCase")]
 pub struct Suggestion {
     pub folder: i64,
-    /// "face" (a person recognised) or "look" (looks like that folder's pictures).
+    /// "face" (a person recognised).
     pub reason: String,
     pub score: f32,
 }
 
-fn mean(vs: &[Vec<f32>]) -> Option<Vec<f32>> {
-    let first = vs.first()?;
-    let dim = first.len();
-    let mut m = vec![0f32; dim];
-    for v in vs.iter().filter(|v| v.len() == dim) {
-        for (a, b) in m.iter_mut().zip(v) {
-            *a += b;
-        }
-    }
-    let n = m.iter().map(|x| x * x).sum::<f32>().sqrt();
-    (n > 1e-6).then(|| m.iter().map(|x| x / n).collect())
-}
-
-/// Where this item probably belongs: person folders of recognised faces,
-/// then folders whose pictures look like it (smart search). Best first.
+/// Where this item probably belongs: person folders of recognised faces.
+/// Best first.
 pub fn suggest(conn: &Connection, item: i64) -> R<Vec<Suggestion>> {
     let here: Option<i64> = conn.query_row("SELECT folder_id FROM media WHERE id = ?", [item], |r| r.get(0)).map_err(e)?;
     let mut out: Vec<Suggestion> = Vec::new();
     // Faces: people recognised in it, else the person its faces are most like.
     for (p, score) in faces::person_matches(conn, item)? {
         out.push(Suggestion { folder: p, reason: "face".into(), score });
-    }
-    // Looks: compare with the average picture of each folder.
-    // Vectors from memory (clip.rs keeps them all).
-    let mine = crate::clip::with_index(conn, |idx| idx.vectors(item))?.unwrap_or_default();
-    if let Some(me) = mean(&mine.chunks(crate::clip::DIM).map(|c| c.to_vec()).collect::<Vec<_>>()) {
-        let folder_of: HashMap<i64, i64> = conn
-            .prepare("SELECT id, folder_id FROM media WHERE deleted_at IS NULL AND folder_id IS NOT NULL AND id <> ?")
-            .map_err(e)?
-            .query_map([item], |r| Ok((r.get(0)?, r.get(1)?)))
-            .map_err(e)?
-            .collect::<rusqlite::Result<_>>()
-            .map_err(e)?;
-        let rows: Vec<(i64, Vec<f32>)> = crate::clip::with_index(conn, |idx| {
-            idx.ids().filter_map(|id| Some((*folder_of.get(&id)?, idx.vectors(id)?))).collect()
-        })?;
-        let mut sums: HashMap<i64, Vec<Vec<f32>>> = HashMap::new();
-        for (f, v) in rows {
-            if Some(f) != here {
-                // Videos have several vectors: their average stands for them.
-                if let Some(m) = mean(&v.chunks(crate::clip::DIM).map(|c| c.to_vec()).collect::<Vec<_>>()) {
-                    sums.entry(f).or_default().push(m);
-                }
-            }
-        }
-        let mut looks: Vec<(i64, f32)> = sums
-            .into_iter()
-            .filter(|(_, v)| v.len() >= 2)
-            .filter_map(|(f, v)| mean(&v).map(|c| (f, me.iter().zip(&c).map(|(a, b)| a * b).sum::<f32>())))
-            .collect();
-        looks.sort_by(|a, b| b.1.total_cmp(&a.1));
-        for (f, s) in looks.into_iter().take(2).filter(|(_, s)| *s >= 0.78) {
-            out.push(Suggestion { folder: f, reason: "look".into(), score: s });
-        }
     }
     let mut seen = HashSet::new();
     out.retain(|s| Some(s.folder) != here && seen.insert(s.folder));

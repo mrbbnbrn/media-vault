@@ -1,50 +1,14 @@
-// The library's search bars: plain search (tags, names, people), smart search
-// (what the picture shows) and the tag-name bar.
+// The library's search bar: tags, names and people.
 
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { type FolderCard, type TagCount } from '../../api';
-import { CloseIcon, FolderIcon, FaceIcon, SearchIcon, SparkleIcon, TagIcon } from '../../components/Icons';
+import { CloseIcon, FolderIcon, FaceIcon, SearchIcon, TagIcon } from '../../components/Icons';
 import { peopleInText } from '../../peoplelogic';
 
 export type SearchValue = { tags: string[]; names: string[]; people: number[] };
 
-export function SearchBar(props: {
-  tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void;
-  smart: boolean; smartQuery: string; onSmart: (q: string) => void; onEscape: () => void;
-}) {
-  if (props.smart) return <SmartBar query={props.smartQuery} onSearch={props.onSmart} onEscape={props.onEscape} />;
-  return <TagNameBar {...props} />;
-}
-
-/** Smart search: type a description, Enter to search. */
-export function SmartBar(props: { query: string; onSearch: (q: string) => void; onEscape: () => void }) {
-  const [text, setText] = useState(props.query);
-  useEffect(() => setText(props.query), [props.query]);
-  return (
-    <div className="search smart">
-      <SparkleIcon />
-      <label htmlFor="lib-search" className="sr-only">Smart search</label>
-      <input id="lib-search" value={text} autoComplete="off" placeholder="Describe what you're looking for… (any language)"
-        onChange={(e) => setText(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') { e.preventDefault(); props.onSearch(text.trim()); }
-          else if (e.key === 'Escape') {
-            // Esc clears the box; Esc on an empty box leaves the search.
-            if (text) setText('');
-            else {
-              (e.target as HTMLInputElement).blur();
-              props.onEscape();
-            }
-          }
-        }} />
-      {text && (
-        <button type="button" className="link" aria-label="Clear" onClick={() => { setText(''); props.onSearch(''); }}><CloseIcon size={12} /></button>
-      )}
-    </div>
-  );
-}
-
-export function TagNameBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void; onEscape: () => void }) {
+/** Search by tags, names and people (a folder or person folder can be opened from it too). */
+export function SearchBar(props: { tags: TagCount[]; folders: FolderCard[]; value: SearchValue; onChange: (v: SearchValue) => void; onOpenFolder: (id: number) => void; onEscape: () => void }) {
   const [text, setText] = useState('');
   const [focus, setFocus] = useState(false);
   const [hi, setHi] = useState(0);

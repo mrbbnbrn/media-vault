@@ -3,7 +3,7 @@
 // actions with undo, and importing by drag and drop.
 
 import { SORTS, minimapLabel, KINDS, PREVIEWS, viewTitle, NO_SEARCH, foldName, searchTitle, groupBy, saveColsLater, findAnchor } from './library/helpers';
-import { FolderCover, SmartProgressNote } from './library/FolderCover';
+import { FolderCover } from './library/FolderCover';
 import { TagItemsDialog, ArchivePasswordDialog, ImportSummary, CoverPicker } from './library/LibraryDialogs';
 import { SearchBar } from './library/SearchBars';
 import { errText } from '../text';
@@ -37,7 +37,6 @@ import { bandPick, folderPick, returnPick } from '../selection';
 import { ExportDialog, LoginBanner, TaskCards, hasTaskCards } from '../components/Safety';
 import { CoverImg, leaveCard, setHoveredCard } from '../components/CoverImg';
 import { kickFaceScanner, noteFaceProgress } from '../ml/facescan';
-import { embedQuery, smartAvailable } from '../ml/smart';
 import { useTaskPart } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
 import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
@@ -105,7 +104,6 @@ export type LibView =
   | { kind: 'trash' }
   | { kind: 'stats' }
   | { kind: 'search'; tags: string[]; names: string[]; people: number[] }
-  | { kind: 'smart'; q: string }
   | { kind: 'people' }
   /** Groups of pictures that look the same (whole library or one folder). */
   | { kind: 'lookalikes'; folder: number | null; only?: number[]; onlyLabel?: string }
@@ -328,12 +326,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [storageMsg, setStorageMsg] = useState<StorageDone | null>(null);
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
-  const [smartModels, setSmartModels] = useState(false);
-  // Smart search can be turned off altogether (Settings): then it's as if its models weren't there.
-  const smartOk = smartModels && cfg.smartEnabled !== false;
-  const smartOn = smartOk && !!cfg.smartSearch;
-  // "Find similar" uses smart search when it is on (only that view reloads when it changes).
-  const similarSmart = view.kind === 'similar' && smartOn;
   const [lookTick, setLookTick] = useState(0);
   // Cut / copy inside the library (Ctrl+X / Ctrl+C, then Ctrl+V).
   const [clipboard, setClipboard] = useState<{ mode: 'cut' | 'copy'; ids: number[]; folders: number[] } | null>(null);
@@ -498,10 +490,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       b.then((u) => u());
     };
   }, []);
-  // Smart search: are the models there? (How far the analysis is: SmartProgressNote.)
-  useEffect(() => {
-    smartAvailable().then(setSmartModels);
-  }, []);
   // The login note goes away by itself unless wrong passwords were tried.
   useEffect(() => {
     if (!login || login.failed.length) return;
@@ -519,8 +507,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   /**
    * Load the page again. `bg`: because of background work (an import or a conversion
    * finished, thumbnails arrived): no "loading…", unchanged things keep their objects,
-   * and what is on screen keeps its order (calm.ts). Views worked out by models
-   * (smart search, similar) aren't recomputed then.
+   * and what is on screen keeps its order (calm.ts). Views worked out from the
+   * fingerprints (similar, look-alikes) aren't recomputed then.
    */
   /** Each load gets a number: an answer that arrives after a newer load started is dropped. */
   const loadGen = useRef(0);
@@ -545,7 +533,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const setTrash = (t: TrashView | null) => !stale() && setTrashRaw(t);
     const setError = (e: string | null) => !stale() && setErrorRaw(e);
     if (!keep) setLoading(true);
-    else if (view.kind === 'smart' || view.kind === 'similar' || view.kind === 'lookalikes') {
+    else if (view.kind === 'similar' || view.kind === 'lookalikes') {
       // Only the folders and tags (the sidebar) then.
       const page = await api.libraryPage(null, false).catch(() => null);
       if (page) {
@@ -588,13 +576,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         else if (view.kind === 'continue') setItems(await api.continueWatching());
         else if (view.kind === 'memories') setItems([]);
         else if (view.kind === 'similar') {
-          const [me, hits] = await Promise.all([api.getItem(view.id).catch(() => null), api.similarTo(view.id, similarSmart)]);
+          const [me, hits] = await Promise.all([api.getItem(view.id).catch(() => null), api.similarTo(view.id)]);
           setItems([...(me && me.deletedAt == null ? [me] : []), ...hits.map((h) => h.item)]);
-        }
-        else if (view.kind === 'smart') {
-          const vec = await embedQuery(view.q);
-          const hits = await api.smartSearch(Array.from(vec), null);
-          setItems(hits.map((h) => h.item));
         }
         else if (view.kind === 'timeline' && view.person != null) setItems(await api.queryItems({ people: [view.person] }));
         else if (view.kind === 'all' || view.kind === 'timeline') setItems(await api.queryItems({}));
@@ -616,7 +599,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       // Background work may start now (firstgrid.ts).
       gridShown();
     }
-  }, [view, similarSmart]);
+  }, [view]);
   /** Load again because of background work, once you have paused (calm.ts). */
   const reloadCalmly = useCallback(() => calmly('library-reload', () => void reloadRef.current({ bg: true })), []);
   const reloadRef = useRef(reload);
@@ -1120,7 +1103,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [faceWallFor, setFaceWallFor] = useState<number | null>(null);
   const faceWall = facePerson != null && faceWallFor === facePerson;
   const inTrash = view.kind === 'trash';
-  const smart = view.kind === 'smart';
   // Each item's grid entry is made once per item object (unchanged items keep
   // theirs, so their tiles don't draw again: MediaGrid's Tile is memoised).
   const deco = useRef(new WeakMap<Item, Item & { key: string; added: number; date: number }>());
@@ -1135,9 +1117,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       const dir = sort === 'oldest' ? 1 : -1;
       return [...k].sort((a, b) => dir * (a.takenAt - b.takenAt) || dir * (a.id - b.id)).map(d);
     }
-    if (inTrash || smart || view.kind === 'similar') return k.map(d);
+    if (inTrash || view.kind === 'similar') return k.map(d);
     return sorted(k.map(d), sort);
-  }, [items, kind, sort, timeline, inTrash, smart, view.kind]);
+  }, [items, kind, sort, timeline, inTrash, view.kind]);
   // After background work, what is on screen keeps its place (calm.ts).
   const shown = useStableList(shownFresh, (x) => x.id, bgList.current, `${viewK}|${sort}|${kind}`);
   const groups = useMemo(() => (timeline ? monthGroups(shown.map((i) => i.takenAt)) : undefined), [timeline, shown]);
@@ -2101,10 +2083,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         title: 'Slideshow of everything selected (folders: everything inside)',
         run: itemsOnly && one ? () => playItems(true, one.id) : onAll((list) => playList(list, true, itemsOnly ? ids[0] : undefined, oneFolder ? oneFolder.name : 'Selection')) },
       one && !(view.kind === 'folder' && view.id === one.folderId) && { id: 'showFolder', label: 'Show in its folder', run: () => showInFolder(one) },
-      one && (view.kind === 'search' || view.kind === 'smart') && { id: 'why', label: 'Why is this here?', hint: 'what matched', run: () => setDialog({
-        t: 'why', item: one, query: view.kind === 'smart' ? { kind: 'smart', q: view.q } : { kind: 'search', tags: view.tags, names: view.names, people: view.people ?? [] },
+      one && view.kind === 'search' && { id: 'why', label: 'Why is this here?', hint: 'what matched', run: () => setDialog({
+        t: 'why', item: one, query: { kind: 'search', tags: view.tags, names: view.names, people: view.people ?? [] },
       }) },
-      one && ['image', 'gif', 'video'].includes(one.kind) && { id: 'similar', label: 'Find similar', hint: smartOn ? 'smart search' : undefined, run: () => { setView({ kind: 'similar', id: one.id, name: one.name }); showItem(one.id); } },
+      one && ['image', 'gif', 'video'].includes(one.kind) && { id: 'similar', label: 'Find similar', run: () => { setView({ kind: 'similar', id: one.id, name: one.name }); showItem(one.id); } },
       { id: 'fav', sepBefore: true, label: itemsOnly ? (allFav ? 'Remove from favourites' : 'Add to favourites') : 'Favourite everything inside',
         barLabel: allFav ? 'Unfavourite' : 'Favourite', icon: <HeartIcon size={14} />, bar: true,
         run: itemsOnly ? () => setFav(ids, !allFav) : onAll((list) => setFav(list.map((i) => i.id), !list.every((i) => i.favourite))) },
@@ -2453,7 +2435,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const folderNames = useMemo(() => new Map(folders.map((f) => [f.id, f.name])), [folders]);
   const personName = useCallback((id: number) => folderNames.get(id), [folderNames]);
   const dimmed = useMemo(() => (clipboard?.mode === 'cut' ? new Set(clipboard.ids) : undefined), [clipboard]);
-  const minimapSort = timeline || smart || inTrash || view.kind === 'similar' ? null : sort;
+  const minimapSort = timeline || inTrash || view.kind === 'similar' ? null : sort;
   const gridMinimapLabel = useMemo(() => minimapLabel(minimapSort), [minimapSort]);
 
   // The folder being opened, from the full folder list (known at once), so the title and the
@@ -2533,18 +2515,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onChange={(v) => setView(v.tags.length || v.names.length || v.people.length ? { kind: 'search', ...v } : { kind: 'folders' })}
           onOpenFolder={openFolder}
           onEscape={() => {
-            if (view.kind === 'search' || view.kind === 'smart') {
+            if (view.kind === 'search') {
               if (!history.back()) setView({ kind: 'folders' });
             }
-          }}
-          smart={smartOk && !!cfg.smartSearch} smartQuery={smart ? view.q : ''}
-          onSmart={(q) => setView(q ? { kind: 'smart', q } : { kind: 'folders' })} />
-        {cfg.smartEnabled !== false && <button type="button" className={`btn btn-icon btn-sm smart-toggle${smartOk && cfg.smartSearch ? ' on' : ''}`} aria-pressed={smartOk && !!cfg.smartSearch}
-          disabled={!smartOk} aria-label="Smart search"
-          title={!smartOk ? 'Smart search needs the full package (with the “models” folder next to the app)'
-            : cfg.smartSearch ? 'Smart search is on: describe what you are looking for, in any language. Click to turn off.'
-            : 'Smart search: find pictures by describing them (“beach at sunset”, “kırmızı araba”). Click to turn on.'}
-          onClick={() => saveCfg({ smartSearch: !cfg.smartSearch })}><SparkleIcon /></button>}
+          }} />
         <nav className={`row topbar${topEdit ? ' editing' : ''}`} style={{ gap: 8 }}>
           {topOrder.map((k) => {
             const b = topButtons[k];
@@ -2790,7 +2764,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                   {/* Sort, what to show, layout and size in one menu. */}
                   <Dropdown label="View ▾" title={`${timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label} · ${KINDS.find((x) => x.id === kind)?.label} · ${faceWall ? 'face wall' : scrollMode ? 'scroll' : shape ? 'true shape' : 'tiles'}${!scrollMode && !faceWall ? ` · ${cols} per row` : ''}`}
                     items={() => [
-                      ...(!smart && view.kind !== 'similar' ? [group(`Sort: ${(timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label ?? '').toLowerCase()}`, [
+                      ...(view.kind !== 'similar' ? [group(`Sort: ${(timeline ? (sort === 'oldest' ? 'Oldest first' : 'Newest first') : SORTS.find((x) => x.id === sort)?.label ?? '').toLowerCase()}`, [
                         ...(timeline ? SORTS.slice(0, 2) : SORTS).map((o) => ({ label: o.label, checked: o.id === sort, onSelect: () => setSort(o.id) })),
                         // Inside a folder the same menu sorts its subfolder cards.
                         ...(view.kind === 'folder' && cards.length > 0 ? FOLDER_SORTS.map((o, k) => ({
@@ -2825,7 +2799,6 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             <PeopleView folders={folders} onChanged={() => { void reload({ quiet: true }); nav.refresh().catch(() => {}); }} onOpenItem={(it) => openInFolder(it, true)} onTimeline={(id) => setView({ kind: 'timeline', person: id })}
               onOpenTab={tabs ? (v) => tabs.open(v) : undefined} />
           )}
-          {smart && <SmartProgressNote />}
 
           {view.kind === 'memories' && (
             <MemoriesView folders={folders} onPlay={(m: Memory) => nav.go({
@@ -2834,7 +2807,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           )}
           {view.kind === 'lookalikes' && (
             <LookAlikes folder={view.folder} folderName={folders.find((f) => f.id === view.folder)?.name ?? null} only={view.only} onlyLabel={view.onlyLabel}
-              smartOk={smartOn} tick={lookTick} marked={selected} setMarked={setSelected}
+              tick={lookTick} marked={selected} setMarked={setSelected}
               onGroups={(g) => setItems(g.flat())}
               onOpen={(g, id) => playList(g, false, id, 'Look-alikes')}
               onAllFolders={() => setView({ kind: 'lookalikes', folder: null })} />
@@ -2940,7 +2913,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                 {inTrash ? <TrashIcon size={28} /> : <ImportIcon size={28} />}
                 <b>{inTrash ? 'The trash is empty'
                   : view.kind === 'folder' ? 'This folder is empty'
-                  : view.kind === 'search' || smart ? 'Nothing matches this search'
+                  : view.kind === 'search' ? 'Nothing matches this search'
                   : 'Nothing here yet'}</b>
                 {!inTrash && <span className="muted">Drag files, folders or .7z archives from Windows onto any folder to import them.</span>}
               </div>

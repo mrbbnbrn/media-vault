@@ -10,10 +10,10 @@ import { UpscalerSection } from '../components/Upscale';
 import { DepthSection } from '../components/Depth3D';
 import { FaceSection } from '../components/FaceEngine';
 import { PoorFaceSettingsView } from '../components/PoorFaceSettings';
-import { smartAvailable } from '../ml/smart';
 import { startCheck, useTasks } from '../tasks';
-import { inTauri, type DataInfo, type CacheInfo, type ClipStatus, type EngineInfo, type LibraryBackup, type SmartEngine, type StorageTask } from '../api';
+import { inTauri, type DataInfo, type CacheInfo, type EngineInfo, type LibraryBackup, type StorageTask } from '../api';
 import { ConfirmDialog } from '../components/Dialogs';
+import { say } from '../messages';
 import { ACCENTS, applyAccent, formatBytes } from '../theme';
 import { STYLES } from '../look';
 import { GrowthSpark } from '../components/VaultGrowth';
@@ -327,7 +327,7 @@ export function Settings({ nav, page, at }: { nav: Nav; page?: SettingsPage; at?
             </>
           )}
           {section === 'background' && <BackgroundSection cfg={cfg} update={update} />}
-          {section === 'ai' && <SmartSection cfg={cfg} update={update} viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
+          {section === 'ai' && <AiSection viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (
             <>
               <section className="section">
@@ -587,7 +587,8 @@ function StorageSection({ cfg }: { cfg: AppConfig }) {
   const [cache, setCache] = useState<CacheInfo | null>(null);
   const [confirm, setConfirm] = useState<'deleteThumbs' | 'deletePreviews' | null>(null);
   const [data, setData] = useState<DataInfo | null>(null);
-  const [dataConfirm, setDataConfirm] = useState<'faces' | 'clip' | 'backups' | null>(null);
+  const [dataConfirm, setDataConfirm] = useState<'faces' | 'backups' | null>(null);
+  const [smartConfirm, setSmartConfirm] = useState(false);
   const [dataMsg, setDataMsg] = useState<string | null>(null);
   const [backups, setBackups] = useState<LibraryBackup[]>([]);
   const [restoring, setRestoring] = useState<LibraryBackup | null>(null);
@@ -690,7 +691,6 @@ function StorageSection({ cfg }: { cfg: AppConfig }) {
       {data && (
         <div className="stats" style={{ flexWrap: 'wrap' }}>
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Face recognition</span><b>{data.faces.toLocaleString()} faces · {formatBytes(data.faceBytes)}</b></div>
-          <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Smart search</span><b>{data.clipItems.toLocaleString()} items · {formatBytes(data.clipBytes)}</b></div>
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Library backups</span><b>{data.backups} of 5 · {formatBytes(data.backupBytes)}</b></div>
           <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Library</span><b>{formatBytes(data.libraryBytes)}</b></div>
         </div>
@@ -704,10 +704,12 @@ function StorageSection({ cfg }: { cfg: AppConfig }) {
       </div>
       <div className="setting">
         <div className="text">
-          <span className="title">Delete smart-search data</span>
-          <span className="desc">{cfg.smartIndex !== false && cfg.smartEnabled !== false ? 'It is made again in the background while analysing is on (pause it in Background work, or turn smart search off in AI & 3D, to keep it deleted).' : 'Smart search finds nothing until pictures are analysed again.'}</span>
+          <span className="title">Delete all past smart search data</span>
+          <span className="desc">{!data ? 'Looking…' : data.clipItems > 0
+            ? `Smart search is no longer part of the app, but what it saved about your pictures is still in the library (${data.clipItems.toLocaleString()} ${data.clipItems === 1 ? 'item' : 'items'}, ${formatBytes(data.clipBytes)}). Deleting it makes the library smaller. Your pictures are not touched. Library backups made before keep their copy until they are replaced or deleted.`
+            : 'There is no smart search data in this library.'}</span>
         </div>
-        <button type="button" className="btn" disabled={!data?.clipItems} onClick={() => setDataConfirm('clip')}>Delete</button>
+        <button type="button" className="btn" disabled={!data?.clipItems} onClick={() => setSmartConfirm(true)}>Delete</button>
       </div>
       {dataMsg && <div className="info">{dataMsg}</div>}
       <h2 style={{ marginTop: 18 }}>Library backups</h2>
@@ -754,14 +756,24 @@ function StorageSection({ cfg }: { cfg: AppConfig }) {
       )}
       {dataConfirm && (
         <ConfirmDialog danger confirm="Delete" onClose={() => setDataConfirm(null)}
-          title={dataConfirm === 'faces' ? 'Delete face recognition data?' : dataConfirm === 'clip' ? 'Delete smart-search data?' : 'Delete the library backups?'}
+          title={dataConfirm === 'faces' ? 'Delete face recognition data?' : 'Delete the library backups?'}
           onConfirm={async () => {
             setDataMsg(await api.deleteData(dataConfirm));
             await loadData();
           }}>
           {dataConfirm === 'faces' && `${data?.faces.toLocaleString()} faces (${formatBytes(data?.faceBytes ?? 0)}) and your answers about them are deleted. This can't be undone, but scanning again finds the faces again.`}
-          {dataConfirm === 'clip' && `The analysis of ${data?.clipItems.toLocaleString()} items (${formatBytes(data?.clipBytes ?? 0)}) is deleted.`}
           {dataConfirm === 'backups' && `${data?.backups} earlier copies of the library (${formatBytes(data?.backupBytes ?? 0)}) are deleted. Your current library is not affected.`}
+        </ConfirmDialog>
+      )}
+      {smartConfirm && (
+        <ConfirmDialog danger confirm="Delete" title="Delete all smart search data?" onClose={() => setSmartConfirm(false)}
+          onConfirm={async () => {
+            const mb = (await api.smartDataDelete()) / 1e6;
+            say(`Deleted smart search data (${mb >= 0.1 ? mb.toFixed(1) : 'less than 0.1'} MB freed).`, 'done');
+            await loadData();
+          }}>
+          The saved analysis of every picture is removed from the library. This can't be undone, and smart search no
+          longer exists in the app, so it won't come back.
         </ConfirmDialog>
       )}
       {confirm && (
@@ -879,13 +891,9 @@ function EngineSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig)
 
 /** Things the app does by itself in the background: pause them, or turn them off. */
 function BackgroundSection({ cfg, update }: { cfg: AppConfig; update: (c: AppConfig) => Promise<void> }) {
-  const smartOn = cfg.smartEnabled !== false;
-  const analysing = cfg.smartIndex !== false;
-  const [clip, setClip] = useState<ClipStatus | null>(null);
   // The face scan's Pause: the same one as on the People page (and remembered after a restart).
   const [facesPaused, setFacesPaused] = useState(faceScanPaused());
   useEffect(() => {
-    api.clipStatus().then(setClip).catch(() => {});
     const off = onFaceScanPaused(setFacesPaused);
     return () => void off();
   }, []);
@@ -894,32 +902,9 @@ function BackgroundSection({ cfg, update }: { cfg: AppConfig; update: (c: AppCon
       <section className="section">
         <h2>Analysing</h2>
         <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-          New pictures and videos are looked at in the background, for smart search and to find faces. Paused stays paused,
+          New pictures and videos are looked at in the background to find faces. Paused stays paused,
           also after the app restarts, until you resume.
         </p>
-        {smartOn ? (
-          <div className="setting">
-            <div className="text">
-              <span className="title">{analysing ? 'Smart search: analysing new pictures' : 'Smart search: paused'}</span>
-              <span className="desc">
-                {analysing
-                  ? 'New pictures and videos are analysed in the background (also pausable from the background-jobs ring).'
-                  : 'New pictures aren’t analysed until you resume; smart search only finds what was analysed before.'}
-                {clip && clip.total > clip.done ? ` ${(clip.total - clip.done).toLocaleString()} not analysed yet.` : ''}
-              </span>
-            </div>
-            <button type="button" className={analysing ? 'btn' : 'btn btn-primary'} onClick={() => update({ ...cfg, smartIndex: !analysing })}>
-              {analysing ? 'Pause' : 'Resume'}
-            </button>
-          </div>
-        ) : (
-          <div className="setting">
-            <div className="text">
-              <span className="title">Smart search: off</span>
-              <span className="desc">Nothing is analysed for it. Turn it on in AI & 3D.</span>
-            </div>
-          </div>
-        )}
         <div className="setting">
           <div className="text">
             <span className="title">{facesPaused ? 'Face scan: paused' : 'Face scan: scanning new pictures'}</span>
@@ -952,52 +937,12 @@ function BackgroundSection({ cfg, update }: { cfg: AppConfig; update: (c: AppCon
   );
 }
 
-function SmartSection(props: { cfg: AppConfig; update: (c: AppConfig) => Promise<void>; poor?: React.ReactNode; viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
-  const { cfg, update } = props;
-  const enabled = cfg.smartEnabled !== false;
-  const analysing = cfg.smartIndex !== false;
-  const [clip, setClip] = useState<ClipStatus | null>(null);
-  const [models, setModels] = useState<boolean | null>(null);
-  const [engine, setEngine] = useState<SmartEngine | null>(null);
-  useEffect(() => {
-    api.clipStatus().then(setClip).catch(() => {});
-    smartAvailable().then(setModels);
-    api.smartEngine().then(setEngine).catch(() => {});
-  }, []);
-  // Pictures are analysed by the app itself (graphics card or processor), else slowly in the window.
-  const runsOn = !engine ? null : engine.native ? (engine.device === 'gpu' ? 'graphics card' : 'processor') : 'browser engine (slow)';
+function AiSection(props: { poor?: React.ReactNode; viewer: ViewerSettings; setViewer: (patch: Partial<ViewerSettings>) => void }) {
   return (
     <>
       <FaceSection />
 
       {props.poor && <><div className="divider" />{props.poor}</>}
-
-      <div className="divider" />
-
-      <section className="section">
-        <h2>Smart search</h2>
-        <Toggle title="Smart search" on={enabled} set={(v) => update({ ...cfg, smartEnabled: v })}
-          desc={enabled ? 'Search by describing what’s in the pictures. Turn off to remove the ✦ button and stop analysing pictures for it (what’s analysed so far is kept unless you delete it in Storage).' : 'Off: no ✦ button, nothing is analysed for it and its models aren’t loaded. Turn it on again any time.'} />
-        {enabled && !analysing && (
-          <div className="info">Analysing new pictures is paused. Resume it in Background work.</div>
-        )}
-        {enabled && <p className="muted" style={{ margin: 0, lineHeight: 1.6 }}>
-          Turn it on with the ✦ button next to the search box, then describe what you're looking for — “dog on the beach”,
-          “kırmızı elbise”, “Geburtstagstorte”. Works in 50+ languages, fully offline. Pictures and videos are analysed in the
-          background (using their thumbnails); the results stay inside the encrypted vault.
-        </p>}
-        {enabled && models === false && <div className="notice">This copy of the app doesn't include the smart-search models. Use the full package (it has a “models” folder next to MediaVault.exe).</div>}
-        {enabled && models && engine && !engine.native && (
-          <div className="info">Analysing runs in the browser engine, which is slow. The newer models download (“models-v2” on the Releases page) adds the engine that uses your graphics card: unzip it over your MediaVault folder.</div>
-        )}
-        {enabled && models && clip && (
-          <div className="stats" style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 10, paddingBottom: 0 }}>
-            <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Analysed</span><b>{clip.done.toLocaleString()} / {clip.total.toLocaleString()}</b></div>
-            {runsOn && <div className="stat" title={engine?.problem ?? undefined}><span className="faint" style={{ fontSize: 12 }}>Runs on</span><b>{runsOn}</b></div>}
-            {clip.failed > 0 && <div className="stat"><span className="faint" style={{ fontSize: 12 }}>Couldn't analyse</span><b>{clip.failed}</b></div>}
-          </div>
-        )}
-      </section>
 
       <div className="divider" />
 

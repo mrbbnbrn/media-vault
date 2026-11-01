@@ -2,16 +2,15 @@
 //! `cargo test -p media-vault-app bench_ -- --ignored --nocapture --test-threads 1`
 //! Each prints its numbers; they only assert that the results are right.
 
-use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
 use rusqlite::params;
 use vault_core::stream::{ObjectReader, ObjectWriter};
-use vault_core::{ObjectId, ObjectKind, half};
+use vault_core::{ObjectId, ObjectKind};
 
-use crate::{clip, faces, import, library, session};
+use crate::{faces, import, library, session};
 
 fn rnd(seed: &mut u64) -> f32 {
     *seed ^= *seed << 13;
@@ -35,8 +34,7 @@ const FOLDERS: i64 = 300;
 const FACES: i64 = 4_000;
 
 /// A library like a big real one: 300 folders (some inside others), 20 000
-/// items with thumbnails, smart-search vectors for all of them (videos have
-/// five) and 4 000 faces.
+/// items with thumbnails and 4 000 faces.
 fn fill(c: &rusqlite::Connection) {
     let tx = c.unchecked_transaction().unwrap();
     for f in 1..=FOLDERS {
@@ -45,21 +43,14 @@ fn fill(c: &rusqlite::Connection) {
             .unwrap();
     }
     let mut seed = 0x1234_5678_9abc_def0u64;
-    let centres: Vec<Vec<f32>> = (0..40).map(|_| (0..clip::DIM).map(|_| rnd(&mut seed)).collect()).collect();
     for i in 1..=ITEMS {
         let kind = ["image", "image", "video", "gif"][(i % 4) as usize];
         tx.execute(
-            "INSERT INTO media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, clip_state) \
-             VALUES (?1, lower(hex(randomblob(16))), lower(hex(randomblob(16))), ?2, ?3, ?4, 'jpg', ?5, 'h', ?1, 1)",
+            "INSERT INTO media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) \
+             VALUES (?1, lower(hex(randomblob(16))), lower(hex(randomblob(16))), ?2, ?3, ?4, 'jpg', ?5, 'h', ?1)",
             params![i, if i % 50 == 0 { None } else { Some(i % FOLDERS + 1) }, kind, format!("IMG_{i:05}.jpg"), 1_000_000 + i],
         )
         .unwrap();
-        let n = if kind == "video" { 5 } else { 1 };
-        let mut v = Vec::new();
-        for _ in 0..n {
-            v.extend(unit(centres[(i % 40) as usize].iter().map(|c| c + rnd(&mut seed) * 1.5).collect()));
-        }
-        tx.execute("INSERT INTO clip(media_id, vec, f16) VALUES (?, ?, 1)", params![i, half::f32s_to_f16_blob(&v)]).unwrap();
     }
     let people: Vec<Vec<f32>> = (0..60).map(|_| unit((0..512).map(|_| rnd(&mut seed)).collect())).collect();
     for k in 1..=FACES {
@@ -97,30 +88,9 @@ fn old_folder_queries(c: &rusqlite::Connection) -> usize {
     n
 }
 
-fn old_search(c: &rusqlite::Connection, q: &[f32]) -> usize {
-    let rows: Vec<(i64, Vec<u8>)> = c
-        .prepare("SELECT c.media_id, c.vec FROM clip c JOIN media m ON m.id = c.media_id WHERE m.deleted_at IS NULL")
-        .unwrap()
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-        .unwrap()
-        .collect::<rusqlite::Result<_>>()
-        .unwrap();
-    let mut s: Vec<(i64, f32)> = rows
-        .into_iter()
-        .map(|(id, b)| {
-            let v: Vec<f32> = b.chunks_exact(4).map(|x| f32::from_le_bytes([x[0], x[1], x[2], x[3]])).collect();
-            (id, v.chunks(clip::DIM).map(|r| r.iter().zip(q).map(|(a, b)| a * b).sum::<f32>()).fold(f32::MIN, f32::max))
-        })
-        .collect();
-    s.sort_by(|a, b| b.1.total_cmp(&a.1));
-    let items = library::query_items(c, &Default::default()).unwrap();
-    let by: HashMap<i64, library::Item> = items.into_iter().map(|i| (i.id, i)).collect();
-    s.iter().take(300).filter(|x| by.contains_key(&x.0)).count()
-}
-
 #[test]
 #[ignore]
-fn bench_library_unlock_folders_search_faces() {
+fn bench_library_unlock_folders_faces() {
     let t = tempfile::tempdir().unwrap();
     let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
     let path = s.info().path;
@@ -152,49 +122,6 @@ fn bench_library_unlock_folders_search_faces() {
         assert!(vault_core::db::check_folder_stats(&c).unwrap());
     }
 
-    // Smart search: reading every vector per search before vs the index now.
-    let mut seed = 99u64;
-    let q = unit((0..clip::DIM).map(|_| rnd(&mut seed)).collect());
-    {
-        let c = s.db();
-        let t0 = Instant::now();
-        let first = clip::search(&c, &q, None, 300).unwrap();
-        let cold = ms(t0);
-        let t0 = Instant::now();
-        for _ in 0..5 {
-            clip::search(&c, &q, None, 300).unwrap();
-        }
-        let warm = ms(t0) / 5.0;
-        // As before: 32-bit blobs read from the library on every search.
-        c.execute_batch("UPDATE clip SET f16 = 0").unwrap(); // (marks only; converted below)
-        let rows: Vec<(i64, Vec<u8>)> =
-            c.prepare("SELECT media_id, vec FROM clip").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-        for (id, b) in rows {
-            let f32s: Vec<u8> = half::f16_blob_to_f32(&b).iter().flat_map(|x| x.to_le_bytes()).collect();
-            c.execute("UPDATE clip SET vec = ? WHERE media_id = ?", params![f32s, id]).unwrap();
-        }
-        let t0 = Instant::now();
-        for _ in 0..3 {
-            old_search(&c, &q);
-        }
-        let old = ms(t0) / 3.0;
-        let f32_size = vault_core::db::serialize(&c).unwrap().len();
-        eprintln!("smart search: {old:.1} ms per search before; now {warm:.1} ms ({cold:.1} ms for the first, which loads the index); {} results", first.len());
-        // Back to 16-bit for the rest (the index sees every change through its triggers).
-        let rows: Vec<(i64, Vec<u8>)> =
-            c.prepare("SELECT media_id, vec FROM clip").unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap().collect::<rusqlite::Result<_>>().unwrap();
-        for (id, b) in rows {
-            c.execute("UPDATE clip SET vec = ?, f16 = 1 WHERE media_id = ?", params![half::f32_blob_to_f16(&b), id]).unwrap();
-        }
-        c.execute_batch("VACUUM").unwrap();
-        let f16_size = vault_core::db::serialize(&c).unwrap().len();
-        eprintln!("library size: {:.1} MB with 32-bit vectors, {:.1} MB with 16-bit ones", f32_size as f64 / 1e6, f16_size as f64 / 1e6);
-        let again = clip::search(&c, &q, None, 300).unwrap();
-        assert_eq!(again.iter().map(|h| h.item.id).take(20).collect::<Vec<_>>(), first.iter().map(|h| h.item.id).take(20).collect::<Vec<_>>());
-    }
-    s.mark_dirty();
-    s.save().unwrap();
-
     // Faces: the look-alike graph worked out from nothing, then read back.
     let t0 = Instant::now();
     faces::warm(&s).unwrap();
@@ -203,7 +130,6 @@ fn bench_library_unlock_folders_search_faces() {
     s.save().unwrap();
     drop(s);
     faces::forget_cache();
-    clip::forget_index();
 
     // Unlocking until the grid can show (the top level and the folder list).
     let t0 = Instant::now();
@@ -213,9 +139,6 @@ fn bench_library_unlock_folders_search_faces() {
     let top = library::query_items(&s.db(), &library::ItemFilter { folder: Some(None), ..Default::default() }).unwrap();
     let grid = ms(t0);
     eprintln!("unlock: library open in {opened:.0} ms, grid ready (folders + top level) in {grid:.0} ms; {} folders, {} items at the top", folders.len(), top.len());
-    let t0 = Instant::now();
-    let n = clip::warm(&s).unwrap();
-    eprintln!("after unlock, in the background: {n} items' vectors loaded in {:.0} ms", ms(t0));
     let t0 = Instant::now();
     faces::warm(&s).unwrap();
     eprintln!("faces: graph of {FACES} faces worked out in {cold:.0} ms; read back from the library in {:.0} ms", ms(t0));
@@ -303,7 +226,7 @@ fn bench_save_unlock_and_requests() {
         eprintln!("save after one change: {:.0} ms in all (copying the {:.1} MB library out alone: {copy:.0} ms)", ms(t0), bytes.len() as f64 / 1e6);
     }
     let c = s.db();
-    for (what, sql) in [("smart-search vectors", "SELECT IFNULL(SUM(length(vec)),0) FROM clip"), ("face descriptors", "SELECT IFNULL(SUM(length(descriptor)),0) FROM faces"),
+    for (what, sql) in [("face descriptors", "SELECT IFNULL(SUM(length(descriptor)),0) FROM faces"),
         ("colour sketches", "SELECT IFNULL(SUM(length(sketch)),0) FROM media"), ("pack index", "SELECT COUNT(*) * 80 FROM sqlite_master WHERE name = 'objects'")] {
         let n: i64 = c.query_row(sql, [], |r| r.get(0)).unwrap_or(0);
         eprintln!("  {what}: {:.1} MB", n as f64 / 1e6);
@@ -344,7 +267,6 @@ fn bench_save_unlock_and_requests() {
     eprintln!("one folder ({} items): {fv:.1} ms, as text {:.1} ms ({:.0} KB)", v.items.len(), ms(t0), json.len() as f64 / 1e3);
     drop(c);
     drop(s);
-    clip::forget_index();
     faces::forget_cache();
     let t0 = Instant::now();
     let s = session::unlock(&path, "long enough pw").unwrap();

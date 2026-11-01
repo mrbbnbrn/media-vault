@@ -1,18 +1,14 @@
 // "Why is this here?": why an item turned up in a search, worked out by the
 // search's own rules (explain.rs) — matching words in the name or note, tags
-// (direct or through a folder), recognised people, smart-search similarity
-// and the filters it passed.
+// (direct or through a folder), recognised people and the filters it passed.
 
 import { errText } from '../text';
 import { useEffect, useState, type ReactNode } from 'react';
 import { api, thumbUrl, type Explanation, type Item, type Kind, type Ranges } from '../api';
-import { embedQuery } from '../ml/smart';
 import { Modal } from './Dialogs';
-import { FaceIcon, FolderIcon, NoteIcon, SearchIcon, SparkleIcon, TagIcon } from './Icons';
+import { FaceIcon, FolderIcon, NoteIcon, SearchIcon, TagIcon } from './Icons';
 
-export type WhyQuery =
-  | { kind: 'search'; tags: string[]; names: string[]; people: number[] }
-  | { kind: 'smart'; q: string };
+export type WhyQuery = { kind: 'search'; tags: string[]; names: string[]; people: number[] };
 
 /** Text with the matched parts marked (ranges count Unicode characters). */
 export function highlight(text: string, ranges: Ranges): ReactNode[] {
@@ -41,8 +37,6 @@ function noteBit(note: string, ranges: Ranges): ReactNode[] {
   return [from > 0 ? '…' : '', ...highlight(part, shifted), to < chars.length ? '…' : ''];
 }
 
-const pct = (x: number) => `${Math.round(x * 100)}%`;
-
 function Row({ ok, icon, children }: { ok: boolean; icon: ReactNode; children: ReactNode }) {
   return (
     <li className={`why-row${ok ? '' : ' no'}`}>
@@ -58,14 +52,8 @@ export function WhyHere({ item, query, kind, onClose }: { item: Item; query: Why
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
-    (async () => {
-      const kinds = kind === 'any' ? [] : [kind];
-      if (query.kind === 'smart') {
-        const vec = Array.from(await embedQuery(query.q));
-        return api.explainMatch(item.id, { kinds }, vec, null);
-      }
-      return api.explainMatch(item.id, { tags: query.tags, names: query.names, people: query.people, kinds });
-    })()
+    const kinds = kind === 'any' ? [] : [kind];
+    api.explainMatch(item.id, { tags: query.tags, names: query.names, people: query.people, kinds })
       .then((r) => { if (live) setX(r); })
       .catch((e) => { if (live) setError(errText(e)); });
     return () => {
@@ -118,28 +106,13 @@ export function WhyHere({ item, query, kind, onClose }: { item: Item; query: Why
                 {!p.found && <><b>{p.name}</b> isn't recognised in it</>}
               </Row>
             ))}
-            {x.smart && (
-              <Row ok={x.smart.kept} icon={<SparkleIcon size={13} />}>
-                {x.smart.score == null ? <>Not analysed for smart search yet</> : <>
-                  Looks like your search: <b>{pct(x.smart.score)} match</b>
-                  {x.smart.rank != null && <span className="faint"> · number {x.smart.rank} of the results</span>}
-                  <span className="why-meter" aria-hidden="true">
-                    <span className="why-meter-fill" style={{ width: `${Math.max(2, Math.min(100, (x.smart.score / Math.max(x.smart.best, 0.01)) * 100))}%` }} />
-                    <span className="why-meter-cut" style={{ left: `${Math.max(0, Math.min(100, (x.smart.cut / Math.max(x.smart.best, 0.01)) * 100))}%` }} />
-                  </span>
-                  <span className="faint why-small">
-                    Smart search keeps matches of {pct(x.smart.cut)} or more (the best match, {pct(x.smart.best)}, minus 5), and always the best {x.smart.minResults}.
-                  </span>
-                </>}
-              </Row>
-            )}
             {x.filters.filter((f) => f.filter !== 'trash' || !f.passed).map((f) => (
               <Row key={`f${f.filter}`} ok={f.passed} icon={<span className="why-dot" />}>
                 Only {f.wants}: it's {f.has}
               </Row>
             ))}
           </ul>
-          {!x.names.length && !x.tags.length && !x.people.length && !x.smart && (
+          {!x.names.length && !x.tags.length && !x.people.length && (
             <p className="faint" style={{ margin: 0 }}>This search has no words, tags or people, so everything that passes the filters is shown.</p>
           )}
         </>

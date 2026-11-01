@@ -30,7 +30,7 @@ pub struct Session {
     closed: AtomicBool,
     dirty: AtomicBool,
     /// Unsaved changes made only by background work, all of which can be
-    /// made again (thumbnails, fingerprints, smart-search vectors, sketches,
+    /// made again (thumbnails, fingerprints, sketches,
     /// dates taken, face scans): saved at most every `BACKGROUND_SAVE_EVERY`,
     /// so the whole library isn't written every few seconds while it runs.
     dirty_bg: AtomicBool,

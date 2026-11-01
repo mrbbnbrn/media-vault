@@ -11,8 +11,6 @@ import { animationMs, makeThumb } from './media';
 import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
 import { checkFaceEngine, faceBackend, scanItem } from './ml/facescan';
-import { embedPixels, embedQuery, pixelsOf, smartAvailable } from './ml/smart';
-import { cosine } from './ml/cliputil';
 
 interface Info {
   items: { id: number; kind: Kind; name: string }[];
@@ -32,14 +30,6 @@ function waitEvent<T>(name: string, ms: number): Promise<T> {
     ms,
     name,
   );
-}
-
-async function loadImage(src: string): Promise<HTMLImageElement> {
-  const img = new Image();
-  img.crossOrigin = 'anonymous';
-  img.src = src;
-  await img.decode();
-  return img;
 }
 
 const timeout = <T,>(p: Promise<T>, ms: number, what: string) =>
@@ -267,7 +257,7 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       return `${list.length} bookmark, deleted and restored`;
     });
   }
-  // Batch 3: safety, faces, smart search, built-in engine.
+  // Batch 3: safety, faces, built-in engine.
   await step('web engine', async () => {
     const e = await api.engineInfo();
     const v = navigator.userAgent.match(/Edg\/([\d.]+)/)?.[1] ?? '?';
@@ -292,14 +282,13 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
     if (r.exported !== all.length || r.failed.length) throw new Error(`${r.exported} of ${all.length} exported, failed ${JSON.stringify(r.failed)}`);
     return `${r.exported} files, ${r.bytes} bytes`;
   });
-  // The app's own analysis pass: one decode per picture for thumbnail, fingerprint, smart search and faces.
-  const smartNative = (await api.smartEngine().catch(() => null))?.native ?? false;
+  // The app's own analysis pass: one decode per picture for thumbnail, fingerprint and faces.
   if (pic) {
     await step('native analysis (decode once)', async () => {
       const t = performance.now();
       const bytes = await fetchBytes(mediaUrl(pic.id));
       const id = await api.addFileBytes(null, 'selftest native.jpg', bytes);
-      const [r] = await api.analyseNow([id], false);
+      const [r] = await api.analyseNow([id]);
       if (!r?.thumb) throw new Error(`no thumbnail made (${JSON.stringify(r)})`);
       if (!r.print) throw new Error('no fingerprint made');
       const got = await checkImage(`${thumbUrl(id)}?v=1`);
@@ -313,7 +302,7 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       await step('face recognition (native pass)', async () => {
         await api.facesQueue({ ids: [people.id] });
         const t = performance.now();
-        const [r] = await timeout(api.analyseNow([people.id], false), 240_000, 'scan');
+        const [r] = await timeout(api.analyseNow([people.id]), 240_000, 'scan');
         if ((r?.faces ?? 0) < 2) throw new Error(`found ${r?.faces ?? 'no'} faces (${JSON.stringify(r)})`);
         const st = await api.facesStatus();
         return `${r.faces} faces in ${Math.round(performance.now() - t)} ms, ${st.faces} stored`;
@@ -329,32 +318,13 @@ export async function runSelfTestIfRequested(): Promise<boolean> {
       lines.push(`skip  face recognition: the faces pack isn't in this build (${engine?.native.problem ?? 'no answer'})`);
     }
   }
-  const monkey = info.items.find((i) => i.name === 'baboon.jpg');
-  if (monkey && (await smartAvailable())) {
-    await step(`smart search (${smartNative ? 'native' : 'browser engine'})`, async () => {
-      const t = performance.now();
-      const pics = info.items.filter((i) => i.kind === 'image');
-      if (smartNative) {
-        const reps = await timeout(api.analyseNow(pics.map((p) => p.id), true), 240_000, 'analyse');
-        const missing = pics.filter((p) => !reps.some((r) => r.id === p.id && r.smart));
-        if (missing.length) throw new Error(`not analysed natively: ${missing.map((m) => m.name).join(', ')}`);
-      } else {
-        for (const p of pics) {
-          const img = await loadImage(thumbUrl(p.id));
-          await api.clipSave(p.id, Array.from(await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight))));
-        }
-      }
-      const q = await embedQuery('maymun');
-      const hits = await api.smartSearch(Array.from(q), null, 5);
-      if (hits[0]?.item.id !== monkey.id) throw new Error(`top hit ${hits[0]?.item.name}`);
-      const img = await loadImage(mediaUrl(monkey.id));
-      const full = await embedPixels(pixelsOf(img, img.naturalWidth, img.naturalHeight));
-      const on = smartNative ? `, on the ${(await api.smartEngine()).device === 'gpu' ? 'graphics card' : 'processor'}` : '';
-      return `${pics.length} pictures${on}, “maymun” → ${hits[0].item.name} (${hits[0].score.toFixed(3)}, full picture ${cosine(q, full).toFixed(3)}) in ${Math.round(performance.now() - t)} ms`;
-    });
-  } else if (monkey) {
-    lines.push('skip  smart search: no models folder');
-  }
+  // What smart search (no longer in the app) left in older libraries can be deleted; a new vault has none.
+  await step('delete past smart search data', async () => {
+    const freed = await api.smartDataDelete();
+    if (freed !== 0) throw new Error(`freed ${freed} bytes in a vault that never had any`);
+    if ((await api.dataInfo()).clipItems !== 0) throw new Error('some is still there');
+    return 'nothing there, nothing to free';
+  });
 
   await step('storage is packed', async () => {
     const st = await api.storageInfo();
