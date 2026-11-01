@@ -279,3 +279,77 @@ fn bench_encrypt_decrypt_and_import() {
     import::TEST_SMALL_FILE.store(64 << 10, std::sync::atomic::Ordering::SeqCst);
     import::TEST_IN_FLIGHT.store(256 << 10, std::sync::atomic::Ordering::SeqCst);
 }
+
+/// What one save of a big library costs (copying it out, encrypting and
+/// writing), what unlocking spends its time on, and what the biggest
+/// everyday requests cost, including turning the answer into text for the window.
+#[test]
+#[ignore]
+fn bench_save_unlock_and_requests() {
+    let t = tempfile::tempdir().unwrap();
+    let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+    let path = s.info().path;
+    fill(&s.db());
+    s.mark_dirty();
+    s.save().unwrap();
+    for round in 0..3 {
+        s.db().execute("UPDATE media SET favourite = 1 - favourite WHERE id = ?", [round + 1]).unwrap();
+        let t0 = Instant::now();
+        let bytes = vault_core::db::serialize(&s.db()).unwrap();
+        let copy = ms(t0);
+        s.mark_dirty();
+        let t0 = Instant::now();
+        s.save().unwrap();
+        eprintln!("save after one change: {:.0} ms in all (copying the {:.1} MB library out alone: {copy:.0} ms)", ms(t0), bytes.len() as f64 / 1e6);
+    }
+    let c = s.db();
+    for (what, sql) in [("smart-search vectors", "SELECT IFNULL(SUM(length(vec)),0) FROM clip"), ("face descriptors", "SELECT IFNULL(SUM(length(descriptor)),0) FROM faces"),
+        ("colour sketches", "SELECT IFNULL(SUM(length(sketch)),0) FROM media"), ("pack index", "SELECT COUNT(*) * 80 FROM sqlite_master WHERE name = 'objects'")] {
+        let n: i64 = c.query_row(sql, [], |r| r.get(0)).unwrap_or(0);
+        eprintln!("  {what}: {:.1} MB", n as f64 / 1e6);
+    }
+    let t0 = Instant::now();
+    let all = library::query_items(&c, &Default::default()).unwrap();
+    let q = ms(t0);
+    let t0 = Instant::now();
+    let json = serde_json::to_vec(&all).unwrap();
+    eprintln!("all {} items: query {q:.0} ms, as text for the window {:.0} ms ({:.1} MB)", all.len(), ms(t0), json.len() as f64 / 1e6);
+    let big = c.query_row("SELECT folder_id FROM media WHERE folder_id IS NOT NULL GROUP BY folder_id ORDER BY COUNT(*) DESC LIMIT 1", [], |r| r.get::<_, i64>(0)).unwrap();
+    let t0 = Instant::now();
+    library::all_folders(&c).unwrap();
+    eprintln!("  folder list (after a change): {:.1} ms", ms(t0));
+    let t0 = Instant::now();
+    let n: i64 = c.query_row("SELECT COUNT(*) FROM (SELECT folder_id, MAX(d), MIN(d) FROM (SELECT folder_id, COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at) AS d FROM media WHERE deleted_at IS NULL AND folder_id IS NOT NULL) GROUP BY folder_id)", [], |r| r.get(0)).unwrap();
+    eprintln!("    dates part: {:.1} ms ({n})", ms(t0));
+    let t0 = Instant::now();
+    {
+        let mut st = c.prepare("SELECT id FROM media WHERE folder_id = ? AND deleted_at IS NULL AND thumb_object_id IS NOT NULL AND thumb_object_id <> '' ORDER BY kind <> 'image', id LIMIT 3").unwrap();
+        for f in 1..=FOLDERS { let _: Vec<i64> = st.query_map([f], |r| r.get(0)).unwrap().map(|x| x.unwrap()).collect(); }
+    }
+    eprintln!("    samples part: {:.1} ms", ms(t0));
+    let t0 = Instant::now();
+    library::forget_cache();
+    library::all_folders(&c).unwrap();
+    eprintln!("    whole list with person covers worked out again: {:.1} ms", ms(t0));
+    let t0 = Instant::now();
+    let only = library::query_items(&c, &library::ItemFilter { folder: Some(Some(big)), ..Default::default() }).unwrap();
+    eprintln!("  that folder's items alone: {:.1} ms ({})", ms(t0), only.len());
+    for row in c.prepare(&format!("EXPLAIN QUERY PLAN SELECT * FROM media m WHERE m.deleted_at IS NULL AND m.folder_id = {big} ORDER BY m.imported_at DESC, m.id DESC")).unwrap()
+        .query_map([], |r| r.get::<_, String>(3)).unwrap() { eprintln!("    plan: {}", row.unwrap()); }
+    let t0 = Instant::now();
+    let v = library::folder_view(&c, Some(big)).unwrap();
+    let fv = ms(t0);
+    let t0 = Instant::now();
+    let json = serde_json::to_vec(&v).unwrap();
+    eprintln!("one folder ({} items): {fv:.1} ms, as text {:.1} ms ({:.0} KB)", v.items.len(), ms(t0), json.len() as f64 / 1e3);
+    drop(c);
+    drop(s);
+    clip::forget_index();
+    faces::forget_cache();
+    let t0 = Instant::now();
+    let s = session::unlock(&path, "long enough pw").unwrap();
+    eprintln!("unlock: {:.0} ms", ms(t0));
+    let t0 = Instant::now();
+    let check: String = s.db().query_row("PRAGMA quick_check", [], |r| r.get(0)).unwrap();
+    eprintln!("  of which the library check (quick_check) takes about {:.0} ms ({check})", ms(t0));
+}

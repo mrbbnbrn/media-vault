@@ -4,10 +4,10 @@
 
 import { noteEvent } from './perf';
 import type {
-  AnalyseStatus, AppConfig, AppState, BeatStatus, DepthBenchmark, DepthDetail, DepthInfo, DepthMap, DepthModel, DerivedGroup, DerivedKind, DerivedStats, FaceSplit, Growth, GrowthMonth, InpaintBenchmark, InpaintInfo, InpaintModel, InpaintRequest, Item, LibraryBackup, LockReason, Rgba, SessionInfo, SmartEngine, SubjectBenchmark, SubjectInfo, SubjectMask, SubjectModel, UpscaleListener, UpscaleRequest, UpscaleSaved, UpscalerInfo,
+  AnalyseStatus, AppConfig, AppState, BeatStatus, DepthBenchmark, DepthDetail, DepthInfo, DepthMap, DepthModel, DerivedGroup, DerivedKind, DerivedStats, FaceSplit, Growth, GrowthMonth, InpaintBenchmark, InpaintInfo, InpaintModel, InpaintRequest, Item, LibraryBackup, Rgba, SessionInfo, SmartEngine, SubjectBenchmark, SubjectInfo, SubjectMask, SubjectModel, UpscaleRequest, UpscaleSaved, UpscalerInfo,
 } from './api';
 
-export const mockListeners = new Map<string, Set<(p: unknown) => void>>();
+import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 
 /** Browser preview: send an event to the window. */
 export function mockEmit(name: string, payload: unknown) {
@@ -27,7 +27,6 @@ export const mockBackups: LibraryBackup[] = [5, 3, 2, 1, 0.2].map((days, i) => {
 });
 
 export const mock = {
-  lockListeners: [] as ((r: LockReason) => void)[],
   state: {
     config: {
       accent: '#2ec4b6',
@@ -177,7 +176,7 @@ export const mock = {
         return WORDS;
       case 'lock_vault':
         s.session = null;
-        this.lockListeners.forEach((l) => l('manual'));
+        lockListeners.forEach((l) => l('manual'));
         return;
       case 'forget_vault':
         s.vaults = s.vaults.filter((v) => v.path !== a.path);
@@ -478,7 +477,6 @@ export async function mockSubject(w: number, h: number, rgba: Uint8Array): Promi
   return { w, h, data };
 }
 
-export const mockUpscaleListeners = new Set<UpscaleListener>();
 
 export let mockJob = 0;
 

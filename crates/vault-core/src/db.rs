@@ -635,6 +635,10 @@ CREATE INDEX IF NOT EXISTS media_need_smart ON media(id) WHERE clip_state = 0;
 CREATE INDEX IF NOT EXISTS media_need_previews ON media(id)
     WHERE kind = 'video' AND (preview_object_id IS NULL OR tiny_object_id IS NULL);
 CREATE INDEX IF NOT EXISTS media_folder_items ON media(folder_id, imported_at, id);
+-- Each folder's newest and oldest item date (sorting folders by date), looked
+-- up per folder instead of reading the whole library after every change.
+CREATE INDEX IF NOT EXISTS media_folder_dates ON media(folder_id, COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at))
+    WHERE deleted_at IS NULL;
 CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS folders_cover ON folders(cover_media_id);
 CREATE INDEX IF NOT EXISTS folders_banner ON folders(banner_media_id);
@@ -1294,6 +1298,10 @@ mod tests {
         uses("SELECT id FROM folders WHERE parent_id = 3", "folders_parent");
         uses("SELECT id FROM folders WHERE cover_media_id = 3", "folders_cover");
         uses("SELECT face_id FROM face_rejects WHERE folder_id = 3", "face_rejects_folder");
+        uses(
+            "SELECT MAX(COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at)) FROM media WHERE folder_id = 3 AND deleted_at IS NULL",
+            "media_folder_dates",
+        );
         uses("SELECT id FROM media WHERE folder_id = 3 ORDER BY imported_at, id", "media_folder_items");
     }
 }

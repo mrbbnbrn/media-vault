@@ -253,18 +253,22 @@ fn make_all_folders(conn: &Connection) -> R<Vec<FolderCard>> {
             direct_bytes.insert(f, bytes);
         }
     }
-    // The newest and oldest item date of each folder's own items (sorting folders by date).
+    // The newest and oldest item date of each folder's own items (sorting folders by date):
+    // two look-ups per folder in index media_folder_dates instead of reading every item.
     let mut direct_dates: HashMap<i64, (i64, i64)> = HashMap::new();
     {
+        const D: &str = "COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at)";
         let mut st = conn
-            .prepare(
-                "SELECT folder_id, MAX(d), MIN(d) FROM (SELECT folder_id, COALESCE(NULLIF(taken_at, 0), NULLIF(file_mtime, 0), imported_at) AS d \
-                 FROM media WHERE deleted_at IS NULL AND folder_id IS NOT NULL) GROUP BY folder_id",
-            )
+            .prepare(&format!(
+                "SELECT (SELECT MAX({D}) FROM media WHERE folder_id = ?1 AND deleted_at IS NULL), \
+                        (SELECT MIN({D}) FROM media WHERE folder_id = ?1 AND deleted_at IS NULL)"
+            ))
             .map_err(e)?;
-        for row in st.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).map_err(e)? {
-            let (f, hi, lo) = row.map_err(e)?;
-            direct_dates.insert(f, (hi, lo));
+        for f in direct.keys() {
+            let (hi, lo): (Option<i64>, Option<i64>) = st.query_row([f], |r| Ok((r.get(0)?, r.get(1)?))).map_err(e)?;
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                direct_dates.insert(*f, (hi, lo));
+            }
         }
     }
     // A few pictures per folder for stacked cards (pictures first); the

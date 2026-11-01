@@ -12,7 +12,7 @@ import { decodeText, fetchBytes, openPdf, renderPage } from './docs';
 import { captureVideoFrame, makeGif } from './clips';
 import { checkFaceEngine, faceBackend, scanItem } from './ml/facescan';
 import { embedPixels, embedQuery, pixelsOf, smartAvailable } from './ml/smart';
-import { cosine } from './ml/clipcore';
+import { cosine } from './ml/cliputil';
 
 interface Info {
   items: { id: number; kind: Kind; name: string }[];

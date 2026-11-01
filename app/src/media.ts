@@ -5,7 +5,6 @@ import { api, jobsApi, mediaUrl, localUrl, thumbUrl, type Item, type Kind, type 
 import { loopJob } from './jobs';
 import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
-import { httpRanges, keyframeNear, readKeyframes } from './keyframes';
 import { canvasPicture, THUMB_JPEG_QUALITY, THUMB_WEBP_QUALITY } from './canvaspic';
 import { giveWay } from './bgpace';
 
@@ -206,6 +205,8 @@ async function imageThumb(id: number) {
 export async function thumbMoment(src: string, duration: number): Promise<number> {
   const at = Math.min(duration * 0.1, 5);
   if (at <= 0.05) return 0;
+  // The key-frame reader loads the first time it is needed (not at startup).
+  const { httpRanges, keyframeNear, readKeyframes } = await import('./keyframes');
   const index = await withTimeout(readKeyframes(httpRanges(src)), 4000).catch(() => null);
   return keyframeNear(index, at, Math.max(5, duration * 0.05), duration, Math.min(1, at / 2));
 }

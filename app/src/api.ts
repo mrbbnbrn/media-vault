@@ -8,7 +8,10 @@ import { open, save } from '@tauri-apps/plugin-dialog';
 export * from './apitypes';
 import type { CoverPos } from './coverframe';
 import type { RiverFace } from './riverplay';
-import { mock, mockDepth, mockGrowth, mockInpaint, mockListeners, mockSubject, mockUpscaleListeners } from './apimock';
+import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
+// The browser preview's stand-in for the backend: loaded only outside the app.
+let mockLoad: Promise<typeof import('./apimock')> | null = null;
+const demo = () => (mockLoad ??= import('./apimock'));
 import type {
   AppConfig, VaultEntry, SessionInfo, LoginInfo, ExportRequest, ShareRequest, EngineInfo, ScanRequest, ScanStatus, FaceIn, FaceBox, PersonFace, FaceMeasure, FaceEngineStatus, FaceReview, ReviewRequest, OwnerProposal, SortOffers, ClipStatus, SmartEngine, AnalyseStatus, AnalyseReport, AppState, Kind, Item, FolderCard, FolderBanner, FolderView, ItemFilter, Extracted, TrashView, Stats, Bookmark, TagCount, Named, DropSummary, LocalSet, StorageInfo, CacheInfo, DataInfo, LibraryBackup, StorageTask, LockReason,
 } from './apitypes';
@@ -448,7 +451,7 @@ export interface Turned {
 }
 
 async function rotateReplace(request: { itemId: number; quarter: number; lossless: boolean }, file: Uint8Array): Promise<Turned> {
-  if (!inTauri) return mock.call('rotate_replace', { request }) as Promise<Turned>;
+  if (!inTauri) return (await demo()).mock.call('rotate_replace', { request }) as Promise<Turned>;
   try {
     return await invoke<Turned>('rotate_replace', upscaleBody(request as unknown as UpscaleRequest, file));
   } catch (e) {
@@ -673,7 +676,7 @@ export const localUrl = (key: string) => proto('local', `f/${key}`);
 export const modelUrl = (name: string) => proto('models', name);
 
 export async function pickFolder(title: string): Promise<string | null> {
-  if (!inTauri) return mock.pickFolder();
+  if (!inTauri) return (await demo()).mock.pickFolder();
   const r = await open({ directory: true, multiple: false, title });
   return typeof r === 'string' ? r : null;
 }
@@ -687,7 +690,7 @@ export async function pickSave7z(title: string, defaultPath: string): Promise<st
 
 export async function onLocked(cb: (reason: LockReason) => void): Promise<UnlistenFn> {
   if (!inTauri) {
-    mock.lockListeners.push(cb);
+    lockListeners.push(cb);
     return () => {};
   }
   return listen<LockReason>('vault-locked', (e) => cb(e.payload));
@@ -696,7 +699,7 @@ export async function onLocked(cb: (reason: LockReason) => void): Promise<Unlist
 async function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const t0 = performance.now();
   try {
-    if (!inTauri) return (await mock.call(cmd, args ?? {})) as T;
+    if (!inTauri) return (await (await demo()).mock.call(cmd, args ?? {})) as T;
     return await invoke<T>(cmd, args);
   } catch (e) {
     throw e instanceof Error ? e : new Error(typeof e === 'string' ? e : String(e));
@@ -726,7 +729,7 @@ export function rawBody(args: Record<string, unknown>, data: Bytes): Uint8Array 
 async function callRaw<T>(cmd: string, args: Record<string, unknown>, data: Bytes): Promise<T> {
   const t0 = performance.now();
   try {
-    if (!inTauri) return (await mock.call(cmd, { ...args, data })) as T;
+    if (!inTauri) return (await (await demo()).mock.call(cmd, { ...args, data })) as T;
     return await invoke<T>(cmd, rawBody(args, data));
   } catch (e) {
     throw e instanceof Error ? e : new Error(typeof e === 'string' ? e : String(e));
@@ -801,7 +804,7 @@ export interface Growth {
 
 export const jobsApi = {
   backgroundLeft: () => (inTauri ? call<BackgroundLeft>('background_left') : Promise.resolve<BackgroundLeft>({ thumbs: 0, previews: 0 })),
-  vaultGrowth: () => (inTauri ? call<Growth>('vault_growth') : new Promise<Growth>((r) => setTimeout(() => r(mockGrowth()), 80))),
+  vaultGrowth: () => (inTauri ? call<Growth>('vault_growth') : demo().then((m) => new Promise<Growth>((r) => setTimeout(() => r(m.mockGrowth()), 80)))),
 };
 // ---- offline AI upscaler -------------------------------------------------------------------
 
@@ -867,7 +870,7 @@ export function upscaleBody(request: UpscaleRequest, rgba: Uint8Array): Uint8Arr
 }
 
 async function upscaleStart(request: UpscaleRequest, rgba: Uint8Array): Promise<number> {
-  if (!inTauri) return mock.call('upscale_start', { request }) as Promise<number>;
+  if (!inTauri) return (await demo()).mock.call('upscale_start', { request }) as Promise<number>;
   try {
     return await invoke<number>('upscale_start', upscaleBody(request, rgba));
   } catch (e) {
@@ -984,7 +987,7 @@ async function depthEstimate(request: DepthRequest, rgba: Uint8Array): Promise<D
   }
 }
 async function depthEstimateNow(request: DepthRequest, rgba: Uint8Array): Promise<DepthMap> {
-  if (!inTauri) return mockDepth(request.width, request.height, rgba);
+  if (!inTauri) return (await demo()).mockDepth(request.width, request.height, rgba);
   try {
     return parseDepth(await invoke<ArrayBuffer>('depth_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
   } catch (e) {
@@ -1058,7 +1061,7 @@ async function subjectEstimate(request: SubjectRequest, rgba: Uint8Array): Promi
   }
 }
 async function subjectEstimateNow(request: SubjectRequest, rgba: Uint8Array): Promise<SubjectMask> {
-  if (!inTauri) return mockSubject(request.width, request.height, rgba);
+  if (!inTauri) return (await demo()).mockSubject(request.width, request.height, rgba);
   try {
     return parseSubject(await invoke<ArrayBuffer>('subject_estimate', upscaleBody(request as unknown as UpscaleRequest, rgba)));
   } catch (e) {
@@ -1155,7 +1158,7 @@ async function inpaintEstimateNow(request: InpaintRequest, rgba: Uint8Array, mas
   const both = new Uint8Array(rgba.length + mask.length);
   both.set(rgba, 0);
   both.set(mask, rgba.length);
-  if (!inTauri) return mockInpaint(request, rgba, mask);
+  if (!inTauri) return (await demo()).mockInpaint(request, rgba, mask);
   try {
     return parseRgba(await invoke<ArrayBuffer>('inpaint_estimate', rawBody(request as unknown as Record<string, unknown>, both)));
   } catch (e) {
@@ -1197,7 +1200,7 @@ export interface DerivedStats {
 
 async function derivedGet(item: number, kind: DerivedKind, model: string): Promise<Uint8Array | null> {
   let b: ArrayBuffer | Uint8Array | null;
-  if (!inTauri) b = (await mock.call('derived_get', { item, kind, model })) as Uint8Array;
+  if (!inTauri) b = (await (await demo()).mock.call('derived_get', { item, kind, model })) as Uint8Array;
   else {
     try {
       b = await invoke<ArrayBuffer>('derived_get', { item, kind, model });
