@@ -52,11 +52,13 @@
 .shape-bar .chip-dark { max-width: 280px; }
 .shape-bar .vol { width: 70px; }
 .multi.clean .shape-bar { background: rgba(10, 11, 13, 0.7); }
-.shape-menu { width: 520px; display: grid !important; grid-template-columns: repeat(3, 1fr); gap: 6px; max-height: 70vh; }
-.shape-pick { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 6px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; }
-.shape-pick:hover { background: var(--accent-soft-2); }
-.shape-pick.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
-.shape-pick .faint { font-size: var(--fs-xs); }
+.shape-menu { width: min(620px, calc(100vw - 32px)); display: grid !important; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 6px; max-height: 72vh; overflow-y: auto; }
+.shape-group { grid-column: 1 / -1; padding: 10px 6px 2px; font-size: var(--fs-xs); font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); }
+.shape-group:first-child { padding-top: 4px; }
+.shape-menu .shape-pick { display: flex; flex-direction: column; align-items: center; gap: 4px; min-width: 0; text-align: center; padding: 8px 6px; border-radius: 10px; border: 1px solid transparent; background: transparent; color: var(--text-2); font-size: var(--fs-sm); cursor: pointer; }
+.shape-menu .shape-pick:hover { background: var(--accent-soft-2); }
+.shape-menu .shape-pick.on { border-color: var(--accent); background: var(--accent-soft); color: var(--accent-text); }
+.shape-menu .shape-pick .faint { font-size: var(--fs-xs); }
 /* 3D photos: the depth model chooser (components/DepthModels.tsx). */
 .depth-models { display: flex; flex-direction: column; gap: 12px; }
 .depth-model-list { display: flex; flex-direction: column; gap: 6px; }
