@@ -14,6 +14,8 @@ export interface ShapePanel {
   anchor: { x: number; y: number };
   /** Higher draws on top. */
   z: number;
+  /** For Fit inside the shape (shapefit.ts), when the path alone doesn't say it (rounded boxes). */
+  outline?: { kind: 'poly'; pts: [number, number][] };
 }
 
 export interface LayoutDef {
@@ -52,8 +54,11 @@ export const GRID_LAYOUTS = GRID;
 export const SHAPE_LAYOUTS = SHAPES;
 export const MAX_PANELS = Math.max(...LAYOUTS.map((l) => l.count));
 
+/** Extra layouts from elsewhere (the free-form ones in customLayouts.ts fill this in). */
+export const layoutHooks: { def?: (id: string) => LayoutDef | undefined; build?: (id: string, W: number, H: number) => ShapePanel[] | undefined } = {};
+
 export function layoutDef(id: string): LayoutDef {
-  return LAYOUTS.find((l) => l.id === id) ?? GRID[2];
+  return LAYOUTS.find((l) => l.id === id) ?? layoutHooks.def?.(id) ?? GRID[2];
 }
 
 // ---- geometry helpers ------------------------------------------------------------------
@@ -135,6 +140,8 @@ const rect = (x: number, y: number, w: number, h: number): Pt[] => [[x, y], [x +
 
 /** Panels for a shaped layout on a stage of W × H px, in panel order. */
 export function buildShapes(id: string, W: number, H: number): ShapePanel[] {
+  const custom = layoutHooks.build?.(id, W, H);
+  if (custom) return custom;
   const sx = W / 150;
   const sy = H / 84;
   const s = Math.min(sx, sy);

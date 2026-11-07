@@ -621,6 +621,13 @@ fn migrate(conn: &Connection) -> Result<()> {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS face_rejects_folder ON face_rejects(folder_id);")?;
     }
     // ---- speed indexes (end) ----
+    // ---- free-form layouts (begin) ----
+    // Multi-screen layouts drawn in the layout editor. Not a new format: made
+    // at every opening if missing (an older app simply doesn't see them).
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS free_layouts (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, settings_json TEXT NOT NULL);",
+    )?;
+    // ---- free-form layouts (end) ----
     Ok(())
 }
 
@@ -1259,6 +1266,19 @@ mod tests {
         assert_eq!(n(&c), 0);
         migrate(&c).unwrap();
     }
+    #[test]
+    fn free_layouts_are_made_at_every_opening_without_a_new_format() {
+        let c = create_empty().unwrap();
+        c.execute_batch("DROP TABLE free_layouts;").unwrap();
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION, "the format number stays");
+        c.execute("INSERT INTO free_layouts(name, settings_json) VALUES ('Tall + squares', '{}')", []).unwrap();
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        let n: i64 = c.query_row("SELECT COUNT(*) FROM free_layouts", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1, "kept across openings");
+    }
+
     /// How SQLite would run a query (the "detail" column of EXPLAIN QUERY PLAN).
     pub(crate) fn plan(c: &Connection, sql: &str) -> String {
         let mut st = c.prepare(&format!("EXPLAIN QUERY PLAN {sql}")).unwrap();

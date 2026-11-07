@@ -9,6 +9,10 @@ import type {
 
 import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 
+/** Saved presets and layouts in the preview, by kind. */
+const mockNamed = new Map<string, { id: number; name: string; settings: unknown }[]>();
+let mockNamedId = 0;
+
 /** Folders with preview clips turned off (the preview's own list). */
 const previewsOff = new Set<number>();
 
@@ -314,9 +318,25 @@ export const mock = {
       case 'library_folders':
       case 'query_items':
       case 'all_tags':
-      case 'list_named':
       case 'thumbs_needed':
         return [];
+      case 'list_named':
+        return [...(mockNamed.get(a.kind as string) ?? [])].sort((x, y) => x.name.localeCompare(y.name));
+      case 'save_named': {
+        // The preview keeps saved presets and layouts until the page is reloaded.
+        const list = mockNamed.get(a.kind as string) ?? [];
+        const item = a.item as { id: number | null; name: string; settings: unknown };
+        const name = item.name.trim();
+        if (!name) throw new Error('Give it a name.');
+        const clash = list.find((x) => x.name.toLowerCase() === name.toLowerCase() && x.id !== item.id);
+        const keep = list.filter((x) => x !== clash && x.id !== item.id);
+        const id = clash?.id ?? item.id ?? ++mockNamedId;
+        mockNamed.set(a.kind as string, [...keep, { id, name, settings: item.settings }]);
+        return id;
+      }
+      case 'delete_named':
+        mockNamed.set(a.kind as string, (mockNamed.get(a.kind as string) ?? []).filter((x) => x.id !== a.id));
+        return;
       case 'storage_info':
         return { files: 14, totalBytes: 3.2e9, packFiles: 4, reclaimableBytes: 0, looseObjects: 0 };
       case 'trash_view':

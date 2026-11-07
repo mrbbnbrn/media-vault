@@ -1765,6 +1765,7 @@ fn named_table(kind: &str) -> R<&'static str> {
     match kind {
         "preset" => Ok("presets"),
         "layout" => Ok("layouts"),
+        "freeLayout" => Ok("free_layouts"),
         _ => Err("Unknown kind.".into()),
     }
 }
@@ -2245,6 +2246,15 @@ mod tests {
         delete_named(&c, "preset", id).unwrap();
         assert!(list_named(&c, "preset").unwrap().is_empty());
         assert!(list_named(&c, "bogus").is_err());
+    }
+    #[test]
+    fn named_free_layouts_are_kept_apart_from_saved_layouts() {
+        let c = db::create_empty().unwrap();
+        let n = |name: &str| Named { id: None, name: name.into(), settings: serde_json::json!({"boxes": []}) };
+        save_named(&c, "freeLayout", &n("Tall + squares")).unwrap();
+        save_named(&c, "layout", &n("Evening")).unwrap();
+        assert_eq!(list_named(&c, "freeLayout").unwrap().len(), 1);
+        assert_eq!(list_named(&c, "layout").unwrap()[0].name, "Evening");
     }
     #[test]
     fn renames_many_at_once_all_or_nothing() {
