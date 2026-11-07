@@ -1,0 +1,62 @@
+/* The layout editor (components/LayoutEditor.tsx) and "My layouts" in the shapes menu. */
+.le { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.le-bar { gap: 10px; }
+.le-title { font-size: var(--fs-md); font-weight: 600; color: var(--accent-text, var(--accent)); margin-right: 4px; }
+.le-hint { font-size: var(--fs-xs); max-width: 420px; }
+.le-count { font-size: var(--fs-xs); white-space: nowrap; }
+.le-stage { user-select: none; touch-action: none;
+  background-color: #050506;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 40px 40px; }
+
+.le-box { position: absolute; cursor: move; }
+.le-box.circle { outline: 1px dashed rgba(255, 255, 255, 0.12); outline-offset: -1px; }
+.le-tile { position: absolute; overflow: hidden; display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(160deg, #1a2a29, #11191a); border: 2px solid #2b3d3c; box-sizing: border-box; box-shadow: 0 6px 24px rgba(0, 0, 0, 0.45); transition: border-color 0.12s; }
+.le-box:hover .le-tile { border-color: #3f6b67; }
+.le-box.sel .le-tile { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), 0 8px 30px rgba(0, 0, 0, 0.55); }
+.le-num { font-weight: 600; line-height: 1; color: rgba(233, 231, 227, 0.13); pointer-events: none; }
+.le-shape { position: absolute; left: 50%; transform: translateX(-50%); bottom: 8px; font-size: var(--fs-2xs, 11px); color: var(--accent); opacity: 0.75; pointer-events: none; }
+
+.le-x { position: absolute; top: 6px; right: 6px; width: 22px; height: 22px; border-radius: 11px; border: none; padding: 0; display: none; align-items: center; justify-content: center;
+  background: rgba(10, 11, 13, 0.85); color: var(--text-2); cursor: pointer; z-index: 2; }
+.le-x:hover { background: var(--danger); color: #fff; }
+.le-box:hover .le-x, .le-box.sel .le-x { display: inline-flex; }
+
+.le-h { position: absolute; z-index: 1; }
+.le-h-n, .le-h-s { left: 10px; right: 10px; height: 10px; cursor: ns-resize; }
+.le-h-n { top: -5px; }
+.le-h-s { bottom: -5px; }
+.le-h-w, .le-h-e { top: 10px; bottom: 10px; width: 10px; cursor: ew-resize; }
+.le-h-w { left: -5px; }
+.le-h-e { right: -5px; }
+.le-h-nw, .le-h-ne, .le-h-sw, .le-h-se { width: 14px; height: 14px; }
+.le-h-nw { left: -7px; top: -7px; cursor: nwse-resize; }
+.le-h-se { right: -7px; bottom: -7px; cursor: nwse-resize; }
+.le-h-ne { right: -7px; top: -7px; cursor: nesw-resize; }
+.le-h-sw { left: -7px; bottom: -7px; cursor: nesw-resize; }
+.le-box.sel .le-h-nw, .le-box.sel .le-h-ne, .le-box.sel .le-h-sw, .le-box.sel .le-h-se {
+  background: var(--accent); border: 2px solid #050506; border-radius: 4px; box-sizing: border-box; width: 12px; height: 12px; }
+.le-box.sel .le-h-nw { left: -6px; top: -6px; }
+.le-box.sel .le-h-se { right: -6px; bottom: -6px; }
+.le-box.sel .le-h-ne { right: -6px; top: -6px; }
+.le-box.sel .le-h-sw { left: -6px; bottom: -6px; }
+
+.le-guide { position: absolute; z-index: 200; pointer-events: none; background: var(--accent); opacity: 0.85; }
+.le-guide.v { top: 0; bottom: 0; width: 1px; margin-left: -0.5px; }
+.le-guide.h { left: 0; right: 0; height: 1px; margin-top: -0.5px; }
+
+.le-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; text-align: center; padding: 20px; color: var(--text-2); }
+.le-empty .muted { max-width: 360px; font-size: var(--fs-sm); }
+
+/* "My layouts" in the shapes menu. */
+.le-menu-head { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 6px; padding: 8px 4px 2px; border-top: 1px solid var(--line); color: var(--faint); font-size: var(--fs-sm); }
+.le-menu-empty { grid-column: 1 / -1; padding: 2px 4px 6px; font-size: var(--fs-xs); }
+.le-pick { position: relative; display: flex; flex-direction: column; min-width: 0; }
+.le-pick .shape-pick { min-width: 0; }
+.le-pick-tools { display: flex; justify-content: center; gap: 2px; margin-top: 2px; opacity: 0.6; }
+.le-pick:hover .le-pick-tools, .le-pick:focus-within .le-pick-tools { opacity: 1; }
+.le-pick-tools .pbtn { min-width: 0; height: 22px; padding: 0 6px; font-size: var(--fs-2xs, 11px); border-radius: 6px; }
+
+/* Free-form layouts can stack many boxes: keep their z order inside the stage (under the toolbar and its menus). */
+.mstage.shaped { isolation: isolate; }

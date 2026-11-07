@@ -29,6 +29,8 @@ import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_GROUPS, SHAPE_L
 import { fitRectInShape } from '../shapefit';
 import { SettingsMenu } from './Viewer';
 import { useLayer } from '../keylayers';
+import { freeEntry, freeSnapshot, restoreFree, type FreeSnapshot } from '../customLayouts';
+import { LayoutEditor, MyLayoutsMenu, useFreeLayouts, type EditTarget } from '../components/LayoutEditor';
 
 export type Source =
   | { t: 'folder'; id: number; name: string; recursive: boolean }
@@ -63,6 +65,8 @@ interface LayoutSettings {
   wall?: { source: Source | null; count: number; speed: WallState['speed'] };
   /** Mosaic mode (shares the wall's source). Older saves do not have it. */
   mosaic?: MosaicSettings;
+  /** The free-form layout's boxes, when it uses one. */
+  free?: FreeSnapshot;
 }
 
 function sourceLabel(s: Source | null): string {
@@ -176,6 +180,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const [layouts, setLayouts] = useState<Named<LayoutSettings>[]>([]);
   const [saving, setSaving] = useState(false);
   const [shapeMenu, setShapeMenu] = useState(false);
+  const [editing, setEditing] = useState<EditTarget | null>(null);
+  const free = useFreeLayouts(vault, layout, (id) => changeLayout(id));
   const [solo, setSolo] = useState<number | null>(null);
   const [wallSolo, setWallSolo] = useState<PlayItem | null>(null);
   const [hover, setHover] = useState<number | null>(null);
@@ -212,7 +218,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     ro.observe(el);
     setStage({ w: el.clientWidth, h: el.clientHeight });
     return () => ro.disconnect();
-  }, [isWall, def.kind]);
+  }, [isWall, def.kind, !!editing]);
 
   const update = (idx: number, patch: Partial<Panel>) => setPanels((ps) => ps.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
 
@@ -345,13 +351,14 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       panels: panels.slice(0, Math.max(n, 1)).map((p) => ({ source: p.source, settings: p.settings })),
       wall: { source: wall.source, count: wall.count, speed: wall.speed },
       mosaic,
+      free: freeSnapshot(layout),
     };
     await api.saveNamed('layout', { id: null, name, settings });
     setLayouts(await api.listNamed<LayoutSettings>('layout'));
   };
   const loadLayout = async (l: Named<LayoutSettings>) => {
     const s = l.settings;
-    const id = s.layout ?? String(s.n ?? 4);
+    const id = restoreFree(s.layout ?? String(s.n ?? 4), s.free, l.id ?? l.name);
     const count = id === 'wall' || id === 'mosaic' ? 0 : layoutDef(id).count;
     const fresh = Array.from({ length: MAX_PANELS }, (_, i) => blank(normalize(s.panels?.[i]?.settings)));
     setPanels(fresh);
@@ -367,12 +374,14 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
 
   const layoutItems = useMemo(() => [
     ...layouts.map((l) => ({ label: l.name, onSelect: () => loadLayout(l) })),
+    ...free.list.map((l, i) => ({ label: l.name, hint: 'my layout', sepBefore: i === 0 && layouts.length > 0, onSelect: () => changeLayout(l.id) })),
+    { label: 'Edit layout…', sepBefore: true, onSelect: () => openEditor() },
     { label: 'Save this layout…', onSelect: () => setSaving(true), disabled: !vault },
     ...layouts.map((l) => ({ label: `Delete “${l.name}”`, danger: true, onSelect: async () => {
       if (l.id != null) await api.deleteNamed('layout', l.id);
       setLayouts(await api.listNamed<LayoutSettings>('layout'));
     } })),
-  ], [layouts, vault]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [layouts, vault, free.list, layout, stage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pickMenu = (idx: number | 'wall') => [
     ...(vault ? [
@@ -540,10 +549,21 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const cols = def.cols ?? 2;
   const rows = Math.ceil(n / cols);
   const shown = panels.slice(0, n);
-  const currentShape = SHAPE_LAYOUTS.find((l) => l.id === layout);
+  const currentShape = SHAPE_LAYOUTS.find((l) => l.id === layout) ?? (freeEntry(layout) ? def : undefined);
+  const openEditor = (from = layout, empty = false) => {
+    if (solo != null) exitSolo();
+    setShapeMenu(false);
+    setEditing(empty ? { boxes: [], dbId: null, name: null } : free.startEdit(from, stage.w, stage.h));
+  };
+  const endEdit = async (boxes: Parameters<typeof free.commit>[0], asName?: string) => {
+    if (!editing) return;
+    const id = await free.commit(boxes, editing, asName);
+    setEditing(null);
+    changeLayout(id);
+  };
   return (
     <div className={`multi${clean ? ' clean' : ''}${clean && !mouse ? ' no-cursor' : ''}`} onMouseMove={pokeMouse}>
-      {showBar && (
+      {showBar && !editing && (
         <div className={`mbar${clean ? ' floating' : ''}`}>
           {!vault && <span className="brand-sm">Player</span>}
           <div role="group" aria-label="Layout" className="seg">
@@ -568,6 +588,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
                     </button>
                   )),
                 ])}
+                <MyLayoutsMenu free={free} current={layout} thumb={(id) => <LayoutThumb id={id} />} onPick={(id) => { changeLayout(id); setShapeMenu(false); }}
+                  onEdit={(id) => openEditor(id)} onNew={() => openEditor(layout, true)} />
               </div>
             )}
           </div>
@@ -579,6 +601,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             <button type="button" className={`btn btn-sm${isMosaic ? ' accent-soft' : ''}`} onClick={() => changeLayout('mosaic')}
               title="The whole screen filled edge to edge, every picture and video in its own shape">Mosaic</button>
           )}
+          <button type="button" className="btn btn-sm" onClick={() => openEditor()} title="Draw your own layout from boxes">Edit layout</button>
           {isMosaic ? (
             <>
               <Dropdown label={`${MOSAIC_SIZES.find((x) => x.id === mosaic.size)?.label} ▾`} title="How big the pieces are"
@@ -624,7 +647,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
         </div>
       )}
 
-      {isWall ? (
+      {editing ? (
+        <LayoutEditor start={editing.boxes} name={editing.name} canSave={vault} onCancel={() => setEditing(null)}
+          onDone={(boxes) => endEdit(boxes)} onSave={(name, boxes) => endEdit(boxes, name)} />
+      ) : isWall ? (
         <div className="mstage" ref={stageRef}>
           {wall.items.length && isMosaic ? (
             <MosaicWall items={wall.items} settings={mosaic} volume={master} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
@@ -708,6 +734,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
         <PromptDialog title="Save layout" label="Name" confirm="Save" onClose={() => setSaving(false)}
           hint="Saves the layout and each panel's source and settings (and the wall's)." onSubmit={saveLayout} />
       )}
+      {free.dialogs}
     </div>
   );
 }

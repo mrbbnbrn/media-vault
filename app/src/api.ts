@@ -28,6 +28,9 @@ export function takeLogin(): LoginInfo | null {
   return l;
 }
 
+/** Kinds of named settings: player presets, saved multi-screen layouts, free-form layouts from the layout editor. */
+export type NamedKind = 'preset' | 'layout' | 'freeLayout';
+
 /** One 3D model's room on the graphics card (MB). */
 export interface ModelFit {
   model: string;
@@ -181,9 +184,9 @@ export const api = {
   untagItems: (ids: number[], tag: string) => call<number[]>('untag_items', { ids, tag }),
   tagFolder: (folder: number, tags: string[]) => call<void>('tag_folder', { folder, tags }),
   untagFolder: (folder: number, tag: string) => call<void>('untag_folder', { folder, tag }),
-  listNamed: <S,>(kind: 'preset' | 'layout') => call<Named<S>[]>('list_named', { kind }),
-  saveNamed: <S,>(kind: 'preset' | 'layout', item: Named<S>) => call<number>('save_named', { kind, item }),
-  deleteNamed: (kind: 'preset' | 'layout', id: number) => call<void>('delete_named', { kind, id }),
+  listNamed: <S,>(kind: NamedKind) => call<Named<S>[]>('list_named', { kind }),
+  saveNamed: <S,>(kind: NamedKind, item: Named<S>) => call<number>('save_named', { kind, item }),
+  deleteNamed: (kind: NamedKind, id: number) => call<void>('delete_named', { kind, id }),
 
   // thumbnails
   thumbsNeeded: (limit: number) => call<{ id: number; kind: Kind }[]>('thumbs_needed', { limit }),
