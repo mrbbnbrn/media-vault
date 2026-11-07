@@ -25,7 +25,7 @@ import { setCleanFullscreen } from '../fullscreen';
 import { fromItem, fromLocal, type PlayItem } from '../media';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
 import { rememberSound, unmuteVolume, withSound } from '../prefs';
-import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_LAYOUTS } from '../shapes';
+import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_GROUPS, SHAPE_LAYOUTS } from '../shapes';
 import { SettingsMenu } from './Viewer';
 import { useLayer } from '../keylayers';
 
@@ -481,14 +481,17 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             </button>
             {shapeMenu && (
               <div className="menu shape-menu" role="menu" onMouseLeave={() => setShapeMenu(false)}>
-                {SHAPE_LAYOUTS.map((l) => (
-                  <button key={l.id} type="button" role="menuitemradio" aria-checked={l.id === layout} className={`shape-pick${l.id === layout ? ' on' : ''}`}
-                    onClick={() => { changeLayout(l.id); setShapeMenu(false); }}>
-                    <LayoutThumb id={l.id} />
-                    <span>{l.name}</span>
-                    <span className="faint">{l.count} panels</span>
-                  </button>
-                ))}
+                {SHAPE_GROUPS.map((g) => [
+                  <div key={`h-${g.name}`} className="shape-group" role="presentation">{g.name}</div>,
+                  ...g.layouts.map((l) => (
+                    <button key={l.id} type="button" role="menuitemradio" aria-checked={l.id === layout} className={`shape-pick${l.id === layout ? ' on' : ''}`}
+                      onClick={() => { changeLayout(l.id); setShapeMenu(false); }}>
+                      <LayoutThumb id={l.id} />
+                      <span>{l.name}</span>
+                      <span className="faint">{l.count} panels</span>
+                    </button>
+                  )),
+                ])}
               </div>
             )}
           </div>
