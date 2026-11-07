@@ -18,6 +18,8 @@ import {
 } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
 import { Wall, WALL_SIZES, WALL_SPEEDS } from '../components/Wall';
+import { MosaicWall } from '../components/MosaicWall';
+import { DEFAULT_MOSAIC, MOSAIC_SIZES, MOSAIC_SPEEDS, normalizeMosaic, type MosaicSettings } from '../mosaic';
 import { setDropHandler } from '../drop';
 import { setCleanFullscreen } from '../fullscreen';
 import { fromItem, fromLocal, type PlayItem } from '../media';
@@ -58,6 +60,8 @@ interface LayoutSettings {
   master: number;
   panels: { source: Source | null; settings: PlaybackSettings }[];
   wall?: { source: Source | null; count: number; speed: WallState['speed'] };
+  /** Mosaic mode (shares the wall's source). Older saves do not have it. */
+  mosaic?: MosaicSettings;
 }
 
 function sourceLabel(s: Source | null): string {
@@ -91,6 +95,7 @@ const blankWall = (): WallState => ({ source: null, items: [], count: 20, speed:
 
 /** Panels survive leaving and coming back during this session (not saved to disk). */
 let remembered: { layout: string; panels: Panel[]; master: number; wall: WallState } | null = null;
+let rememberedMosaic: MosaicSettings = DEFAULT_MOSAIC;
 
 /** Small picture of a layout for the layout menu. */
 function LayoutThumb({ id }: { id: string }) {
@@ -115,6 +120,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     return [...p, ...Array.from({ length: Math.max(0, MAX_PANELS - p.length) }, () => blank())];
   });
   const [wall, setWall] = useState<WallState>(remembered?.wall ?? blankWall());
+  const [mosaic, setMosaicState] = useState<MosaicSettings>(rememberedMosaic);
+  const setMosaic = (patch: Partial<MosaicSettings>) => setMosaicState((m) => (rememberedMosaic = { ...m, ...patch }));
   const [master, setMaster] = useState(remembered?.master ?? 0.8);
   const [masterMuted, setMasterMuted] = useState(false);
   const [allPaused, setAllPaused] = useState(false);
@@ -138,7 +145,9 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const soloResume = useRef<number[]>([]);
   const stageRef = useRef<HTMLDivElement>(null);
 
-  const isWall = layout === 'wall';
+  // Mosaic is a kind of wall: same source, same "watch it alone".
+  const isMosaic = layout === 'mosaic';
+  const isWall = layout === 'wall' || isMosaic;
   const def = layoutDef(isWall ? '4' : layout);
   const n = isWall ? 0 : def.count;
 
@@ -231,7 +240,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     if (solo != null) exitSolo();
     setWallSolo(null);
     setLayout(id);
-    const d = id === 'wall' ? null : layoutDef(id);
+    const d = id === 'wall' || id === 'mosaic' ? null : layoutDef(id);
     if (d) setFocus((f) => Math.min(f, d.count - 1));
   };
 
@@ -292,6 +301,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       master,
       panels: panels.slice(0, Math.max(n, 1)).map((p) => ({ source: p.source, settings: p.settings })),
       wall: { source: wall.source, count: wall.count, speed: wall.speed },
+      mosaic,
     };
     await api.saveNamed('layout', { id: null, name, settings });
     setLayouts(await api.listNamed<LayoutSettings>('layout'));
@@ -299,7 +309,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const loadLayout = async (l: Named<LayoutSettings>) => {
     const s = l.settings;
     const id = s.layout ?? String(s.n ?? 4);
-    const count = id === 'wall' ? 0 : layoutDef(id).count;
+    const count = id === 'wall' || id === 'mosaic' ? 0 : layoutDef(id).count;
     const fresh = Array.from({ length: MAX_PANELS }, (_, i) => blank(normalize(s.panels?.[i]?.settings)));
     setPanels(fresh);
     changeLayout(id);
@@ -309,6 +319,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       setWall({ ...blankWall(), count: WALL_SIZES.includes(s.wall.count) ? s.wall.count : 20, speed: s.wall.speed ?? 'normal' });
       if (s.wall.source) assign('wall', s.wall.source);
     }
+    if (s.mosaic) setMosaic(normalizeMosaic(s.mosaic));
   };
 
   const layoutItems = useMemo(() => [
@@ -482,10 +493,26 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             )}
           </div>
           {vault && (
-            <button type="button" className={`btn btn-sm${isWall ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
+            <button type="button" className={`btn btn-sm${isWall && !isMosaic ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
               title="Many small tiles that swap at random">Wall</button>
           )}
-          {isWall ? (
+          {vault && (
+            <button type="button" className={`btn btn-sm${isMosaic ? ' accent-soft' : ''}`} onClick={() => changeLayout('mosaic')}
+              title="The whole screen filled edge to edge, every picture and video in its own shape">Mosaic</button>
+          )}
+          {isMosaic ? (
+            <>
+              <Dropdown label={`${MOSAIC_SIZES.find((x) => x.id === mosaic.size)?.label} ▾`} title="How big the pieces are"
+                items={MOSAIC_SIZES.map((x) => ({ label: x.label, checked: x.id === mosaic.size, onSelect: () => setMosaic({ size: x.id }) }))} />
+              <Dropdown label={`${MOSAIC_SPEEDS.find((x) => x.id === mosaic.speed)?.label} ▾`} title="How often a piece changes"
+                items={MOSAIC_SPEEDS.map((x) => ({ label: x.label, checked: x.id === mosaic.speed, onSelect: () => setMosaic({ speed: x.id }) }))} />
+              <button type="button" className={`btn btn-sm${mosaic.sound ? ' accent-soft' : ''}`} aria-pressed={mosaic.sound} onClick={() => setMosaic({ sound: !mosaic.sound })}
+                title={mosaic.sound ? 'Sound plays for the video under the mouse — click to turn it off' : 'No sound — click to hear the video under the mouse'}>
+                {mosaic.sound ? <><SoundIcon size={15} /> Sound under the mouse</> : <><MuteIcon size={15} /> Sound off</>}
+              </button>
+              <Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />
+            </>
+          ) : isWall ? (
             <>
               <Dropdown label={`${wall.count} tiles ▾`} items={WALL_SIZES.map((c) => ({ label: `${c} tiles`, checked: c === wall.count, onSelect: () => setWall((w) => ({ ...w, count: c })) }))} />
               <Dropdown label={`${WALL_SPEEDS.find((x) => x.id === wall.speed)?.label} ▾`} title="How often tiles change"
@@ -520,7 +547,17 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
 
       {isWall ? (
         <div className="mstage" ref={stageRef}>
-          {wall.items.length ? (
+          {wall.items.length && isMosaic ? (
+            <MosaicWall items={wall.items} settings={mosaic} volume={master} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
+          ) : isMosaic ? (
+            <div className="panel-empty">
+              {wall.error && <span className="error-text">{wall.error}</span>}
+              <GridIcon size={26} />
+              <b>Mosaic</b>
+              <span className="muted">The whole screen filled edge to edge with pictures, GIFs and videos, each in its own shape. Every few seconds one changes and the rest glide to make room.</span>
+              <Dropdown className="btn btn-sm" label="Choose what to show ▾" items={pickMenu('wall')} />
+            </div>
+          ) : wall.items.length ? (
             <Wall items={wall.items} count={wall.count} speed={wall.speed} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
           ) : (
             <div className="panel-empty">
@@ -536,7 +573,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <ErrorBoundary name="the wall's viewer" onError={() => setWallSolo(null)}>
               <Player items={wall.items} startKey={wallSolo.key} settings={panels[0].settings} onSettings={(s) => update(0, { settings: s })}
                 keys activityId="wall-solo" onClose={() => setWallSolo(null)}
-                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the wall</button>} />
+                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the {isMosaic ? 'mosaic' : 'wall'}</button>} />
               </ErrorBoundary>
             </div>
           )}

@@ -1,0 +1,18 @@
+/* Mosaic mode: pieces at their own shape, packed edge to edge, gliding to new places. */
+.mosaic { position: absolute; inset: 0; overflow: hidden; background: #050506; }
+.mosaic-piece {
+  position: absolute; left: 0; top: 0; padding: 0; margin: 0; border: none; border-radius: 2px;
+  background: #0d0f12; overflow: hidden; cursor: pointer;
+  transition: transform 0.6s cubic-bezier(0.22, 0.8, 0.24, 1), width 0.6s cubic-bezier(0.22, 0.8, 0.24, 1), height 0.6s cubic-bezier(0.22, 0.8, 0.24, 1), opacity 0.6s ease;
+  will-change: transform;
+}
+.mosaic-piece img, .mosaic-piece video { width: 100%; height: 100%; object-fit: cover; display: block; pointer-events: none; }
+.mosaic-piece.entering { animation: mosaic-in 0.7s ease both; }
+.mosaic-piece.leaving { z-index: 0; pointer-events: none; animation: mosaic-out 0.6s ease both; }
+.mosaic-piece:not(.leaving) { z-index: 1; }
+.mosaic-piece.hover { outline: 2px solid var(--accent); outline-offset: -2px; z-index: 2; }
+@keyframes mosaic-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes mosaic-out { from { opacity: 1; } to { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  .mosaic-piece { transition: none; }
+}
