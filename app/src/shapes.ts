@@ -16,6 +16,12 @@ export interface ShapePanel {
   z: number;
   /** For Fit inside the shape (shapefit.ts), when the path alone doesn't say it (rounded boxes). */
   outline?: { kind: 'poly'; pts: [number, number][] };
+  /**
+   * Tilted panels: the media is turned by `deg` (clockwise) so it lines up with
+   * the shape. It is drawn in a w × h rectangle centred at (cx, cy) in box
+   * coordinates; `outline` is the shape inside that turned rectangle (for Fit).
+   */
+  turn?: { deg: number; cx: number; cy: number; w: number; h: number; outline: [number, number][] };
 }
 
 export interface LayoutDef {
@@ -64,6 +70,7 @@ const MORE: LayoutDef[] = [
     ['tallGrid6', 'Tall + 6', 7],
     ['wideOverTall', 'Wide over tall', 8],
     ['tallWideTall', 'Tall, wide, tall', 4],
+    ['tallMiddle4', 'Tall + 4 around', 5],
   ]),
   ...S('Mixed sizes', [
     ['bigL', 'Big + L', 6],
@@ -71,12 +78,26 @@ const MORE: LayoutDef[] = [
     ['rows23', '2 + 3 rows', 5],
     ['filmStrip', 'Film strip', 7],
     ['bigLeft3', 'Big + 3 stacked', 4],
+    ['big2Tall', 'Big + 2 tall', 3],
+    ['steps', 'Steps', 5],
   ]),
   ...S('Fun', [
     ['honeycomb', 'Honeycomb', 12],
-    ['stripes', 'Diagonal stripes', 5],
     ['roundTiles', 'Rounded tiles', 10],
     ['capsules', 'Capsules', 4],
+    ['arches', 'Arches', 5],
+    ['bigCircle3', 'Big circle + 3', 5],
+  ]),
+  ...S('Tilted', [
+    ['stripes', 'Diagonal stripes', 5],
+    ['tiltRows', 'Tilted rows', 4],
+    ['tiltCols', 'Tilted columns', 4],
+    ['tiltCols3', '3 leaning columns', 3],
+    ['scattered', 'Scattered photos', 5],
+    ['pinboard', 'Pinboard', 5],
+    ['fan', 'Fanned cards', 6],
+    ['tiltWindow', 'Tilted window', 2],
+    ['tiltSquares', 'Turned squares', 4],
   ]),
   ...S('Picture in picture', [
     ['pip1', 'PiP: 1 window', 2],
@@ -88,7 +109,7 @@ const MORE: LayoutDef[] = [
 
 /** Shape layouts in menu order, grouped under their headings. */
 const ALL_SHAPES: LayoutDef[] = [...SHAPES, ...MORE];
-const ORDER = ['Shapes', 'Bubbles', 'Tall boxes', 'Mixed sizes', 'Fun', 'Picture in picture'];
+const ORDER = ['Shapes', 'Bubbles', 'Tall boxes', 'Mixed sizes', 'Fun', 'Tilted', 'Picture in picture'];
 export const SHAPE_GROUPS: { name: string; layouts: LayoutDef[] }[] = ORDER.map((name) => ({ name, layouts: ALL_SHAPES.filter((l) => l.group === name) }));
 
 
@@ -194,6 +215,48 @@ function roundPanel(x: number, y: number, w: number, h: number, r: number, sx: n
   return { box, d, anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 }, z, outline: { kind: 'poly', pts } };
 }
 
+/** Turn points (px) by `deg` around the origin. */
+function turnPts(pts: Pt[], deg: number): Pt[] {
+  const a = (deg * Math.PI) / 180;
+  const c = Math.cos(a);
+  const s = Math.sin(a);
+  return pts.map(([x, y]) => [x * c - y * s, x * s + y * c] as Pt);
+}
+
+/**
+ * A panel (screen px points) whose media is turned by `deg` to line up with it:
+ * the media's rectangle is the shape's bounding box in the turned frame, so it
+ * covers the whole shape (Fill), and Fit keeps it inside the shape.
+ */
+function tiltPanel(pts: Pt[], deg: number, W: number, H: number, z = 0): ShapePanel | null {
+  const p = polyPanel(pts, 1, 1, W, H, z);
+  if (!p) return null;
+  const clipped = clipToRect(pts, W, H);
+  const local = turnPts(clipped, -deg);
+  const b = bbox(local);
+  const [mx, my] = turnPts([[b.x + b.w / 2, b.y + b.h / 2]], deg)[0];
+  const outline = local.map(([x, y]) => [r2(x - b.x), r2(y - b.y)] as [number, number]);
+  return { ...p, turn: { deg, cx: mx - p.box.x, cy: my - p.box.y, w: b.w, h: b.h, outline } };
+}
+
+/** A card of w × h px centred at (cx, cy) px, turned by `deg`. */
+const cardPts = (cx: number, cy: number, w: number, h: number, deg: number): Pt[] =>
+  turnPts([[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]], deg).map(([x, y]) => [x + cx, y + cy] as Pt);
+
+/** An arch (a box with a round top), in design units. */
+function archPanel(x: number, y: number, w: number, h: number, sx: number, sy: number, z = 1): ShapePanel {
+  const box = { x: x * sx, y: y * sy, w: w * sx, h: h * sy };
+  const bw = r2(box.w);
+  const bh = r2(box.h);
+  const R = r2(Math.min(bw / 2, bh));
+  const d = `M0 ${bh} L0 ${R} A${R} ${R} 0 0 1 ${bw} ${R} L${bw} ${bh} Z`;
+  const arc: [number, number][] = Array.from({ length: 13 }, (_, i) => {
+    const a = Math.PI + (i * Math.PI) / 12;
+    return [r2(bw / 2 + (bw / 2) * Math.cos(a)), r2(R + R * Math.sin(a))] as [number, number];
+  });
+  return { box, d, anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 }, z, outline: { kind: 'poly', pts: [[0, bh], ...arc, [bw, bh]] } };
+}
+
 const rect = (x: number, y: number, w: number, h: number): Pt[] => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
 
 // ---- the layouts ------------------------------------------------------------------------
@@ -209,6 +272,25 @@ export function buildShapes(id: string, W: number, H: number): ShapePanel[] {
   const C = (cx: number, cy: number, r: number, z = 1) => circlePanel(cx, cy, r, sx, sy, s, z);
   const Rd = (x: number, y: number, w: number, h: number, r: number, z = 1) => roundPanel(x, y, w, h, r, sx, sy, s, z);
   const R = (x: number, y: number, w: number, h: number) => P(rect(x, y, w, h));
+  /** A panel (screen px) with its media turned by deg. */
+  const T = (pts: Pt[], deg: number, z = 0) => tiltPanel(pts, deg, W, H, z);
+  /** A turned card: centre in design units, size in px-true design units (kept in shape). */
+  const card = (cx: number, cy: number, w: number, h: number, deg: number, z = 1) => T(cardPts(cx * sx, cy * sy, w * s, h * s, deg), deg, z);
+  /** Bands between slanted lines across the screen: y = c + (x - W/2)·tan(deg) (rows) or x = c + (y - H/2)·tan(deg) (columns). */
+  const bands = (cuts: number[], deg: number, rows: boolean) => {
+    const t = Math.tan((deg * Math.PI) / 180);
+    const big = 4 * Math.max(W, H);
+    const line = (c: number): [Pt, Pt] => (rows ? [[-big, c - (big + W / 2) * t], [W + big, c + (big + W / 2) * t]] : [[c + (big + H / 2) * t, -big], [c - (big + H / 2) * t, H + big]]);
+    const edges = [-big, ...cuts, big];
+    return edges.slice(0, -1).map((c0, i) => {
+      const c1 = edges[i + 1];
+      const [a0, b0] = line(c0);
+      const [a1, b1] = line(c1);
+      return T([a0, b0, b1, a1], deg);
+    });
+  };
+  const back = () => P(rect(0, 0, 150, 84));
+  const A = (x: number, y: number, w: number, h: number) => archPanel(x, y, w, h, sx, sy);
   /** Columns of equal width across [x0, x0 + w], full height unless given. */
   const cols = (n: number, x0: number, w: number, y = 0, h = 84) => Array.from({ length: n }, (_, i) => R(x0 + (i * w) / n, y, w / n, h));
   /** A cols × rows grid of boxes filling the given area, row by row. */
@@ -383,7 +465,9 @@ export function buildShapes(id: string, W: number, H: number): ShapePanel[] {
       // 45° bands; the end ones are triangles in the corners.
       const ks = [-84, -37.2, 9.6, 56.4, 103.2, 150];
       const band = (k0: number, k1: number): Pt[] => [[k0, 0], [k1, 0], [k1 + 84, 84], [k0 + 84, 84]];
-      out = [2, 1, 3, 0, 4].map((i) => P(band(ks[i], ks[i + 1])));
+      // The media is turned to run along each band.
+      const deg = (Math.atan2(84 * sy, 84 * sx) * 180) / Math.PI;
+      out = [2, 1, 3, 0, 4].map((i) => T(band(ks[i], ks[i + 1]).map(([x, y]) => [x * sx, y * sy] as Pt), deg));
       break;
     }
     case 'roundTiles': {
@@ -417,6 +501,57 @@ export function buildShapes(id: string, W: number, H: number): ShapePanel[] {
       }
       break;
     }
+    // ---- tilted: the media is turned to line up with the shape ----
+    case 'tiltRows':
+      out = bands([H * 0.25, H * 0.5, H * 0.75], 7, true);
+      break;
+    case 'tiltCols':
+      out = bands([W * 0.25, W * 0.5, W * 0.75], 9, false);
+      break;
+    case 'tiltCols3':
+      out = bands([W / 3, (2 * W) / 3], 12, false);
+      break;
+    case 'scattered':
+      out = [card(42, 26, 64, 36, -7), card(108, 24, 60, 34, 6), card(44, 62, 58, 33, 5), card(106, 61, 62, 35, -5), back()];
+      break;
+    case 'fan': {
+      const cw = 30;
+      const chh = (cw * 16) / 9;
+      out = [-24, -12, 0, 12, 24].map((deg, i) => {
+        const a = (deg * Math.PI) / 180;
+        // Fanned from a point below the screen, like a hand of cards.
+        const px = 75 + Math.sin(a) * 70;
+        const py = 100 - Math.cos(a) * 70 + 4;
+        return card(px, py - chh / 2 + 18, cw, chh, deg, 1 + i);
+      });
+      out = [out[2], out[1], out[3], out[0], out[4], back()];
+      break;
+    }
+    case 'tiltWindow':
+      out = [card(75, 42, 92, 52, -6, 2), back()];
+      break;
+    case 'pinboard':
+      out = [card(40, 23, 56, 31.5, -4), card(110, 23, 56, 31.5, 3), card(40, 61, 56, 31.5, 3), card(110, 61, 56, 31.5, -4), back()];
+      break;
+    case 'tiltSquares':
+      out = [card(75, 42, 46, 46, 45, 2), card(31, 42, 34, 34, 45), card(119, 42, 34, 34, 45), back()];
+      break;
+    // ---- more ----
+    case 'arches':
+      out = [A(6, 10, 30, 70), A(42, 10, 30, 70), A(78, 10, 30, 70), A(114, 10, 30, 70), back()];
+      break;
+    case 'bigCircle3':
+      out = [C(42, 42, 38), P(rect(0, 0, 84, 84)), R(84, 0, 66, 28), R(84, 28, 66, 28), R(84, 56, 66, 28)];
+      break;
+    case 'tallMiddle4':
+      out = [R(51.5, 0, 47, 84), R(0, 0, 51.5, 42), R(0, 42, 51.5, 42), R(98.5, 0, 51.5, 42), R(98.5, 42, 51.5, 42)];
+      break;
+    case 'big2Tall':
+      out = [R(0, 0, 94, 84), R(94, 0, 28, 84), R(122, 0, 28, 84)];
+      break;
+    case 'steps':
+      out = [R(0, 0, 60, 84), R(60, 0, 50, 56), R(110, 0, 40, 28), R(110, 28, 40, 28), R(60, 56, 90, 28)];
+      break;
   }
   return out.filter((p): p is ShapePanel => !!p);
 }

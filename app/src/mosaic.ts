@@ -12,19 +12,31 @@ export const MOSAIC_MAX_VIDEOS = 8;
 export const MAX_CROP = 0.03;
 
 export type MosaicSize = 'big' | 'normal' | 'small';
-export type MosaicSpeed = 'calm' | 'normal' | 'fast';
+export type MosaicSpeed = 'calm' | 'normal' | 'fast' | 'veryFast';
 
 export const MOSAIC_SIZES: { id: MosaicSize; label: string; rows: number }[] = [
   { id: 'big', label: 'Fewer, bigger', rows: 2 },
   { id: 'normal', label: 'Normal size', rows: 3 },
   { id: 'small', label: 'More, smaller', rows: 4 },
 ];
-/** Seconds between swaps (give or take a little). */
-export const MOSAIC_SPEEDS: { id: MosaicSpeed; label: string; every: number }[] = [
-  { id: 'calm', label: 'Calm', every: 9 },
-  { id: 'normal', label: 'Normal', every: 5 },
-  { id: 'fast', label: 'Fast', every: 2.5 },
+/** About how long each piece stays on screen (seconds). Several change at once when needed. */
+export const MOSAIC_SPEEDS: { id: MosaicSpeed; label: string; stay: number }[] = [
+  { id: 'calm', label: 'Calm', stay: 30 },
+  { id: 'normal', label: 'Normal', stay: 15 },
+  { id: 'fast', label: 'Fast', stay: 7 },
+  { id: 'veryFast', label: 'Very fast', stay: 3.5 },
 ];
+
+/**
+ * How often to change pieces and how many each time, so every piece stays about
+ * `stay` seconds: changes come no closer than `minGap` (the glide needs time), and
+ * then several pieces change together.
+ */
+export function mosaicPace(stay: number, pieces: number, minGap = 0.9): { gap: number; count: number } {
+  const n = Math.max(1, pieces);
+  const gap = Math.max(minGap, Math.min(stay / n, 4));
+  return { gap, count: Math.max(1, Math.min(n, Math.round((n * gap) / stay))) };
+}
 
 export interface MosaicSettings {
   size: MosaicSize;

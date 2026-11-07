@@ -9,7 +9,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PlayItem } from '../media';
 import { pickWeighted } from './Wall';
 import {
-  chooseMosaic, MOSAIC_MAX_VIDEOS, MOSAIC_SPEEDS, mosaicRows, packMosaic, polish, swapPiece,
+  chooseMosaic, MOSAIC_MAX_VIDEOS, MOSAIC_SPEEDS, mosaicPace, mosaicRows, packMosaic, polish, swapPiece,
   type Box, type Chooser, type MosaicSettings,
 } from '../mosaic';
 import './mosaic.css';
@@ -108,27 +108,38 @@ export function MosaicWall(props: {
   const boxOf = useRef(new Map<number, Box>());
   pieces.forEach((p, i) => fit.boxes[i] && boxOf.current.set(p.uid, fit.boxes[i]));
 
-  // Swap one piece every few seconds.
-  const every = MOSAIC_SPEEDS.find((s) => s.id === props.settings.speed)?.every ?? 5;
+  // Change pieces so each stays about as long as the speed says (the oldest go first).
+  const stay = MOSAIC_SPEEDS.find((s) => s.id === props.settings.speed)?.stay ?? 15;
+  const born = useRef(new Map<number, number>());
   useEffect(() => {
     if (stopped || !pieces.length || !ready) return;
+    const now = Date.now();
+    for (const p of pieces) if (!born.current.has(p.uid)) born.current.set(p.uid, now);
+    const pace = mosaicPace(stay, pieces.length);
     const t = setTimeout(() => {
       const cur = pieces;
       // Never take away the piece under the mouse.
       const hv = hoverRef.current;
       const keep = new Set(cur.filter((p) => p.uid === hv).map((p) => p.item.key));
-      const choices = cur.map((_, i) => i).filter((i) => cur[i].uid !== hv);
-      if (!choices.length) return;
-      const victim = choices[Math.floor(Math.random() * choices.length)];
-      const next = wrap(swapPiece(cur.map((p) => p.item), victim, chooser, size.w, size.h, rows, keep), cur);
-      const stay = new Set(next.map((p) => p.uid));
-      const gone = cur.filter((p) => !stay.has(p.uid)).map((p) => ({ ...p, box: boxOf.current.get(p.uid)! })).filter((p) => p.box);
+      const oldest = cur.filter((p) => p.uid !== hv)
+        .map((p) => ({ p, t: (born.current.get(p.uid) ?? 0) + Math.random() * 1500 }))
+        .sort((x, y) => x.t - y.t).slice(0, pace.count).map((x) => x.p.item.key);
+      if (!oldest.length) return;
+      let list = cur.map((p) => p.item);
+      for (const key of oldest) {
+        const i = list.findIndex((x) => x.key === key);
+        if (i >= 0) list = swapPiece(list, i, chooser, size.w, size.h, rows, keep);
+      }
+      const next = wrap(list, cur);
+      const stayIds = new Set(next.map((p) => p.uid));
+      const gone = cur.filter((p) => !stayIds.has(p.uid)).map((p) => ({ ...p, box: boxOf.current.get(p.uid)! })).filter((p) => p.box);
+      gone.forEach((p) => born.current.delete(p.uid));
       setLeaving((l) => [...l, ...gone]);
       setTimeout(() => setLeaving((l) => l.filter((x) => !gone.includes(x))), MOVE_MS + 100);
       setPieces(next);
-    }, every * 1000 * (0.7 + Math.random() * 0.6));
+    }, pace.gap * 1000 * (0.85 + Math.random() * 0.3));
     return () => clearTimeout(t);
-  }, [pieces, stopped, every, chooser, size.w, size.h, rows, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pieces, stopped, stay, chooser, size.w, size.h, rows, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Videos take turns playing.
   const videoCount = pieces.filter((p) => p.item.kind === 'video').length;

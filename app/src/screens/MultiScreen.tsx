@@ -25,7 +25,7 @@ import { setCleanFullscreen } from '../fullscreen';
 import { fromItem, fromLocal, type PlayItem } from '../media';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
 import { rememberSound, unmuteVolume, withSound } from '../prefs';
-import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_GROUPS, SHAPE_LAYOUTS } from '../shapes';
+import { buildShapes, type ShapePanel, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_GROUPS, SHAPE_LAYOUTS } from '../shapes';
 import { fitRectInShape } from '../shapefit';
 import { SettingsMenu } from './Viewer';
 import { useLayer } from '../keylayers';
@@ -95,6 +95,12 @@ async function resolve(s: Source): Promise<{ items: PlayItem[]; startKey?: strin
 }
 
 // ---- fit, "Repeat this one" and "Apply to every window…" (begin) ----
+/** For Fit: a tilted panel's shape as seen by its turned media. */
+function turnedShape(sp: ShapePanel): Pick<ShapePanel, 'box' | 'd' | 'outline'> {
+  if (!sp.turn) return sp;
+  return { box: { x: 0, y: 0, w: sp.turn.w, h: sp.turn.h }, d: '', outline: { kind: 'poly', pts: sp.turn.outline } };
+}
+
 const FIT_NAMES = { contain: 'Fit', cover: 'Fill', original: 'Original' } as const;
 
 /** What "Apply to every window…" can copy, and the settings each part covers. */
@@ -452,7 +458,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           settings={p.settings}
           onSettings={(s) => update(i, { settings: s })}
           // Fit / Original size in a shape: the whole media inside the shape's outline.
-          fitArea={shaped && !alone && shapes[i] ? (a) => fitRectInShape(shapes[i], a) : undefined}
+          fitArea={shaped && !alone && shapes[i] ? (a) => fitRectInShape(turnedShape(shapes[i]), a) : undefined}
           autoSlideshow
           masterVolume={master}
           masterMuted={masterMuted}
@@ -607,7 +613,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <Dropdown label={`${MOSAIC_SIZES.find((x) => x.id === mosaic.size)?.label} ▾`} title="How big the pieces are"
                 items={MOSAIC_SIZES.map((x) => ({ label: x.label, checked: x.id === mosaic.size, onSelect: () => setMosaic({ size: x.id }) }))} />
               <Dropdown label={`${MOSAIC_SPEEDS.find((x) => x.id === mosaic.speed)?.label} ▾`} title="How often a piece changes"
-                items={MOSAIC_SPEEDS.map((x) => ({ label: x.label, checked: x.id === mosaic.speed, onSelect: () => setMosaic({ speed: x.id }) }))} />
+                items={MOSAIC_SPEEDS.map((x) => ({ label: x.label, hint: `each stays about ${x.stay} s`, checked: x.id === mosaic.speed, onSelect: () => setMosaic({ speed: x.id }) }))} />
               <button type="button" className={`btn btn-sm${mosaic.sound ? ' accent-soft' : ''}`} aria-pressed={mosaic.sound} onClick={() => setMosaic({ sound: !mosaic.sound })}
                 title={mosaic.sound ? 'Sound plays for the video under the mouse — click to turn it off' : 'No sound — click to hear the video under the mouse'}>
                 {mosaic.sound ? <><SoundIcon size={15} /> Sound under the mouse</> : <><MuteIcon size={15} /> Sound off</>}
@@ -695,7 +701,12 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
                 style={alone ? { zIndex: 50 } : { left: sp.box.x, top: sp.box.y, width: sp.box.w, height: sp.box.h, clipPath: `path('${sp.d}')`, zIndex: sp.z + 1 }}
                 onPointerEnter={() => solo == null && setHoverSoon(i)} onPointerLeave={() => setHoverSoon(null)}
                 onMouseDown={() => setFocus(i)} onDoubleClick={() => toggleSolo(i)}>
-                {panelBody(p, i)}
+                {sp.turn && !alone ? (
+                  // Tilted panels: the media is turned to line up with the shape.
+                  <div className="sturn" style={{ left: sp.turn.cx - sp.turn.w / 2, top: sp.turn.cy - sp.turn.h / 2, width: sp.turn.w, height: sp.turn.h, transform: `rotate(${sp.turn.deg}deg)` }}>
+                    {panelBody(p, i)}
+                  </div>
+                ) : panelBody(p, i)}
                 {!alone && (
                   <svg className="sborder" width={sp.box.w} height={sp.box.h} aria-hidden="true">
                     <path d={sp.d} />

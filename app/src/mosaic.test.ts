@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chooseMosaic, MAX_CROP, MOSAIC_GAP, normalizeMosaic, packMosaic, swapPiece, type Box, type Chooser } from './mosaic';
+import { mosaicPace, chooseMosaic, MAX_CROP, MOSAIC_GAP, normalizeMosaic, packMosaic, swapPiece, type Box, type Chooser } from './mosaic';
 
 /** Small seeded random, so the tests are the same every run. */
 function seeded(seed: number) {
@@ -110,5 +110,20 @@ describe('mosaic packing', () => {
   it('old or odd saved settings fall back to the default', () => {
     expect(normalizeMosaic(undefined)).toEqual({ size: 'normal', speed: 'normal', sound: false });
     expect(normalizeMosaic({ size: 'big', speed: 'zoom', sound: true })).toEqual({ size: 'big', speed: 'normal', sound: true });
+  });
+});
+
+describe('mosaicPace', () => {
+  it('keeps every piece about as long as asked, changing several at once when needed', () => {
+    for (const [stay, n] of [[3.5, 15], [7, 15], [7, 30], [15, 12], [30, 8], [3.5, 4]]) {
+      const { gap, count } = mosaicPace(stay, n);
+      expect(gap).toBeGreaterThanOrEqual(0.9);
+      expect(count).toBeGreaterThanOrEqual(1);
+      expect(count).toBeLessThanOrEqual(n);
+      // Each piece's time on screen: n / count changes, gap seconds apart.
+      const life = (n / count) * gap;
+      expect(life).toBeGreaterThan(stay * 0.6);
+      expect(life).toBeLessThan(stay * 1.6);
+    }
   });
 });

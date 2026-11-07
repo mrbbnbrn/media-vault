@@ -90,3 +90,7 @@
 .player .blur-bg.video { filter: blur(10px); }
 .player.blurbg .image-stage, .player.blurbg .media { background: transparent; }
 .player .stage.fit-area { right: auto; bottom: auto; }
+
+/* Tilted shaped panels: the media's turned rectangle inside the clipped shape. */
+.spanel .sturn { position: absolute; transform-origin: 50% 50%; }
+.spanel .sturn > * { width: 100%; height: 100%; }
