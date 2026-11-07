@@ -85,3 +85,8 @@
 .wall-name { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 8px; font-size: var(--fs-sm); color: var(--faint); text-align: center; }
 .wall-solo { position: absolute; inset: 0; z-index: var(--z-context); background: #000; display: flex; animation: fadein 0.2s ease; }
 .mstage > .panel-empty { position: absolute; inset: 0; }
+/* "Blurred background" behind Fit / Original size (components/BlurBackdrop.tsx). */
+.player .blur-bg { position: absolute; left: -4%; top: -4%; width: 108%; height: 108%; object-fit: cover; pointer-events: none; filter: blur(28px) brightness(0.5) saturate(1.2); animation: fadein 0.4s ease; }
+.player .blur-bg.video { filter: blur(10px); }
+.player.blurbg .image-stage, .player.blurbg .media { background: transparent; }
+.player .stage.fit-area { right: auto; bottom: auto; }

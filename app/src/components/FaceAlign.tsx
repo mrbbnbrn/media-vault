@@ -8,7 +8,7 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { api, type FaceBox } from '../api';
 import { alignedCss, alignFace, faceTarget, mainFace, maxScaleFor, NO_ALIGN, zoomAbout, type Aligned } from '../facealign';
-import { drawnRect } from '../flip';
+import { drawnRect, type Fit } from '../flip';
 import type { PlayItem } from '../media';
 
 /** Faces per item, kept for the session (also for upcoming items). */
@@ -28,7 +28,7 @@ export function useFaceAlign(o: {
   /** The picture's own size once loaded (null while loading). */
   natural: { w: number; h: number } | null;
   stage: { w: number; h: number };
-  fit: 'contain' | 'cover';
+  fit: Fit;
   /** Nothing moves while zoomed in by hand, or when the picture failed. */
   blocked: boolean;
   person?: number | null;

@@ -8,6 +8,23 @@ export interface Box {
   height: number;
 }
 
+/**
+ * How a picture fills its area: `contain` (Fit: all of it shows), `cover`
+ * (Fill: crops the edges) or `original` (Original size: never larger than its
+ * own pixels; shrinks only when it doesn't fit).
+ */
+export type Fit = 'contain' | 'cover' | 'original';
+
+/** The CSS object-fit for a fit (`original` is `scale-down`). */
+export const cssFit = (fit: Fit): 'contain' | 'cover' | 'scale-down' => (fit === 'original' ? 'scale-down' : fit);
+
+/** The scale a picture of nw × nh is drawn at inside W × H. */
+export function fitScale(W: number, H: number, nw: number, nh: number, fit: Fit): number {
+  if (fit === 'cover') return Math.max(W / nw, H / nh);
+  const k = Math.min(W / nw, H / nh);
+  return fit === 'original' ? Math.min(1, k) : k;
+}
+
 export interface Zoom {
   s: number;
   x: number;
@@ -18,9 +35,9 @@ export interface Zoom {
  * Where a picture of `nw`×`nh` is drawn inside a `W`×`H` area with the
  * viewer's fit and zoom (the same sums as ImageStage and the video zoom layer).
  */
-export function drawnRect(W: number, H: number, nw: number, nh: number, fit: 'contain' | 'cover', zoom: Zoom = { s: 1, x: 0, y: 0 }): Box {
+export function drawnRect(W: number, H: number, nw: number, nh: number, fit: Fit, zoom: Zoom = { s: 1, x: 0, y: 0 }): Box {
   if (!nw || !nh || !W || !H) return { left: 0, top: 0, width: W, height: H };
-  const k = fit === 'cover' ? Math.max(W / nw, H / nh) : Math.min(W / nw, H / nh);
+  const k = fitScale(W, H, nw, nh, fit);
   const dw = nw * k;
   const dh = nh * k;
   return {

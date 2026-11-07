@@ -14,7 +14,7 @@ import { api, inTauri, type FolderCard, type Named, type TagCount } from '../api
 import type { Nav } from '../App';
 import { Dropdown, FolderPicker, Modal, PromptDialog } from '../components/Dialogs';
 import {
-  CloseIcon, FullscreenIcon, GridIcon, ImportIcon, MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, SoundIcon,
+  CloseIcon, FullscreenIcon, GridIcon, ImportIcon, LoopIcon, MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, SoundIcon,
 } from '../components/Icons';
 import { Player, type PlayerHandle } from '../components/Player';
 import { Wall, WALL_SIZES, WALL_SPEEDS } from '../components/Wall';
@@ -26,6 +26,7 @@ import { fromItem, fromLocal, type PlayItem } from '../media';
 import { DEFAULT_PLAYBACK, normalize, type PlaybackSettings } from '../presets';
 import { rememberSound, unmuteVolume, withSound } from '../prefs';
 import { buildShapes, GRID_LAYOUTS, layoutDef, MAX_PANELS, SHAPE_GROUPS, SHAPE_LAYOUTS } from '../shapes';
+import { fitRectInShape } from '../shapefit';
 import { SettingsMenu } from './Viewer';
 import { useLayer } from '../keylayers';
 
@@ -89,6 +90,47 @@ async function resolve(s: Source): Promise<{ items: PlayItem[]; startKey?: strin
   }
 }
 
+// ---- fit, "Repeat this one" and "Apply to every window…" (begin) ----
+const FIT_NAMES = { contain: 'Fit', cover: 'Fill', original: 'Original' } as const;
+
+/** What "Apply to every window…" can copy, and the settings each part covers. */
+type ApplyPart = 'playback' | 'sound' | 'fit' | 'source';
+const APPLY_PARTS: { id: ApplyPart; label: string }[] = [
+  { id: 'playback', label: 'Playback (speed, order, repeat, timing, transitions)' },
+  { id: 'sound', label: 'Sound (volume, mute)' },
+  { id: 'fit', label: 'Fit' },
+  { id: 'source', label: 'What it shows (source)' },
+];
+const PART_KEYS: Record<Exclude<ApplyPart, 'source'>, (keyof PlaybackSettings)[]> = {
+  playback: ['imageSeconds', 'videoMaxSeconds', 'videoRandomStart', 'gifLoops', 'gifMaxSeconds', 'order', 'repeat', 'repeatThis', 'speed',
+    'transition', 'fadeMs', 'beatSync', 'beatEvery', 'beatMinSeconds', 'kenBurns'],
+  sound: ['volume', 'muted'],
+  fit: ['fit', 'blurBg'],
+};
+const APPLY_KEY = 'multiscreen.applyToAll';
+function lastApplyParts(): ApplyPart[] {
+  try {
+    const v = JSON.parse(localStorage.getItem(APPLY_KEY) ?? 'null');
+    if (Array.isArray(v)) return v.filter((x): x is ApplyPart => APPLY_PARTS.some((p) => p.id === x));
+  } catch { /* not available */ }
+  return ['playback', 'sound', 'fit'];
+}
+function rememberApplyParts(parts: ApplyPart[]) {
+  try {
+    localStorage.setItem(APPLY_KEY, JSON.stringify(parts));
+  } catch { /* not available */ }
+}
+/** The chosen parts of `from`'s settings, to lay over another panel's. */
+function pickSettings(from: PlaybackSettings, parts: ApplyPart[]): Partial<PlaybackSettings> {
+  const out: Partial<PlaybackSettings> = {};
+  for (const part of parts) {
+    if (part === 'source') continue;
+    for (const k of PART_KEYS[part]) (out as Record<string, unknown>)[k] = from[k];
+  }
+  return out;
+}
+// ---- fit, "Repeat this one" and "Apply to every window…" (end) ----
+
 let nextId = 1;
 const blank = (settings?: PlaybackSettings): Panel => ({ id: nextId++, source: null, settings: settings ?? withSound(DEFAULT_PLAYBACK), items: [] });
 const blankWall = (): WallState => ({ source: null, items: [], count: 20, speed: 'normal' });
@@ -137,6 +179,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const [solo, setSolo] = useState<number | null>(null);
   const [wallSolo, setWallSolo] = useState<PlayItem | null>(null);
   const [hover, setHover] = useState<number | null>(null);
+  const [applyFrom, setApplyFrom] = useState<number | null>(null);
   const [, bump] = useState(0);
   const [stage, setStage] = useState({ w: 1280, h: 720 });
   const handles = useRef<(PlayerHandle | null)[]>([]);
@@ -354,6 +397,36 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
 
   // ---- one panel ---------------------------------------------------------------------------
 
+  /** "Repeat this one" and the fit menu (with "Apply to every window…"), in each panel's controls. */
+  const panelTools = (i: number) => {
+    const ps = panels[i].settings;
+    const set = (x: Partial<PlaybackSettings>) => setPanels((all) => all.map((p, j) => (j === i ? { ...p, settings: { ...p.settings, ...x } } : p)));
+    return (
+      <>
+        <button type="button" className={`pbtn${ps.repeatThis ? ' on' : ''}`} aria-pressed={!!ps.repeatThis}
+          aria-label="Repeat this one" title={ps.repeatThis ? 'Repeating this one — click to go on with the slideshow' : 'Repeat this one: keep playing it over and over'}
+          onClick={() => set({ repeatThis: !ps.repeatThis })}><LoopIcon size={14} /><small>1</small></button>
+        <Dropdown up className="pbtn wide" label={FIT_NAMES[ps.fit] ?? 'Fit'} title="How it fits, and copying to every window" ariaLabel="Fit"
+          items={() => [
+            { label: 'Fit', hint: 'the whole picture', checked: ps.fit === 'contain', onSelect: () => set({ fit: 'contain' }) },
+            { label: 'Fill', hint: 'crops the edges', checked: ps.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
+            { label: 'Original size', hint: 'never made bigger', checked: ps.fit === 'original', onSelect: () => set({ fit: 'original' }) },
+            { label: 'Blurred background', hint: 'instead of black', checked: !!ps.blurBg, disabled: ps.fit === 'cover', sepBefore: true, onSelect: () => set({ blurBg: !ps.blurBg }) },
+            ...(n > 1 ? [{ label: 'Apply to every window…', sepBefore: true, onSelect: () => setApplyFrom(i) }] : []),
+          ]} />
+      </>
+    );
+  };
+
+  const applyToAll = (from: number, parts: ApplyPart[]) => {
+    const src = panels[from];
+    const patch = pickSettings(src.settings, parts);
+    setPanels((all) => all.map((p, j) => (j < n && j !== from ? { ...p, settings: { ...p.settings, ...patch } } : p)));
+    if (parts.includes('source') && src.source) {
+      for (let j = 0; j < n; j++) if (j !== from) assign(j, src.source);
+    }
+  };
+
   const shapes = useMemo(() => (def.kind === 'shape' && !isWall ? buildShapes(def.id, stage.w, stage.h) : []), [def, isWall, stage.w, stage.h]);
   const shaped = shapes.length > 0;
 
@@ -367,9 +440,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           ref={(h) => { handles.current[i] = h; }}
           items={p.items}
           startKey={p.startKey}
-          // Shapes look best filled edge to edge.
-          settings={shaped && !alone ? { ...p.settings, fit: 'cover' } : p.settings}
-          onSettings={(s) => update(i, { settings: shaped && !alone ? { ...s, fit: p.settings.fit } : s })}
+          settings={p.settings}
+          onSettings={(s) => update(i, { settings: s })}
+          // Fit / Original size in a shape: the whole media inside the shape's outline.
+          fitArea={shaped && !alone && shapes[i] ? (a) => fitRectInShape(shapes[i], a) : undefined}
           autoSlideshow
           masterVolume={master}
           masterMuted={masterMuted}
@@ -381,6 +455,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           title={<span className="chip-dark ellipsis">{n > 1 ? `${i + 1} · ` : ''}{sourceLabel(p.source)}</span>}
           panelExtra={
             <>
+              {panelTools(i)}
               <SettingsMenu compact s={p.settings} set={(x) => update(i, { settings: { ...p.settings, ...x } })} />
               <Dropdown up className="pbtn wide" label="Source…" items={pickMenu(i)} />
               {n > 1 && (
@@ -448,6 +523,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
                 rememberSound(false, Number(e.target.value));
                 update(i, { settings: { ...p.settings, volume: Number(e.target.value), muted: false } });
               }} />
+            {panelTools(i)}
             <SettingsMenu compact s={p.settings} set={(x) => update(i, { settings: { ...p.settings, ...x } })} />
             <button type="button" className="pbtn" title="Watch this one alone (double-click)" aria-label="Watch this one alone" onClick={() => enterSolo(i)}>
               <FullscreenIcon size={14} />
@@ -625,11 +701,37 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       {picking?.kind === 'tags' && (
         <TagPicker tags={tags} onClose={() => setPicking(null)} onPick={(t) => assign(picking.panel, { t: 'tags', tags: t })} />
       )}
+      {applyFrom != null && (
+        <ApplyDialog panel={applyFrom} onClose={() => setApplyFrom(null)} onApply={(parts) => applyToAll(applyFrom, parts)} />
+      )}
       {saving && (
         <PromptDialog title="Save layout" label="Name" confirm="Save" onClose={() => setSaving(false)}
           hint="Saves the layout and each panel's source and settings (and the wall's)." onSubmit={saveLayout} />
       )}
     </div>
+  );
+}
+
+/** "Apply to every window…": which parts of this panel to copy to the others (the last choice is remembered). */
+function ApplyDialog({ panel, onApply, onClose }: { panel: number; onApply: (parts: ApplyPart[]) => void; onClose: () => void }) {
+  const [parts, setParts] = useState<ApplyPart[]>(lastApplyParts);
+  return (
+    <Modal title="Apply to every window" onClose={onClose}>
+      <p className="faint" style={{ margin: 0, fontSize: 13 }}>Copies what you tick from window {panel + 1} to all the other windows in this layout.</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {APPLY_PARTS.map((p) => (
+          <label key={p.id} className="check">
+            <input type="checkbox" checked={parts.includes(p.id)}
+              onChange={(e) => setParts((s) => (e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id)))} /> {p.label}
+          </label>
+        ))}
+      </div>
+      <div className="row" style={{ justifyContent: 'flex-end' }}>
+        <button type="button" className="btn" onClick={onClose}>Cancel</button>
+        <button type="button" className="btn btn-primary" disabled={!parts.length}
+          onClick={() => { rememberApplyParts(parts); onApply(parts); onClose(); }}>Apply</button>
+      </div>
+    </Modal>
   );
 }
 

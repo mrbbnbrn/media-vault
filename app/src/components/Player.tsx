@@ -18,9 +18,10 @@ import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState,
 import { setPlaying as reportPlaying } from '../activity';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
-import { clipBox, type Box } from '../flip';
+import { clipBox, cssFit, type Box } from '../flip';
+import { BlurBackdrop } from './BlurBackdrop';
 import { kickFaceScanner } from '../ml/facescan';
-import { saveWay, turn, turnBox, turnedRect, turnedStyle, turnLabel, type Quarter } from '../rotation';
+import { saveWay, turn, turnBox, turnedRect, turnedSize, turnedStyle, turnLabel, type Quarter } from '../rotation';
 import { RotateNote, saveRotation, savedText } from '../rotatesave';
 import { peekUndo, pushUndo, undoLast, type UndoEntry } from '../undo';
 import { facesAt, kenBurnsPath, resumeStart, resumeValue } from '../viewerlogic';
@@ -110,6 +111,12 @@ export interface PlayerProps {
   title?: ReactNode;
   topRight?: ReactNode;
   panelExtra?: ReactNode;
+  /**
+   * With Fit or Original size: where the media may go inside the player (px,
+   * from its top left) for a media of this width / height — e.g. the biggest
+   * rectangle inside a round multi-screen panel. Null or absent: the whole player.
+   */
+  fitArea?: (aspect: number) => { x: number; y: number; w: number; h: number } | null;
   onFavourite?: (item: PlayItem, on: boolean) => Promise<void> | void;
   /** `was`: the weight before (for undo). */
   onWeight?: (item: PlayItem, weight: number, was: number) => Promise<void> | void;
@@ -361,9 +368,13 @@ export function Player(props: PlayerProps) {
     setCur(n);
   }, []);
 
+  // "Repeat this one" (or repeat one): the current item stays; videos and GIFs loop and
+  // nothing (timer, video limit, beat) moves on by itself. Skipping by hand still works.
+  const keepOne = s.repeatThis === true || s.repeat === 'one';
+
   // Beat sync: with music playing on the computer, the slideshow moves on with
   // the beat (videos too); when it's quiet the normal timing takes over.
-  const beatOn = slideshow && !halted && s.beatSync;
+  const beatOn = slideshow && !halted && s.beatSync && !keepOne;
   const beat = useBeatSync({ enabled: beatOn, everyBeats: s.beatEvery, minSeconds: s.beatMinSeconds, onAdvance: () => go('next', true) });
   beatMark.current = beat.markAdvanced;
   const beatDriving = beatOn && !beat.silent && !zoomed;
@@ -373,6 +384,7 @@ export function Player(props: PlayerProps) {
   useEffect(() => {
     if (!item || !slideshow || halted || zoomed) return;
     if (beatDriving && !failed) return;
+    if (keepOne && !failed) return;
     let ms = 0;
     if (failed) ms = 1500;
     else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf') ms = s.imageSeconds * 1000;
@@ -394,12 +406,12 @@ export function Player(props: PlayerProps) {
       c.since = null;
     };
     // ---- time to next slide (end) ----
-  }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, tick, slideshow, halted, zoomed, failed, imgInfo, s.imageSeconds, s.gifLoops, s.gifMaxSeconds, go, beatDriving, keepOne]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Very short video stays (under 2 s, down to 0.1 s): checked often, not only when the player reports its time.
   useEffect(() => {
     const max = s.videoMaxSeconds;
-    if (!item || item.kind !== 'video' || !slideshow || halted || beatDriving || !(max > 0 && max < 2)) return;
+    if (!item || item.kind !== 'video' || !slideshow || halted || beatDriving || keepOne || !(max > 0 && max < 2)) return;
     let done = false;
     const t = setInterval(() => {
       const v = videoRef.current;
@@ -408,7 +420,7 @@ export function Player(props: PlayerProps) {
       go('next', true);
     }, 25);
     return () => clearInterval(t);
-  }, [item?.key, tick, slideshow, halted, beatDriving, s.videoMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, tick, slideshow, halted, beatDriving, keepOne, s.videoMaxSeconds, go]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ---- time to next slide (begin): what the ring by the Slideshow button shows ----
   const ringOn = prefs.slideRing !== false && slideshow && !mini && !props.compact;
@@ -418,7 +430,7 @@ export function Player(props: PlayerProps) {
   }, [item?.key, tick]); // eslint-disable-line react-hooks/exhaustive-deps
   const ringNow = useRef<() => RingInfo | null>(() => null);
   ringNow.current = () => {
-    if (!item) return null;
+    if (!item || (keepOne && !failed)) return null;
     if (beatDriving && !failed) return { mode: 'beat', every: s.beatEvery, filled: beatFilled(beat.pulse, beatBase.current, s.beatEvery), running: !halted };
     const c = slideClock.current;
     if (c.key === `${item.key}:${tick}` && c.ms > 0) return { mode: 'time', frac: clockFrac(c, performance.now()), running: c.since != null, segments: c.segments };
@@ -690,7 +702,7 @@ export function Player(props: PlayerProps) {
   // Video element follows play/pause, speed and volume.
   const volume = Math.max(0, Math.min(1, s.volume * (props.masterVolume ?? 1)));
   // Slideshow videos stay quiet while beat sync listens (so they don't confuse it).
-  const beatQuiet = slideshow && s.beatSync;
+  const beatQuiet = slideshow && s.beatSync && !keepOne;
   const muted = s.muted || !!props.masterMuted || beatQuiet;
   useEffect(() => {
     const v = videoRef.current;
@@ -827,7 +839,7 @@ export function Player(props: PlayerProps) {
       } else lastPos.current = { id: item.itemId, at: v.currentTime, dur, saved: item.resumeMs };
     }
     // With the beat in charge, videos move on with the music instead.
-    if (slideshow && !beatDriving && s.videoMaxSeconds > 0 && v.currentTime - videoStart.current >= s.videoMaxSeconds) go('next', true);
+    if (slideshow && !beatDriving && !keepOne && s.videoMaxSeconds > 0 && v.currentTime - videoStart.current >= s.videoMaxSeconds) go('next', true);
   };
 
   const onVideoEnd = () => {
@@ -837,7 +849,14 @@ export function Player(props: PlayerProps) {
       saveResume();
     }
     if (loop.a != null && loop.b != null) return; // the loop takes over
-    if (slideshow) go('next', true);
+    if (keepOne) {
+      // (Normally the video loops by itself and never ends.)
+      const v = videoRef.current;
+      if (v) {
+        v.currentTime = 0;
+        v.play().catch(() => {});
+      }
+    } else if (slideshow) go('next', true);
     else if (s.repeat === 'one') {
       const v = videoRef.current;
       if (v) {
@@ -876,6 +895,13 @@ export function Player(props: PlayerProps) {
   const natural = isPicture && imgInfo ? { w: imgInfo.width, h: imgInfo.height } : isVideo ? vidSize : null;
   // Turned, the fit uses the turned shape.
   const drawn: Box | null = natural && stageWH.w > 0 && !failed ? turnedRect(stageWH.w, stageWH.h, natural.w, natural.h, s.fit, rot, zoom) : null;
+  // Fit / Original size in a shaped panel: the media goes in the biggest rectangle inside the shape.
+  const sizeHint = natural ?? (item?.width && item.height && (isPicture || isVideo) ? { w: item.width, h: item.height } : null);
+  const fitAspect = sizeHint ? (() => { const t = turnedSize(sizeHint, rot); return t.w / t.h; })() : 0;
+  const fitAreaFn = props.fitArea;
+  const area = useMemo(() => (s.fit !== 'cover' && fitAreaFn && fitAspect > 0 && !failed && (isPicture || isVideo) ? fitAreaFn(fitAspect) : null),
+    [s.fit, fitAreaFn, fitAspect, failed, isPicture, isVideo]);
+  const blurOn = !!s.blurBg && s.fit !== 'cover' && !failed && !mini && !!item && (isPicture || isVideo);
 
   // ---- transitions between items (transitions.ts, ItemTransition.tsx) ---------------------------
   const txRef = useRef<HTMLDivElement>(null);
@@ -1616,15 +1642,15 @@ export function Player(props: PlayerProps) {
     if (item.kind === 'video')
       return (
         <video key={item.key} ref={videoRef} className={`media ${anim ?? ''}`}
-          style={{ objectFit: s.fit, imageRendering: pixelVideo ? 'pixelated' : undefined, ...turnedStyle(rot, stageWH.w, stageWH.h) }}
-          src={item.src} autoPlay={!halted} crossOrigin="anonymous"
+          style={{ objectFit: cssFit(s.fit), imageRendering: pixelVideo ? 'pixelated' : undefined, ...turnedStyle(rot, stageWH.w, stageWH.h) }}
+          src={item.src} autoPlay={!halted} crossOrigin="anonymous" loop={keepOne}
           playsInline preload="auto" onLoadedMetadata={() => vh.current.meta()} onTimeUpdate={() => vh.current.time()} onEnded={() => vh.current.end()}
           onLoadedData={() => vh.current.shown()} onError={() => setFailed(true)} />
       );
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     return null;
-  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo, keepOne, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
   const toggleFavourite = () => {
@@ -1672,7 +1698,7 @@ export function Player(props: PlayerProps) {
     <GifBar at={gifAt} subs={gifSubs.current} count={gifCount} onSeek={(i) => { setPaused(true); imgRef.current?.seek(i); }} loop={loop} />
   ) : isVideo && time.dur > 0 ? (
     <PositionBar at={time.at} dur={time.dur} onSeek={seekTo} bookmarks={props.compact ? [] : bookmarks} loop={props.compact ? NO_LOOP : loop}
-      suffix={s.videoMaxSeconds > 0 && slideshow ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''}
+      suffix={s.videoMaxSeconds > 0 && slideshow && !keepOne ? ` · max ${formatTime(s.videoMaxSeconds * 1000)}` : ''}
       hover={props.compact ? undefined : {
         strip: item?.preview && item.itemId != null ? previewUrl(item.itemId) : null,
         aspect: vidSize ? vidSize.w / vidSize.h : 16 / 9,
@@ -1682,7 +1708,7 @@ export function Player(props: PlayerProps) {
   const muteKey = props.onMinimize ? 'Shift+M' : 'M';
   // Beat sync status: a tiny level meter and the tempo.
   const beatProblem = beatStatusText(beat);
-  const beatBadge = s.beatSync && slideshow && (
+  const beatBadge = s.beatSync && slideshow && !keepOne && (
     <span className={`beat-badge${beatProblem.problem && !paused ? ' problem' : ''}`} title={beatProblem.problem ? beatProblem.text : 'The slideshow follows the music playing on your computer'}>
       <span className="beat-meter" aria-hidden="true"><span style={{ transform: `scaleY(${Math.max(0.08, Math.min(1, beat.level))})` }} /></span>
       {paused ? 'Beat sync paused' : beatProblem.problem ? "Beat sync can't hear anything (see Timing)" : beat.silent || !beat.bpm ? 'Listening… play some music on your computer' : `♪ ${Math.round(beat.bpm)} BPM`}
@@ -1724,6 +1750,8 @@ export function Player(props: PlayerProps) {
   const viewMenu: MenuItem[] = [
     { label: 'Fit', hint: 'the whole picture', checked: s.fit === 'contain', onSelect: () => set({ fit: 'contain' }) },
     { label: 'Fill', hint: 'crops the edges', checked: s.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
+    { label: 'Original size', hint: 'never made bigger', checked: s.fit === 'original', onSelect: () => set({ fit: 'original' }) },
+    { label: 'Blurred background', hint: 'around Fit and Original size', checked: !!s.blurBg, disabled: s.fit === 'cover', onSelect: () => set({ blurBg: !s.blurBg }) },
     { label: 'Soft glow around', hint: 'instead of black', checked: !!prefs.ambient, sepBefore: true, onSelect: () => saveViewerPrefs({ ambient: !prefs.ambient }) },
     ...(faceCapable ? [{ label: 'Face boxes', hint: 'boxes around faces', checked: prefs.faceBoxes, onSelect: () => setFaceBoxes(!prefs.faceBoxes) }] : []),
   ];
@@ -1780,11 +1808,15 @@ export function Player(props: PlayerProps) {
   );
 
   return (
-    <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi && !mini ? '' : ' idle'}${mini ? ' mini' : ''}${ambient ? ' ambient' : ''}`}
+    <div ref={rootRef} className={`player${props.compact ? ' compact' : ''}${showUi && !mini ? '' : ' idle'}${mini ? ' mini' : ''}${ambient ? ' ambient' : ''}${blurOn ? ' blurbg' : ''}`}
       style={{ ['--fade-ms' as string]: `${fadeMs}ms` }}
       onMouseMove={poke} onMouseDown={poke}>
       {ambient && item?.thumb && <div key={item.key} className="ambient-glow" style={{ backgroundImage: `url("${item.thumb}")` }} aria-hidden="true" />}
-      <div ref={stageRef} className={`stage${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}${tx.film ? ' tx-film' : ''}${edgeHover ? ' at-edge' : ''}`} onPointerDown={onStagePointerDown}
+      {blurOn && item && (
+        <BlurBackdrop key={item.key} kind={isVideo ? 'video' : isGif ? 'gif' : 'image'} src={item.src} thumb={item.thumb} video={videoRef} running={!halted} />
+      )}
+      <div ref={stageRef} style={area ? { left: area.x, top: area.y, width: area.w, height: area.h } : undefined}
+        className={`stage${area ? ' fit-area' : ''}${isDoc ? ' doc' : ''}${zoomed ? ' zoomed' : ''}${tx.film ? ' tx-film' : ''}${edgeHover ? ' at-edge' : ''}`} onPointerDown={onStagePointerDown}
         onPointerMove={onStageHover} onPointerLeave={() => edgeHover && setEdgeHover(null)}
         onContextMenu={(e) => {
           e.preventDefault();

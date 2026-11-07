@@ -14,6 +14,8 @@ export interface ShapePanel {
   anchor: { x: number; y: number };
   /** Higher draws on top. */
   z: number;
+  /** For Fit inside the shape (shapefit.ts), when the path alone doesn't say it (rounded boxes). */
+  outline?: { kind: 'poly'; pts: [number, number][] };
 }
 
 export interface LayoutDef {
@@ -179,7 +181,14 @@ function roundPanel(x: number, y: number, w: number, h: number, r: number, sx: n
   const bw = r2(box.w);
   const bh = r2(box.h);
   const d = `M${R} 0 L${r2(bw - R)} 0 A${R} ${R} 0 0 1 ${bw} ${R} L${bw} ${r2(bh - R)} A${R} ${R} 0 0 1 ${r2(bw - R)} ${bh} L${R} ${bh} A${R} ${R} 0 0 1 0 ${r2(bh - R)} L0 ${R} A${R} ${R} 0 0 1 ${R} 0 Z`;
-  return { box, d, anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 }, z };
+  // The rounded box as a polygon (each corner cut where the arc is), for Fit inside it.
+  const c = R * (1 - Math.SQRT1_2);
+  const k = (n: number) => r2(n);
+  const pts: [number, number][] = [
+    [R, 0], [bw - R, 0], [bw - c, c], [bw, R], [bw, bh - R], [bw - c, bh - c], [bw - R, bh],
+    [R, bh], [c, bh - c], [0, bh - R], [0, R], [c, c],
+  ].map(([x, y]) => [k(x), k(y)] as [number, number]);
+  return { box, d, anchor: { x: box.x + box.w / 2, y: box.y + box.h / 2 }, z, outline: { kind: 'poly', pts } };
 }
 
 const rect = (x: number, y: number, w: number, h: number): Pt[] => [[x, y], [x + w, y], [x + w, y + h], [x, y + h]];
