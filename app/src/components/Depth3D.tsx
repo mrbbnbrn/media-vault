@@ -30,7 +30,7 @@ import {
   NO_DEPTH_PACK, pivotOf, scalePose, sharedCamera, SHIFT, blendDepth, depthForTime, VIDEO_DEPTH_MS, videoFrameDepth,
   type FrameDepths, type FrameFeed, type MotionChoice, type Pose,
 } from '../depth';
-import { drawnRect } from '../flip';
+import { drawnRect, type Fit } from '../flip';
 import {
   fadeAt, fadeDone, fadeTo, flatDepth, maskStats, newFade, subjectDepth, subjectFrame, subjectLetGo, subjectOf,
   type SubjectStats,
@@ -48,7 +48,7 @@ interface Props {
   src: string;
   /** The picture's own size (as shown, after its EXIF orientation). */
   natural: { w: number; h: number };
-  fit: 'contain' | 'cover';
+  fit: Fit;
   /** How long this picture stays (ms; not used by the movement any more, which carries on from picture to picture). */
   showMs?: number;
   /** Paused: the camera waits. */

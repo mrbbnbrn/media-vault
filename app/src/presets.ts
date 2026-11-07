@@ -3,6 +3,9 @@
 
 import type { Order, Repeat } from './playlist';
 import { normalTransition, type Transition } from './transitions';
+import type { Fit } from './flip';
+
+export type { Fit };
 
 export interface PlaybackSettings {
   imageSeconds: number;
@@ -16,7 +19,15 @@ export interface PlaybackSettings {
   order: Order;
   repeat: Repeat;
   speed: number;
-  fit: 'contain' | 'cover';
+  /** Fit (whole picture), Fill (crop edges) or Original size (never enlarged). */
+  fit: Fit;
+  /** With Fit or Original size: the empty space shows a blurred copy of the picture instead of black. */
+  blurBg?: boolean;
+  /**
+   * "Repeat this one": keep showing the current item (videos and GIFs loop,
+   * pictures stay); no timer, video limit or beat moves on. Skipping by hand still works.
+   */
+  repeatThis?: boolean;
   /** How the next item comes in (transitions.ts). Old saved values ('none', 'fade') keep working. */
   transition: Transition;
   /** "Transition speed": how long every transition takes (ms). With beat sync it gets shorter to keep up with fast music. */
@@ -49,6 +60,8 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   repeat: 'all',
   speed: 1,
   fit: 'contain',
+  blurBg: false,
+  repeatThis: false,
   transition: 'fade',
   fadeMs: 350,
   volume: 0.8,
@@ -80,6 +93,9 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     beatMinSeconds: s.beatMinSeconds === 2 ? 0.3 : num(s.beatMinSeconds, 0.3, 0.1, 60),
     transition: normalTransition(s.transition),
     fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
+    fit: s.fit === 'cover' || s.fit === 'original' ? s.fit : 'contain',
+    blurBg: s.blurBg === true,
+    repeatThis: s.repeatThis === true,
     kenBurns: s.kenBurns === true,
     depth3d: s.depth3d === true,
   };

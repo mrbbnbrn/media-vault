@@ -4,7 +4,7 @@
 
 import type { CSSProperties } from 'react';
 import { applyPalette, quantize } from 'gifenc';
-import { drawnRect, type Box } from './flip';
+import { drawnRect, type Box, type Fit } from './flip';
 
 export type Quarter = 0 | 1 | 2 | 3;
 
@@ -17,7 +17,7 @@ export function turnedSize<T extends { w: number; h: number }>(s: T, r: Quarter)
 }
 
 /** Where a picture of nw × nh is drawn on a W × H stage, turned `r`. */
-export function turnedRect(W: number, H: number, nw: number, nh: number, fit: 'contain' | 'cover', r: Quarter, zoom?: { s: number; x: number; y: number }): Box {
+export function turnedRect(W: number, H: number, nw: number, nh: number, fit: Fit, r: Quarter, zoom?: { s: number; x: number; y: number }): Box {
   const t = turnedSize({ w: nw, h: nh }, r);
   return drawnRect(W, H, t.w, t.h, fit, zoom);
 }

@@ -566,7 +566,15 @@ function PlaybackDialog({ s, set, onClose, place }: { s: PlaybackSettings; set: 
           <div role="group" className="seg">
             <button type="button" className={s.fit === 'contain' ? 'on' : ''} onClick={() => set({ fit: 'contain' })}>Fit (whole picture)</button>
             <button type="button" className={s.fit === 'cover' ? 'on' : ''} onClick={() => set({ fit: 'cover' })}>Fill (crop edges)</button>
+            <button type="button" className={s.fit === 'original' ? 'on' : ''} onClick={() => set({ fit: 'original' })}
+              title="Never made bigger than its own size; only shrinks when it doesn't fit">Original size</button>
           </div>
+          <span />
+          <span className="row">
+            <label className="check" title="With Fit or Original size, the empty space shows a blurred copy of the picture instead of black">
+              <input type="checkbox" checked={!!s.blurBg} disabled={s.fit === 'cover'} onChange={(e) => set({ blurBg: e.target.checked })} /> Blurred background
+            </label>
+          </span>
 
           <span>Transition</span>
           <div role="group" className="seg tx-pick" aria-label="Transition">

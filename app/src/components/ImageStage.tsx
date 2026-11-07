@@ -18,6 +18,7 @@ import { animationMs } from '../media';
 import { cachedPicture, fullPicture, holdPicture, loadPicture, resizedPicture, type Picture } from '../picturecache';
 import type { ViewerSettings } from '../api';
 import { turnedSize, turnedStyle, turnMatrix, type Quarter } from '../rotation';
+import { cssFit, fitScale, type Fit } from '../flip';
 
 export interface Zoom {
   s: number;
@@ -51,7 +52,7 @@ interface Props {
   src: string;
   kind: 'image' | 'gif';
   name: string;
-  fit: 'contain' | 'cover';
+  fit: Fit;
   zoom: Zoom;
   /** Shown turned this many clockwise quarter turns (rotation.ts). */
   rot?: Quarter;
@@ -129,7 +130,7 @@ export function ImageStage(props: Props) {
     // Turned: the fit uses the turned shape; the picture is drawn turned into that box.
     const r = p.rot ?? 0;
     const t = turnedSize({ w: nw, h: nh }, r);
-    const k = p.fit === 'cover' ? Math.max(W / t.w, H / t.h) : Math.min(W / t.w, H / t.h);
+    const k = fitScale(W, H, t.w, t.h, p.fit);
     const dw = t.w * k;
     const dh = t.h * k;
     const z = p.zoom;
@@ -427,7 +428,7 @@ export function ImageStage(props: Props) {
       <div ref={boxRef} className="image-stage">
         <div className="zoom-layer" style={{ transform: `translate(${z.x}px, ${z.y}px) scale(${z.s})` }}>
           <img className={`media ${props.className ?? ''}`}
-            style={{ objectFit: props.fit, imageRendering: props.prefs.smoothZoom ? undefined : 'pixelated', ...turnedStyle(props.rot ?? 0, size.w, size.h) }}
+            style={{ objectFit: cssFit(props.fit), imageRendering: props.prefs.smoothZoom ? undefined : 'pixelated', ...turnedStyle(props.rot ?? 0, size.w, size.h) }}
             src={fallback} alt={props.name} draggable={false} />
         </div>
       </div>
