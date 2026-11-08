@@ -18,6 +18,8 @@ export interface BeatSyncOptions {
   /** Never advance sooner than this after the previous advance. */
   minSeconds: number;
   onAdvance: () => void;
+  /** Every beat heard, with its strength 0..1 (optional). */
+  onBeat?: (strength: number) => void;
 }
 
 export interface BeatSync {
@@ -109,6 +111,7 @@ export function useBeatSync(opts: BeatSyncOptions): BeatSync {
         setBpm(b.bpm);
         setPulse((p) => p + 1);
         const o = optsRef.current;
+        o.onBeat?.(Number.isFinite(b.strength) ? b.strength : 0.5);
         if (counter.current.beat(now, o.everyBeats, o.minSeconds)) o.onAdvance();
       };
       const offBeat = await onEvent<BeatEvent>('beat', onBeat);
