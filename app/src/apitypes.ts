@@ -797,3 +797,67 @@ export interface StorageDone {
 }
 
 export type LockReason = 'idle' | 'safetyNet' | 'systemLocked' | 'sleep' | 'minimized' | 'panicKey' | 'manual';
+
+// ---- Wi-Fi transfer with the phone (transfer/ in the backend) ----------------------------
+
+/** A paired phone. */
+export interface TransferPeer {
+  id: string;
+  name: string;
+  /** When it was paired (seconds since 1970). */
+  pairedAt: number;
+  connected: boolean;
+}
+
+/** Pairing a phone: the steps after "Pair a phone". */
+export interface TransferPairing {
+  state: 'waiting' | 'code' | 'confirmed' | 'done' | 'failed';
+  /** "004217" once known. */
+  code: string | null;
+  phoneName: string | null;
+  /** End of the 2-minute window (ms since 1970). */
+  expiresAt: number;
+  /** Why it failed, or "Paired with …". */
+  message: string | null;
+}
+
+export interface TransferStatus {
+  listening: boolean;
+  port: number | null;
+  peers: TransferPeer[];
+  /** Name of the connected phone. */
+  connected: string | null;
+  pairing: TransferPairing | null;
+  /** A transfer is running in either direction. */
+  busy: boolean;
+}
+
+/** Payload of 'transfer-progress' (a few times a second while sending or receiving). */
+export interface TransferProgress {
+  dir: 'send' | 'receive';
+  done: number;
+  total: number;
+  bytes: number;
+  totalBytes: number;
+  /** File name. */
+  current: string;
+}
+
+/** Payload of 'transfer-done' (once per finished batch). */
+export interface TransferDone {
+  dir: 'send' | 'receive';
+  /** Items sent / received. */
+  done: number;
+  /** Skipped: the other side already had them. */
+  have: number;
+  /** Skipped: the other side can't take that kind. */
+  cant: number;
+  /** (name, why) */
+  failed: [string, string][];
+  /** Why it was cut short, if it was. */
+  stopped: string | null;
+  /** Where received items landed ("Received from phone"). */
+  folder: number | null;
+  /** Playable copies made (receive only). */
+  playable: number;
+}

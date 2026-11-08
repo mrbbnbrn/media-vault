@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { EncryptionSection } from '../components/EncryptionSection';
+import { PhoneTransferSection } from '../components/PhoneTransfer';
 import { api, DEFAULT_LOOK, DEFAULT_VIEWER, onEvent, type AppConfig, type LookSettings, type ViewerSettings, type StorageDone, type StorageInfo, type StorageProgress } from '../api';
 import type { Nav } from '../App';
 import { Busy, ErrorBox, PasswordPair, TopBar, passwordsOk } from '../components/Chrome';
@@ -83,6 +84,7 @@ export function Settings({ nav, page, at }: { nav: Nav; page?: SettingsPage; at?
     ['viewer', 'Viewer'],
     ['security', 'Security'],
     ['storage', 'Storage'],
+    ['phone', 'Phone transfer'],
     ['background', 'Background work'],
     ['ai', 'AI & 3D'],
     ['about', 'About'],
@@ -326,6 +328,7 @@ export function Settings({ nav, page, at }: { nav: Nav; page?: SettingsPage; at?
               <CheckAndExportSection />
             </>
           )}
+          {section === 'phone' && <PhoneTransferSection />}
           {section === 'background' && <BackgroundSection cfg={cfg} update={update} />}
           {section === 'ai' && <AiSection viewer={viewer} setViewer={setViewer} poor={<PoorFaceSettingsView value={cfg.poorFaces} onChange={(poorFaces) => update({ ...cfg, poorFaces })} />} />}
           {section === 'about' && (

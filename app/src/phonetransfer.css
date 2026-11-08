@@ -1,0 +1,32 @@
+/* ---- Settings → Phone transfer (components/PhoneTransfer.tsx) and the title bar's phone mark ---- */
+
+.phone-transfer { max-width: 620px; }
+.pt-status { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--fs-md); }
+.pt-status.on { color: var(--text); }
+.pt-status .btn { margin-left: auto; }
+.pt-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+.pt-status.on .pt-dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+
+.pt-pair { display: flex; flex-direction: column; gap: 12px; padding: 16px 18px; border-radius: 12px; background: var(--panel); border: 1px solid var(--line); }
+.pt-step { margin: 0; font-size: var(--fs-base); line-height: 1.5; }
+.pt-ok { color: var(--accent-text); }
+.pt-code { font-size: 44px; font-weight: 600; letter-spacing: 0.08em; color: var(--text); line-height: 1.1; }
+.pt-code.dim { color: var(--muted); font-size: 30px; }
+
+.pt-peers { display: flex; flex-direction: column; gap: 8px; }
+.pt-peer { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line); color: var(--muted); }
+.pt-peer-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.pt-peer-text b { color: var(--text); font-weight: 600; }
+.pt-peer-text .faint { font-size: 12px; }
+.pt-badge { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line-2); color: var(--faint); }
+.pt-badge.on { color: var(--accent-text); border-color: var(--accent-border); background: var(--accent-soft-2); }
+
+.pt-note { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; line-height: 1.55; }
+.pt-note p { margin: 0; }
+.pt-help summary { cursor: pointer; font-size: var(--fs-md); }
+.pt-help p { margin: 8px 0 0; line-height: 1.55; font-size: var(--fs-md); }
+
+/* Title bar: "Phone connected" (and how far a transfer is). */
+.wt-phone { display: flex; align-items: center; gap: 6px; padding: 0 10px; border: none; background: none; color: var(--accent); font-size: 12px; opacity: 0.75; cursor: default; }
+.wt-phone:hover { opacity: 1; background: color-mix(in srgb, var(--panel) 55%, transparent); }
+.wt-phone .wt-phone-text { color: var(--text-2); white-space: nowrap; }
