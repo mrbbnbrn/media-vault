@@ -21,6 +21,8 @@ import { Wall, WALL_SIZES, WALL_SPEEDS } from '../components/Wall';
 import { MosaicWall } from '../components/MosaicWall';
 import { BreatheControls, BreatheShow } from '../components/BreatheShow';
 import { DEFAULT_BREATHE, normalizeBreathe, type BreatheSettings } from '../breathe';
+import { GridModeBar, GridModeButtons, GridModeStage, GRID_MODE_INFO } from '../components/GridModes';
+import { DEFAULT_GRID_MODES, isGridMode, normalizeGridModes, type GridModes } from '../gridmodes';
 import { DEFAULT_MOSAIC, MOSAIC_SIZES, MOSAIC_SPEEDS, normalizeMosaic, type MosaicSettings } from '../mosaic';
 import { setDropHandler } from '../drop';
 import { setCleanFullscreen } from '../fullscreen';
@@ -69,6 +71,8 @@ interface LayoutSettings {
   mosaic?: MosaicSettings;
   /** Breathe mode (shares the wall's source). Older saves do not have it. */
   breathe?: BreatheSettings;
+  /** Breathing grid, Pulse grid and Parallax layers (share the wall's source). Older saves do not have them. */
+  grids?: GridModes;
   /** The free-form layout's boxes, when it uses one. */
   free?: FreeSnapshot;
 }
@@ -153,6 +157,7 @@ const blankWall = (): WallState => ({ source: null, items: [], count: 20, speed:
 let remembered: { layout: string; panels: Panel[]; master: number; wall: WallState } | null = null;
 let rememberedMosaic: MosaicSettings = DEFAULT_MOSAIC;
 let rememberedBreathe: BreatheSettings = DEFAULT_BREATHE;
+let rememberedGrids: GridModes = DEFAULT_GRID_MODES;
 
 /** Small picture of a layout for the layout menu. */
 function LayoutThumb({ id }: { id: string }) {
@@ -181,6 +186,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const setMosaic = (patch: Partial<MosaicSettings>) => setMosaicState((m) => (rememberedMosaic = { ...m, ...patch }));
   const [breathe, setBreatheState] = useState<BreatheSettings>(rememberedBreathe);
   const setBreathe = (patch: Partial<BreatheSettings>) => setBreatheState((b) => (rememberedBreathe = { ...b, ...patch }));
+  const [grids, setGridsState] = useState<GridModes>(rememberedGrids);
+  const setGrids = (patch: Partial<GridModes>) => setGridsState((g) => (rememberedGrids = { ...g, ...patch }));
   const [master, setMaster] = useState(remembered?.master ?? 0.8);
   const [masterMuted, setMasterMuted] = useState(false);
   const [allPaused, setAllPaused] = useState(false);
@@ -210,7 +217,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   // Mosaic is a kind of wall: same source, same "watch it alone".
   const isMosaic = layout === 'mosaic';
   const isBreathe = layout === 'breathe';
-  const isWall = layout === 'wall' || isMosaic || isBreathe;
+  const gridMode = isGridMode(layout) ? layout : null;
+  const isWall = layout === 'wall' || isMosaic || isBreathe || !!gridMode;
   const def = layoutDef(isWall ? '4' : layout);
   const n = isWall ? 0 : def.count;
 
@@ -303,7 +311,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     if (solo != null) exitSolo();
     setWallSolo(null);
     setLayout(id);
-    const d = id === 'wall' || id === 'mosaic' || id === 'breathe' ? null : layoutDef(id);
+    const d = id === 'wall' || id === 'mosaic' || id === 'breathe' || isGridMode(id) ? null : layoutDef(id);
     if (d) setFocus((f) => Math.min(f, d.count - 1));
   };
 
@@ -366,6 +374,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       wall: { source: wall.source, count: wall.count, speed: wall.speed },
       mosaic,
       breathe,
+      grids,
       free: freeSnapshot(layout),
     };
     await api.saveNamed('layout', { id: null, name, settings });
@@ -374,7 +383,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const loadLayout = async (l: Named<LayoutSettings>) => {
     const s = l.settings;
     const id = restoreFree(s.layout ?? String(s.n ?? 4), s.free, l.id ?? l.name);
-    const count = id === 'wall' || id === 'mosaic' || id === 'breathe' ? 0 : layoutDef(id).count;
+    const count = id === 'wall' || id === 'mosaic' || id === 'breathe' || isGridMode(id) ? 0 : layoutDef(id).count;
     const fresh = Array.from({ length: MAX_PANELS }, (_, i) => blank(normalize(s.panels?.[i]?.settings)));
     setPanels(fresh);
     changeLayout(id);
@@ -386,6 +395,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     }
     if (s.mosaic) setMosaic(normalizeMosaic(s.mosaic));
     if (s.breathe) setBreathe(normalizeBreathe(s.breathe));
+    if (s.grids) setGrids(normalizeGridModes(s.grids));
   };
 
   const layoutItems = useMemo(() => [
@@ -610,7 +620,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             )}
           </div>
           {vault && (
-            <button type="button" className={`btn btn-sm${isWall && !isMosaic && !isBreathe ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
+            <button type="button" className={`btn btn-sm${layout === 'wall' ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
               title="Many small tiles that swap at random">Wall</button>
           )}
           {vault && (
@@ -621,8 +631,11 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             <button type="button" className={`btn btn-sm${isBreathe ? ' accent-soft' : ''}`} onClick={() => changeLayout('breathe')}
               title="A calm slideshow that slowly breathes — and can beat like a heart to your music">Breathe</button>
           )}
+          {vault && <GridModeButtons current={layout} onPick={changeLayout} />}
           <button type="button" className="btn btn-sm" onClick={() => openEditor()} title="Draw your own layout from boxes">Edit layout</button>
-          {isBreathe ? (
+          {gridMode ? (
+            <GridModeBar mode={gridMode} s={grids} set={setGrids} source={<Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />} />
+          ) : isBreathe ? (
             <BreatheControls s={breathe} set={setBreathe} source={<Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />} />
           ) : isMosaic ? (
             <>
@@ -674,7 +687,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           onDone={(boxes) => endEdit(boxes)} onSave={(name, boxes) => endEdit(boxes, name)} />
       ) : isWall ? (
         <div className="mstage" ref={stageRef}>
-          {isBreathe ? (
+          {gridMode ? (
+            <GridModeStage mode={gridMode} s={grids} items={wall.items} error={wall.error} paused={allPaused || !!wallSolo} onOpen={setWallSolo}
+              pick={<Dropdown className="btn btn-sm" label="Choose what to show ▾" items={pickMenu('wall')} />} />
+          ) : isBreathe ? (
             wall.items.length ? (
               <BreatheShow items={wall.items} settings={breathe} volume={master} paused={allPaused || !!wallSolo} showStatus={showBar} onOpen={setWallSolo} />
             ) : (
@@ -712,7 +728,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <ErrorBoundary name="the wall's viewer" onError={() => setWallSolo(null)}>
               <Player items={wall.items} startKey={wallSolo.key} settings={panels[0].settings} onSettings={(s) => update(0, { settings: s })}
                 keys activityId="wall-solo" onClose={() => setWallSolo(null)}
-                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the {isMosaic ? 'mosaic' : isBreathe ? 'slideshow' : 'wall'}</button>} />
+                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the {gridMode ? GRID_MODE_INFO[gridMode].back : isMosaic ? 'mosaic' : isBreathe ? 'slideshow' : 'wall'}</button>} />
               </ErrorBoundary>
             </div>
           )}
