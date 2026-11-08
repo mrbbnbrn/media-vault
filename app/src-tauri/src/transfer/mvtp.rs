@@ -331,6 +331,7 @@ pub fn parse_pair_discover(p: &[u8]) -> Option<[u8; 16]> {
     (p.len() == 22 && p[..6] == head(ty::PAIR_DISCOVER)).then(|| p[6..22].try_into().unwrap())
 }
 
+#[cfg_attr(not(test), allow(dead_code))] // the phone's side: used by the tests' fake phone
 pub fn pair_discover(nonce: &[u8; 16]) -> Vec<u8> {
     [&head(ty::PAIR_DISCOVER)[..], nonce].concat()
 }
@@ -340,6 +341,7 @@ pub fn pair_answer(nonce: &[u8; 16], port: u16) -> Vec<u8> {
 }
 
 /// A DISCOVER packet (phone side, used by the tests' fake phone).
+#[cfg_attr(not(test), allow(dead_code))] // the phone's side: used by the tests' fake phone
 pub fn discover(disc_key: &[u8; 32], ts_ms: u64, nonce: &[u8; 16]) -> Vec<u8> {
     let body = [&head(ty::DISCOVER)[..], &ts_ms.to_be_bytes(), nonce].concat();
     let mac = hmac256(disc_key, &[&body]);
@@ -347,7 +349,10 @@ pub fn discover(disc_key: &[u8; 32], ts_ms: u64, nonce: &[u8; 16]) -> Vec<u8> {
 }
 
 /// DISCOVER parts without checking the MAC: (ts_ms, nonce, body, mac).
-pub fn split_discover(p: &[u8]) -> Option<(u64, [u8; 16], &[u8], &[u8])> {
+/// (ts_ms, nonce, the bytes the MAC covers, the MAC)
+pub type DiscoverParts<'a> = (u64, [u8; 16], &'a [u8], &'a [u8]);
+
+pub fn split_discover(p: &[u8]) -> Option<DiscoverParts<'_>> {
     if p.len() != 6 + 8 + 16 + 32 || p[..6] != head(ty::DISCOVER) {
         return None;
     }

@@ -44,7 +44,7 @@ pub fn start(inner: &Shared, s: Arc<Session>) {
                     inner.activity.lock().unwrap_or_else(|e| e.into_inner()).playing(Instant::now());
                 }
             }),
-            playable: Box::new(|s, ids| playable_copies(s, ids)),
+            playable: Box::new(playable_copies),
         },
         server::Ports::default(),
     );

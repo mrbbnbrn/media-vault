@@ -246,9 +246,7 @@ pub fn answer(conn: &Connection, offer: &Offer, free: Option<u64>) -> Answer {
         .items
         .iter()
         .map(|it| {
-            let a = if !KINDS.contains(&it.kind.as_str()) {
-                ans::CANT
-            } else if !valid_sha(&it.sha256) {
+            let a = if !KINDS.contains(&it.kind.as_str()) || !valid_sha(&it.sha256) {
                 ans::CANT
             } else if !wanted_sha.insert(it.sha256.to_ascii_lowercase()) || have(conn, &it.sha256) {
                 ans::HAVE

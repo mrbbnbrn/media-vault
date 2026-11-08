@@ -219,7 +219,7 @@ impl Conn {
                 return (!self.is_closed()).then(|| e.to_string());
             }
             let l = u32::from_be_bytes(len);
-            if l < 17 || l > mvtp::MAX_FRAME {
+            if !(17..=mvtp::MAX_FRAME).contains(&l) {
                 return Some("The phone sent something unexpected.".into());
             }
             let mut body = vec![0u8; l as usize];

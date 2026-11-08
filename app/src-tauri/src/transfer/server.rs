@@ -17,13 +17,16 @@ use super::mvtp::{self, KeyPair, Sealer, ty};
 use super::store::{self, Peer};
 use crate::session::Session;
 
+pub type EmitFn = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
+pub type PlayableFn = Box<dyn Fn(&Arc<Session>, &[i64]) -> usize + Send + Sync>;
+
 /// How the transfer talks to the rest of the app (the window, auto-lock).
 pub struct Hooks {
-    pub emit: Box<dyn Fn(&str, serde_json::Value) + Send + Sync>,
+    pub emit: EmitFn,
     /// A transfer is running: counts as activity, so the vault doesn't auto-lock.
     pub keep_awake: Box<dyn Fn() + Send + Sync>,
     /// Make playable copies of these received items; returns how many were made.
-    pub playable: Box<dyn Fn(&Arc<Session>, &[i64]) -> usize + Send + Sync>,
+    pub playable: PlayableFn,
 }
 
 /// Ports (0 = any free one; the tests use that).
