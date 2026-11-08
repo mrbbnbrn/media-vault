@@ -9,9 +9,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { PlayItem } from '../media';
 import { pickWeighted } from './Wall';
 import {
-  chooseMosaic, MOSAIC_MAX_VIDEOS, MOSAIC_SPEEDS, mosaicPace, mosaicRows, packMosaic, polish, swapPiece,
+  chooseMosaic, MOSAIC_MAX_VIDEOS, MOSAIC_SPEEDS, mosaicPace, mosaicRows, orderByColour, packMosaic, polish, swapPiece,
   type Box, type Chooser, type MosaicSettings,
 } from '../mosaic';
+import { measureColours, onColours, rainbowOf, stopMeasuring } from '../colourcache';
+import { ContextMenu } from './Dialogs';
+import { LockIcon } from './Icons';
 import './mosaic.css';
 
 /** Shapes measured when the media loaded (for files whose size the vault does not know). */
@@ -54,6 +57,17 @@ export function MosaicWall(props: {
   const uid = useRef(1);
   const fresh = useRef(new Set<number>());
   const stopped = props.paused || hidden;
+  // Locked pieces (right-click): never swapped out, a locked video always plays, on loop. For this visit.
+  const [locked, setLocked] = useState<Set<string>>(() => new Set());
+  const lockedRef = useRef(locked);
+  lockedRef.current = locked;
+  const [menu, setMenu] = useState<{ x: number; y: number; item: PlayItem } | null>(null);
+  const toggleLock = (key: string) => setLocked((l) => {
+    const n = new Set(l);
+    if (n.has(key)) n.delete(key);
+    else n.add(key);
+    return n;
+  });
 
   useLayoutEffect(() => {
     const el = ref.current;
@@ -71,10 +85,16 @@ export function MosaicWall(props: {
     return () => document.removeEventListener('visibilitychange', on);
   }, []);
 
+  // Colour flow (read through a ref, so turning it on or off re-sorts what is there instead of starting over).
+  const colourOn = useRef(props.settings.colour);
+  colourOn.current = props.settings.colour;
   const chooser = useMemo<Chooser<PlayItem>>(() => ({
     key: (i) => i.key,
     aspect: aspectOf,
     pick: (ex) => pickWeighted(props.items, ex),
+    get colour() {
+      return colourOn.current ? (i: PlayItem) => rainbowOf(i.key) : undefined;
+    },
   }), [props.items]);
 
   const wrap = (list: PlayItem[], old: Piece[]): Piece[] => {
@@ -94,7 +114,12 @@ export function MosaicWall(props: {
   useEffect(() => {
     if (!ready) return;
     setLeaving([]);
-    setPieces(wrap(chooseMosaic(chooser, size.w, size.h, rows), []));
+    // Locked pieces stay through a new screenful (when they are still in the source).
+    setPieces((cur) => {
+      const there = new Set(props.items.map((i) => i.key));
+      const start = cur.filter((p) => lockedRef.current.has(p.item.key) && there.has(p.item.key)).map((p) => p.item);
+      return wrap(chooseMosaic(chooser, size.w, size.h, rows, start, lockedRef.current), cur.filter((p) => start.includes(p.item)));
+    });
   }, [chooser, rows, ready]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fit = useMemo(() => packMosaic(pieces.map((p) => aspectOf(p.item)), size.w, size.h, rows), [pieces, size.w, size.h, rows, shapeTick]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -102,7 +127,7 @@ export function MosaicWall(props: {
   // The window changed shape, or a piece turned out to have another shape: improve the fit.
   useEffect(() => {
     if (!ready || !pieces.length || fit.error < 0.015) return;
-    setPieces((cur) => wrap(polish(cur.map((p) => p.item), chooser, size.w, size.h, rows), cur));
+    setPieces((cur) => wrap(polish(cur.map((p) => p.item), chooser, size.w, size.h, rows, undefined, 40, lockedRef.current), cur));
   }, [size.w, size.h, shapeTick]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const boxOf = useRef(new Map<number, Box>());
@@ -120,8 +145,8 @@ export function MosaicWall(props: {
       const cur = pieces;
       // Never take away the piece under the mouse.
       const hv = hoverRef.current;
-      const keep = new Set(cur.filter((p) => p.uid === hv).map((p) => p.item.key));
-      const oldest = cur.filter((p) => p.uid !== hv)
+      const keep = new Set([...cur.filter((p) => p.uid === hv).map((p) => p.item.key), ...locked]);
+      const oldest = cur.filter((p) => p.uid !== hv && !locked.has(p.item.key))
         .map((p) => ({ p, t: (born.current.get(p.uid) ?? 0) + Math.random() * 1500 }))
         .sort((x, y) => x.t - y.t).slice(0, pace.count).map((x) => x.p.item.key);
       if (!oldest.length) return;
@@ -130,6 +155,7 @@ export function MosaicWall(props: {
         const i = list.findIndex((x) => x.key === key);
         if (i >= 0) list = swapPiece(list, i, chooser, size.w, size.h, rows, keep);
       }
+      list = orderByColour(list, chooser, size.w, size.h, rows, new Set(cur.filter((p) => p.uid === hv).map((p) => p.item.key)));
       const next = wrap(list, cur);
       const stayIds = new Set(next.map((p) => p.uid));
       const gone = cur.filter((p) => !stayIds.has(p.uid)).map((p) => ({ ...p, box: boxOf.current.get(p.uid)! })).filter((p) => p.box);
@@ -139,7 +165,30 @@ export function MosaicWall(props: {
       setPieces(next);
     }, pace.gap * 1000 * (0.85 + Math.random() * 0.3));
     return () => clearTimeout(t);
-  }, [pieces, stopped, stay, chooser, size.w, size.h, rows, ready]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [pieces, stopped, stay, chooser, size.w, size.h, rows, ready, locked]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Colour flow: measure the colours of what is on screen (then the rest, from thumbnails), and
+  // when new ones are in (or it is turned on), sort the rows by colour; the pieces glide there.
+  const colour = props.settings.colour;
+  useEffect(() => {
+    if (!colour || !pieces.length) return;
+    measureColours(pieces.map((p) => p.item), props.items);
+  }, [colour, pieces, props.items]);
+  useEffect(() => () => stopMeasuring(), []);
+  const resort = useRef<() => void>(() => {});
+  resort.current = () => {
+    if (!colourOn.current || !ready) return;
+    setPieces((cur) => {
+      const hv = hoverRef.current;
+      const keep = new Set(cur.filter((p) => p.uid === hv).map((p) => p.item.key));
+      const list = orderByColour(cur.map((p) => p.item), chooser, size.w, size.h, rows, keep);
+      return list.every((it, i) => it === cur[i].item) ? cur : wrap(list, cur);
+    });
+  };
+  useEffect(() => onColours(() => resort.current()), []);
+  useEffect(() => {
+    if (colour) resort.current();
+  }, [colour]);
 
   // Videos take turns playing.
   const videoCount = pieces.filter((p) => p.item.kind === 'video').length;
@@ -152,10 +201,12 @@ export function MosaicWall(props: {
     const vids = pieces.filter((p) => p.item.kind === 'video').map((p) => p.uid);
     const set = new Set<number>();
     if (hover != null && vids.includes(hover)) set.add(hover);
+    // Locked videos always play (they count towards the limit, but never wait their turn).
+    for (const p of pieces) if (p.item.kind === 'video' && locked.has(p.item.key) && set.size < MOSAIC_MAX_VIDEOS) set.add(p.uid);
     const off = vids.length ? (turn * Math.max(1, Math.floor(MOSAIC_MAX_VIDEOS / 2))) % vids.length : 0;
     for (let k = 0; k < vids.length && set.size < MOSAIC_MAX_VIDEOS; k++) set.add(vids[(off + k) % vids.length]);
     return set;
-  }, [pieces, turn, hover]);
+  }, [pieces, turn, hover, locked]);
 
   // Pause or resume the videos.
   useEffect(() => {
@@ -212,14 +263,27 @@ export function MosaicWall(props: {
       {pieces.map((p, i) => {
         const b = fit.boxes[i];
         if (!b) return null;
+        const isLocked = locked.has(p.item.key);
         return (
-          <button key={p.uid} type="button" className={`mosaic-piece${fresh.current.has(p.uid) ? ' entering' : ''}${hover === p.uid ? ' hover' : ''}`}
-            style={style(b)} title={`${p.item.name} — double-click to watch it alone`}
-            onPointerEnter={() => setHover(p.uid)} onDoubleClick={() => props.onOpen(p.item)}>
+          <button key={p.uid} type="button" className={`mosaic-piece${fresh.current.has(p.uid) ? ' entering' : ''}${hover === p.uid ? ' hover' : ''}${isLocked ? ' locked' : ''}`}
+            style={style(b)} title={`${p.item.name}${isLocked ? ' (locked)' : ''} — double-click to watch it alone, right-click to ${isLocked ? 'unlock' : 'lock'}`}
+            onPointerEnter={() => setHover(p.uid)} onDoubleClick={() => props.onOpen(p.item)}
+            onContextMenu={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setMenu({ x: e.clientX, y: e.clientY, item: p.item });
+            }}>
             {media(p)}
+            {isLocked && <span className="mosaic-lock" aria-label="Locked"><LockIcon size={13} /></span>}
           </button>
         );
       })}
+      {menu && (
+        <ContextMenu x={menu.x} y={menu.y} title={menu.item.name} onClose={() => setMenu(null)}
+          items={[locked.has(menu.item.key)
+            ? { label: 'Unlock', hint: 'it changes again like the others', onSelect: () => toggleLock(menu.item.key) }
+            : { label: 'Lock this one', hint: 'keeps playing on loop', onSelect: () => toggleLock(menu.item.key) }]} />
+      )}
     </div>
   );
 }

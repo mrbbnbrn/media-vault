@@ -21,6 +21,11 @@
   background: linear-gradient(100deg, transparent 38%, rgba(157, 226, 218, 0.028) 47%, rgba(157, 226, 218, 0.045) 50%, rgba(157, 226, 218, 0.028) 53%, transparent 62%);
   animation: rv-sheen 46s linear infinite; will-change: transform; }
 @keyframes rv-sheen { from { transform: translate3d(-22%, 0, 0); } to { transform: translate3d(22%, 0, 0); } }
+/* Falling from the top: the band of light drifts down instead. */
+.rv-down .rv-sheen { top: -60%; bottom: auto; left: -10%; width: 120%; height: 220%;
+  background: linear-gradient(190deg, transparent 38%, rgba(157, 226, 218, 0.028) 47%, rgba(157, 226, 218, 0.045) 50%, rgba(157, 226, 218, 0.028) 53%, transparent 62%);
+  animation-name: rv-sheen-down; }
+@keyframes rv-sheen-down { from { transform: translate3d(0, -22%, 0); } to { transform: translate3d(0, 22%, 0); } }
 
 /* The stage makes no stacking context: the motes sit between the far and the near layers. */
 .rv-stage { position: absolute; inset: 0; pointer-events: none; }
@@ -60,6 +65,10 @@
 
 .rv-mist { position: absolute; inset: 0; z-index: 50; pointer-events: none;
   background: linear-gradient(180deg, rgba(2, 5, 7, 0.92) 0%, rgba(2, 5, 7, 0.35) 9%, transparent 20%, transparent 74%, rgba(3, 8, 9, 0.5) 88%, rgba(3, 7, 8, 0.9) 100%); }
+/* Falling: the sides fade instead (the cards come out of the dark at the top and go at the bottom). */
+.rv-down .rv-mist {
+  background: linear-gradient(90deg, rgba(2, 5, 7, 0.9) 0%, rgba(2, 5, 7, 0.3) 8%, transparent 16%, transparent 84%, rgba(2, 5, 7, 0.3) 92%, rgba(2, 5, 7, 0.9) 100%),
+    linear-gradient(180deg, rgba(2, 5, 7, 0.75) 0%, transparent 10%, transparent 86%, rgba(3, 7, 8, 0.7) 100%); }
 .rv-vignette { position: absolute; inset: 0; z-index: 51; pointer-events: none; background: radial-gradient(120% 95% at 50% 48%, transparent 52%, rgba(0, 0, 0, 0.62) 100%); }
 .rv-grain { position: absolute; inset: -64px; z-index: 52; pointer-events: none; opacity: 0.035; background-size: 128px 128px; animation: rv-grain 0.9s steps(6) infinite; will-change: transform; }
 @keyframes rv-grain {

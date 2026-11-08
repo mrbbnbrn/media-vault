@@ -5,6 +5,8 @@
 // Whatever is left (usually well under 1%) is taken up by trimming every
 // piece by the same tiny amount, never more than MAX_CROP, never by gaps.
 
+import { quantile, sortSlots } from './colour';
+
 export const MOSAIC_GAP = 4;
 /** At most this many videos actually play at once; the rest show a still. */
 export const MOSAIC_MAX_VIDEOS = 8;
@@ -43,8 +45,10 @@ export interface MosaicSettings {
   speed: MosaicSpeed;
   /** Play the sound of the piece under the mouse. */
   sound: boolean;
+  /** Colour flow: pieces sit next to ones of similar colour (a rainbow across the screen). Older saves do not have it. */
+  colour: boolean;
 }
-export const DEFAULT_MOSAIC: MosaicSettings = { size: 'normal', speed: 'normal', sound: false };
+export const DEFAULT_MOSAIC: MosaicSettings = { size: 'normal', speed: 'normal', sound: false, colour: false };
 
 /** Settings from a saved layout (anything missing or odd falls back to the default). */
 export function normalizeMosaic(x: unknown): MosaicSettings {
@@ -53,6 +57,7 @@ export function normalizeMosaic(x: unknown): MosaicSettings {
     size: MOSAIC_SIZES.some((s) => s.id === o.size) ? o.size! : DEFAULT_MOSAIC.size,
     speed: MOSAIC_SPEEDS.some((s) => s.id === o.speed) ? o.speed! : DEFAULT_MOSAIC.speed,
     sound: typeof o.sound === 'boolean' ? o.sound : DEFAULT_MOSAIC.sound,
+    colour: typeof o.colour === 'boolean' ? o.colour : DEFAULT_MOSAIC.colour,
   };
 }
 export const mosaicRows = (size: MosaicSize) => MOSAIC_SIZES.find((s) => s.id === size)?.rows ?? 3;
@@ -144,6 +149,50 @@ export interface Chooser<T> {
   /** A random pick (by weight), avoiding these keys when there is anything else. */
   pick: (exclude: Set<string>) => T | null;
   rnd?: () => number;
+  /** Colour flow: the piece's place on the rainbow (0 … 1, colour.ts), null while unknown. Leave out for no colour flow. */
+  colour?: (t: T) => number | null;
+}
+
+/** How much a colour mismatch counts against a fit (per piece put in; 0 … 1 apart on the rainbow). */
+const COLOUR_WEIGHT = 0.03;
+
+/**
+ * Colour flow: the rainbow position a piece in box `i` should have. The pieces
+ * on screen spread over the screen's width by colour, so a spot `f` of the way
+ * across wants the `f` quantile of their colours.
+ */
+export function colourTarget<T>(list: T[], i: number, c: Chooser<T>, W: number, H: number, rows: number): number | null {
+  if (!c.colour || W <= 0) return null;
+  const b = packMosaic(list.map(c.aspect), W, H, rows).boxes[i];
+  if (!b) return null;
+  const vals = list.filter((_, k) => k !== i).map(c.colour).filter((v): v is number => v != null);
+  return quantile(vals, (b.x + b.w / 2) / W);
+}
+
+/**
+ * Colour flow: every row sorted by colour from left to right (pieces of
+ * unknown colour, and `keep` ones, stay where they are). Order within a row
+ * doesn't change the fit; when the new order lets the rows break better, the
+ * new rows are sorted again.
+ */
+export function orderByColour<T>(listIn: T[], c: Chooser<T>, W: number, H: number, rows: number, keep = new Set<string>()): T[] {
+  const col = c.colour;
+  if (!col || !listIn.length) return listIn;
+  const pos = (t: T) => (keep.has(c.key(t)) ? null : col(t));
+  let list = listIn;
+  const first = packMosaic(list.map(c.aspect), W, H, rows);
+  let starts = first.rowStarts;
+  // The new order can make the rows break elsewhere, and that may fit worse: then an earlier round (or none) is kept.
+  let best = listIn;
+  for (let round = 0; round < 4; round++) {
+    const ends = [...starts.slice(1), list.length];
+    for (let r = 0; r < starts.length; r++) list = sortSlots(list, Array.from({ length: ends[r] - starts[r] }, (_, k) => starts[r] + k), pos);
+    const again = packMosaic(list.map(c.aspect), W, H, rows);
+    if (again.error <= first.error + 0.003) best = list;
+    if (again.rowStarts.join() === starts.join()) break;
+    starts = again.rowStarts;
+  }
+  return best;
 }
 
 const errorOf = <T,>(list: T[], c: Chooser<T>, W: number, H: number, rows: number) =>
@@ -181,25 +230,36 @@ function candidates<T>(on: T[], c: Chooser<T>, k: number): T[] {
  * taken out (the piece under the mouse).
  */
 export function swapPiece<T>(list: T[], victim: number, c: Chooser<T>, W: number, H: number, rows: number, keep = new Set<string>()): T[] {
-  const cand = candidates(list, c, 10);
+  // A locked piece (or the one under the mouse) is never the one taken out.
+  if (!list[victim] || keep.has(c.key(list[victim]))) return list;
+  // Colour flow: a few more to choose from, and each scored on how well its colour suits the spot too.
+  const cand = candidates(list, c, c.colour ? 14 : 10);
   const ideal = idealCount(list, c, W, H, rows);
+  const target = colourTarget(list, victim, c, W, H, rows);
+  const miss = (ins: T[]) => {
+    if (target == null || !c.colour) return 0;
+    return ins.reduce((s, t) => {
+      const p = c.colour!(t);
+      return s + COLOUR_WEIGHT * (p == null ? 0.3 : Math.abs(p - target));
+    }, 0) / ins.length;
+  };
   const options: { list: T[]; s: number }[] = [];
-  const add = (l: T[], bias: number) => options.push({ list: l, s: score(l, c, W, H, rows, ideal) + bias });
+  const add = (l: T[], bias: number, ins: T[] = []) => options.push({ list: l, s: score(l, c, W, H, rows, ideal) + bias + miss(ins) });
   const rep = (i: number, ins: T[], drop = 1) => [...list.slice(0, i), ...ins, ...list.slice(i + drop)];
-  cand.forEach((x, k) => add(rep(victim, [x]), k * 0.0004));
+  cand.forEach((x, k) => add(rep(victim, [x]), k * 0.0004, [x]));
   for (let p = 0; p < Math.min(4, cand.length); p++)
-    for (let q = p + 1; q < Math.min(5, cand.length); q++) add(rep(victim, [cand[p], cand[q]]), (p + q) * 0.0004 + 0.001);
+    for (let q = p + 1; q < Math.min(5, cand.length); q++) add(rep(victim, [cand[p], cand[q]]), (p + q) * 0.0004 + 0.001, [cand[p], cand[q]]);
   // Two-for-one: also take out a neighbour (not one we must keep).
   const nb = [victim + 1, victim - 1].find((j) => j >= 0 && j < list.length && !keep.has(c.key(list[j])));
   if (nb != null && list.length > rows + 1)
-    cand.slice(0, 5).forEach((x, k) => add(rep(Math.min(victim, nb), [x], 2), k * 0.0004 + 0.001));
+    cand.slice(0, 5).forEach((x, k) => add(rep(Math.min(victim, nb), [x], 2), k * 0.0004 + 0.001, [x]));
   if (!options.length) return list;
   options.sort((x, y) => x.s - y.s);
   return options[0].list;
 }
 
 /** Pick a fresh screenful: add pieces until the rows are full, then polish the fit. */
-export function chooseMosaic<T>(c: Chooser<T>, W: number, H: number, rows: number, start: T[] = []): T[] {
+export function chooseMosaic<T>(c: Chooser<T>, W: number, H: number, rows: number, start: T[] = [], keep = new Set<string>()): T[] {
   const rnd = c.rnd ?? Math.random;
   let list = [...start];
   const rowAspect = W / ((H - MOSAIC_GAP * (rows - 1)) / rows);
@@ -211,17 +271,24 @@ export function chooseMosaic<T>(c: Chooser<T>, W: number, H: number, rows: numbe
     list.push(t);
     sum += clampAspect(c.aspect(t));
   }
-  return polish(list, c, W, H, rows, rnd);
+  // Colour flow: by colour first (so the polish's swaps know what each spot wants), then again after.
+  list = orderByColour(list, c, W, H, rows);
+  return orderByColour(polish(list, c, W, H, rows, rnd, 40, keep), c, W, H, rows);
 }
 
-/** Small random swaps that make the fill better, until it is all but perfect. */
-export function polish<T>(listIn: T[], c: Chooser<T>, W: number, H: number, rows: number, rnd = c.rnd ?? Math.random, tries = 40): T[] {
+/**
+ * Small random swaps that make the fill better, until it is all but perfect.
+ * `keep` keys (locked pieces) are never taken out.
+ */
+export function polish<T>(listIn: T[], c: Chooser<T>, W: number, H: number, rows: number, rnd = c.rnd ?? Math.random, tries = 40, keep = new Set<string>()): T[] {
   let list = listIn;
   if (!list.length) return list;
   const ideal = idealCount(list, c, W, H, rows);
   let best = score(list, c, W, H, rows, ideal);
   for (let t = 0; t < tries && errorOf(list, c, W, H, rows) > 0.002; t++) {
-    const next = swapPiece(list, Math.floor(rnd() * list.length), c, W, H, rows);
+    const free = list.map((x, i) => (keep.has(c.key(x)) ? -1 : i)).filter((i) => i >= 0);
+    if (!free.length) break;
+    const next = swapPiece(list, free[Math.floor(rnd() * free.length)], c, W, H, rows, keep);
     const s = score(next, c, W, H, rows, ideal);
     if (s < best) { best = s; list = next; }
   }

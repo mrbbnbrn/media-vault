@@ -16,3 +16,10 @@
 @media (prefers-reduced-motion: reduce) {
   .mosaic-piece { transition: none; }
 }
+/* A locked piece (right-click): a small teal lock in the corner, clearer under the mouse. Also used by the wall. */
+.mosaic-lock, .wall-lock {
+  position: absolute; top: 6px; right: 6px; z-index: 3; display: grid; place-items: center; width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(5, 14, 16, 0.55); color: var(--accent); opacity: 0.6; pointer-events: none; transition: opacity 0.2s ease;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.mosaic-piece:hover .mosaic-lock, .wall-tile:hover .wall-lock { opacity: 1; }

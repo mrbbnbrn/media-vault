@@ -53,6 +53,8 @@ interface WallState {
   items: PlayItem[];
   count: number;
   speed: 'calm' | 'normal' | 'fast';
+  /** Colour flow: tiles sit next to ones of similar colour (older saves do not have it). */
+  colour?: boolean;
   error?: string;
 }
 
@@ -62,7 +64,7 @@ interface LayoutSettings {
   layout?: string;
   master: number;
   panels: { source: Source | null; settings: PlaybackSettings }[];
-  wall?: { source: Source | null; count: number; speed: WallState['speed'] };
+  wall?: { source: Source | null; count: number; speed: WallState['speed']; colour?: boolean };
   /** Mosaic mode (shares the wall's source). Older saves do not have it. */
   mosaic?: MosaicSettings;
   /** The free-form layout's boxes, when it uses one. */
@@ -355,7 +357,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       layout,
       master,
       panels: panels.slice(0, Math.max(n, 1)).map((p) => ({ source: p.source, settings: p.settings })),
-      wall: { source: wall.source, count: wall.count, speed: wall.speed },
+      wall: { source: wall.source, count: wall.count, speed: wall.speed, colour: !!wall.colour },
       mosaic,
       free: freeSnapshot(layout),
     };
@@ -372,7 +374,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     setMaster(typeof s.master === 'number' ? s.master : 0.8);
     (s.panels ?? []).slice(0, count).forEach((p, i) => p.source && assign(i, p.source));
     if (s.wall) {
-      setWall({ ...blankWall(), count: WALL_SIZES.includes(s.wall.count) ? s.wall.count : 20, speed: s.wall.speed ?? 'normal' });
+      setWall({ ...blankWall(), count: WALL_SIZES.includes(s.wall.count) ? s.wall.count : 20, speed: s.wall.speed ?? 'normal', colour: s.wall.colour === true });
       if (s.wall.source) assign('wall', s.wall.source);
     }
     if (s.mosaic) setMosaic(normalizeMosaic(s.mosaic));
@@ -618,6 +620,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
                 title={mosaic.sound ? 'Sound plays for the video under the mouse — click to turn it off' : 'No sound — click to hear the video under the mouse'}>
                 {mosaic.sound ? <><SoundIcon size={15} /> Sound under the mouse</> : <><MuteIcon size={15} /> Sound off</>}
               </button>
+              <button type="button" className={`btn btn-sm${mosaic.colour ? ' accent-soft' : ''}`} aria-pressed={mosaic.colour} onClick={() => setMosaic({ colour: !mosaic.colour })}
+                title={mosaic.colour ? 'Pieces sit next to ones of similar colour, a slow rainbow across the screen — click to turn it off' : 'Put pieces next to ones of similar colour, a slow rainbow across the screen'}>
+                Colour flow
+              </button>
               <Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />
             </>
           ) : isWall ? (
@@ -625,6 +631,10 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <Dropdown label={`${wall.count} tiles ▾`} items={WALL_SIZES.map((c) => ({ label: `${c} tiles`, checked: c === wall.count, onSelect: () => setWall((w) => ({ ...w, count: c })) }))} />
               <Dropdown label={`${WALL_SPEEDS.find((x) => x.id === wall.speed)?.label} ▾`} title="How often tiles change"
                 items={WALL_SPEEDS.map((x) => ({ label: x.label, checked: x.id === wall.speed, onSelect: () => setWall((w) => ({ ...w, speed: x.id })) }))} />
+              <button type="button" className={`btn btn-sm${wall.colour ? ' accent-soft' : ''}`} aria-pressed={!!wall.colour} onClick={() => setWall((w) => ({ ...w, colour: !w.colour }))}
+                title={wall.colour ? 'Tiles sit next to ones of similar colour, a slow rainbow from left to right — click to turn it off' : 'Put tiles next to ones of similar colour, a slow rainbow from left to right'}>
+                Colour flow
+              </button>
               <Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />
             </>
           ) : (
@@ -669,7 +679,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <Dropdown className="btn btn-sm" label="Choose what to show ▾" items={pickMenu('wall')} />
             </div>
           ) : wall.items.length ? (
-            <Wall items={wall.items} count={wall.count} speed={wall.speed} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
+            <Wall items={wall.items} count={wall.count} speed={wall.speed} colour={!!wall.colour} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
           ) : (
             <div className="panel-empty">
               {wall.error && <span className="error-text">{wall.error}</span>}

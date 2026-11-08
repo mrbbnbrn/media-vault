@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { mosaicPace, chooseMosaic, MAX_CROP, MOSAIC_GAP, normalizeMosaic, packMosaic, swapPiece, type Box, type Chooser } from './mosaic';
+import { mosaicPace, chooseMosaic, colourTarget, MAX_CROP, MOSAIC_GAP, normalizeMosaic, orderByColour, packMosaic, polish, swapPiece, type Box, type Chooser } from './mosaic';
 
 /** Small seeded random, so the tests are the same every run. */
 function seeded(seed: number) {
@@ -108,8 +108,10 @@ describe('mosaic packing', () => {
   });
 
   it('old or odd saved settings fall back to the default', () => {
-    expect(normalizeMosaic(undefined)).toEqual({ size: 'normal', speed: 'normal', sound: false });
-    expect(normalizeMosaic({ size: 'big', speed: 'zoom', sound: true })).toEqual({ size: 'big', speed: 'normal', sound: true });
+    expect(normalizeMosaic(undefined)).toEqual({ size: 'normal', speed: 'normal', sound: false, colour: false });
+    expect(normalizeMosaic({ size: 'big', speed: 'zoom', sound: true })).toEqual({ size: 'big', speed: 'normal', sound: true, colour: false });
+    expect(normalizeMosaic({ size: 'small', colour: true }).colour).toBe(true);
+    expect(normalizeMosaic({ colour: 'yes' }).colour).toBe(false);
   });
 });
 
@@ -125,5 +127,78 @@ describe('mosaicPace', () => {
       expect(life).toBeGreaterThan(stay * 0.6);
       expect(life).toBeLessThan(stay * 1.6);
     }
+  });
+});
+
+describe('mosaic locks', () => {
+  it('locked pieces survive swaps and polish', () => {
+    const rnd = seeded(11);
+    const pool = mixedPool(rnd);
+    const c = chooser(pool, rnd);
+    let list = chooseMosaic(c, 1920, 1080, 3);
+    const keep = new Set([list[0].key, list[2].key, list[list.length - 1].key]);
+    // Swapping a locked piece does nothing.
+    expect(swapPiece(list, 0, c, 1920, 1080, 3, keep)).toBe(list);
+    for (let t = 0; t < 80; t++) {
+      list = swapPiece(list, Math.floor(rnd() * list.length), c, 1920, 1080, 3, keep);
+      for (const k of keep) expect(list.some((p) => p.key === k)).toBe(true);
+      if (t % 10 === 0) list = polish(list, c, 1920, 1080, 3, rnd, 40, keep);
+    }
+    for (const k of keep) expect(list.some((p) => p.key === k)).toBe(true);
+    // A fresh screenful started from the locked pieces keeps them too.
+    const start = pool.filter((p) => keep.has(p.key));
+    const again = chooseMosaic(c, 1280, 720, 4, start, keep);
+    for (const k of keep) expect(again.some((p) => p.key === k)).toBe(true);
+    expect(checkFill(again.map((p) => p.a), 1280, 720, 4).error).toBeLessThan(MAX_CROP);
+  });
+});
+
+describe('mosaic colour flow', () => {
+  // Each piece a place on the rainbow (some still unknown).
+  const withColour = (pool: P[], rnd: () => number) => new Map(pool.map((p) => [p.key, rnd() < 0.1 ? null : rnd()] as const));
+
+  it('orders every row by colour without changing the fit', () => {
+    const rnd = seeded(5);
+    const pool = mixedPool(rnd);
+    const col = withColour(pool, rnd);
+    const c = { ...chooser(pool, rnd), colour: (p: P) => col.get(p.key) ?? null };
+    for (const rows of [2, 3, 4]) {
+      const list = chooseMosaic(c, 1920, 1080, rows);
+      const fit = checkFill(list.map((p) => p.a), 1920, 1080, rows);
+      expect(fit.error).toBeLessThan(0.02);
+      const ends = [...fit.rowStarts.slice(1), list.length];
+      fit.rowStarts.forEach((s, r) => {
+        const known = list.slice(s, ends[r]).map((p) => col.get(p.key)).filter((v): v is number => v != null);
+        expect(known).toEqual([...known].sort((a, b) => a - b));
+      });
+      // Sorting again changes nothing.
+      expect(orderByColour(list, c, 1920, 1080, rows)).toEqual(list);
+    }
+  });
+
+  it('swaps in pieces whose colour suits the spot, and still fills the screen', () => {
+    const rnd = seeded(9);
+    const pool = mixedPool(rnd, 300);
+    const col = new Map(pool.map((p) => [p.key, rnd()] as const));
+    const c = { ...chooser(pool, rnd), colour: (p: P) => col.get(p.key) ?? null };
+    const plain = chooser(pool, rnd);
+    let list = chooseMosaic(c, 1920, 1080, 3);
+    let missColour = 0;
+    let missPlain = 0;
+    let worst = 0;
+    for (let t = 0; t < 60; t++) {
+      const v = Math.floor(rnd() * list.length);
+      const target = colourTarget(list, v, c, 1920, 1080, 3)!;
+      const before = new Set(list.map((p) => p.key));
+      const next = swapPiece(list, v, c, 1920, 1080, 3);
+      const ins = next.filter((p) => !before.has(p.key));
+      missColour += ins.reduce((s, p) => s + Math.abs(col.get(p.key)! - target), 0) / Math.max(1, ins.length);
+      const other = swapPiece(list, v, plain, 1920, 1080, 3).filter((p) => !before.has(p.key));
+      missPlain += other.reduce((s, p) => s + Math.abs(col.get(p.key)! - target), 0) / Math.max(1, other.length);
+      list = orderByColour(next, c, 1920, 1080, 3);
+      worst = Math.max(worst, checkFill(list.map((p) => p.a), 1920, 1080, 3).error);
+    }
+    expect(missColour).toBeLessThan(missPlain * 0.6);
+    expect(worst).toBeLessThan(MAX_CROP);
   });
 });

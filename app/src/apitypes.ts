@@ -84,6 +84,8 @@ export interface ViewerSettings {
   riverFlow?: number;
   riverDensity?: number;
   riverLayers?: number;
+  /** Discovery river: flows in from the left, or falls from the top. */
+  riverDir?: 'left' | 'top';
   /** Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed). */
   poorFaces?: boolean;
   /** Discovery river: pictures, or round faces of known people (whose: riverPeople, empty = everyone; smallest face in px: riverFaceMin). */
@@ -114,7 +116,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   subjectModel: '', depthLift: false, depthLiftAmount: 1,
   depthEdges3d: false, depthEdgesStrength: 0.7, depthSubjectOnly: false,
   depthLayered: false, inpaintModel: '', depthIdlePrepare: true,
-  riverFlow: 1, riverDensity: 1, riverLayers: 5,
+  riverFlow: 1, riverDensity: 1, riverLayers: 5, riverDir: 'left',
   poorFaces: false,
   riverMode: 'pictures', riverPeople: [], riverFaceMin: 0,
   faceWallMin: 40, bestFacesMin: 80, timelapseMin: 120, bestFacesCount: 24, timelapseFps: 8, timelapseMorph: false, timelapseMorphShare: 0.5,
