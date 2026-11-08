@@ -19,6 +19,8 @@ import {
 import { Player, type PlayerHandle } from '../components/Player';
 import { Wall, WALL_SIZES, WALL_SPEEDS } from '../components/Wall';
 import { MosaicWall } from '../components/MosaicWall';
+import { BreatheControls, BreatheShow } from '../components/BreatheShow';
+import { DEFAULT_BREATHE, normalizeBreathe, type BreatheSettings } from '../breathe';
 import { DEFAULT_MOSAIC, MOSAIC_SIZES, MOSAIC_SPEEDS, normalizeMosaic, type MosaicSettings } from '../mosaic';
 import { setDropHandler } from '../drop';
 import { setCleanFullscreen } from '../fullscreen';
@@ -65,6 +67,8 @@ interface LayoutSettings {
   wall?: { source: Source | null; count: number; speed: WallState['speed'] };
   /** Mosaic mode (shares the wall's source). Older saves do not have it. */
   mosaic?: MosaicSettings;
+  /** Breathe mode (shares the wall's source). Older saves do not have it. */
+  breathe?: BreatheSettings;
   /** The free-form layout's boxes, when it uses one. */
   free?: FreeSnapshot;
 }
@@ -148,6 +152,7 @@ const blankWall = (): WallState => ({ source: null, items: [], count: 20, speed:
 /** Panels survive leaving and coming back during this session (not saved to disk). */
 let remembered: { layout: string; panels: Panel[]; master: number; wall: WallState } | null = null;
 let rememberedMosaic: MosaicSettings = DEFAULT_MOSAIC;
+let rememberedBreathe: BreatheSettings = DEFAULT_BREATHE;
 
 /** Small picture of a layout for the layout menu. */
 function LayoutThumb({ id }: { id: string }) {
@@ -174,6 +179,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const [wall, setWall] = useState<WallState>(remembered?.wall ?? blankWall());
   const [mosaic, setMosaicState] = useState<MosaicSettings>(rememberedMosaic);
   const setMosaic = (patch: Partial<MosaicSettings>) => setMosaicState((m) => (rememberedMosaic = { ...m, ...patch }));
+  const [breathe, setBreatheState] = useState<BreatheSettings>(rememberedBreathe);
+  const setBreathe = (patch: Partial<BreatheSettings>) => setBreatheState((b) => (rememberedBreathe = { ...b, ...patch }));
   const [master, setMaster] = useState(remembered?.master ?? 0.8);
   const [masterMuted, setMasterMuted] = useState(false);
   const [allPaused, setAllPaused] = useState(false);
@@ -202,7 +209,8 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
 
   // Mosaic is a kind of wall: same source, same "watch it alone".
   const isMosaic = layout === 'mosaic';
-  const isWall = layout === 'wall' || isMosaic;
+  const isBreathe = layout === 'breathe';
+  const isWall = layout === 'wall' || isMosaic || isBreathe;
   const def = layoutDef(isWall ? '4' : layout);
   const n = isWall ? 0 : def.count;
 
@@ -295,7 +303,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
     if (solo != null) exitSolo();
     setWallSolo(null);
     setLayout(id);
-    const d = id === 'wall' || id === 'mosaic' ? null : layoutDef(id);
+    const d = id === 'wall' || id === 'mosaic' || id === 'breathe' ? null : layoutDef(id);
     if (d) setFocus((f) => Math.min(f, d.count - 1));
   };
 
@@ -357,6 +365,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       panels: panels.slice(0, Math.max(n, 1)).map((p) => ({ source: p.source, settings: p.settings })),
       wall: { source: wall.source, count: wall.count, speed: wall.speed },
       mosaic,
+      breathe,
       free: freeSnapshot(layout),
     };
     await api.saveNamed('layout', { id: null, name, settings });
@@ -365,7 +374,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
   const loadLayout = async (l: Named<LayoutSettings>) => {
     const s = l.settings;
     const id = restoreFree(s.layout ?? String(s.n ?? 4), s.free, l.id ?? l.name);
-    const count = id === 'wall' || id === 'mosaic' ? 0 : layoutDef(id).count;
+    const count = id === 'wall' || id === 'mosaic' || id === 'breathe' ? 0 : layoutDef(id).count;
     const fresh = Array.from({ length: MAX_PANELS }, (_, i) => blank(normalize(s.panels?.[i]?.settings)));
     setPanels(fresh);
     changeLayout(id);
@@ -376,6 +385,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
       if (s.wall.source) assign('wall', s.wall.source);
     }
     if (s.mosaic) setMosaic(normalizeMosaic(s.mosaic));
+    if (s.breathe) setBreathe(normalizeBreathe(s.breathe));
   };
 
   const layoutItems = useMemo(() => [
@@ -600,15 +610,21 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             )}
           </div>
           {vault && (
-            <button type="button" className={`btn btn-sm${isWall && !isMosaic ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
+            <button type="button" className={`btn btn-sm${isWall && !isMosaic && !isBreathe ? ' accent-soft' : ''}`} onClick={() => changeLayout('wall')}
               title="Many small tiles that swap at random">Wall</button>
           )}
           {vault && (
             <button type="button" className={`btn btn-sm${isMosaic ? ' accent-soft' : ''}`} onClick={() => changeLayout('mosaic')}
               title="The whole screen filled edge to edge, every picture and video in its own shape">Mosaic</button>
           )}
+          {vault && (
+            <button type="button" className={`btn btn-sm${isBreathe ? ' accent-soft' : ''}`} onClick={() => changeLayout('breathe')}
+              title="A calm slideshow that slowly breathes — and can beat like a heart to your music">Breathe</button>
+          )}
           <button type="button" className="btn btn-sm" onClick={() => openEditor()} title="Draw your own layout from boxes">Edit layout</button>
-          {isMosaic ? (
+          {isBreathe ? (
+            <BreatheControls s={breathe} set={setBreathe} source={<Dropdown label={`Source: ${sourceLabel(wall.source)} ▾`} items={pickMenu('wall')} />} />
+          ) : isMosaic ? (
             <>
               <Dropdown label={`${MOSAIC_SIZES.find((x) => x.id === mosaic.size)?.label} ▾`} title="How big the pieces are"
                 items={MOSAIC_SIZES.map((x) => ({ label: x.label, checked: x.id === mosaic.size, onSelect: () => setMosaic({ size: x.id }) }))} />
@@ -658,7 +674,19 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
           onDone={(boxes) => endEdit(boxes)} onSave={(name, boxes) => endEdit(boxes, name)} />
       ) : isWall ? (
         <div className="mstage" ref={stageRef}>
-          {wall.items.length && isMosaic ? (
+          {isBreathe ? (
+            wall.items.length ? (
+              <BreatheShow items={wall.items} settings={breathe} volume={master} paused={allPaused || !!wallSolo} showStatus={showBar} onOpen={setWallSolo} />
+            ) : (
+              <div className="panel-empty">
+                {wall.error && <span className="error-text">{wall.error}</span>}
+                <GridIcon size={26} />
+                <b>Breathe</b>
+                <span className="muted">A calm slideshow: each picture or video slowly breathes, then fades into the next. Turn on “Beat like a heart” and it pulses with the music you are playing.</span>
+                <Dropdown className="btn btn-sm" label="Choose what to show ▾" items={pickMenu('wall')} />
+              </div>
+            )
+          ) : wall.items.length && isMosaic ? (
             <MosaicWall items={wall.items} settings={mosaic} volume={master} paused={allPaused || !!wallSolo} onOpen={setWallSolo} />
           ) : isMosaic ? (
             <div className="panel-empty">
@@ -684,7 +712,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
               <ErrorBoundary name="the wall's viewer" onError={() => setWallSolo(null)}>
               <Player items={wall.items} startKey={wallSolo.key} settings={panels[0].settings} onSettings={(s) => update(0, { settings: s })}
                 keys activityId="wall-solo" onClose={() => setWallSolo(null)}
-                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the {isMosaic ? 'mosaic' : 'wall'}</button>} />
+                title={<button type="button" className="btn btn-sm glass" onClick={() => setWallSolo(null)}><CloseIcon size={12} /> Back to the {isMosaic ? 'mosaic' : isBreathe ? 'slideshow' : 'wall'}</button>} />
               </ErrorBoundary>
             </div>
           )}
