@@ -199,6 +199,8 @@ export const api = {
   thumbsToWebp: (after: number, upto: number, limit: number) => call<{ tasks: { id: number; kind: Kind }[]; next: number }>('thumbs_to_webp', { after, upto, limit }),
   countToSharpen: (after: number, upto: number) => call<number>('count_to_sharpen', { after, upto }),
   thumbFailed: (id: number) => call<void>('thumb_failed', { id }),
+  /** The playable copy (JPEG / MP4) of an original received from the phone; null: none (any more). */
+  playableCopy: (id: number) => call<number | null>('playable_copy', { id }),
 
   // import
   inspectDrop: (paths: string[]) => call<DropSummary>('inspect_drop', { paths }),

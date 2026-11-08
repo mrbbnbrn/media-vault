@@ -522,7 +522,9 @@ impl Conn {
         done.stopped = stopped;
         // Playable copies of formats this app can't show (the original stays).
         if !received.is_empty() && !s.is_closed() {
-            done.playable = self.rt.make_playable(&received);
+            let (n, fails) = self.rt.make_playable(&received);
+            done.playable = n;
+            done.failed.extend(fails);
         }
         self.rt.emit_done(&done);
     }

@@ -8,6 +8,7 @@
 pub mod conn;
 pub mod items;
 pub mod mvtp;
+pub mod playable;
 pub mod server;
 pub mod store;
 #[cfg(test)]
@@ -50,9 +51,10 @@ pub fn start(inner: &Shared, s: Arc<Session>) {
     );
 }
 
-/// Playable copies of received formats this app can't show (the original stays).
-fn playable_copies(_s: &Arc<Session>, _ids: &[i64]) -> usize {
-    0
+/// Playable copies of received formats this app can't show (the original
+/// stays). Returns how many were made and what failed.
+fn playable_copies(s: &Arc<Session>, ids: &[i64]) -> (usize, Vec<(String, String)>) {
+    playable::make_copies(s, ids, &std::sync::atomic::AtomicBool::new(false))
 }
 
 /// The vault is locking.

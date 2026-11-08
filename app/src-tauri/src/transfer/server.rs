@@ -18,14 +18,14 @@ use super::store::{self, Peer};
 use crate::session::Session;
 
 pub type EmitFn = Box<dyn Fn(&str, serde_json::Value) + Send + Sync>;
-pub type PlayableFn = Box<dyn Fn(&Arc<Session>, &[i64]) -> usize + Send + Sync>;
+pub type PlayableFn = Box<dyn Fn(&Arc<Session>, &[i64]) -> (usize, Vec<(String, String)>) + Send + Sync>;
 
 /// How the transfer talks to the rest of the app (the window, auto-lock).
 pub struct Hooks {
     pub emit: EmitFn,
     /// A transfer is running: counts as activity, so the vault doesn't auto-lock.
     pub keep_awake: Box<dyn Fn() + Send + Sync>,
-    /// Make playable copies of these received items; returns how many were made.
+    /// Make playable copies of these received items: how many were made, and failures.
     pub playable: PlayableFn,
 }
 
@@ -323,7 +323,7 @@ impl Rt {
         crate::diskspace::free_bytes(self.s.vault().root())
     }
 
-    pub fn make_playable(&self, ids: &[i64]) -> usize {
+    pub fn make_playable(&self, ids: &[i64]) -> (usize, Vec<(String, String)>) {
         (self.hooks.playable)(&self.s, ids)
     }
 

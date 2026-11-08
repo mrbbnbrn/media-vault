@@ -679,6 +679,7 @@ pub fn run() {
             cmd_media::make_tiny_with_tool,
             cmd_vault::cache_info,
             cmd_misc::ui_get,
+            transfer::playable::playable_copy,
             cmd_vault::save_now,
             cmd_vault::data_info,
             cmd_vault::delete_data,

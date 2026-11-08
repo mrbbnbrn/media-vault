@@ -1028,6 +1028,18 @@ pub fn add_bytes(
     bytes: &[u8],
 ) -> Result<i64, String> {
     let kind = kind_for(name, bytes).ok_or("That file type can't be added.")?;
+    add_bytes_as(s, folder, name, bytes, kind)
+}
+
+/// `add_bytes` with the kind chosen by the caller (files received from the
+/// phone in formats the window can't show: transfer/playable.rs).
+pub fn add_bytes_as(
+    s: &Session,
+    folder: Option<i64>,
+    name: &str,
+    bytes: &[u8],
+    kind: &'static str,
+) -> Result<i64, String> {
     if let Some(f) = folder {
         let live: bool = s
             .db()

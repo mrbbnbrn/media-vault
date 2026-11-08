@@ -31,7 +31,7 @@ fn vault() -> (tempfile::TempDir, Arc<Session>, Events) {
         Hooks {
             emit: Box::new(move |n, v| ev2.lock().unwrap().push((n.to_string(), v))),
             keep_awake: Box::new(|| {}),
-            playable: Box::new(|_, _| 0),
+            playable: Box::new(|_, _| (0, vec![])),
         },
         Ports { tcp: 0, udp: 0 },
     );

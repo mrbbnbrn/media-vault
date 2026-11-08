@@ -54,6 +54,9 @@
 .tile .wt { left: 8px; color: var(--accent-text); }
 .tile-msg { position: absolute; inset: 0; display: flex; flex-direction: column; gap: 6px; align-items: center; justify-content: center; color: var(--faint); font-size: var(--fs-sm); }
 .spinner.small { width: 14px; height: 14px; }
+.tile-msg.phone-orig { padding: 10px; text-align: center; background: linear-gradient(160deg, var(--raised), var(--card)); }
+.phone-orig-type { padding: 3px 9px; border-radius: 6px; border: 1px solid var(--line-2); color: var(--text); font-family: var(--mono); font-size: var(--fs-sm); letter-spacing: 0.06em; }
+.phone-orig-text { max-width: 180px; line-height: 1.35; font-size: var(--fs-xs); }
 .drag-ghost { position: fixed; z-index: var(--z-float); pointer-events: none; padding: 8px 12px; border-radius: 10px; background: var(--raised); border: 1px solid var(--accent); box-shadow: 0 14px 36px rgba(0, 0, 0, 0.6); font-size: var(--fs-md); }
 
 .dropzone { margin-top: 24px; padding: 48px 24px; border: 2px dashed var(--line-2); border-radius: 16px; display: flex; flex-direction: column; align-items: center; gap: 10px; text-align: center; color: var(--faint); }

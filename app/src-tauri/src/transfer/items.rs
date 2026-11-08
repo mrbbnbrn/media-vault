@@ -368,6 +368,11 @@ pub fn insert_received(
     )
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
+    // A format this app can't show (HEIC, MOV…): background passes leave it
+    // alone; a playable copy is made after the batch.
+    if super::playable::needs_copy(&ext, kind).is_some() {
+        super::playable::mark_unshowable(conn, id).map_err(|e| e.to_string())?;
+    }
     if !it.tags.is_empty() {
         crate::library::tag_items(conn, &[id], &it.tags)?;
     }

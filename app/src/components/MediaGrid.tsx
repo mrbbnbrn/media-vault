@@ -5,6 +5,7 @@
 // Layouts: equal tiles ("grid") or every item at its true shape ("shape"),
 // optionally in groups with a header (the timeline's months).
 
+import { isPhoneOriginal, typeBadge } from '../phoneoriginal';
 import { preloadPictures } from '../picturecache';
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { itemThumbUrl, mediaUrl, smallEnough, thumbUrl, type FaceBox, type Item } from '../api';
@@ -611,11 +612,18 @@ const Tile = memo(function Tile(p: {
   const playing = p.playing;
   const place = p.faces ? placement(it, w, h, mode, p.faces, p.faceCrop) : null;
   const names = p.faceNames.split('\u0001');
+  // An original from the phone the window can't show (HEIC, MOV…): a calm placeholder, not "Can't play".
+  const phone = isPhoneOriginal(it);
   return (
     <button type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
       className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${p.dimmed ? ' cut' : ''}${p.hoverInfo ? ' hinfo' : ''}`}
       style={{ left: p.x, top: p.y, width: w, height: h, ...sketchStyle(it, place && p.faceCrop ? place : null) }}>
-      {hasThumb && it.thumb !== 'failed' ? (
+      {phone ? (
+        <span className="tile-msg phone-orig">
+          <span className="phone-orig-type">{typeBadge(it)}</span>
+          {w >= 110 && <span className="phone-orig-text">Original from phone · open the copy to view</span>}
+        </span>
+      ) : hasThumb && it.thumb !== 'failed' ? (
         <QueuedThumb key={tileThumbUrl(it, w, h, ready)} url={tileThumbUrl(it, w, h, ready)} prio={p.prio} flinging={p.flinging}
           style={place && p.faceCrop ? { objectPosition: `${place.px * 100}% ${place.py * 100}%` } : undefined} />
       ) : it.thumb === 'failed' ? (
@@ -651,7 +659,7 @@ const Tile = memo(function Tile(p: {
       {sel && <span className="tick" aria-hidden="true">✓</span>}
       {it.favourite && <span className="fav" aria-label="Favourite"><HeartIcon filled size={15} /></span>}
       {it.weight !== 1 && <span className="wt" title={`Weight ${it.weight}`}>×{it.weight}</span>}
-      {it.kind === 'video' && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
+      {it.kind === 'video' && !phone && <span className="badge">{formatTime(it.durationMs) || 'VIDEO'}</span>}
       {watched != null && <span className="tile-progress" title={`Watched ${Math.round(watched * 100)}%`}><span style={{ width: `${watched * 100}%` }} /></span>}
       {it.kind === 'gif' && <span className="badge">GIF</span>}
       {it.kind === 'pdf' && <span className="badge">PDF</span>}
