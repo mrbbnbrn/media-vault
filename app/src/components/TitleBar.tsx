@@ -4,6 +4,11 @@
 // The OS window title always stays "Media Vault".
 
 import { ActivityRing } from './ActivityRing';
+import { PhoneIcon } from './Icons';
+import { useTransfer } from '../transfer';
+import { progressText } from '../transferlogic';
+import { openSettings } from '../settingslink';
+import '../phonetransfer.css';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { inTauri } from '../api';
@@ -69,6 +74,7 @@ export function TitleBar({ tabs, onTab, onLock, closeOnly, jobs }: {
       {/* lock from the title bar (end) */}
       {tabs && <TabStrip tabs={tabs} onTab={onTab} />}
       <div className="wt-drag" data-tauri-drag-region />
+      {jobs && <PhoneMark />}
       {jobs && <ActivityRing titlebar notify={jobs.notify} />}
       <div className="wt-caption">
         <button type="button" className="wt-cap" aria-label="Minimise" title="Minimise" tabIndex={-1} onClick={() => win((w) => w.minimize())}>
@@ -262,5 +268,19 @@ function TabStrip({ tabs, onTab }: { tabs: LibraryTabs; onTab?: () => void }) {
       </button>
       {menu && <ContextMenu x={menu.x} y={menu.y} title={menu.title} items={menu.items} onClose={() => setMenu(null)} />}
     </>
+  );
+}
+
+/** "Phone connected" while the phone is (with how far a transfer is); opens Settings → Phone transfer. */
+function PhoneMark() {
+  const { status, progress } = useTransfer();
+  if (!status?.connected) return null;
+  const busy = progress ? progressText(progress) : null;
+  return (
+    <button type="button" className="wt-phone" tabIndex={-1} title={`${busy ?? 'Phone connected'}: ${status.connected}. Click for Phone transfer settings.`}
+      aria-label={`Phone connected: ${status.connected}`} onClick={() => openSettings('phone')}>
+      <PhoneIcon size={14} />
+      <span className="wt-phone-text">{busy ?? 'Phone connected'}</span>
+    </button>
   );
 }

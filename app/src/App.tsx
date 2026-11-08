@@ -16,6 +16,7 @@ import { clearViewMemory } from './viewmemory';
 import { startActivityTracking, stopAllPlaying } from './activity';
 import { beginStep, clearPerf, setModelLogSource, setPerfJobs, startPerfObservers } from './perf';
 import { clearJobs, jobList } from './jobs';
+import { clearTransfer } from './transfer';
 import { clearTasks } from './tasks';
 import { clearFolderSamples } from './components/CoverImg';
 import { Start } from './screens/Start';
@@ -264,6 +265,7 @@ export function App() {
       // Finished jobs' messages can name folders and people: they go with the vault.
       clearJobs();
       clearTasks();
+      clearTransfer();
       setToast(reason === 'manual' && !hadPassword.current ? 'Vault closed.' : LOCK_MESSAGES[reason] ?? 'Vault locked.');
       refresh().catch(() => {});
     });

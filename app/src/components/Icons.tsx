@@ -413,3 +413,10 @@ export const SubjectPngIcon = ({ size = 16 }: P) => (
     <path d="M18.5 12v8M15.5 17l3 3 3-3" strokeWidth={1.6} />
   </svg>
 );
+/** A phone (Wi-Fi transfer). */
+export const PhoneIcon = ({ size = 16 }: P) => (
+  <svg {...base(size)}>
+    <rect x="7" y="2.5" width="10" height="19" rx="2.2" />
+    <path d="M11 18.5h2" />
+  </svg>
+);

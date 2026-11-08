@@ -13,7 +13,7 @@ import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 let mockLoad: Promise<typeof import('./apimock')> | null = null;
 const demo = () => (mockLoad ??= import('./apimock'));
 import type {
-  AppConfig, VaultEntry, SessionInfo, LoginInfo, ExportRequest, ShareRequest, EngineInfo, ScanRequest, ScanStatus, FaceIn, FaceBox, PersonFace, FaceMeasure, FaceEngineStatus, FaceReview, ReviewRequest, OwnerProposal, SortOffers, AnalyseStatus, AnalyseReport, AppState, Kind, Item, FolderCard, FolderBanner, FolderView, ItemFilter, Extracted, TrashView, Stats, Bookmark, TagCount, Named, DropSummary, LocalSet, StorageInfo, CacheInfo, DataInfo, LibraryBackup, StorageTask, LockReason,
+  AppConfig, VaultEntry, SessionInfo, LoginInfo, ExportRequest, ShareRequest, EngineInfo, ScanRequest, ScanStatus, FaceIn, FaceBox, PersonFace, FaceMeasure, FaceEngineStatus, FaceReview, ReviewRequest, OwnerProposal, SortOffers, AnalyseStatus, AnalyseReport, AppState, Kind, Item, FolderCard, FolderBanner, FolderView, ItemFilter, Extracted, TrashView, Stats, Bookmark, TagCount, Named, DropSummary, LocalSet, StorageInfo, CacheInfo, DataInfo, LibraryBackup, StorageTask, LockReason, TransferStatus,
 } from './apitypes';
 
 let lastLogin: LoginInfo | null = null;
@@ -243,6 +243,19 @@ export const api = {
   // safety
   checkDamage: () => call<void>('check_damage'),
   cancelTask: (task: 'check' | 'export' | 'share' | 'convert' | 'animation') => call<void>('cancel_task', { task }),
+  /** Wi-Fi transfer with the phone (transfer.ts keeps the shared state; events: transfer-status / -progress / -done). */
+  transferStatus: () => call<TransferStatus>('transfer_status'),
+  /** Pairing mode on for 2 minutes (starts listening if needed). */
+  transferPairStart: () => call<void>('transfer_pair_start'),
+  /** Confirm (or not) that the phone shows the same code. */
+  transferPairConfirm: (yes: boolean) => call<void>('transfer_pair_confirm', { yes }),
+  transferPairCancel: () => call<void>('transfer_pair_cancel'),
+  /** Forget a paired phone. */
+  transferForget: (id: string) => call<void>('transfer_forget', { id }),
+  /** Send items and folders (everything inside) to the connected phone; fails with a message when none is connected. */
+  transferSend: (media: number[], folders: number[]) => call<{ items: number }>('transfer_send', { media, folders }),
+  /** Stop what is being sent or received (the connection stays). */
+  transferCancel: () => call<void>('transfer_cancel'),
   exportStart: (request: ExportRequest) => call<void>('export_start', { request }),
   // share as encrypted .7z: "share-progress" (ShareProgress), then "share-done" (ShareDone)
   share7zStart: (request: ShareRequest) => call<void>('share_7z_start', { request }),

@@ -8,6 +8,7 @@ import type {
 } from './api';
 
 import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
+import { transferAnswer } from './mocktransfer';
 
 /** Saved presets and layouts in the preview, by kind. */
 const mockNamed = new Map<string, { id: number; name: string; settings: unknown }[]>();
@@ -86,6 +87,8 @@ export const mock = {
       return n;
     }
     await new Promise((r) => setTimeout(r, cmd.startsWith('unlock') || cmd === 'create_vault' ? 600 : 50));
+    // Wi-Fi transfer with a pretend phone (mocktransfer.ts).
+    if (cmd.startsWith('transfer_')) return transferAnswer(cmd, a);
     // Preview with sample folders, people and tags: open the page with ?demo.
     if (typeof location !== 'undefined' && /[?&]demo\b/.test(location.search)) {
       const { demoCall, NOT_DEMO } = await import('./mockdemo');

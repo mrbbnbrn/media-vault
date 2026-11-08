@@ -9,6 +9,7 @@ import { SearchBar } from './library/SearchBars';
 import { errText } from '../text';
 import { MESSAGE_SLOT } from '../components/Messages';
 import { say } from '../messages';
+import { onTransferArrived, useTransfer } from '../transfer';
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { StatsGo } from '../components/StatsView';
 import { createPortal } from 'react-dom';
@@ -19,7 +20,7 @@ import type { Nav } from '../App';
 import { ActionBar, type BarAction } from '../components/ActionBar';
 import { ConfirmDialog, ContextMenu, Dropdown, FolderPicker, Modal, PromptDialog, type MenuItem } from '../components/Dialogs';
 import { FolderLookDialog, FolderMark } from '../components/FolderLook';
-import { ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LeaveIcon, LockIcon, MoveIcon, PinIcon, ArrowIcon, ExportIcon, FaceIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon } from '../components/Icons';
+import { ChartIcon, ChevronIcon, ClockIcon, CloseIcon, DiceIcon, FolderIcon, GearIcon, GridIcon, HeartIcon, HelpIcon, ImportIcon, LeaveIcon, LockIcon, MoveIcon, PinIcon, ArrowIcon, ExportIcon, FaceIcon, PhoneIcon, PlayIcon, TwinIcon, ImagesIcon, NoteIcon, RailIcon, SortIcon, PlusIcon, RestoreIcon, SheetIcon, SparkleIcon, TagIcon, TrashIcon, UndoIcon, WeightIcon } from '../components/Icons';
 import { FaceSortOffer } from '../components/FaceSort';
 import { openSortAll } from '../facesort';
 import type { RenameEntry } from '../components/RenameDialog';
@@ -327,6 +328,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const [note, setNote] = useState<{ text: string; at: number } | null>(null);
   const [login, setLogin] = useState<LoginInfo | null>(() => takeLogin());
   const [lookTick, setLookTick] = useState(0);
+  // Wi-Fi transfer: "Send to phone" in the menus (transfer.ts).
+  const phone = useTransfer();
   // Cut / copy inside the library (Ctrl+X / Ctrl+C, then Ctrl+V).
   const [clipboard, setClipboard] = useState<{ mode: 'cut' | 'copy'; ids: number[]; folders: number[] } | null>(null);
   // How often each folder was a destination: "Move to" submenu and quick sort.
@@ -1080,8 +1083,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       reloadCalmly();
       nav.refresh().catch(() => {});
     });
+    // Items that arrived from the phone are in the library now: the same as an import finishing.
+    const offPhone = onTransferArrived(() => {
+      kickThumbnails();
+      reloadCalmly();
+      nav.refresh().catch(() => {});
+    });
     return () => {
       b.then((u) => u());
+      offPhone();
     };
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -1432,6 +1442,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     group('Share and export', [
       { label: 'Share as encrypted .7z…', onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
       { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
+      !!phone.status?.peers.length && { label: 'Send to phone', hint: phone.status.connected ?? 'Open Aktarım on your phone', disabled: !phone.status.connected,
+        onSelect: () => { api.transferSend([], [f.id]).then((r) => { if (!r.items) say('There is nothing in there to send.', 'note'); }).catch((e) => say(errText(e), 'problem')); } },
     ]),
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
@@ -2022,6 +2034,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     group?: string;
     /** In right-click menus only, not the bottom bar. */
     menuOnly?: boolean;
+    /** Shown greyed out in menus (left out of the bottom bar). */
+    disabled?: boolean;
     run: () => void;
   };
   /** The items inside these folders (and subfolders) plus these items, selected ones first. */
@@ -2166,6 +2180,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       { id: 'export', group: 'Share and export', label: 'Export decrypted…', barLabel: 'Export…', icon: <ExportIcon />, title: 'Write unencrypted copies to a folder', bar: true,
         run: oneFolder ? () => setDialog({ t: 'export', request: { folder: oneFolder.id }, what })
           : itemsOnly ? () => setDialog({ t: 'export', request: { ids }, what }) : onAll((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
+      // Wi-Fi transfer: only once a phone is paired; greyed out until it is connected.
+      !!phone.status?.peers.length && { id: 'phone', group: 'Share and export', label: 'Send to phone', bar: true, barLabel: 'Send to phone',
+        icon: <PhoneIcon size={14} />, disabled: !phone.status.connected, hint: phone.status.connected ? phone.status.connected : 'Open Aktarım on your phone',
+        title: phone.status.connected ? `Send to ${phone.status.connected} over Wi-Fi` : undefined,
+        run: () => failed(api.transferSend(ids, fs.map((f) => f.id)).then((r) => {
+          if (!r.items) say('There is nothing in there to send.', 'note');
+        }).catch((e) => say(errText(e), 'problem'))) },
       { id: 'delete', label: itemsOnly ? 'Move to trash' : 'Move to trash…', hint: 'Delete', barLabel: 'Move to trash', icon: <TrashIcon />,
         danger: true, sepBefore: true, bar: 'pinned', title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
         run: itemsOnly ? () => failed(trashItems(ids)) : () => setDialog({ t: 'deleteMany', folders: fs, items: ids }) },
@@ -2206,7 +2227,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const groups = new Map<string, MenuItem>();
     for (const a of acts) {
       if (a.noMenu) continue;
-      const item: MenuItem = { label: a.label, hint: a.hint, danger: a.danger, sepBefore: a.sepBefore, sub: a.sub, onSelect: a.run };
+      const item: MenuItem = { label: a.label, hint: a.hint, danger: a.danger, disabled: a.disabled, sepBefore: a.sepBefore, sub: a.sub, onSelect: a.run };
       if (!a.group) {
         out.push(item);
         continue;
@@ -2224,7 +2245,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     return out.map((m) => (m.subOnly && m.sub?.length === 1 && groups.get(m.label) === m ? { ...m.sub[0], sepBefore: m.sepBefore } : m));
   };
   /** The actions as the bottom bar's buttons. */
-  const barOf = (acts: Act[]): BarAction[] => acts.filter((a) => a.bar && !a.menuOnly).map((a) => ({
+  const barOf = (acts: Act[]): BarAction[] => acts.filter((a) => a.bar && !a.menuOnly && !a.disabled).map((a) => ({
     key: a.id, label: a.barLabel ?? a.label, icon: a.icon, title: a.title, danger: a.danger, pinned: a.bar === 'pinned', onClick: a.run,
   }));
 

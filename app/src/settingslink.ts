@@ -1,7 +1,7 @@
 // Opening Settings on one of its pages from anywhere (the viewer's 3D photos
 // window has "More 3D settings…"). App says how to get there.
 
-export type SettingsPage = 'appearance' | 'viewer' | 'security' | 'storage' | 'background' | 'ai' | 'about';
+export type SettingsPage = 'appearance' | 'viewer' | 'security' | 'storage' | 'phone' | 'background' | 'ai' | 'about';
 
 let opener: ((page: SettingsPage, at?: string) => void) | null = null;
 
