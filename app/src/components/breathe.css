@@ -1,0 +1,36 @@
+/* Breathe mode: frames that slowly breathe, with a soft glow that breathes with them. */
+.breathe {
+  position: absolute; inset: 0; overflow: hidden;
+  background: radial-gradient(ellipse at 50% 45%, #10161a 0%, #07090b 60%, #040506 100%);
+  --breathe-glow: rgba(64, 196, 182, 0.34);
+}
+.breathe.beating { --breathe-glow: rgba(236, 92, 120, 0.42); }
+.breathe-glow {
+  position: absolute; border-radius: 18px; pointer-events: none; opacity: 0.4;
+  box-shadow: 0 0 80px 14px var(--breathe-glow);
+  transition: box-shadow 1.2s ease;
+  will-change: transform, opacity;
+}
+.breathe-frame {
+  position: absolute; border-radius: 16px; overflow: hidden; background: #0b0d10; cursor: pointer;
+  outline: 1px solid rgba(255, 255, 255, 0.06); outline-offset: -1px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.55);
+  will-change: transform; transform-origin: 50% 50%;
+}
+.breathe-frame.hover { outline: 2px solid var(--accent); outline-offset: -2px; }
+.breathe-slide { position: absolute; inset: 0; }
+.breathe-slide.entering { animation: breathe-in 1.4s ease both; }
+.breathe-slide img, .breathe-slide video:not(.blur-bg) {
+  position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none;
+}
+.breathe-slide .blur-bg {
+  position: absolute; left: -6%; top: -6%; width: 112%; height: 112%; object-fit: cover; pointer-events: none;
+  filter: blur(28px) brightness(0.5) saturate(1.2);
+}
+.breathe-slide .blur-bg.video { filter: blur(10px); }
+.breathe-status {
+  position: absolute; left: 16px; bottom: 14px; z-index: 3; max-width: min(640px, calc(100% - 32px));
+  display: flex; flex-direction: column; gap: 2px; padding: 8px 12px; border-radius: 10px;
+  background: rgba(10, 12, 14, 0.72); backdrop-filter: blur(8px); font-size: 12px;
+}
+@keyframes breathe-in { from { opacity: 0; } to { opacity: 1; } }
