@@ -4,6 +4,7 @@
 import type { Order, Repeat } from './playlist';
 import { normalTransition, type Transition } from './transitions';
 import type { Fit } from './flip';
+import { echoLook, mirrorLook, type EchoLook, type MirrorLook } from './looks';
 
 export type { Fit };
 
@@ -23,6 +24,10 @@ export interface PlaybackSettings {
   fit: Fit;
   /** With Fit or Original size: the empty space shows a blurred copy of the picture instead of black. */
   blurBg?: boolean;
+  /** "Mirror world": shown mirrored, slowly moving (looks.ts). */
+  mirror?: MirrorLook;
+  /** "Echo trail": moving videos and GIFs leave soft fading copies behind them. */
+  echo?: EchoLook;
   /**
    * "Repeat this one": keep showing the current item (videos and GIFs loop,
    * pictures stay); no timer, video limit or beat moves on. Skipping by hand still works.
@@ -67,6 +72,8 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   speed: 1,
   fit: 'contain',
   blurBg: false,
+  mirror: 'off',
+  echo: 'off',
   repeatThis: false,
   transition: 'fade',
   fadeMs: 350,
@@ -107,6 +114,8 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
     fit: s.fit === 'cover' || s.fit === 'original' ? s.fit : 'contain',
     blurBg: s.blurBg === true,
+    mirror: mirrorLook(s.mirror),
+    echo: echoLook(s.echo),
     repeatThis: s.repeatThis === true,
     kenBurns: s.kenBurns === true,
     depth3d: s.depth3d === true,

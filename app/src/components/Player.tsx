@@ -20,6 +20,8 @@ import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } fro
 import { beatStatusText, useBeatSync } from '../beats';
 import { clipBox, cssFit, type Box } from '../flip';
 import { BlurBackdrop } from './BlurBackdrop';
+import { lookMenuItems, MediaLooks } from './MediaLooks';
+import { echoLook, lookArea, mirrorLook } from '../looks';
 import { kickFaceScanner } from '../ml/facescan';
 import { saveWay, turn, turnBox, turnedRect, turnedSize, turnedStyle, turnLabel, type Quarter } from '../rotation';
 import { RotateNote, saveRotation, savedText } from '../rotatesave';
@@ -924,7 +926,7 @@ export function Player(props: PlayerProps) {
     if (!ctx) return null;
     const sr = st.getBoundingClientRect();
     let any = false;
-    for (const cv of kbRef.current?.querySelectorAll<HTMLCanvasElement>('canvas.media-canvas') ?? []) {
+    for (const cv of kbRef.current?.querySelectorAll<HTMLCanvasElement>('canvas.media-canvas, canvas.look-canvas') ?? []) {
       if (!cv.width || !cv.height || cv.style.visibility === 'hidden' || cv.closest('.upscaled-layer.hide')) continue;
       const r = cv.getBoundingClientRect();
       ctx.drawImage(cv, (r.left - sr.left) * dpr, (r.top - sr.top) * dpr, r.width * dpr, r.height * dpr);
@@ -1117,6 +1119,11 @@ export function Player(props: PlayerProps) {
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   // (Pictures with a subject effect on show without the depth pack too: a flat depth map is used.)
   const depth3d = depthFor && (depthPackOk || subjectOn) && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
+  // Looks (MediaLooks.tsx): Mirror world on anything shown; Echo trail only on media that moves.
+  const lookOk = !mini && !zoomed && !failed && !depth3d && !up.src && !!item && (isPicture || isVideo);
+  const lookMirror = lookOk ? mirrorLook(s.mirror) : 'off';
+  const lookEcho = lookOk && (isVideo || animated) ? echoLook(s.echo) : 'off';
+  const lookBox = (lookMirror !== 'off' || lookEcho !== 'off') && drawn ? lookArea(drawn, stageWH.w, stageWH.h) : null;
   /** Each shown GIF frame, for the 3D layer. */
   const gifFeed = useMemo(() => frameFeed(), []);
   // Live video 3D with the delay on: the sound is delayed by the same amount as the picture.
@@ -1764,6 +1771,7 @@ export function Player(props: PlayerProps) {
     { label: 'Blurred background', hint: 'around Fit and Original size', checked: !!s.blurBg, disabled: s.fit === 'cover', onSelect: () => set({ blurBg: !s.blurBg }) },
     { label: 'Speed ramp', hint: 'videos: slow-mo and fast in waves', checked: !!s.speedRamp, sepBefore: true, onSelect: () => set({ speedRamp: !s.speedRamp }) },
     { label: 'Soft glow around', hint: 'instead of black', checked: !!prefs.ambient, sepBefore: true, onSelect: () => saveViewerPrefs({ ambient: !prefs.ambient }) },
+    ...lookMenuItems(s, set),
     ...(faceCapable ? [{ label: 'Face boxes', hint: 'boxes around faces', checked: prefs.faceBoxes, onSelect: () => setFaceBoxes(!prefs.faceBoxes) }] : []),
   ];
 
@@ -1850,6 +1858,17 @@ export function Player(props: PlayerProps) {
             ) : (
               <div className="zoom-layer" style={{ transform: `translate(${zoom.x}px, ${zoom.y}px) scale(${zoom.s})` }}>{media}</div>
             )}
+            {lookBox && item && drawn && (
+              <MediaLooks key={`look:${item.key}:${tick}`} mirror={lookMirror} echo={lookEcho} rot={rot} W={stageWH.w} H={stageWH.h} area={lookBox}
+                running={!halted} live={isVideo || animated}
+                source={() => {
+                  if (isVideo) return videoRef.current ? { el: videoRef.current, box: drawn } : null;
+                  const cv = kbRef.current?.querySelector<HTMLCanvasElement>('.image-stage canvas.media-canvas');
+                  if (cv) return { el: cv, box: null };
+                  const im = kbRef.current?.querySelector<HTMLImageElement>('.image-stage img.media');
+                  return im ? { el: im, box: drawn } : null;
+                }} />
+            )}
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'motion'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
@@ -1877,7 +1896,7 @@ export function Player(props: PlayerProps) {
               </div>
             )}
             {up.src && up.compare && <UpscaleCompare layer={upLayer} drawn={drawn} label={up.label} keys={!!props.keys} />}
-            {drawn && shownFaces.length > 0 && (
+            {drawn && shownFaces.length > 0 && lookMirror === 'off' && (
               <FaceLayer faces={shownFaces} rect={drawn} onShowPerson={props.onShowPerson} onOpenPerson={props.onOpenPerson} tools={faceTools}
                 onChanged={() => setFaceReload((n) => n + 1)} onMessage={setFlash} onAsking={setFaceAsking} />
             )}
