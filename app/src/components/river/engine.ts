@@ -12,8 +12,8 @@
 // stored).
 
 import {
-  cardSize, Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, setDensity, setLayerCount, step, stepFlow, wheelFlow,
-  type Drifter, type Spawner, type View,
+  cardSize, Deck, fill, flowText, unit, hitTest, LAYERS, MAX_FLOW, MIN_FLOW, Momentum, NEAREST, placed, riverSize, screenAspect, setDensity, setLayerCount, step, stepFlow, toRiver, wheelFlow,
+  type Drifter, type RiverDir, type Spawner, type View,
 } from '../../river';
 import { riverPreviews, type RiverCardWant } from '../../riverplay';
 import { Budget, type Layer } from '../../previewplan';
@@ -60,6 +60,8 @@ export interface RiverOptions {
   flow?: number;
   density?: number;
   layers?: number;
+  /** From the left (as designed) or falling from the top. */
+  dir?: RiverDir;
 }
 
 interface Card {
@@ -160,7 +162,9 @@ export class RiverEngine {
     setDensity(opts.density ?? 1);
     this.pool = LAYERS.map(() => []);
     this.flow = this.target = Math.max(MIN_FLOW, Math.min(MAX_FLOW, opts.flow ?? 1));
-    this.view = { w: root.clientWidth || 1280, h: root.clientHeight || 720, reduced };
+    const down = opts.dir === 'top';
+    this.view = { ...riverSize(root.clientWidth || 1280, root.clientHeight || 720, down), reduced, down };
+    root.classList.toggle('rv-down', down);
     this.deck = new Deck(items.length);
     const showing = () => new Set(this.drifters.map((d) => d.item));
     this.spawner = {
@@ -282,8 +286,34 @@ export class RiverEngine {
     this.plan();
   }
 
-  pointer(x: number | null, y = 0) {
-    this.mouse = x == null || this.covered ? null : { x, y };
+  /** The direction: the river starts over flowing the new way (frozen cards are let go). */
+  setDirection(dir: RiverDir) {
+    const down = dir === 'top';
+    if (!!this.view.down === down) return;
+    this.grab = null;
+    this.root.classList.remove('rv-holding');
+    for (const d of this.drifters) this.detach(d);
+    this.drifters = [];
+    this.setHover(null);
+    this.view.down = down;
+    Object.assign(this.view, riverSize(this.root.clientWidth || 1280, this.root.clientHeight || 720, down));
+    this.root.classList.toggle('rv-down', down);
+    this.motes = [];
+    this.resize();
+    this.drifters = fill(this.view, this.spawner);
+    for (const d of this.drifters) {
+      d.shown = 0;
+      this.attach(d);
+    }
+    this.plan();
+  }
+
+  pointer(sx: number | null, sy = 0) {
+    // Screen to the river's own space (falling: x and y change places).
+    const q = sx == null ? null : toRiver(sx, sy, this.view);
+    const x = q?.x ?? null;
+    const y = q?.y ?? 0;
+    this.mouse = q == null || this.covered ? null : q;
     this.lastMove = performance.now();
     const g = this.grab;
     if (g && x != null) {
@@ -295,13 +325,15 @@ export class RiverEngine {
   }
 
   /** The card under a point (index into the items), if any. */
-  itemAt(x: number, y: number): number | null {
+  itemAt(sx: number, sy: number): number | null {
+    const { x, y } = toRiver(sx, sy, this.view);
     const d = hitTest(this.drifters, x, y, this.t, this.view, this.hovered?.key ?? null);
     return d ? d.item : null;
   }
 
   /** Left button down: take the card under the mouse (true if there was one). */
-  press(x: number, y: number): boolean {
+  press(sx: number, sy: number): boolean {
+    const { x, y } = toRiver(sx, sy, this.view);
     const d = hitTest(this.drifters, x, y, this.t, this.view, this.hovered?.key ?? null);
     if (!d) return false;
     d.held = true;
@@ -351,15 +383,14 @@ export class RiverEngine {
     const d = g.d;
     const c = this.cards.get(d.key);
     if (d.layer !== NEAREST) {
-      const s = cardSize(NEAREST, d.w / d.h, this.view);
+      const s = cardSize(NEAREST, screenAspect(d, this.view), this.view);
       d.layer = NEAREST;
       d.w = s.w;
       d.h = s.h;
       if (c) {
         this.lookFor(c, NEAREST, this.items[d.item]);
         c.el.classList.add('rv-grow');
-        c.el.style.width = `${d.w.toFixed(1)}px`;
-        c.el.style.height = `${d.h.toFixed(1)}px`;
+        this.sizeCard(c, d);
         window.setTimeout(() => c.el.classList.remove('rv-grow'), 450);
       }
     }
@@ -458,7 +489,10 @@ export class RiverEngine {
       const c = this.cards.get(d.key);
       if (!c) continue;
       const p = placed(d, this.t, v);
-      c.el.style.transform = `translate3d(${(p.x - p.w / 2).toFixed(1)}px, ${(p.y - p.h / 2).toFixed(1)}px, 0) rotate(${p.rot.toFixed(2)}deg) scale(${p.scale.toFixed(3)})`;
+      // Falling: the river's x is down the screen and its y across.
+      const left = v.down ? p.y - p.h / 2 : p.x - p.w / 2;
+      const top = v.down ? p.x - p.w / 2 : p.y - p.h / 2;
+      c.el.style.transform = `translate3d(${left.toFixed(1)}px, ${top.toFixed(1)}px, 0) rotate(${p.rot.toFixed(2)}deg) scale(${p.scale.toFixed(3)})`;
       const L = LAYERS[d.layer];
       if (!L) continue;
       const op = (L.opacity + (1 - L.opacity) * d.lift) * d.shown;
@@ -493,8 +527,7 @@ export class RiverEngine {
     const c = this.pool[d.layer].pop() ?? this.makeCard(d.layer);
     const it = this.items[d.item];
     c.key = d.key;
-    c.el.style.width = `${d.w.toFixed(1)}px`;
-    c.el.style.height = `${d.h.toFixed(1)}px`;
+    this.sizeCard(c, d);
     c.el.style.opacity = '0';
     c.el.style.zIndex = String(10 + d.layer * 10);
     this.lookFor(c, d.layer, it);
@@ -552,6 +585,12 @@ export class RiverEngine {
     st.top = pct(f.top);
   }
 
+  /** The card's size on screen (falling: the river's w is its height). */
+  private sizeCard(c: Card, d: Drifter) {
+    c.el.style.width = `${(this.view.down ? d.h : d.w).toFixed(1)}px`;
+    c.el.style.height = `${(this.view.down ? d.w : d.h).toFixed(1)}px`;
+  }
+
   /** The real shape from the thumbnail (the stored size may be unknown or turned). */
   private learnShape(d: Drifter, c: Card, it: RiverItem) {
     const nw = c.img.naturalWidth;
@@ -559,11 +598,13 @@ export class RiverEngine {
     if (!nw || !nh) return;
     const a = nw / nh;
     this.aspects.set(it.id, a);
-    const now = d.w / d.h;
+    const now = screenAspect(d, this.view);
     if (Math.abs(a - now) / now < 0.04) return;
-    const h = d.h;
-    d.w = h * Math.max(0.6, Math.min(1.8, a));
-    c.el.style.width = `${d.w.toFixed(1)}px`;
+    // The height on screen stays; the width follows the picture.
+    const ca = Math.max(0.6, Math.min(1.8, a));
+    if (this.view.down) d.h = d.w * ca;
+    else d.w = d.h * ca;
+    this.sizeCard(c, d);
     if (c.flip && c.flip.style.display !== 'none') this.sizeFlip(c, d, it);
   }
 
@@ -809,8 +850,8 @@ export class RiverEngine {
   /** The flip-book covers the card as the video would (its frames have the video's shape). */
   private sizeFlip(c: Card, d: Drifter, it: RiverItem) {
     if (!c.flip) return;
-    const a = this.aspects.get(it.id) ?? it.aspect ?? d.w / d.h;
-    const ca = d.w / d.h;
+    const ca = screenAspect(d, this.view);
+    const a = this.aspects.get(it.id) ?? it.aspect ?? ca;
     // In parts of the card, so it follows the card's size (freezing, resizing) by itself.
     const w = Math.max(1, a / ca);
     const h = w * (ca / a);
@@ -864,8 +905,10 @@ export class RiverEngine {
   // ---- motes ---------------------------------------------------------------------------------
 
   private resize() {
-    const w = this.root.clientWidth || 1280;
-    const h = this.root.clientHeight || 720;
+    const sw = this.root.clientWidth || 1280;
+    const sh = this.root.clientHeight || 720;
+    // In the river's own space (falling: width and height change places).
+    const { w, h } = riverSize(sw, sh, !!this.view.down);
     const sx = w / this.view.w;
     const sy = h / this.view.h;
     const su = unit({ ...this.view, w, h }) / unit(this.view);
@@ -877,17 +920,14 @@ export class RiverEngine {
         d.w *= su;
         d.h *= su;
         const c = this.cards.get(d.key);
-        if (c) {
-          c.el.style.width = `${d.w.toFixed(1)}px`;
-          c.el.style.height = `${d.h.toFixed(1)}px`;
-        }
+        if (c) this.sizeCard(c, d);
       }
     }
     this.view.w = w;
     this.view.h = h;
     this.dpr = window.devicePixelRatio || 1;
-    this.canvas.width = Math.round(w * this.moteScale);
-    this.canvas.height = Math.round(h * this.moteScale);
+    this.canvas.width = Math.round(sw * this.moteScale);
+    this.canvas.height = Math.round(sh * this.moteScale);
     const want = Math.round(Math.min(90, (w * h) / 22000));
     while (this.motes.length < want) this.motes.push(this.newMote(true));
     this.motes.length = want;
@@ -913,13 +953,16 @@ export class RiverEngine {
     const dt = this.view.reduced ? this.dt * 0.4 : this.dt;
     for (let i = 0; i < this.motes.length; i++) {
       const m = this.motes[i];
-      m.x += (6 + m.z * 26) * (this.view.h / 1080) * this.flow * dt;
+      // Motes drift with the current, in the river's space (falling: drawn with x and y swapped).
+      m.x += (6 + m.z * 26) * ((this.view.down ? this.view.w : this.view.h) / 1080) * this.flow * dt;
       m.y += Math.sin(this.t * 0.3 + m.p) * 3.6 * dt;
       if (m.x > this.view.w + 10) this.motes[i] = this.newMote(false);
       const tw = this.view.reduced ? 0.8 : 0.55 + 0.45 * Math.sin(this.t * (0.6 + m.z) + m.p * 3);
       g.globalAlpha = m.a * tw;
       const r = m.r * 4 * s;
-      g.drawImage(this.mote, m.x * s - r, m.y * s - r, r * 2, r * 2);
+      const sx = this.view.down ? m.y : m.x;
+      const sy = this.view.down ? m.x : m.y;
+      g.drawImage(this.mote, sx * s - r, sy * s - r, r * 2, r * 2);
     }
     g.globalAlpha = 1;
   }

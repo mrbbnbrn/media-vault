@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   cardSize, Deck, DEFAULT_LAYERS, fill, flowText, flowToSlider, hitTest, LAYERS, layerSpeed, loose, makeLayers, margin, MAX_FLOW, MAX_LAYERS, MIN_FLOW, MIN_LAYERS,
-  Momentum, NEAREST, placed, seeded, setDensity, setLayerCount, sliderToFlow, step, stepFlow, wheelFlow,
+  Momentum, NEAREST, normalizeDir, placed, riverSize, screenAspect, seeded, setDensity, setLayerCount, sliderToFlow, step, stepFlow, toRiver, toScreen, unit, wheelFlow,
   type Drifter, type Spawner, type View,
 } from './river';
 
@@ -349,5 +349,67 @@ describe('the higher limits', () => {
     } finally {
       setDensity(1);
     }
+  });
+});
+
+describe('falling from the top', () => {
+  // A 1920 × 1080 screen: the river's own space is 1080 along (down) × 1920 across.
+  const D: View = { ...riverSize(1920, 1080, true), reduced: false, down: true };
+
+  it('swaps the screen into the river and back; old settings mean from the left', () => {
+    expect(riverSize(1920, 1080, true)).toEqual({ w: 1080, h: 1920 });
+    expect(riverSize(1920, 1080, false)).toEqual({ w: 1920, h: 1080 });
+    expect(toRiver(100, 700, D)).toEqual({ x: 700, y: 100 });
+    expect(toScreen(700, 100, D)).toEqual({ x: 100, y: 700 });
+    expect(toRiver(100, 700, V)).toEqual({ x: 100, y: 700 });
+    expect(normalizeDir(undefined)).toBe('left');
+    expect(normalizeDir('top')).toBe('top');
+    expect(normalizeDir('sideways')).toBe('left');
+  });
+
+  it('cards look the same on screen either way; speeds too', () => {
+    setLayerCount(DEFAULT_LAYERS);
+    expect(unit(D)).toBe(unit(V));
+    for (const a of [4 / 3, 3 / 4, 16 / 9]) {
+      const l = cardSize(NEAREST, a, V);
+      const d = cardSize(NEAREST, a, D);
+      // The river's w is the height on screen when falling.
+      expect(d).toEqual({ w: l.h, h: l.w });
+      expect(screenAspect(d, D)).toBeCloseTo(screenAspect(l, V), 6);
+    }
+    expect(layerSpeed(NEAREST, 1, D)).toBeCloseTo(layerSpeed(NEAREST, 1, V), 6);
+  });
+
+  it('falls down the screen, spread across its width, for a long time', () => {
+    setLayerCount(DEFAULT_LAYERS);
+    setDensity(1);
+    const s = spawner(200);
+    const list = fill(D, s);
+    s.list = list;
+    // Columns across the whole width (the river's y is the screen's x).
+    const xs = list.map((d) => toScreen(d.x, d.y, D).x);
+    expect(Math.min(...xs)).toBeLessThan(1920 * 0.3);
+    expect(Math.max(...xs)).toBeGreaterThan(1920 * 0.7);
+    const first = list.find((d) => d.layer === NEAREST)!;
+    const y0 = toScreen(first.x, first.y, D).y;
+    run(list, s, 2, 1, D);
+    if (list.includes(first)) expect(toScreen(first.x, first.y, D).y).toBeGreaterThan(y0);
+    const { gone, added } = run(list, s, 600, 2, D);
+    expect(gone).toBeGreaterThan(20);
+    expect(added).toBeGreaterThan(20);
+    expect(list.length).toBeLessThan(200);
+    // Hit-testing in the river's space finds a card where it is drawn on screen.
+    const d = list.find((x) => x.layer === NEAREST && x.shown > 0.5)!;
+    const p = placed(d, 0, D);
+    const sc = toScreen(p.x, p.y, D);
+    const q = toRiver(sc.x, sc.y, D);
+    expect(hitTest(list, q.x, q.y, 0, D)).not.toBeNull();
+  });
+
+  it('a lifted card rises on screen', () => {
+    const d: Drifter = { key: 1, layer: NEAREST, item: 0, x: 500, y: 900, w: 300, h: 400, phase: 0, tilt: 0, lift: 1, shown: 1 };
+    const p = placed(d, 0, D);
+    expect(p.x).toBeLessThan(500); // up the screen
+    expect(p.y).toBe(900);
   });
 });

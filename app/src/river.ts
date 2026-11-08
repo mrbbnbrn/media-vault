@@ -116,12 +116,35 @@ export interface Drifter {
 /** Out of the stream (held, frozen or thrown): others don't queue behind it, and it can leave any way. */
 export const loose = (d: Drifter) => !!(d.held || d.frozen || d.vx || d.vy);
 
+/**
+ * The river's own space: it always flows along +x, and y is across the
+ * stream. Flowing from the left, that is the screen; falling from the top
+ * (`down`), x is the screen's y (downwards) and y the screen's x, so `w` is
+ * the screen's height and `h` its width. A card's `w` is then its height on
+ * screen and `h` its width (see cardSize, screenAspect, toScreen).
+ */
 export interface View {
   w: number;
   h: number;
   /** Gentler: slower, no bob or sway. */
   reduced: boolean;
+  /** Falling from the top instead of flowing from the left. */
+  down?: boolean;
 }
+
+/** Where the river comes from (the Direction setting). */
+export type RiverDir = 'left' | 'top';
+export const normalizeDir = (d: unknown): RiverDir => (d === 'top' ? 'top' : 'left');
+
+/** The river's size for a screen of this size (its w along the flow, h across). */
+export const riverSize = (screenW: number, screenH: number, down: boolean) => (down ? { w: screenH, h: screenW } : { w: screenW, h: screenH });
+
+/** A point on screen in the river's space, and back (the same swap both ways). */
+export const toRiver = (x: number, y: number, v: Pick<View, 'down'>) => (v.down ? { x: y, y: x } : { x, y });
+export const toScreen = toRiver;
+
+/** A card's width / height on screen. */
+export const screenAspect = (d: { w: number; h: number }, v: Pick<View, 'down'>) => (v.down ? d.h / d.w : d.w / d.h);
 
 export type Rand = () => number;
 
@@ -166,14 +189,15 @@ export class Deck {
 }
 
 /** The size cards and speeds follow: the screen height, or less on a tall narrow window. */
-export const unit = (v: View) => Math.min(v.h, v.w * 0.72);
+export const unit = (v: View) => (v.down ? Math.min(v.w, v.h * 0.72) : Math.min(v.h, v.w * 0.72));
 
 /** Card size for an item of this shape in a layer (wide and tall pictures kept within reason). */
 export function cardSize(layer: number, aspect: number, v: View): { w: number; h: number } {
   const a = Math.max(0.6, Math.min(1.8, Number.isFinite(aspect) && aspect > 0 ? aspect : 4 / 3));
   // Very wide pictures are a little shorter, so all have a similar weight.
   const h = LAYERS[layer].size * unit(v) * (a > 1.35 ? Math.sqrt(1.35 / a) : 1);
-  return { w: h * a, h };
+  // Falling: the same card on screen; in the river's space its height is along the flow.
+  return v.down ? { w: h, h: h * a } : { w: h * a, h };
 }
 
 /** px/s for a layer at this flow. */
@@ -220,11 +244,14 @@ function make(layer: number, x: number, v: View, s: Spawner, leftOf?: Drifter): 
   };
 }
 
-const gapFor = (layer: number, h: number, r: Rand) => {
+const gapFor = (layer: number, h: number, r: Rand, v: View) => {
   const L = LAYERS[layer];
-  const g = (h * (L.gapMin + r() * (L.gapMax - L.gapMin))) / density;
+  // Falling, the stream is shorter and wider than the screen is: as many cards for the same screen
+  // means closer together along it (so the screen looks as full as when flowing from the left).
+  const dens = density * (v.down ? v.h / v.w : 1);
+  const g = (h * (L.gapMin + r() * (L.gapMax - L.gapMin))) / dens;
   // Above the designed amount, the next card may start before this one ends (it takes another row).
-  return density > 1 ? g - h * 0.9 * (1 - 1 / density) : g;
+  return dens > 1 ? g - h * 0.9 * (1 - 1 / dens) : g;
 };
 
 /** A thrown card slows to the current's pace over about a second. */
@@ -242,7 +269,7 @@ export function fill(v: View, s: Spawner): Drifter[] {
       if (!d) return out;
       out.push(d);
       prev = d;
-      right = d.x - d.w / 2 - gapFor(layer, d.h, s.rand);
+      right = d.x - d.w / 2 - gapFor(layer, d.h, s.rand, v);
     }
   }
   return out;
@@ -302,7 +329,7 @@ export function step(list: Drifter[], dt: number, flow: number, v: View, s: Spaw
     }
     // Room on the left: float new ones in.
     const left = mine.filter((d) => !gone.includes(d)).reduce<Drifter | undefined>((a, d) => (!a || d.x < a.x ? d : a), undefined);
-    let edge = left ? left.x - left.w / 2 - gapFor(layer, left.h, s.rand) : v.w + m;
+    let edge = left ? left.x - left.w / 2 - gapFor(layer, left.h, s.rand, v) : v.w + m;
     let prev = left;
     let guard = 0;
     while (edge > -m && guard++ < 40) {
@@ -311,7 +338,7 @@ export function step(list: Drifter[], dt: number, flow: number, v: View, s: Spaw
       d.shown = left ? 1 : 0;
       added.push(d);
       prev = d;
-      edge = d.x - d.w / 2 - gapFor(layer, d.h, s.rand);
+      edge = d.x - d.w / 2 - gapFor(layer, d.h, s.rand, v);
     }
   }
   if (gone.length) {
@@ -335,10 +362,14 @@ export interface Placed {
 export function placed(d: Drifter, t: number, v: View): Placed {
   const L = LAYERS[d.layer];
   const calm = v.reduced || d.held || d.frozen ? 0 : 1;
-  const bob = Math.sin(t * 0.55 + d.phase) * L.bob * v.h * calm * (1 - d.lift);
+  // Measured by the screen's height either way; a lifted card rises a little on screen.
+  const tall = v.down ? v.w : v.h;
+  const bob = Math.sin(t * 0.55 + d.phase) * L.bob * tall * calm * (1 - d.lift);
   const sway = Math.sin(t * 0.37 + d.phase * 1.7) * L.sway * calm * (1 - d.lift);
   const scale = 1 + d.lift * (d.layer === NEAREST ? 0.1 : 0.22);
-  return { x: d.x, y: d.y + bob - d.lift * v.h * 0.01, w: d.w, h: d.h, rot: (d.tilt + sway) * (1 - d.lift), scale };
+  const rise = d.lift * tall * 0.01;
+  if (v.down) return { x: d.x - rise, y: d.y + bob, w: d.w, h: d.h, rot: (d.tilt + sway) * (1 - d.lift), scale };
+  return { x: d.x, y: d.y + bob - rise, w: d.w, h: d.h, rot: (d.tilt + sway) * (1 - d.lift), scale };
 }
 
 /** The card under the point: nearer layers first, then the one drawn last. */

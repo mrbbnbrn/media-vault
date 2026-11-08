@@ -123,6 +123,8 @@ pub struct ViewerSettings {
     pub river_density: f64,
     /// Discovery river: how many depth layers (2–8).
     pub river_layers: u32,
+    /// Discovery river: "left" (flows in from the left) or "top" (falls from the top).
+    pub river_dir: String,
     /// Face boxes in the viewer include the "poor faces" (too small, blurry or turned; dimmed).
     pub poor_faces: bool,
     /// Discovery river: "pictures" or "faces" (round bubbles of known people).
@@ -196,6 +198,7 @@ impl Default for ViewerSettings {
             river_flow: 1.0,
             river_density: 1.0,
             river_layers: 5,
+            river_dir: "left".into(),
             poor_faces: false,
             river_mode: "pictures".into(),
             river_people: Vec::new(),
@@ -399,6 +402,9 @@ impl AppConfig {
         if v.river_mode != "faces" {
             v.river_mode = "pictures".into();
         }
+        if v.river_dir != "top" {
+            v.river_dir = "left".into();
+        }
         v.river_people.truncate(500);
         // A model id is a short name of a-z, 0-9 and "-" (anything else: the best one installed).
         let id_ok = v.depth_model.len() <= 40 && v.depth_model.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-');
@@ -530,6 +536,9 @@ mod tests {
         assert_eq!((c.viewer.river_mode.as_str(), c.viewer.river_people.clone(), c.viewer.river_face_min), ("faces", vec![3, 9], 120));
         let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverMode":"other","riverFaceMin":99999}}"#).unwrap().sanitized();
         assert_eq!((c.viewer.river_mode.as_str(), c.viewer.river_face_min), ("pictures", 5000));
+        assert_eq!(c.viewer.river_dir, "left");
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverDir":"top"}}"#).unwrap().sanitized();
+        assert_eq!(c.viewer.river_dir, "top");
     }
 
     #[test]

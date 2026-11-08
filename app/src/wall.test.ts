@@ -22,3 +22,16 @@ describe('wall', () => {
     expect(wallGrid(30).cols * wallGrid(30).rows).toBe(30);
   });
 });
+
+describe('wall colour flow', () => {
+  it('the target follows the column order, left to right', async () => {
+    const { wallColourTarget } = await import('./components/Wall');
+    const pos = new Map([['a', 0.1], ['b', 0.3], ['c', 0.5], ['d', 0.7], ['e', 0.9], ['f', 0.95]]);
+    const keys = ['a', 'c', 'e', 'b', 'd', 'f']; // 3 columns × 2 rows
+    const p = (k: string) => pos.get(k) ?? null;
+    const left = wallColourTarget(keys, 0, 3, 2, p)!;
+    const right = wallColourTarget(keys, 5, 3, 2, p)!;
+    expect(left).toBeLessThan(right);
+    expect(wallColourTarget(['a', null], 0, 2, 1, p)).toBeNull();
+  });
+});

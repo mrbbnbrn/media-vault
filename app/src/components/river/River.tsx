@@ -11,7 +11,7 @@
 // screen. Clicking a face opens its photo.
 
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { DEFAULT_LAYERS, flowText, flowToSlider, MAX_DENSITY, MAX_LAYERS, MIN_DENSITY, MIN_LAYERS, sliderToFlow } from '../../river';
+import { DEFAULT_LAYERS, flowText, flowToSlider, MAX_DENSITY, MAX_LAYERS, MIN_DENSITY, MIN_LAYERS, normalizeDir, sliderToFlow, type RiverDir } from '../../river';
 import { bigEnough, FACE_MIN_MAX, faceCountText, peopleText, type RiverFace, type RiverMode } from '../../riverplay';
 import { api, type FolderCard } from '../../api';
 import { saveViewerPrefs, viewerPrefs } from '../../prefs';
@@ -56,6 +56,7 @@ export default function River(props: {
   const [flow, setFlowValue] = useState(saved.riverFlow ?? 1);
   const [density, setDensityValue] = useState(saved.riverDensity ?? 1);
   const [layers, setLayersValue] = useState(saved.riverLayers ?? DEFAULT_LAYERS);
+  const [dir, setDir] = useState<RiverDir>(normalizeDir(saved.riverDir));
   const [bar, setBar] = useState(false);
   // Pictures or faces, whose faces, and the smallest face (remembered too).
   const [mode, setMode] = useState<RiverMode>(saved.riverMode === 'faces' ? 'faces' : 'pictures');
@@ -157,7 +158,7 @@ export default function River(props: {
         }
       },
       onLeave: () => p.current.onClose(),
-    }, REDUCED, { flow: start.riverFlow ?? 1, density: start.riverDensity ?? 1, layers: start.riverLayers ?? DEFAULT_LAYERS });
+    }, REDUCED, { flow: start.riverFlow ?? 1, density: start.riverDensity ?? 1, layers: start.riverLayers ?? DEFAULT_LAYERS, dir: normalizeDir(start.riverDir) });
     engine.current = e;
     e.start();
     return () => {
@@ -321,6 +322,22 @@ export default function River(props: {
                   rememberSoon({ riverMode: m });
                 }}>
                 {m === 'pictures' ? 'Pictures' : 'Faces'}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="rv-set rv-modes">
+          <span>Direction</span>
+          <div className="rv-seg" role="radiogroup" aria-label="Where the river comes from">
+            {(['left', 'top'] as const).map((d) => (
+              <button key={d} type="button" role="radio" aria-checked={dir === d} className={dir === d ? 'on' : ''}
+                title={d === 'top' ? 'Pictures fall from the top and drift down' : 'Pictures float in from the left and drift right'}
+                onClick={() => {
+                  setDir(d);
+                  engine.current?.setDirection(d);
+                  rememberSoon({ riverDir: d });
+                }}>
+                {d === 'left' ? 'From the left' : 'From the top'}
               </button>
             ))}
           </div>
