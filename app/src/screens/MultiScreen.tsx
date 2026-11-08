@@ -121,7 +121,8 @@ const APPLY_PARTS: { id: ApplyPart; label: string }[] = [
 ];
 const PART_KEYS: Record<Exclude<ApplyPart, 'source'>, (keyof PlaybackSettings)[]> = {
   playback: ['imageSeconds', 'videoMaxSeconds', 'videoRandomStart', 'gifLoops', 'gifMaxSeconds', 'order', 'repeat', 'repeatThis', 'speed',
-    'transition', 'fadeMs', 'beatSync', 'beatEvery', 'beatMinSeconds', 'kenBurns'],
+    'transition', 'fadeMs', 'beatSync', 'beatEvery', 'beatMinSeconds', 'kenBurns',
+    'beatMontage', 'beatDrop', 'speedRamp'],
   sound: ['volume', 'muted'],
   fit: ['fit', 'blurBg'],
 };

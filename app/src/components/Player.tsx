@@ -71,6 +71,8 @@ import { useUpscale } from './Upscale';
 import { BookmarksPanel, GifMakerDialog, Mp4CutDialog, PositionBar, preciseTime, ScalingMenu } from './VideoTools';
 import { ImageEditor } from './ImageEditor';
 import { useItemTransition } from './ItemTransition';
+import { BeatHit } from './BeatHit';
+import { useSpeedRamp } from '../speedrampHook';
 import { pickEffect, transitionMs, type Effect } from '../transitions';
 import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
 import { libraryItemMenu, trashFromViewer } from '../itemmenu';
@@ -375,7 +377,12 @@ export function Player(props: PlayerProps) {
   // Beat sync: with music playing on the computer, the slideshow moves on with
   // the beat (videos too); when it's quiet the normal timing takes over.
   const beatOn = slideshow && !halted && s.beatSync && !keepOne;
-  const beat = useBeatSync({ enabled: beatOn, everyBeats: s.beatEvery, minSeconds: s.beatMinSeconds, onAdvance: () => go('next', true) });
+  // "Speed ramp" (videos: slow-mo and fast in waves) and "Beat drop" (move on at once with a flash and a zoom punch).
+  const rampHit = useSpeedRamp(videoRef, !!s.speedRamp, s.speed, !halted && isVideo);
+  const [hitN, setHitN] = useState(0);
+  const beat = useBeatSync({ enabled: beatOn, everyBeats: s.beatEvery, minSeconds: s.beatMinSeconds, onAdvance: () => go('next', true),
+    montage: !!s.beatMontage, drop: !!s.beatDrop, onDrop: () => { go('next', true); setHitN((n) => n + 1); },
+    onBeat: (b, now, isDrop) => rampHit(b.strength, now, isDrop) });
   beatMark.current = beat.markAdvanced;
   const beatDriving = beatOn && !beat.silent && !zoomed;
   const slideClock = useRef(newClock()); // time to next slide
@@ -431,7 +438,7 @@ export function Player(props: PlayerProps) {
   const ringNow = useRef<() => RingInfo | null>(() => null);
   ringNow.current = () => {
     if (!item || (keepOne && !failed)) return null;
-    if (beatDriving && !failed) return { mode: 'beat', every: s.beatEvery, filled: beatFilled(beat.pulse, beatBase.current, s.beatEvery), running: !halted };
+    if (beatDriving && !failed) return { mode: 'beat', every: beat.every, filled: beatFilled(beat.pulse, beatBase.current, beat.every), running: !halted };
     const c = slideClock.current;
     if (c.key === `${item.key}:${tick}` && c.ms > 0) return { mode: 'time', frac: clockFrac(c, performance.now()), running: c.since != null, segments: c.segments };
     const v = videoRef.current;
@@ -465,7 +472,7 @@ export function Player(props: PlayerProps) {
 
   // How long a transition takes ("Transition speed"), but with beat sync never longer than
   // about a third of the time between changes, so it keeps up with fast music.
-  const fadeMs = s.transition === 'none' ? 0 : transitionMs(s.fadeMs, beatDriving ? beat.bpm : null, s.beatEvery);
+  const fadeMs = s.transition === 'none' ? 0 : transitionMs(s.fadeMs, beatDriving ? beat.bpm : null, beat.every);
 
   // "Line up faces": the main face stays at the same place and size from picture to picture.
   const align = useFaceAlign({
@@ -709,7 +716,7 @@ export function Player(props: PlayerProps) {
     if (!v) return;
     v.volume = volume;
     v.muted = muted;
-    v.playbackRate = s.speed;
+    if (!s.speedRamp) v.playbackRate = s.speed; // Speed ramp sets it itself (speedrampHook.ts)
     const resumed = wasPaused.current && !halted;
     wasPaused.current = halted;
     if (halted) v.pause();
@@ -1123,7 +1130,7 @@ export function Player(props: PlayerProps) {
   // 3D to the beat: listens to the music while it's on and something is in 3D.
   const beat3d = useBeatSync({ enabled: !!prefs.depthBeat && depth3d, everyBeats: 1, minSeconds: 0, onAdvance: () => {} });
   // How many pictures to prepare ahead: more when a slideshow's stays are short (layers.ts aheadCount).
-  const stay = slideshow ? (beatDriving && beat.bpm ? (60 / beat.bpm) * s.beatEvery : s.imageSeconds) : null;
+  const stay = slideshow ? (beatDriving && beat.bpm ? (60 / beat.bpm) * beat.every : s.imageSeconds) : null;
   const ahead = aheadCount(stay);
   useEffect(() => {
     // The neighbours' depth is worked out ahead (the next pictures and the previous one),
@@ -1755,6 +1762,7 @@ export function Player(props: PlayerProps) {
     { label: 'Fill', hint: 'crops the edges', checked: s.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
     { label: 'Original size', hint: 'never made bigger', checked: s.fit === 'original', onSelect: () => set({ fit: 'original' }) },
     { label: 'Blurred background', hint: 'around Fit and Original size', checked: !!s.blurBg, disabled: s.fit === 'cover', onSelect: () => set({ blurBg: !s.blurBg }) },
+    { label: 'Speed ramp', hint: 'videos: slow-mo and fast in waves', checked: !!s.speedRamp, sepBefore: true, onSelect: () => set({ speedRamp: !s.speedRamp }) },
     { label: 'Soft glow around', hint: 'instead of black', checked: !!prefs.ambient, sepBefore: true, onSelect: () => saveViewerPrefs({ ambient: !prefs.ambient }) },
     ...(faceCapable ? [{ label: 'Face boxes', hint: 'boxes around faces', checked: prefs.faceBoxes, onSelect: () => setFaceBoxes(!prefs.faceBoxes) }] : []),
   ];
@@ -1986,6 +1994,7 @@ export function Player(props: PlayerProps) {
           </div>
         </div>
       )}
+      {s.beatDrop && <BeatHit n={hitN} stage={stageRef} />}
 
       {props.bare || mini ? null : props.compact ? (
         <>

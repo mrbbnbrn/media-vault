@@ -523,6 +523,13 @@ function PlaybackDialog({ s, set, onClose, place }: { s: PlaybackSettings; set: 
             <label className="check"><input type="checkbox" checked={s.videoRandomStart} onChange={(e) => set({ videoRandomStart: e.target.checked })} /> at a random point</label>
           </span>
 
+          <span>Video speed</span>
+          <span className="row">
+            <label className="check" title="Videos speed up and slow down in waves, like an edit (slow-mo to fast). With Change on the beat: slow-mo right on strong beats">
+              <input type="checkbox" checked={!!s.speedRamp} onChange={(e) => set({ speedRamp: e.target.checked })} /> Speed ramp: slow-mo and fast in waves
+            </label>
+          </span>
+
           <label htmlFor="ps-loops">GIFs play</label>
           <span className="row"><input id="ps-loops" className="input small" type="number" min={0} value={s.gifLoops}
             onChange={(e) => set({ gifLoops: Math.max(0, Math.round(num(e.target.value))) })} /> loops, at most
@@ -546,12 +553,26 @@ function PlaybackDialog({ s, set, onClose, place }: { s: PlaybackSettings; set: 
                   <span>Change every</span>
                   <div role="group" className="seg" aria-label="Change every">
                     {([1, 2, 4] as const).map((n) => (
-                      <button key={n} type="button" className={s.beatEvery === n ? 'on' : ''} onClick={() => set({ beatEvery: n })}>{n === 1 ? '1 beat' : `${n} beats`}</button>
+                      <button key={n} type="button" className={s.beatEvery === n && !s.beatMontage ? 'on' : ''} onClick={() => set({ beatEvery: n, beatMontage: false })}>{n === 1 ? '1 beat' : `${n} beats`}</button>
                     ))}
+                    <button type="button" className={s.beatMontage ? 'on' : ''} onClick={() => set({ beatMontage: true })}
+                      title="Montage: quick cuts on busy parts (every beat), long holds on calm parts (4 to 8 beats)">Montage</button>
                   </div>
+                  {s.beatMontage && (
+                    <>
+                      <span />
+                      <span className="faint" style={{ fontSize: 12 }}>Montage: quick cuts on busy parts, long holds on calm parts.</span>
+                    </>
+                  )}
                   <label htmlFor="ps-beatmin">At least</label>
                   <span className="row"><input id="ps-beatmin" className="input small" type="number" min={0.1} max={60} step={0.1} value={s.beatMinSeconds}
                     onChange={(e) => set({ beatMinSeconds: Math.min(60, Math.max(0.1, num(e.target.value))) })} /> seconds per item</span>
+                  <span>Big hits</span>
+                  <span className="row">
+                    <label className="check" title="On a drop or a big hit in the music, move on at once with a white flash and a quick zoom">
+                      <input type="checkbox" checked={!!s.beatDrop} onChange={(e) => set({ beatDrop: e.target.checked })} /> Beat drop: move on with a flash and a zoom
+                    </label>
+                  </span>
                   <span />
                   <span className="faint" style={{ fontSize: 12 }}>
                     Listens to the music playing on your computer (nothing is recorded). When it's quiet, the normal timing above is used.
