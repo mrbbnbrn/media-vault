@@ -305,9 +305,13 @@ impl Conn {
                 }
                 ty::CANCEL => {
                     if let Some(r_) = mvtp::ref_of(&p) {
-                        // The ref may be one we send or one we receive (or all).
-                        self.to_sender(Tx::Cancel(r_));
-                        self.to_receiver(Rx::Cancel(r_));
+                        // Our refs are below PC_REF_LIMIT, the phone's above it.
+                        if r_ == mvtp::CANCEL_ALL || r_ < mvtp::PC_REF_LIMIT {
+                            self.to_sender(Tx::Cancel(r_));
+                        }
+                        if r_ == mvtp::CANCEL_ALL || r_ >= mvtp::PC_REF_LIMIT {
+                            self.to_receiver(Rx::Cancel(r_));
+                        }
                     }
                 }
                 _ => {} // unknown encrypted types are ignored (§4)
@@ -627,7 +631,8 @@ impl Conn {
         if n == 0 {
             return Err("There's nothing to send in what you picked.".into());
         }
-        *self.next_ref.lock().unwrap_or_else(|e| e.into_inner()) = first.wrapping_add(n as u32);
+        let after = ob.items.last().map(|o| mvtp::next_pc_ref(o.item.i)).unwrap_or(first);
+        *self.next_ref.lock().unwrap_or_else(|e| e.into_inner()) = after;
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(Job { folders: ob.folders, items: ob.items });
         if !self.send_busy.swap(true, Ordering::SeqCst) {
             self.cancel_send.store(false, Ordering::SeqCst);

@@ -125,8 +125,10 @@ fn own_tags(conn: &Connection, sql: &str, id: i64) -> Vec<String> {
 }
 
 /// Build what to offer for these items and folders (folders count with
-/// everything under them). Items are numbered from `first_ref`.
+/// everything under them). Items are numbered from `first_ref`, staying
+/// below [`super::mvtp::PC_REF_LIMIT`].
 pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32) -> Result<Outbox, String> {
+    let first_ref = if first_ref == 0 || first_ref >= super::mvtp::PC_REF_LIMIT { 1 } else { first_ref };
     let mut ids: Vec<i64> = Vec::new();
     let mut seen = HashSet::new();
     for id in media.iter().copied().chain(items_under(conn, folders)?) {
@@ -230,7 +232,7 @@ pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32)
                 folder: folder.and_then(|f| fno.get(&f).copied()).unwrap_or(-1),
             },
         });
-        next_ref = next_ref.wrapping_add(1);
+        next_ref = super::mvtp::next_pc_ref(next_ref);
     }
     Ok(Outbox { folders: out_folders, items })
 }

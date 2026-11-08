@@ -27,6 +27,15 @@ pub const MAX_FRAME: u32 = 65_600;
 pub const MAX_DATA: usize = 65_536;
 /// At most this many items in one OFFER (r2).
 pub const MAX_OFFER_ITEMS: usize = 1000;
+/// Item refs the PC picks stay below this; the phone's start above it
+/// (0x40000001 up), so a CANCEL ref always says which way it means.
+pub const PC_REF_LIMIT: u32 = 0x4000_0000;
+
+/// The next PC item ref after `r` (1 … PC_REF_LIMIT − 1, then round again).
+pub fn next_pc_ref(r: u32) -> u32 {
+    if r + 1 >= PC_REF_LIMIT || r == 0 { 1 } else { r + 1 }
+}
+
 /// CANCEL ref meaning "everything".
 pub const CANCEL_ALL: u32 = 0xFFFF_FFFF;
 
@@ -876,6 +885,14 @@ mod tests {
         // taken null and a missing folder are fine.
         let o: Offer = serde_json::from_str(r#"{"offer":2,"items":[{"i":1,"sha256":"00","name":"a.jpg","size":1,"kind":"image","taken":null}]}"#).unwrap();
         assert_eq!((o.items[0].taken, o.items[0].folder, o.last), (None, -1, true));
+    }
+
+    #[test]
+    fn pc_refs_stay_low() {
+        assert_eq!(next_pc_ref(1), 2);
+        assert_eq!(next_pc_ref(PC_REF_LIMIT - 2), PC_REF_LIMIT - 1);
+        assert_eq!(next_pc_ref(PC_REF_LIMIT - 1), 1);
+        assert_eq!(next_pc_ref(0), 1);
     }
 
     #[test]
