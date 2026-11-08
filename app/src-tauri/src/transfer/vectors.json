@@ -1,0 +1,184 @@
+{
+  "protocol": "MVTP/1",
+  "note": "All hex lowercase. All integers big-endian. ECDSA vectors use deterministic RFC 6979 signing so they are reproducible; real implementations may sign with random k (Java does) and only need to VERIFY these signatures and produce signatures that verify.",
+  "hkdf": {
+    "ikm": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "salt": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "info_utf8": "MVTP1 test",
+    "length": 42,
+    "okm": "8c76fa5b20f9470dff68ae4db00a5cbe4ffa81fdd39b6891ce31699db618cc28a021764bf798a5cfc5ce"
+  },
+  "keys": {
+    "phone_identity_priv": {
+      "priv_scalar": "1111111111111111111111111111111111111111111111111111111111111111",
+      "pub65": "040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794"
+    },
+    "pc_identity_priv": {
+      "priv_scalar": "2222222222222222222222222222222222222222222222222222222222222222",
+      "pub65": "04d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf350185e895372df6221ea3a137557e473fddb6755f05bd507c3c533fce9c91285"
+    },
+    "phone_pair_eph_priv": {
+      "priv_scalar": "3333333333333333333333333333333333333333333333333333333333333333",
+      "pub65": "0451a7580833898ea1b183cbd7350a4099078c6ef1c1e18e970cd7683035f25e7d0110522712b0b5a7cff081685486984a94e6831edac46e7360fa9d834a7a81a1"
+    },
+    "pc_pair_eph_priv": {
+      "priv_scalar": "4444444444444444444444444444444444444444444444444444444444444444",
+      "pub65": "045b36890dacbd7c9a96bb74a1ee28b3d2d75b72e09a20ef25cf8e6fd8a9f0350d0e14bed8d4682a34d83538bdff5b96e89a6666ec0db5745d02fa1210072df75a"
+    },
+    "phone_session_eph_priv": {
+      "priv_scalar": "5555555555555555555555555555555555555555555555555555555555555555",
+      "pub65": "0457e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34c5ab3770ba573bdff5414065640ffb5b346dfa84dec4db4d68e5f59cc471c2ec"
+    },
+    "pc_session_eph_priv": {
+      "priv_scalar": "6666666666666666666666666666666666666666666666666666666666666666",
+      "pub65": "040bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77c3c17191559a4c2a1aa57e79b8d1977da2c959172f478e341e27028d69fffb7b"
+    },
+    "x509_der_prefix_for_p256_pub65": "3059301306072a8648ce3d020106082a8648ce3d030107034200",
+    "phone_identity_pub_x509_der": "3059301306072a8648ce3d020106082a8648ce3d030107034200040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794"
+  },
+  "pairing": {
+    "inputs": {
+      "Np": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "Npc": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "phone_eph": "phone_pair_eph_priv",
+      "pc_eph": "pc_pair_eph_priv",
+      "phone_identity": "phone_identity_priv",
+      "pc_identity": "pc_identity_priv",
+      "phone_name": "Telefon",
+      "pc_name": "Media Vault PC"
+    },
+    "frame_PAIR_COMMIT": "000000225001f69c845edad92a270f64202319c30aa815a90baf969256d54a59b81a1ac90141",
+    "frame_PAIR_PC": "0000006251045b36890dacbd7c9a96bb74a1ee28b3d2d75b72e09a20ef25cf8e6fd8a9f0350d0e14bed8d4682a34d83538bdff5b96e89a6666ec0db5745d02fa1210072df75ab2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+    "frame_PAIR_REVEAL": "00000062520451a7580833898ea1b183cbd7350a4099078c6ef1c1e18e970cd7683035f25e7d0110522712b0b5a7cff081685486984a94e6831edac46e7360fa9d834a7a81a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+    "C": "f69c845edad92a270f64202319c30aa815a90baf969256d54a59b81a1ac90141",
+    "T": "52ef30c6e408aa510674c003ca83197a5736456ff9aada492cb78210b9b800f1",
+    "Z": "5238f9f956812e75918895390fa057a2063aa66d4d5eefbe6ecdcf78342d2922",
+    "k_pair_p2c": "3e6f92b25a425c860d7599c1682228bb05f75c2b443ddd0b45ae2da23a77f354",
+    "k_pair_c2p": "a0eb69abed5e550dc57f0436fca4882975ee8aad0fcad61d984d6b33ca9e84c8",
+    "sas4": "28c80ff1",
+    "code6": "199921",
+    "pair_key": "a6a95ed13e96e72283745651e02c66f648fcb9f0cc920823a411cf2d741e86ee",
+    "sig_input_phone": "4d5654503120706169722069640152ef30c6e408aa510674c003ca83197a5736456ff9aada492cb78210b9b800f1040217e617f0b6443928278f96999e69a23a4f2c152bdf6d6cdf66e5b80282d4ed194a7debcb97712d2dda3ca85aa8765a56f45fc758599652f2897c65306e5794",
+    "sig_phone_raw64": "adde1668503d467c8c2c262a34ad05605e3592baf02d8fc4bb291dcbceb8155ba9793ead78856fe220bc6b90c98503b39c3ac4fe2f9950966f476784b9783b9a",
+    "sig_phone_der": "3046022100adde1668503d467c8c2c262a34ad05605e3592baf02d8fc4bb291dcbceb8155b022100a9793ead78856fe220bc6b90c98503b39c3ac4fe2f9950966f476784b9783b9a",
+    "sig_input_pc": "4d5654503120706169722069640252ef30c6e408aa510674c003ca83197a5736456ff9aada492cb78210b9b800f104d65a93977caa3d1b081852ff57a79e465f1660577304baead505dd3a48589cf350185e895372df6221ea3a137557e473fddb6755f05bd507c3c533fce9c91285",
+    "sig_pc_raw64": "d7613f61766313f9dd8b8252acb42ec382c1817aa235a4cc17848d32de41ea1a092f63013ed93868dc578c4987bd6ab95612d90eacb941a2b24f502837376114",
+    "frame_PAIR_ID_phone_ctr0": "0000009bc09edc5ccbb839164eca2a723aecad330283d85ecb1eafe9ff3d9ffd582f041bdc5313c76854ffb05b6ec4b216da779b89481b205abd0614f999445b01c9822bbda204da3c0cda4be26023a29bc25d46d241b7b1b08103c0c37698863ce5385f40a98875bb47194dc8e28a1e7873d87e3797214fe39379f0d90f7375e66091a9baa67d1ac736f36c365063d276a4430971cf6f3f3bc63eb9b66ca1",
+    "frame_PAIR_ID_pc_ctr0": "000000a28102ca97d60fb5085af149425136ac712a8591783b0888cd4e1a586ae92e6e6b81e4715d42a90ffa26bcc72d68ac7d74b15b4e45e7bec447f555a26354efbd60cd000945f71c76cb1e37dc8cd1cd902e1329efecffe028d85f3234179f3fad204d0c20cfb9356d41c190294993cde45ca67e5c7a3f0993eaf5973fe48f7b78abe07e9adf194313c2e55a278e37201af80e37f72be5b77657d8464370ab5a6ed42388",
+    "frame_PAIR_CONFIRM_yes_phone_ctr1": "0000001252f4fc6b779d734c7c6d1026f54c9680a052"
+  },
+  "discovery": {
+    "pair_key": "a6a95ed13e96e72283745651e02c66f648fcb9f0cc920823a411cf2d741e86ee",
+    "disc_key": "fa3fefd530fa997fad3e64d6db834115bbf228b812d7cfbacf16d8212005da32",
+    "ts_ms": 1762611000000,
+    "nonce": "c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3",
+    "tcp_port": 47630,
+    "DISCOVER_packet": "4d56545001100000019a63cd72c0c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c38dcac74c8e05914665f46dd73db4f54bff13646bea1b36fc7f3de1fe8c926ddf",
+    "DISCOVER_ANSWER_packet": "4d5654500111c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3ba0e98bcf24c1ca77e4a73990b13fa712921148e5d11490c77cb47398c9aec1f5a3e",
+    "pairing_nonce": "c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+    "PAIR_DISCOVER_packet": "4d5654500101c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4",
+    "PAIR_ANSWER_packet": "4d5654500102c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4c4ba0e"
+  },
+  "session": {
+    "inputs": {
+      "Np": "d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5",
+      "Npc": "e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6",
+      "phone_eph": "phone_session_eph_priv",
+      "pc_eph": "pc_session_eph_priv",
+      "pair_key": "a6a95ed13e96e72283745651e02c66f648fcb9f0cc920823a411cf2d741e86ee"
+    },
+    "hint": "852f55ed009503d7",
+    "frame_HELLO1": "0000006b20010457e977f6db7e33c3fe7acf2842ed987009caf56d458682fca447b7d3d762ab34c5ab3770ba573bdff5414065640ffb5b346dfa84dec4db4d68e5f59cc471c2ecd5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5d5852f55ed009503d7",
+    "TH": "91e20cb3c9ee0208da9c9f357e1a81725abe775b3e23d801f5921371872aefe7",
+    "sig_pc_raw64": "0d5f22dbc6e280ec023f627004c8d41a6228bcf7139dd0f928eac1e8421012711c1abef7659a8ebbf5783fd0437225fefcc61bb004154a8833c093544c3b0ac8",
+    "frame_HELLO2": "000000a221040bbbc5e8bc84bd33d1d3ce03ffac9a747f4c1993fddb2ec93a4116a86f022a77c3c17191559a4c2a1aa57e79b8d1977da2c959172f478e341e27028d69fffb7be6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e6e60d5f22dbc6e280ec023f627004c8d41a6228bcf7139dd0f928eac1e8421012711c1abef7659a8ebbf5783fd0437225fefcc61bb004154a8833c093544c3b0ac8",
+    "TH2": "eb6a9f039c65c3e66d7315f9fa9cd31ad995ea1860be57e53438d94e487ed92a",
+    "sig_phone_raw64": "6461f3838076c23f1c87176e0676ebe0cfb0a216e9dc61d436a9bdc340f59dd59b31b5acb02e708c11a73299258b8d49f47801bbc72d64ad75a822440ae9d668",
+    "frame_HELLO3": "00000041226461f3838076c23f1c87176e0676ebe0cfb0a216e9dc61d436a9bdc340f59dd59b31b5acb02e708c11a73299258b8d49f47801bbc72d64ad75a822440ae9d668",
+    "Z": "9d7dad66de00cb3717b04136a605341bf5f29a39cf02ad2009db5332ca9efd18",
+    "k_p2c": "018adf6a9705f766dbf38ffaebc6a089bb5e4673937b9ff38451dd7b92541f36",
+    "k_c2p": "3674ab1512932ba904c5fec6509e747a859a71df13f996b33bd8fb65eacf1b37"
+  },
+  "frames": {
+    "HELLO_INFO_phone_ctr0": {
+      "key": "session.k_p2c",
+      "counter": 0,
+      "type": "0x30",
+      "payload_utf8": "{\"app\":\"baroalarm\",\"proto\":1,\"name\":\"Telefon\",\"free\":12345678901,\"kinds\":[\"image\",\"gif\",\"video\"]}",
+      "frame": "0000007214847f4e4465936120b4ff998d803df2297c2ba6864be59ae0809a4b659e1f009830eaff268420d7966c0ceaeca48f5b5fd29ff394649c076f856b8fa2b478c936289eea532a197901cf42b6385b90163416499bccac60493cf93300dbe338c5ab7f88a67261d22e544d907738508ffbba61"
+    },
+    "PING_phone_ctr1": {
+      "key": "session.k_p2c",
+      "counter": 1,
+      "type": "0x32",
+      "payload": "",
+      "frame": "00000011bd6fd0f95ddf06e4b99b89449d9dba2d4c"
+    },
+    "DATA_pc_ctr7": {
+      "key": "session.k_c2p",
+      "counter": 7,
+      "type": "0x43",
+      "payload": "0000000568656c6c6f",
+      "frame": "0000001a07d254caf9ee8b27bf906a33040a48ab24b62befa490edade903"
+    },
+    "ITEM_END_pc_ctr8": {
+      "key": "session.k_c2p",
+      "counter": 8,
+      "type": "0x44",
+      "payload": "000000052cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+      "frame": "00000035138f67c6fbc9951968b89a1aaeaee65e0eca3632149733c689b45820f24537e9e0017909b90c3dea54b0d5e4f7ae60ed04370b8924"
+    },
+    "tamper_check": "Flipping any bit of any frame above, or using the wrong counter, must make decryption fail."
+  },
+  "json_examples": {
+    "OFFER": {
+      "offer": 1,
+      "last": true,
+      "folders": [
+        {
+          "f": 0,
+          "parent": -1,
+          "name": "Tatil",
+          "tags": [
+            "yaz"
+          ]
+        },
+        {
+          "f": 1,
+          "parent": 0,
+          "name": "Bodrum 2026",
+          "tags": []
+        }
+      ],
+      "items": [
+        {
+          "i": 5,
+          "sha256": "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          "name": "IMG_0001.HEIC",
+          "size": 5,
+          "kind": "image",
+          "mime": "image/heic",
+          "w": 4032,
+          "h": 3024,
+          "dur_ms": 0,
+          "taken": 1751371200000,
+          "fav": true,
+          "tags": [
+            "deniz"
+          ],
+          "marks": [],
+          "folder": 1
+        }
+      ]
+    },
+    "ANSWER": {
+      "offer": 1,
+      "answers": [
+        {
+          "i": 5,
+          "a": "want"
+        }
+      ]
+    }
+  }
+}

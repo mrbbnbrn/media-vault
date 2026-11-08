@@ -49,6 +49,14 @@ mimalloc = { version = "=0.1.52", default-features = false }
 # gcc/clang on Linux); its Rust bindings are pre-made, so no clang/bindgen.
 # Only the encoder is used (decoding stays with `image`).
 libwebp-sys = { version = "=0.14.4", default-features = false, features = ["std"] }
+# Wi-Fi transfer with the phone (transfer/): P-256 ECDH + ECDSA, HMAC and HKDF
+# over SHA-256 (MVTP/1, claude/transfer-protocol.md). The same RustCrypto
+# generation vault-core already uses (digest 0.11).
+p256 = { version = "=0.14.0", default-features = false, features = ["ecdh", "ecdsa", "std"] }
+hmac = "0.13.0"
+hkdf = "0.13.0"
+sha2 = "0.11.1"
+getrandom = "0.4.3"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_System_StationsAndDesktops", "Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }

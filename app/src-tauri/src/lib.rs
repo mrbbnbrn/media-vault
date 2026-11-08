@@ -86,6 +86,7 @@ mod videotool;
 mod upscale;
 mod upscale_img;
 mod winshell;
+mod transfer; // Wi-Fi transfer with the phone (MVTP/1)
 mod windowstate;
 // "Why is this here?" for search results, and the slot machine's data.
 mod explain;
