@@ -3,9 +3,11 @@
 // the one coming in. Player.tsx / components/ItemTransition.tsx play them.
 // "Transition speed" (PlaybackSettings.fadeMs) is how long every one takes.
 
-export type Transition = 'none' | 'fade' | 'black' | 'slide' | 'zoom' | 'blur' | 'iris' | 'wipe' | 'cube' | 'curl' | 'film' | 'random';
+export type Transition = 'none' | 'fade' | 'black' | 'slide' | 'zoom' | 'blur' | 'iris' | 'wipe' | 'cube' | 'curl' | 'film' | 'random'
+  | 'punch' | 'whip' | 'shake' | 'spin' | 'endless' | 'edits';
 /** The transitions played with a copy of the picture going out ("fade" too, when Random picks it). */
-export type Effect = 'fade' | 'black' | 'slide' | 'zoom' | 'blur' | 'iris' | 'wipe' | 'cube' | 'curl' | 'film';
+export type Effect = 'fade' | 'black' | 'slide' | 'zoom' | 'blur' | 'iris' | 'wipe' | 'cube' | 'curl' | 'film'
+  | 'punch' | 'whip' | 'shake' | 'spin' | 'endless';
 
 export const TRANSITIONS: { id: Transition; label: string; hint: string }[] = [
   { id: 'none', label: 'None', hint: 'the next item shows straight away' },
@@ -19,11 +21,20 @@ export const TRANSITIONS: { id: Transition; label: string; hint: string }[] = [
   { id: 'cube', label: 'Cube', hint: 'turns like the sides of a cube' },
   { id: 'curl', label: 'Page curl', hint: 'the item turns away like a page' },
   { id: 'film', label: 'Film strip', hint: 'moves on like a film strip' },
+  { id: 'punch', label: 'Zoom punch', hint: 'zooms hard into the next item' },
+  { id: 'whip', label: 'Whip pan', hint: 'a fast blurred swing to the side' },
+  { id: 'shake', label: 'Shake', hint: 'the next item lands with a camera shake' },
+  { id: 'spin', label: 'Spin', hint: 'spins fast into the next item' },
+  { id: 'endless', label: 'Endless zoom', hint: 'zooms deep into the picture to find the next one' },
   { id: 'random', label: 'Random', hint: 'a different one each time' },
+  { id: 'edits', label: 'Random edit style', hint: 'mixes the edit-style ones' },
 ];
 
 /** Every transition Random picks from. */
-export const RANDOM_POOL: Effect[] = ['fade', 'black', 'slide', 'zoom', 'blur', 'iris', 'wipe', 'cube', 'curl', 'film'];
+export const RANDOM_POOL: Effect[] = ['fade', 'black', 'slide', 'zoom', 'blur', 'iris', 'wipe', 'cube', 'curl', 'film', 'punch', 'whip', 'shake', 'spin', 'endless'];
+
+/** The fast "video edit" ones (Random edit style picks from these). */
+export const EDIT_POOL: Effect[] = ['punch', 'whip', 'shake', 'spin', 'endless'];
 
 const IDS = new Set<string>(TRANSITIONS.map((t) => t.id));
 
@@ -38,8 +49,8 @@ export function normalTransition(v: unknown): Transition {
  */
 export function pickEffect(t: Transition, last: Effect | null, rnd: () => number = Math.random): Effect | null {
   if (t === 'none' || t === 'fade') return null;
-  if (t !== 'random') return t;
-  const pool = RANDOM_POOL.filter((e) => e !== last);
+  if (t !== 'random' && t !== 'edits') return t;
+  const pool = (t === 'edits' ? EDIT_POOL : RANDOM_POOL).filter((e) => e !== last);
   return pool[Math.min(pool.length - 1, Math.floor(rnd() * pool.length))];
 }
 
@@ -53,12 +64,27 @@ export interface TransitionPlan {
   film?: boolean;
 }
 
+/** A spot on screen, 0..1 across and down (where Endless zoom dives in). */
+export interface Spot {
+  x: number;
+  y: number;
+}
+
+/** Somewhere near the middle, for Endless zoom when there's no face to aim at. */
+export function randomSpot(rnd: () => number = Math.random): Spot {
+  return { x: 0.3 + rnd() * 0.4, y: 0.3 + rnd() * 0.4 };
+}
+
+/** How small the next item starts in Endless zoom (part of the screen). */
+export const ENDLESS_START = 0.12;
+
 /**
  * The keyframes of `e`. `dir` = 1 going to the next item, -1 to the previous
  * (things move the other way). `fromPx`: the item was already dragged this far
- * sideways (a mouse swipe), so a slide carries on from there.
+ * sideways (a mouse swipe), so a slide carries on from there. `spot`: where
+ * Endless zoom dives in (the middle if not given).
  */
-export function transitionPlan(e: Effect, dir: 1 | -1, fromPx = 0): TransitionPlan {
+export function transitionPlan(e: Effect, dir: 1 | -1, fromPx = 0, spot: Spot = { x: 0.5, y: 0.5 }): TransitionPlan {
   const smooth = 'cubic-bezier(0.25, 0.8, 0.25, 1)';
   const inOut = 'ease-in-out';
   const px = Math.round(fromPx);
@@ -150,6 +176,109 @@ export function transitionPlan(e: Effect, dir: 1 | -1, fromPx = 0): TransitionPl
           { transform: 'translateX(0) scale(1)' },
         ],
       };
+    }
+    case 'punch': {
+      // Ease in hard towards the middle, then the next one snaps out of it.
+      const pull = 'cubic-bezier(0.75, 0, 0.95, 0.45)';
+      const snap = 'cubic-bezier(0.15, 0.85, 0.3, 1)';
+      return {
+        ghostOnTop: true, easing: 'linear',
+        out: [
+          { transform: 'scale(1)', filter: 'blur(0px)', opacity: 1, easing: pull },
+          { transform: 'scale(2.6)', filter: 'blur(14px)', opacity: 1, offset: 0.5 },
+          { transform: 'scale(3.2)', filter: 'blur(18px)', opacity: 0, offset: 0.62 },
+          { transform: 'scale(3.2)', filter: 'blur(18px)', opacity: 0 },
+        ],
+        in: [
+          { transform: 'scale(2.2)', filter: 'blur(16px)', opacity: 0 },
+          { transform: 'scale(2.2)', filter: 'blur(16px)', opacity: 0, offset: 0.48, easing: snap },
+          { transform: 'scale(0.97)', filter: 'blur(0px)', opacity: 1, offset: 0.86, easing: 'ease-in-out' },
+          { transform: 'scale(1)', filter: 'blur(0px)', opacity: 1 },
+        ],
+      };
+    }
+    case 'whip': {
+      // Like the camera was swung: both move as one strip, speeding up, blurred
+      // and stretched along the way, and the next one overshoots a little.
+      const go = 'cubic-bezier(0.6, 0, 0.95, 0.5)';
+      const far = 115 * dir;
+      return {
+        ghostOnTop: true, easing: 'linear',
+        out: [
+          { transform: `translateX(${px}px) scaleX(1)`, filter: 'blur(0px)', easing: go },
+          { transform: `translateX(${-far}%) scaleX(1.3)`, filter: 'blur(22px)', offset: 0.5 },
+          { transform: `translateX(${-far}%) scaleX(1.3)`, filter: 'blur(22px)' },
+        ],
+        in: [
+          { transform: `translateX(calc(${far}% + ${px}px)) scaleX(1.3)`, filter: 'blur(22px)', easing: go },
+          { transform: 'translateX(0%) scaleX(1.3)', filter: 'blur(22px)', offset: 0.5, easing: 'cubic-bezier(0.1, 0.6, 0.3, 1)' },
+          { transform: `translateX(${-3 * dir}%) scaleX(1.07)`, filter: 'blur(2px)', offset: 0.74, easing: 'ease-in-out' },
+          { transform: 'translateX(0%) scaleX(1)', filter: 'blur(0px)' },
+        ],
+      };
+    }
+    case 'shake': {
+      // The old one is gone at once; the next lands with a few jolts that die down
+      // (a little bigger than the screen, so the edges don't show).
+      const jolts: [number, number, number, number][] = [
+        // offset, x %, y %, turn (deg)
+        [0.1, 4, -1.2, -1.6], [0.22, -3, 1, 1.3], [0.36, 2, -0.7, -0.9],
+        [0.5, -1.1, 0.5, 0.55], [0.66, 0.6, -0.25, -0.25], [0.82, -0.2, 0.1, 0.1],
+      ];
+      const n = jolts.length;
+      return {
+        ghostOnTop: true, easing: 'linear',
+        out: [{ opacity: 1, transform: 'scale(1)' }, { opacity: 0, transform: 'scale(1.08)', offset: 0.12 }, { opacity: 0, transform: 'scale(1.08)' }],
+        in: [
+          { transform: 'translate(0%, 0%) rotate(0deg) scale(1.1)', filter: 'brightness(1.35)', easing: 'ease-out' },
+          ...jolts.map(([offset, x, y, r], i): Keyframe => ({
+            offset, easing: 'ease-in-out',
+            transform: `translate(${x * dir}%, ${y}%) rotate(${r * dir}deg) scale(${(1.1 - (0.08 * (i + 1)) / n).toFixed(3)})`,
+            filter: i === 0 ? 'brightness(1.1)' : 'brightness(1)',
+          })),
+          { transform: 'translate(0%, 0%) rotate(0deg) scale(1)', filter: 'brightness(1)' },
+        ],
+      };
+    }
+    case 'spin': {
+      // A fast turn: the old one spins away getting bigger, the next spins in and settles.
+      const pull = 'cubic-bezier(0.7, 0, 0.95, 0.5)';
+      return {
+        ghostOnTop: true, easing: 'linear',
+        out: [
+          { transform: 'rotate(0deg) scale(1)', filter: 'blur(0px)', opacity: 1, easing: pull },
+          { transform: `rotate(${110 * dir}deg) scale(1.9)`, filter: 'blur(16px)', opacity: 1, offset: 0.48 },
+          { transform: `rotate(${150 * dir}deg) scale(2.2)`, filter: 'blur(18px)', opacity: 0, offset: 0.6 },
+          { transform: `rotate(${150 * dir}deg) scale(2.2)`, filter: 'blur(18px)', opacity: 0 },
+        ],
+        in: [
+          { transform: `rotate(${-150 * dir}deg) scale(2.2)`, filter: 'blur(18px)', opacity: 0 },
+          { transform: `rotate(${-110 * dir}deg) scale(1.9)`, filter: 'blur(16px)', opacity: 0, offset: 0.42, easing: 'cubic-bezier(0.1, 0.7, 0.3, 1)' },
+          { transform: `rotate(${4 * dir}deg) scale(0.98)`, filter: 'blur(0px)', opacity: 1, offset: 0.88, easing: 'ease-in-out' },
+          { transform: 'rotate(0deg) scale(1)', filter: 'blur(0px)', opacity: 1 },
+        ],
+      };
+    }
+    case 'endless': {
+      // The next item starts as a small picture inside the old one, at `spot`;
+      // both grow together around that spot (the next one is a fixed part of the
+      // old one's picture), evenly in steps so the zoom feels steady.
+      const s = ENDLESS_START;
+      const at = (v: number) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) * 100 : 50).toFixed(2);
+      const origin = `${at(spot.x)}% ${at(spot.y)}%`;
+      const steps = 6;
+      const out: Keyframe[] = [];
+      const inn: Keyframe[] = [];
+      for (let i = 0; i <= steps; i++) {
+        const p = i / steps;
+        const k = Math.pow(1 / s, p); // the old one, 1 -> 1/s
+        out.push({
+          offset: p, transformOrigin: origin, transform: `scale(${k.toFixed(4)})`,
+          filter: `blur(${(Math.pow(p, 1.5) * 12).toFixed(1)}px)`, opacity: p < 0.6 ? 1 : Math.max(0, 1 - (p - 0.6) / 0.4),
+        });
+        inn.push({ offset: p, transformOrigin: origin, transform: `scale(${(s * k).toFixed(4)})`, opacity: Math.min(1, p / 0.12) });
+      }
+      return { ghostOnTop: false, easing: 'cubic-bezier(0.55, 0, 0.3, 1)', out, in: inn };
     }
   }
 }

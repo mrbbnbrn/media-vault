@@ -4,7 +4,7 @@
 // "Fade" and "None" don't use this (the new item fades in by itself).
 
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
-import { transitionPlan, type Effect, type TransitionPlan } from '../transitions';
+import { randomSpot, transitionPlan, type Effect, type Spot, type TransitionPlan } from '../transitions';
 
 interface Ghost {
   n: number;
@@ -35,8 +35,8 @@ export function useItemTransition(o: {
     anims.current = [];
   };
 
-  /** Call right before moving on. */
-  const start = (effect: Effect, dir: 1 | -1, ms: number, fromPx = 0): boolean => {
+  /** Call right before moving on. `spot`: where Endless zoom dives in (e.g. a face; somewhere near the middle if not given). */
+  const start = (effect: Effect, dir: 1 | -1, ms: number, fromPx = 0, spot?: Spot | null): boolean => {
     if (ms <= 0) return false;
     let canvas: HTMLCanvasElement | null = null;
     try {
@@ -47,7 +47,7 @@ export function useItemTransition(o: {
     stopAll();
     // Nothing to copy (e.g. a picture that couldn't be shown): the next item still comes in, over black.
     if (!canvas) canvas = document.createElement('canvas');
-    setGhost({ n: ++n.current, canvas, plan: transitionPlan(effect, dir, fromPx), ms, from: o.itemKey });
+    setGhost({ n: ++n.current, canvas, plan: transitionPlan(effect, dir, fromPx, spot ?? randomSpot()), ms, from: o.itemKey });
     return true;
   };
 

@@ -940,7 +940,10 @@ export function Player(props: PlayerProps) {
     if (!effect) return;
     // A swipe always slides on, quickly (even with the transition set to None).
     const ms = how ? Math.min(420, Math.max(220, fadeMs)) : fadeMs;
-    if (tx.start(effect, dir === 'next' ? 1 : -1, ms, how?.fromPx ?? 0) && !how) lastEffect.current = effect;
+    // Endless zoom dives into the biggest face shown, if any.
+    const face = effect === 'endless' && drawn && stageWH.w > 0 ? [...shownFaces].sort((a, b) => b.w * b.h - a.w * a.h)[0] : undefined;
+    const spot = face && drawn ? { x: (drawn.left + (face.x + face.w / 2) * drawn.width) / stageWH.w, y: (drawn.top + (face.y + face.h / 2) * drawn.height) / stageWH.h } : null;
+    if (tx.start(effect, dir === 'next' ? 1 : -1, ms, how?.fromPx ?? 0, spot) && !how) lastEffect.current = effect;
   };
   // ---- swiping between items (swipe.ts) ----
   const swipeOn = prefs.swipeNav !== false && !mini && !props.compact && !props.bare && !zoomed && !isDoc && !!item && !editing;
