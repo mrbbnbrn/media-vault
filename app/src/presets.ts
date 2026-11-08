@@ -40,6 +40,12 @@ export interface PlaybackSettings {
   beatEvery: 1 | 2 | 4;
   /** …but never sooner than this many seconds per item. */
   beatMinSeconds: number;
+  /** "Montage": instead of every N beats, quick cuts on busy parts and long holds on calm parts. */
+  beatMontage?: boolean;
+  /** "Beat drop": on a big hit, move on at once with a white flash and a zoom punch. */
+  beatDrop?: boolean;
+  /** "Speed ramp": videos speed up and slow down in waves (slow-mo on strong beats). */
+  speedRamp?: boolean;
   /** Pictures slowly pan and zoom while they show. */
   kenBurns: boolean;
   /**
@@ -69,6 +75,9 @@ export const DEFAULT_PLAYBACK: PlaybackSettings = {
   beatSync: false,
   beatEvery: 1,
   beatMinSeconds: 0.3,
+  beatMontage: false,
+  beatDrop: false,
+  speedRamp: false,
   kenBurns: false,
   depth3d: false,
 };
@@ -91,6 +100,9 @@ export function normalize(p: Partial<PlaybackSettings> | null | undefined): Play
     beatEvery: s.beatEvery === 2 || s.beatEvery === 4 ? s.beatEvery : 1,
     // 2 s was the old default: it made "every beat" wait about 4 beats at 120 BPM.
     beatMinSeconds: s.beatMinSeconds === 2 ? 0.3 : num(s.beatMinSeconds, 0.3, 0.1, 60),
+    beatMontage: s.beatMontage === true,
+    beatDrop: s.beatDrop === true,
+    speedRamp: s.speedRamp === true,
     transition: normalTransition(s.transition),
     fadeMs: Math.round(num(s.fadeMs, 350, 50, 3000)),
     fit: s.fit === 'cover' || s.fit === 'original' ? s.fit : 'contain',
