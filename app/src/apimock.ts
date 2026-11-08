@@ -409,6 +409,8 @@ export const mock = {
           else previewsOff.delete(f);
         }
         return null;
+      case 'playable_copy':
+        return null;
       case 'faces_folder_off':
       case 'faces_stop':
       case 'faces_delete_folder':

@@ -86,6 +86,7 @@ mod videotool;
 mod upscale;
 mod upscale_img;
 mod winshell;
+mod transfer; // Wi-Fi transfer with the phone
 mod windowstate;
 // "Why is this here?" for search results, and the slot machine's data.
 mod explain;
@@ -667,6 +668,7 @@ pub fn run() {
             cmd_media::make_tiny_with_tool,
             cmd_vault::cache_info,
             cmd_misc::ui_get,
+            transfer::playable::playable_copy,
             cmd_vault::save_now,
             cmd_vault::data_info,
             cmd_vault::delete_data,

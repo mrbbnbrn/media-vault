@@ -6,6 +6,7 @@
 // viewer without waiting either.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { copyName, isPhoneOriginal, typeBadge } from '../phoneoriginal';
 import { mediaUrl, thumbUrl, type Item } from '../api';
 import { useViewerPrefs } from '../prefs';
 import { cachedPicture, holdPicture, loadPicture, preloadPictures, viewerOpened, type Picture } from '../picturecache';
@@ -112,7 +113,12 @@ export function QuickLook(props: {
   return (
     <div className="qlook" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
       <div className="qlook-stage" onMouseDown={(e) => e.target === e.currentTarget && props.onClose()}>
-        {it.kind === 'video' ? (
+        {isPhoneOriginal(it) ? (
+          <div className="media-failed phone-orig-view">
+            <span className="phone-orig-type">{typeBadge(it)}</span>
+            <span>Original from your phone, kept as it came. Open its playable copy ({copyName(it)}) to view it.</span>
+          </div>
+        ) : it.kind === 'video' ? (
           <video key={it.id} ref={video} src={mediaUrl(it.id)} autoPlay loop controls playsInline />
         ) : it.kind === 'image' ? (
           <QuickPicture key={it.id} item={it} />

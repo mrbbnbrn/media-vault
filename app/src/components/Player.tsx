@@ -16,6 +16,7 @@ import { audioRoute } from './playeraudio';
 import { errText } from '../text';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
+import { copyName, isPhoneOriginal, typeBadge } from '../phoneoriginal';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
 import { clipBox, cssFit, type Box } from '../flip';
@@ -164,7 +165,7 @@ export function Player(props: PlayerProps) {
   const [paused, setPaused] = useState(false);
   const [slideshow, setSlideshow] = useState(!!props.autoSlideshow);
   const [overrides, setOverrides] = useState<Record<string, Partial<PlayItem>>>({});
-  const [failed, setFailed] = useState(false);
+  const [failedHere, setFailed] = useState(false);
   const [imgInfo, setImgInfo] = useState<ImageInfo | null>(null);
   // A GIF's frame changes many times a second: kept outside React state (only the frame bar
   // draws again, not the whole viewer); the frame count is state (it changes once per GIF).
@@ -251,6 +252,22 @@ export function Player(props: PlayerProps) {
   const isGif = item?.kind === 'gif';
   const isPicture = item?.kind === 'image' || isGif;
   const inVault = item?.itemId != null;
+  // An original from the phone the window can't show (HEIC, MOV…): never tried, it counts as
+  // "can't be shown" (the slideshow moves on); its playable copy can be opened instead.
+  const phoneOrig = !!item && inVault && isPhoneOriginal(item);
+  const failed = failedHere || phoneOrig;
+  // Its playable copy: undefined while asking, null when there is none.
+  const [phoneCopy, setPhoneCopy] = useState<number | null | undefined>(undefined);
+  const phoneOrigId = phoneOrig && item ? item.itemId : null;
+  useEffect(() => {
+    setPhoneCopy(undefined);
+    if (phoneOrigId == null) return;
+    let live = true;
+    api.playableCopy(phoneOrigId).then((c) => live && setPhoneCopy(c ?? null), () => live && setPhoneCopy(null));
+    return () => {
+      live = false;
+    };
+  }, [phoneOrigId]);
 
   // Build the play order whenever the item list changes.
   useEffect(() => {
@@ -1647,8 +1664,34 @@ export function Player(props: PlayerProps) {
   const showUi = controls && allowControls;
   const anim = s.transition === 'fade' ? 'fade-in' : undefined;
   const pixelVideo = !prefs.smoothZoom && zoomed;
+  // Shows the playable copy here when it is in the list being viewed; otherwise says where it is.
+  const openPhoneCopy = (id: number) => {
+    const key = `v${id}`;
+    const p = listRef.current;
+    const n = p && props.items.some((x) => x.key === key) ? p.jump(key) : null;
+    if (n?.key === key) {
+      setFailed(false);
+      setCur(n);
+    } else setFlash(`Its playable copy, ${item ? copyName(item) : 'a copy'}, is in the same folder.`);
+  };
   const media = useMemo(() => {
     if (!item) return null;
+    if (phoneOrig)
+      return (
+        <div className="media-failed phone-orig-view">
+          <span className="phone-orig-type">{typeBadge(item)}</span>
+          <span>This is the original from your phone, kept exactly as it came. Media Vault can't show this kind of file itself.</span>
+          {phoneCopy != null ? (
+            <button type="button" className="btn btn-primary" onPointerDown={(e) => e.stopPropagation()}
+              onClick={(e) => {
+                e.stopPropagation();
+                openPhoneCopy(phoneCopy);
+              }}>Open the playable copy</button>
+          ) : phoneCopy === null ? (
+            <span className="faint">No playable copy of it yet.</span>
+          ) : null}
+        </div>
+      );
     if (failed)
       return (
         <div className="media-failed">
@@ -1667,7 +1710,7 @@ export function Player(props: PlayerProps) {
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     return null;
-  }, [item?.key, item?.src, failed, s.fit, s.transition, tick, docZoom, pixelVideo, keepOne, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src, failed, phoneCopy, s.fit, s.transition, tick, docZoom, pixelVideo, keepOne, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
   const toggleFavourite = () => {

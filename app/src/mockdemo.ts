@@ -27,6 +27,7 @@ const folders: DFolder[] = [
   { id: 9, name: 'ödev 2', parentId: null, order: 0, createdAt: T0 + 50 * DAY, pinned: false, person: false, tags: [] },
   { id: 10, name: 'Screenshots', parentId: null, order: 0, createdAt: T0 + 70 * DAY, pinned: false, person: false, tags: [] },
   { id: 11, name: 'zeynep’s wedding', parentId: null, order: 0, createdAt: T0 + 30 * DAY, pinned: false, person: false, tags: [] },
+  { id: 13, name: 'Received from phone', parentId: null, order: 0, createdAt: T0 + 90 * DAY, pinned: false, person: false, tags: [] },
   // A person folder with a subfolder (the compact sidebar draws those as a folder shape).
   { id: 12, name: 'Beach days', parentId: 2, order: 0, createdAt: T0 + 80 * DAY, pinned: false, person: false, tags: [] },
 ];
@@ -58,6 +59,22 @@ const rivervideos = typeof location !== 'undefined' && /[?&]rivervideos\b/.test(
       id++;
     }
   }
+}
+{
+  // Received from the phone: originals the window can't show (kept as they are, a calm
+  // placeholder tile) and the playable copy made next to one of them (transfer/playable.rs).
+  const base = items[0];
+  const at = T0 + 90 * DAY;
+  const one = (id: number, name: string, kind: Kind, ext: string, thumb: Item['thumb'], extra: Partial<DItem> = {}): DItem => ({
+    ...base, id, name, kind, ext, thumb, folderId: 13, importedAt: at + id, takenAt: at, favourite: false, views: 0, note: null,
+    durationMs: kind === 'video' ? 12_000 : null, preview: false, tiny: false, tags: [], faces: [], ...extra,
+  });
+  items.push(
+    one(901, 'IMG_0101.HEIC', 'image', 'heic', 'failed', { size: 2_400_000, width: null, height: null }),
+    one(902, 'IMG_0101.jpg', 'image', 'jpg', 'ok', { size: 1_900_000 }),
+    one(903, 'VID_0102.MOV', 'video', 'mov', 'failed', { size: 31_000_000, width: null, height: null, durationMs: null }),
+    one(904, 'IMG_0103.jpg', 'image', 'jpg', 'ok'),
+  );
 }
 const ui = new Map<string, string>();
 let nextFolder = 100;
@@ -191,6 +208,13 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
       return query(a.filter as ItemFilter);
     case 'person_item_ids':
       return (a.people as number[]).map((p) => [p, query({ people: [p] }).map((i) => i.id)]);
+    // The playable copy of a phone original: same folder, same name with .jpg / .mp4.
+    case 'playable_copy': {
+      const me = items.find((i) => i.id === a.id);
+      if (!me) return null;
+      const want = `${me.name.replace(/\.[^.]*$/, '')}.${me.kind === 'video' ? 'mp4' : 'jpg'}`.toLowerCase();
+      return items.find((i) => i.id !== me.id && i.deletedAt == null && i.folderId === me.folderId && i.name.toLowerCase() === want)?.id ?? null;
+    }
     case 'get_item':
       return items.find((i) => i.id === a.id);
     case 'all_tags': {

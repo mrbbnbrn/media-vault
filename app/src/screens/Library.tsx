@@ -2,6 +2,7 @@
 // by tag and file name, the timeline, the trash, statistics, selection
 // actions with undo, and importing by drag and drop.
 
+import { isPhoneOriginal } from '../phoneoriginal';
 import { SORTS, minimapLabel, KINDS, PREVIEWS, viewTitle, NO_SEARCH, foldName, searchTitle, groupBy, saveColsLater, findAnchor } from './library/helpers';
 import { FolderCover } from './library/FolderCover';
 import { TagItemsDialog, ArchivePasswordDialog, ImportSummary, CoverPicker } from './library/LibraryDialogs';
@@ -150,7 +151,7 @@ type Dialog =
   | { t: 'quickSort'; folder: FolderCard | null }
   | { t: 'duel'; items: Item[] }
   | { t: 'share'; ids: number[]; folders: number[]; what: string }
-  | { t: 'convert'; items: Item[]; target?: 'mp4' }
+  | { t: 'convert'; items: Item[]; target?: 'mp4' | 'jpg' }
   | { t: 'animation'; items: Item[] }
   | { t: 'dragOut'; resolve: (ok: boolean) => void }
   | { t: 'extracted'; folder: FolderCard; x: Extracted }
@@ -2133,6 +2134,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       !oneFolder && (many || nF > 0) && { id: 'looks', group: 'Faces', label: 'Find look-alikes among these',
         run: onAll((list) => setView({ kind: 'lookalikes', folder: null, only: list.map((i) => i.id), onlyLabel: what })) },
       one && one.thumb === 'failed' && one.kind === 'video' && { id: 'playable', label: 'Make a playable copy', hint: 'converts to MP4', run: () => setDialog({ t: 'convert', items: [one], target: 'mp4' }) },
+      // A picture from the phone the window can't show (HEIC…): its JPEG copy (made on arrival when the video tool is there).
+      one && one.kind === 'image' && isPhoneOriginal(one) && { id: 'playable', label: 'Make a playable copy', hint: 'converts to JPG', run: () => setDialog({ t: 'convert', items: [one], target: 'jpg' }) },
       { id: 'convert', label: `Convert to…${inside}`, barLabel: 'Convert…', bar: true, run: itemsOnly && shownSel.length === nI ? () => setDialog({ t: 'convert', items: shownSel }) : onAll((list) => setDialog({ t: 'convert', items: list })) },
       // "Models in use": only the depth and outline models chosen in the 3D settings.
       ...([[false, true], [false, false], [true, true], [true, false]] as const).map(([faces, inUse], k) => {

@@ -752,6 +752,11 @@ fn convert_args(tool: &Tool, row: &Row, target: Target, url: &str) -> Result<Vec
                 "-map", "[out]", "-loop", "0", "-f", "gif", "pipe:1",
             ]);
         }
+        // HEIC / HEIF / AVIF photos are a grid of tiles (ffmpeg 7.1+ puts them
+        // together itself): no "-map 0:v:0", which would take the first tile only.
+        Target::Jpg if is_tiled_picture(&row.ext) => {
+            push(&mut a, &["-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj420p", "-f", "image2pipe", "pipe:1"])
+        }
         Target::Jpg => push(&mut a, &["-map", "0:v:0", "-frames:v", "1", "-c:v", "mjpeg", "-q:v", "2", "-pix_fmt", "yuvj420p", "-f", "image2pipe", "pipe:1"]),
         Target::Png => push(&mut a, &["-map", "0:v:0", "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1"]),
         Target::Webp => {
@@ -764,7 +769,12 @@ fn convert_args(tool: &Tool, row: &Row, target: Target, url: &str) -> Result<Vec
     Ok(a)
 }
 
-fn new_name(name: &str, ext: &str) -> String {
+/// Phone photo formats whose picture may be split into tiles.
+fn is_tiled_picture(ext: &str) -> bool {
+    matches!(ext, "heic" | "heif" | "hif" | "avif")
+}
+
+pub(crate) fn new_name(name: &str, ext: &str) -> String {
     let stem = Path::new(name)
         .file_stem()
         .map(|s| s.to_string_lossy().into_owned())
@@ -1483,6 +1493,23 @@ mod tests {
 
     fn fake_tool(encoders: &[&str]) -> Tool {
         Tool { path: PathBuf::from("ffmpeg"), version: "7.1".into(), encoders: encoders.iter().map(|e| e.to_string()).collect(), new_options: true }
+    }
+
+    #[test]
+    fn tiled_phone_pictures_are_converted_whole() {
+        let tool = fake_tool(&["libx264", "aac"]);
+        let row = |ext: &str| Row {
+            id: 1, object: String::new(), folder: None, kind: "image".into(), name: format!("IMG_0001.{ext}"), ext: ext.into(),
+            width: None, height: None, duration_ms: None,
+        };
+        for ext in ["heic", "heif", "avif"] {
+            let a = convert_args(&tool, &row(ext), Target::Jpg, "u").unwrap();
+            assert!(!a.iter().any(|x| x == "-map"), "{ext}: {a:?}");
+            assert!(a.windows(2).any(|w| w == ["-frames:v", "1"]) && a.last().unwrap() == "pipe:1");
+        }
+        let a = convert_args(&tool, &row("bmp"), Target::Jpg, "u").unwrap();
+        assert!(a.windows(2).any(|w| w == ["-map", "0:v:0"]));
+        assert_eq!(new_name("IMG_0001.HEIC", "jpg"), "IMG_0001.jpg");
     }
 
     #[test]
