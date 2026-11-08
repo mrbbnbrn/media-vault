@@ -61,6 +61,7 @@ pub mod ty {
 }
 
 /// BYE reasons.
+#[allow(dead_code)]
 pub mod bye {
     pub const NORMAL: u8 = 0;
     pub const LOCKED: u8 = 1;

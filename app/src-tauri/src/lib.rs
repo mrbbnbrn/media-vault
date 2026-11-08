@@ -142,6 +142,8 @@ fn panic_shortcut() -> Shortcut {
 
 /// Wipe the open vault from memory and tell the UI. Safe to call any time.
 fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
+    // The phone hears about it first (and nothing more is received).
+    transfer::stop();
     let taken = inner.session.lock().unwrap_or_else(|e| e.into_inner()).take();
     let was_open = taken.is_some();
     upscale::cancel();
@@ -222,7 +224,8 @@ fn install_session(inner: &Shared, s: Session) -> SessionInfo {
     // Nothing decrypted from another vault stays in memory.
     protocol::forget_cache();
     library::forget_cache();
-    start_background(inner.clone(), s);
+    start_background(inner.clone(), s.clone());
+    transfer::start(inner, s);
     if !selftest::enabled() {
         // The throwaway self-test vault is never remembered.
         let mut cfg = inner.config.lock().unwrap_or_else(|e| e.into_inner());
@@ -527,6 +530,7 @@ pub fn run() {
             });
         })
         .setup(move |app| {
+            transfer::set_app(app.handle().clone());
             // The window starts hidden: put it back where it was, then show it.
             windowstate::restore(app.handle(), &inner.config_dir);
             // The panic key is a convenience; if another program owns the
@@ -584,6 +588,13 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            transfer::transfer_status,
+            transfer::transfer_pair_start,
+            transfer::transfer_pair_confirm,
+            transfer::transfer_pair_cancel,
+            transfer::transfer_forget,
+            transfer::transfer_send,
+            transfer::transfer_cancel,
             cmd_vault::get_state,
             cmd_vault::vault_sizes,
             cmd_vault::save_config,
