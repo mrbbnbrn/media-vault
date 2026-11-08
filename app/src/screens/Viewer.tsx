@@ -1,6 +1,7 @@
 // Full viewer / slideshow for a list of items. Also shown as the small mini
 // player in a corner of the library, and as the speed round.
 
+import { ECHO_LOOKS, echoLook, MIRROR_LOOKS, mirrorLook } from '../looks';
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api, type Named } from '../api';
@@ -575,6 +576,19 @@ function PlaybackDialog({ s, set, onClose, place }: { s: PlaybackSettings; set: 
               <input type="checkbox" checked={!!s.blurBg} disabled={s.fit === 'cover'} onChange={(e) => set({ blurBg: e.target.checked })} /> Blurred background
             </label>
           </span>
+
+          <span title="The picture mirrored into a symmetric view that slowly moves">Mirror world</span>
+          <div role="group" className="seg" aria-label="Mirror world">
+            {MIRROR_LOOKS.map((x) => (
+              <button key={x.id} type="button" className={mirrorLook(s.mirror) === x.id ? 'on' : ''} title={x.hint} onClick={() => set({ mirror: x.id })}>{x.label}</button>
+            ))}
+          </div>
+          <span title="Moving videos and GIFs leave soft fading copies behind them">Echo trail</span>
+          <div role="group" className="seg" aria-label="Echo trail">
+            {ECHO_LOOKS.map((x) => (
+              <button key={x.id} type="button" className={echoLook(s.echo) === x.id ? 'on' : ''} title={x.hint} onClick={() => set({ echo: x.id })}>{x.label}</button>
+            ))}
+          </div>
 
           <span>Transition</span>
           <div role="group" className="seg tx-pick" aria-label="Transition">

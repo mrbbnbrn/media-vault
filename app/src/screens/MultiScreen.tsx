@@ -16,6 +16,7 @@ import { Dropdown, FolderPicker, Modal, PromptDialog } from '../components/Dialo
 import {
   CloseIcon, FullscreenIcon, GridIcon, ImportIcon, LoopIcon, MuteIcon, NextIcon, PauseIcon, PlayIcon, PrevIcon, SoundIcon,
 } from '../components/Icons';
+import { lookMenuItems } from '../components/MediaLooks';
 import { Player, type PlayerHandle } from '../components/Player';
 import { Wall, WALL_SIZES, WALL_SPEEDS } from '../components/Wall';
 import { MosaicWall } from '../components/MosaicWall';
@@ -108,14 +109,14 @@ type ApplyPart = 'playback' | 'sound' | 'fit' | 'source';
 const APPLY_PARTS: { id: ApplyPart; label: string }[] = [
   { id: 'playback', label: 'Playback (speed, order, repeat, timing, transitions)' },
   { id: 'sound', label: 'Sound (volume, mute)' },
-  { id: 'fit', label: 'Fit' },
+  { id: 'fit', label: 'Fit and looks (mirror world, echo trail)' },
   { id: 'source', label: 'What it shows (source)' },
 ];
 const PART_KEYS: Record<Exclude<ApplyPart, 'source'>, (keyof PlaybackSettings)[]> = {
   playback: ['imageSeconds', 'videoMaxSeconds', 'videoRandomStart', 'gifLoops', 'gifMaxSeconds', 'order', 'repeat', 'repeatThis', 'speed',
     'transition', 'fadeMs', 'beatSync', 'beatEvery', 'beatMinSeconds', 'kenBurns'],
   sound: ['volume', 'muted'],
-  fit: ['fit', 'blurBg'],
+  fit: ['fit', 'blurBg', 'mirror', 'echo'],
 };
 const APPLY_KEY = 'multiscreen.applyToAll';
 function lastApplyParts(): ApplyPart[] {
@@ -427,6 +428,7 @@ export function MultiScreen({ nav, onBack, vault }: { nav: Nav; onBack: () => vo
             { label: 'Fill', hint: 'crops the edges', checked: ps.fit === 'cover', onSelect: () => set({ fit: 'cover' }) },
             { label: 'Original size', hint: 'never made bigger', checked: ps.fit === 'original', onSelect: () => set({ fit: 'original' }) },
             { label: 'Blurred background', hint: 'instead of black', checked: !!ps.blurBg, disabled: ps.fit === 'cover', sepBefore: true, onSelect: () => set({ blurBg: !ps.blurBg }) },
+            ...lookMenuItems(ps, set),
             ...(n > 1 ? [{ label: 'Apply to every window…', sepBefore: true, onSelect: () => setApplyFrom(i) }] : []),
           ]} />
       </>
