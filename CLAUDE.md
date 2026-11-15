@@ -11,6 +11,35 @@ This repo is **Media Vault**, the user's Windows desktop app. It is one of three
 The shared protocol is **MVTP/1 revision 2**, in `docs/transfer-protocol.md`. It is a contract between projects:
 see "Sharing and networking" below before changing anything in it.
 
+## 0. Where the code lives and how work is done (GitHub)
+
+- **The code lives only on GitHub:** https://github.com/mrbbnbrn/media-vault (public), branch **`main`**. There is no
+  other copy of the source. The user's PC runs the released app; it doesn't build it.
+- **A copy of this file** sits in the user's shared folder `C:\Users\PC\OneDrive\ALL CLAUDE\CONNECTED APPS\Media Vault\`
+  (next to the other apps' guides). That copy is for reading only: change this file in the repo, then copy it there.
+- **Getting the code:**
+  - Claude Code in the cloud (the usual way): attach the repo `mrbbnbrn/media-vault` with push access, then
+    `git clone https://github.com/mrbbnbrn/media-vault /home/claude/media-vault`.
+  - On the user's Windows PC (only if asked): clone **outside OneDrive** (e.g. `C:\dev\media-vault`), because
+    `node_modules` and `target` must not sync. Building there needs Rust 1.97 (rustup), Node 22, and the Visual Studio
+    C++ build tools.
+- **Every working session:** `git pull` first → change → run the checks in section 4 → commit on `main` → push when
+  the batch is finished. There are no pull requests or feature branches for normal work; helper agents may use
+  temporary local branches/worktrees that are merged into `main` with `--no-ff` before pushing.
+- **Commit messages:** a plain title; `[skip ci]` for docs and notes; `[quick]` only for small fixes (section 4). End
+  every commit message with the attribution lines the session gives (e.g. `Co-Authored-By: Claude … <noreply@anthropic.com>`
+  and the session link).
+- **Each push to `main` builds and releases** (section 4). After pushing:
+  ```bash
+  gh run list -L 1                                   # the new run
+  gh run watch <run id> --exit-status                # wait for it
+  gh api 'repos/mrbbnbrn/media-vault/releases?per_page=1' -q '.[0].tag_name'   # e.g. build-101
+  ```
+  In cloud sessions GitHub's GraphQL is blocked, so `gh release list` fails: use `gh api` (REST) as above. Failing Rust
+  tests on CI show as annotations: `gh api repos/mrbbnbrn/media-vault/check-runs/<job id>/annotations`.
+- **Then tell the user** the build number. They update by downloading `MediaVault-app-windows.zip` from that release,
+  closing the app and unzipping it over their MediaVault folder.
+
 ---
 
 ## 1. What the app does
@@ -296,6 +325,7 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-15: section 0 (GitHub way of working); a copy of this file placed in `CONNECTED APPS\Media Vault\`.
 - 2026-11-15: CLAUDE.md written; `docs/transfer-protocol.md` and `docs/mvtp_ref.py` added (copies of the Project docs).
 - Build 100 (2026-11-08): PC item refs stay below 0x40000000; CANCEL routed by ref range.
 - Build 99 (2026-11-08): phone transfer, PC side (`app/src-tauri/src/transfer/`, Settings → Phone transfer).
