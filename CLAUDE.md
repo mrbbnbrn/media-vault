@@ -1,128 +1,301 @@
-# Media Vault
+# Media Vault — guide for Claude Code
 
-A dark, fully offline, encrypted media library for Windows. The user makes folders and person folders, imports
-pictures, GIFs and videos, and browses them with a viewer, slideshows, favourites, tags, weights, face recognition,
-3D photos, a large Multi-screen section, a discovery river, and a Wi-Fi transfer with the user's Android phone app.
+This repo is **Media Vault**, the user's Windows desktop app. It is one of three apps that share files with each other:
 
-- Backend: **Tauri 2 + Rust**, `app/src-tauri` (crate `media-vault-app`).
-- Window: **React 19 + TypeScript + Vite**, `app/src`.
-- Core vault: `crates/vault-core` (encryption, packs, SQLite schema). `crates/vault-export` is the standalone export tool.
-- Target: Windows 11, WebView2. Development and most tests run on Linux.
+| App | Where | Role in file sharing |
+|---|---|---|
+| **Media Vault** (this repo) | Windows PC | Server: listens on the home network while its vault is unlocked |
+| **Baro Alarm** (Android, Kotlin) | Phone; separate Claude project "Notes and alarm android app" | Client: hidden vault, page "Aktarım" |
+| Phone launcher's file manager (Android) | Phone; separate project | Not connected yet. Nothing in this repo knows about it |
 
-## Rules that must not break
+The shared protocol is **MVTP/1 revision 2**, in `docs/transfer-protocol.md`. It is a contract between projects:
+see "Sharing and networking" below before changing anything in it.
 
-1. **Originals are never deleted or changed.** Edits, rotations and conversions are saved as copies.
-2. **Nothing decrypted is ever written to disk** in an encrypted vault. Media, thumbnails, maps, caches and the
-   database are decrypted in memory only. ffmpeg reads from the in-app `127.0.0.1` server and writes to stdout
-   (`videotool.rs`); never give it a temp file. The one exception is a vault the user made without encryption,
-   whose media are ordinary files under `Files/`.
-3. **Fully offline.** No internet, accounts, telemetry or update checks. The only networking is the phone transfer,
-   on private home-network addresses (IPv4), and only while the vault is unlocked and a phone is paired or pairing.
-4. **The vault format is a promise.** `crates/vault-core/FORMAT.md` is copied into every vault and must stay exact.
-   Any format change needs: FORMAT.md, `vault-export`, `tools/reference_decrypt.py`, and an in-place upgrade path.
-5. **The phone protocol (MVTP/1) is shared with another project.** Don't change `transfer/mvtp.rs` wire behaviour or
-   `transfer/vectors.json` unless the same change is agreed for the phone app. The vector tests must keep passing.
-6. **On lock:** keys and decrypted data are wiped, background work stops, the phone is told (`transfer::stop()`).
-7. Dark UI only, teal accent `#2ec4b6`. UI text in plain, friendly English without jargon.
-8. Don't bring back removed features: smart search, Living subject, A light that stays put, Out of the frame.
+---
 
-## Build and test
+## 1. What the app does
 
+A dark, fully offline, encrypted media library. The user makes folders and **person folders**, imports pictures, GIFs,
+videos, PDFs and text files, and browses them. Everything lives in an encrypted **vault** (a folder on any drive);
+several vaults can exist, one is open at a time.
+
+Main features:
+- **Library:** folders with covers, tags (folder tags are inherited), favourites, weights (0–1000), notes, trash
+  (30 days), sorting, search, free copies, duplicate detection, rubber-band selection, tabs, drag in/out of Explorer.
+- **Import:** files, folders, `.7z` and split archives (including password-protected), all streamed straight into the
+  vault. Duplicates in the same folder are skipped by SHA-256.
+- **Viewer:** pictures, GIFs, videos, PDF, text; zoom, bookmarks, an editor that saves copies, MP4 cutter, GIF maker,
+  AI upscaler, rotate, info panel.
+- **Slideshows:** many transitions (including edit-style ones), beat sync to the PC's own sound, beat drop, montage,
+  speed ramp, looks (Mirror world, Echo trail), per-folder settings and resume.
+- **Multi-screen:** many player windows in grids and shapes, a free-form layout editor, and modes Wall, Mosaic, Breathe,
+  Breathing, Pulse, Parallax.
+- **Faces:** offline face recognition, People page, auto-naming, sort into person folders, face wall, best faces,
+  face time-lapse.
+- **3D photos:** depth models, subject outlines, Lift-off, Layered 3D, background fill; all results saved encrypted.
+- **Discovery river**, museum, memories, duel, slot machine, statistics, today's pick.
+- **Phone transfer:** pair a phone once, then send pictures and videos both ways over home Wi-Fi.
+- **Safety:** auto-lock (idle, Windows lock, minimise), panic key Ctrl+Shift+L, hide from screenshots, 24-word recovery
+  key, vaults with no password or no encryption (user's choice), library backups.
+- **Rescue:** `vault-export.exe` and `tools/reference_decrypt.py` can decrypt a vault without the app.
+
+## 2. Tech stack and versions
+
+| Part | Version / choice |
+|---|---|
+| Rust | **1.97.0**, pinned in `rust-toolchain.toml`; edition 2024; Cargo workspace, `Cargo.lock` committed |
+| App shell | **Tauri 2.12.3** (wry 0.57), plugins dialog, notification 2.5.0, global-shortcut |
+| Web engine | **Microsoft WebView2**. The full package ships its own copy in `WebView2\`; falls back to Windows' own |
+| Window UI | **React 19.3**, **TypeScript 5.9.3**, **Vite 7.3.7**, **Vitest 3.2.7**, Node **22** |
+| Window libs | three 0.186.1, pdfjs-dist 6.4.299, gifenc 1.0.3, IBM Plex fonts (bundled) |
+| Database | SQLite through **rusqlite 0.40.2** (bundled), held in memory, saved as one encrypted object |
+| Crypto (vault) | RustCrypto: aes-gcm 0.11, argon2 0.6, hkdf 0.13, sha2 0.11, bip39 3.0, zeroize |
+| Crypto (transfer) | p256 0.14 (ECDH, ECDSA), hmac 0.13, hkdf 0.13, sha2 0.11, getrandom 0.4 |
+| Media | image 0.25.10 (jpeg/png/webp/gif), libwebp-sys 0.14.4, jpeg-encoder 0.7, sevenz-rust2 0.24 (AES) |
+| AI | ort 2.0.0-rc.14 → **ONNX Runtime 1.24.4 + DirectML**, loaded at run time from optional model packs |
+| Video tool | ffmpeg (BtbN LGPL win64 build `autobuild-2026-09-30-13-08`), optional, in `tools\` |
+| Windows APIs | windows 0.62, windows-sys 0.61, webview2-com 0.39 |
+| Target | Windows 10/11 x64. Development and most tests run on Linux |
+
+## 3. Folder structure and key files
+
+```
+Cargo.toml, Cargo.lock, rust-toolchain.toml   workspace: crates/vault-core, crates/vault-export, app/src-tauri
+crates/vault-core/       the vault: crypto, packs, encrypted objects, SQLite schema
+  FORMAT.md              the on-disk format, byte by byte; copied into every vault
+  src/crypto.rs          AES-GCM seal/open, key wrapping, HKDF
+  src/vault.rs           create/open/unlock a vault, add/read/delete objects
+  src/pack.rs            ~1 GiB pack files holding many encrypted objects
+  src/stream.rs          chunked (1 MiB) streaming encryption, random-access reading
+  src/db.rs              library schema (SCHEMA_VERSION = 20) and in-place upgrades
+  src/export.rs          list and export items (used by vault-export)
+  src/multipart.rs       reading split archives as one stream
+  examples/make_demo_vault.rs   makes a test vault (used by CI)
+crates/vault-export/     vault-export.exe: info / verify / export / dump-db without the app
+tools/reference_decrypt.py   independent Python decrypter written only from FORMAT.md (CI compares it)
+docs/transfer-protocol.md    MVTP/1 r2, the phone protocol (shared with the phone apps)
+docs/mvtp_ref.py             Python reference that regenerates and checks the protocol test vectors
+packaging/README.txt     the readme shipped next to MediaVault.exe
+.github/workflows/build.yml  test + package + release on every push to main
+.github/workflows/*.yml  model-pack builds (depth, subject, inpaint, faces, upscaler)
+
+app/src-tauri/           Rust backend (crate media-vault-app, binary MediaVault)
+  tauri.conf.json        window, CSP, identifier app.mediavault.desktop
+  capabilities/default.json   what the window may call
+  selftest/              sample media for the built-in self-test
+  src/main.rs            entry point (mimalloc)
+  src/lib.rs             setup, generate_handler! (every command), unlock/lock plumbing
+  src/session.rs         the open vault: Session (db, vault, save, is_closed)
+  src/cmd_vault.rs       create/unlock/lock/recover/password commands
+  src/cmd_library.rs     folders, items, tags, moves, trash
+  src/cmd_media.rs       viewer-side commands (rotate, saves, conversions)
+  src/cmd_faces.rs, cmd_similar.rs, cmd_misc.rs   faces, look-alikes, everything else
+  src/library.rs         folder/tag/query helpers (get_or_create_folder, tag_items, tag_folder)
+  src/import.rs          importing files/folders/archives; supported extension lists
+  src/protocol.rs        vault:// and local:// URL schemes: decrypted media streamed to the window, Range support
+  src/config.rs          app settings (config.json), cleaned on load
+  src/storage.rs         reclaiming space, compaction, storage reports
+  src/videotool.rs       ffmpeg runs (input from the in-app server, output to stdout)
+  src/faces*.rs, faceid*.rs   face detection and recognition
+  src/depth.rs, subject.rs, inpaint.rs, upscale*.rs   ONNX models; gpuroom.rs shares the graphics card
+  src/derived.rs         saved depth maps, outlines, plates (encrypted)
+  src/encryption.rs, plainfiles.rs   turning encryption on/off; vaults without encryption
+  src/picture.rs, thumbpages.rs, sketch.rs   native decoding, thumbnails, thumbnail pages
+  src/userbusy.rs        background work steps aside while the user is busy
+  src/diaglog.rs, crashguard.rs, selftest.rs   diagnostics log, WebView2 crash recovery, CI self-test
+  src/transfer/          phone transfer (see section 6)
+    mod.rs               commands + start/stop hooks
+    mvtp.rs              the protocol: crypto, frames, packets, messages; vector tests
+    vectors.json         shared test vectors (identical to the phone projects' copy)
+    store.rs             identity key, paired phones, landing folder (inside the encrypted library)
+    items.rs             what to offer, answering offers, recording received items, name cleaning
+    server.rs            listening, UDP discovery answers, pairing, session handshake, status for the window
+    conn.rs              one connected phone: keep-alive, receiving into the vault, sending from it
+    playable.rs          JPEG/MP4 copies of HEIC/MOV etc. (originals kept)
+    tests_e2e.rs         a fake phone over real sockets
+
+app/src/                 React window
+  main.tsx               imports keyguard.ts first
+  App.tsx                shell: screens, global keys, mouse back/forward, lock
+  api.ts / apitypes.ts   every backend call / types and defaults
+  apimock.ts, mock*.ts   demo mocks (browser demo, tests)
+  screens/Library.tsx    the library; mediaActions(...) = the ONE action list for all item menus
+  screens/Viewer.tsx, components/Player.tsx   viewer, slideshow settings, every player window
+  screens/MultiScreen.tsx, Settings.tsx, Start.tsx, CreateVault.tsx, Recover.tsx
+  components/PhoneTransfer.tsx, transfer.ts, transferlogic.ts, mocktransfer.ts, phoneoriginal.ts   phone transfer UI
+  presets.ts             PlaybackSettings (normalize old saves)
+  messages.ts, text.ts, components/Dialogs.tsx, keylayers.ts, calm.ts, bgpace.ts, jobs.ts   shared helpers
+  styles.css + styles/*.css   theme variables and styles
+```
+
+## 4. Build, run and test
+
+**One-time setup (Linux)**
 ```bash
-# once, on a fresh Linux machine
 apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libsoup-3.0-dev \
   libjavascriptcoregtk-4.1-dev librsvg2-dev libayatana-appindicator3-dev
 cd app && npm ci
-
-# checks before every commit
-cd app && npx tsc --noEmit -p .          # must be clean
-cd app && npx vitest run                 # window tests
-cd app/src-tauri && cargo test -q --lib  # backend tests (first build takes 10+ minutes)
-cd app/src-tauri && cargo clippy -q --lib --tests   # must be clean
-cargo test -q -p vault-core              # from the repo root
 ```
+If the pinned toolchain can't be downloaded and the installed `stable` is 1.97.0, prefix cargo with
+`RUSTUP_TOOLCHAIN=stable`.
 
-- The toolchain is pinned to Rust 1.97.0 (`rust-toolchain.toml`). If it can't be downloaded and the installed
-  `stable` is the same version, prefix cargo with `RUSTUP_TOOLCHAIN=stable`.
+**Checks before every commit** (all must pass)
+```bash
+cd app && npx tsc --noEmit -p .                   # clean
+cd app && npx vitest run                          # ~586 window tests
+cd app/src-tauri && cargo test -q --lib           # ~340 backend tests; first build 10+ minutes
+cd app/src-tauri && cargo clippy -q --lib --tests # clean (CI uses -D warnings on the whole workspace)
+cargo test -q -p vault-core                       # from the repo root
+```
+- One area only: `cargo test -q --lib transfer::` (protocol vectors + fake phone).
 - `npm run lint` isn't configured. `cargo fmt --check` shows old unrelated diffs: don't mass-reformat.
-- Run one area: `cargo test -q --lib transfer::` (protocol vectors plus a fake phone over real sockets).
+- CI runs `cargo test --workspace --release --locked` and `cargo clippy --workspace --all-targets --locked -- -D warnings`.
 
-**Demo in a browser (no backend):** `cd app && npx vite --port 5176 --strictPort`, then open
-`http://localhost:5176/?demo`, password `password`. Every backend call is mocked in `app/src/apimock.ts`.
-Extras: `?demo&beatdemo` (fake music beats), `?demo&phone` (a paired, connected phone), `window.__fakeReceive(n)`.
+**Browser demo (no backend, no device)**
+```bash
+cd app && npx vite --port 5176 --strictPort      # then open http://localhost:5176/?demo, password: password
+```
+Extras in the address: `beatdemo` (fake music), `phone` (a paired, connected phone), `people`, `griddemo=N`.
+In the console: `window.__fakeReceive(n)`, `window.__fakeDisconnect(true|false)`, `window.__fakeBeat(strength, level)`.
 
-**CI and releases:** every push to `main` runs `.github/workflows/build.yml` and publishes a GitHub Release
-`build-N` (Windows zip); it stays a draft until the Linux and Windows tests pass.
-- Push only finished batches, and never while a previous build's Windows tests are still running.
-- `[quick]` in the last commit message skips the Windows test run; use it only for small fixes, and never write
-  that word in brackets otherwise. `[skip ci]` is for commits that need no release (docs, housekeeping).
+**Run the real app**
+- Windows: `cd app && npx tauri dev` (starts Vite on 5173 itself), or `npx tauri build --no-bundle` →
+  `target\release\MediaVault.exe`. Linux builds run for testing only.
+- Self-test (what CI runs on Windows): `MV_SELFTEST=1 MediaVault.exe`, result in `MV_SELFTEST_OUT` or stdout, exit 0 = pass.
+- Model packs and ffmpeg are optional; for local tests point to them with `MV_FFMPEG`, `MV_FACES`, `MV_DEPTH`,
+  `MV_SUBJECT`, `MV_INPAINT`, `MV_UPSCALER` (folder paths).
 
-## Key files
+**Things that wait for input**
+- `vault-export info|verify|export|dump-db <vault> …` asks for the password on the terminal (no echo). With
+  `--recovery` it reads the 24 words from stdin. A vault without a password opens without asking.
+- The app itself waits for a password on its start screen. No device needs to be connected for anything; the phone
+  transfer is tested with the fake phone in `tests_e2e.rs`.
 
-**Window (`app/src`)**
-- `main.tsx` imports `keyguard.ts` first. `App.tsx` is the shell (global keys, mouse back/forward, lock).
-- `api.ts` (every backend call), `apitypes.ts` (types, defaults), `apimock.ts` (demo mocks).
-- `screens/Library.tsx` with `screens/library/*`. `mediaActions(folders, ids, anchor)` is the **one** action list
-  for every item menu and the bottom bar: add menu entries there.
-- `components/Player.tsx` (the viewer and every multi-screen window), `screens/Viewer.tsx` (slideshow settings).
-- `presets.ts`: `PlaybackSettings`. New fields must read old saves safely (normalize).
-- `transitions.ts`, `components/ItemTransition.tsx`; `beats.ts`, `beatdrop.ts`; `looks.ts`, `components/MediaLooks.tsx`.
-- `screens/MultiScreen.tsx`, `shapes.ts`, `components/{Wall,MosaicWall,BreatheShow,GridModes}.tsx`.
-- `components/river/*`; 3D: `depth.ts`, `subject.ts`, `inpaint.ts`, `layers.ts`, `plate.ts`, `derived.ts`.
-- Phone transfer: `transfer.ts`, `transferlogic.ts`, `components/PhoneTransfer.tsx`, `phoneoriginal.ts`.
-- Shared helpers to reuse, not copy: `messages.ts` (`say(text, 'note'|'done'|'problem')`), `text.ts` (`errText`,
-  `fold`), `components/Dialogs.tsx` (Modal, ContextMenu, Dropdown), `keylayers.ts` (`useLayer`), `calm.ts`,
-  `bgpace.ts` (`giveWay`), `jobs.ts`, `perf.ts`.
-- Styles: `styles.css` holds the theme variables (`--z-*`, `--fs-*`, colours); `screens.css` only imports
-  `styles/*.css`. Put rules in the matching file.
+**Releases:** every push to `main` runs `.github/workflows/build.yml` → GitHub Release `build-N`
+(`MediaVault-app-windows.zip`; the web engine and video tool are separate one-time downloads). The release stays a
+draft until the Linux and Windows tests pass.
+- Push only finished batches, never while a previous build's Windows tests still run (`gh run list -L 1`).
+- `[quick]` in the last commit message skips the Windows tests (small fixes only; never write that word in brackets
+  otherwise). `[skip ci]` = no build, no release (docs, notes, housekeeping).
 
-**Backend (`app/src-tauri/src`)**
-- `lib.rs`: setup, `generate_handler!`, unlock/lock plumbing. `session.rs`: the open vault (`Session`).
-- Commands: `cmd_vault.rs`, `cmd_library.rs`, `cmd_media.rs`, `cmd_faces.rs`, `cmd_misc.rs`, plus feature modules.
-- `library.rs` (folders, tags, queries), `import.rs`, `storage.rs`, `config.rs` (app settings, cleaned on load).
-- `videotool.rs` (ffmpeg), `faces*.rs`, `depth.rs`, `subject.rs`, `inpaint.rs`, `gpuroom.rs` (models sharing the
-  graphics card), `derived.rs`, `encryption.rs` + `plainfiles.rs` (vaults without encryption), `userbusy.rs`.
-- `transfer/`: `mvtp.rs` (protocol, vectors), `store.rs` (identity, paired phones, landing folder), `items.rs`
-  (offer, answer, record), `server.rs` (listening, pairing, handshake), `conn.rs` (one connected phone),
-  `playable.rs` (JPEG/MP4 copies of HEIC/MOV and similar), `tests_e2e.rs`.
+## 5. Data formats and where data is stored
 
-**Core (`crates/vault-core/src`)**: `crypto.rs`, `vault.rs`, `pack.rs`, `stream.rs`, `db.rs` (schema).
+**A vault** (any folder the user picks; full byte layout in `crates/vault-core/FORMAT.md`)
+```
+vault.json, vault.json.bak   header: format, version, vault_id, kdf settings, wrapped master key slots
+meta.db.enc                  the SQLite library, encrypted as one object
+meta-backups/                up to 5 older library copies
+packs/media-NNNNNN.pack      encrypted media (~1 GiB each; magic MVPK, entries MVPE)
+packs/thumbs-NNNNNN.pack     encrypted thumbnails, previews, derived data
+Files/                       only in a vault without encryption (version 4): ordinary files
+FORMAT.md                    format description;  .lock  one writer at a time
+```
+- `version`: 1 = one file per object, 2 = packs, 3 = packs without a password, 4 = not encrypted.
+- One random 256-bit master key, wrapped by the password (Argon2id) and by a 24-word BIP-39 recovery key (HKDF).
+  Each object has its own key; content is AES-256-GCM in 1 MiB chunks.
+- **No other app may write into a vault.** Other apps exchange files with it only through the phone transfer.
 
-**Adding a backend command:** write it, add it to `generate_handler!` in `lib.rs`, add a wrapper in `api.ts`,
-and add a mock in `apimock.ts`. All four, or the demo and tests break.
+**The library database** (inside `meta.db.enc`; `crates/vault-core/src/db.rs`, `SCHEMA_VERSION = 20`)
 
-## Data formats
+| Table | Fields worth knowing |
+|---|---|
+| `folders` | id, parent_id (NULL = top), name (unique per parent, case-insensitive), sort_order, created_at (s), cover_media_id, pinned, color, emoji, person (1 = person folder), deleted_at (**ms**) |
+| `media` | id, object_id, folder_id, kind (`image` `gif` `video` `text` `pdf`), original_name, ext, size, width, height, duration_ms, sha256 (lowercase hex), imported_at (s), taken_at (s; 0 = unknown), file_mtime (s), favourite, weight, views, last_viewed_at, deleted_at (**ms**) |
+| `tags`, `media_tags`, `folder_tags` | tag names; an item's own tags; a folder's own tags (inherited by everything inside, never copied onto items) |
+| `bookmarks` | media_id, position_ms, note — video bookmarks |
+| `objects` | object_id, kind, pack, offset, length — where each encrypted object lives |
+| `faces`, `face_rejects`, `face_not_same`, `face_graph` | detected faces, names, answers |
+| `derived` | saved depth maps, outlines, plates per item and model |
+| `settings` | key/value. Feature keys: `transfer.identity`, `transfer.peers`, `transfer.landing`, `playable:<id>`, `faces_off_folders`, `previews_off_folders` |
+| also | `presets`, `layouts`, `free_layouts`, `plain_files`, `thumb_bundles`, `folder_stats`, `clip` (unused) |
 
-**Vault on disk** (full byte-level description: `crates/vault-core/FORMAT.md`; read it before touching storage)
-- `vault.json` (+ `.bak`): header. `version` 1 = one file per object, 2 = packs, 3 = packs without a password,
-  4 = not encrypted (media as files under `Files/`).
-- `packs/media-NNNNNN.pack`, `packs/thumbs-NNNNNN.pack`: about 1 GiB each, magic `MVPK`, entries `MVPE`.
-- `meta.db.enc`: the SQLite library, encrypted as one object; `meta-backups/` keeps up to 5 older ones.
-- Crypto: AES-256-GCM (content in 1 MiB chunks, a key per item), Argon2id for the password, HKDF-SHA256,
-  a random 256-bit master key wrapped by the password and by a 24-word BIP-39 recovery key.
+- A schema change bumps `SCHEMA_VERSION` and upgrades old libraries in place at unlock. New `IF NOT EXISTS` tables and
+  new `settings` keys don't need a bump.
 
-**Library database** (`db.rs`, `SCHEMA_VERSION = 20`)
-- Main tables: `folders`, `media`, `objects`, `tags`, `media_tags`, `folder_tags`, `faces`, `bookmarks`,
-  `derived`, `plain_files`, `free_layouts`, `settings`, `presets`, `layouts`.
-- `media.kind` is `image | gif | video | text | pdf`. A file lives in exactly one folder. Folder tags are inherited,
-  never copied onto items. `deleted_at` set = in the trash. `sha256` is lowercase hex. Times are unix seconds.
-- A schema change bumps `SCHEMA_VERSION` and upgrades old libraries in place on unlock. Tables created with
-  `IF NOT EXISTS` and keys in `settings` don't need a bump.
-- Settings keys used by features include `transfer.identity`, `transfer.peers`, `transfer.landing`,
-  `playable:<id>`, `faces_off_folders`, `previews_off_folders`.
+**App settings on the PC** (no secrets, no media)
+- `config.json` (+ `config.json.bak`) in the `data` folder next to `MediaVault.exe` when that folder is writable
+  (portable mode), else `%APPDATA%\MediaVault\`. JSON, camelCase keys (`lock`, `viewer`, `look`, `accent`, `vaults`,
+  `lastVault`, `poorFaces`, …). Read with defaults for missing keys and cleaned on load (`config.rs`).
+- Same folder: `diagnostics.log` (steps and sizes only), `gpu-fit.json` (model sizes on the graphics card).
+- Window-only conveniences use `localStorage` (e.g. `mv-prep-inuse`); never pictures.
 
-**Phone transfer (MVTP/1 revision 2)**
-- The phone is always the client; this app listens on TCP 47630 and UDP 47631.
-- P-256 ECDH + ECDSA, HKDF-SHA256, AES-256-GCM frames, big-endian, file data in pieces of at most 64 KiB.
-- Pairing by a 6-digit code shown on both sides. Item refs chosen by the PC stay below `0x40000000`.
-- Received items land in "Received from phone"; duplicates are skipped by SHA-256.
+## 6. Sharing and networking
 
-## Conventions
+Everything here follows `docs/transfer-protocol.md` (MVTP/1 r2). Summary:
+- **Roles:** the phone app is always the client and never listens. Media Vault is the server.
+- **When it listens:** only while a vault is unlocked **and** (a phone is paired **or** pairing mode is on). It stops
+  on lock and when the last phone is forgotten. Only private IPv4 addresses (10/8, 172.16/12, 192.168/16, 169.254/16,
+  loopback) are accepted; IPv6 is not used.
+- **Ports:** TCP **47630** (falls back to any free port, reported in discovery answers), UDP **47631**.
+- **Discovery:** the phone broadcasts `PAIR_DISCOVER` (only answered in pairing mode) or `DISCOVER` with an HMAC made
+  from the pair key, a timestamp (±10 min) and a nonce (replay cache 20 min). Strangers get no reply at all.
+- **Pairing:** user presses "Pair a phone" on the PC (2 minutes). Commit → keys → reveal, then a **6-digit code** shown
+  on both screens; the user confirms on both. Each side stores the other's P-256 identity key and a 32-byte pair key
+  **inside its encrypted vault**. Re-pairing with a known key replaces the entry.
+- **Session:** fresh ECDH each connection, signatures from both identity keys, HKDF → one AES-256-GCM key per
+  direction. Frames: `u32 length | body`, max 65 600 bytes, nonce = counter. PING after 15 s idle, close after 45 s silent.
+- **Messages:** JSON `INFO`, `OFFER` (≤1000 items, with folder tree and each folder's own tags), `ANSWER`
+  (`want` / `have` / `cant` / `nospace`), then binary `ITEM_START`, `DATA` (≤64 KiB), `ITEM_END` (SHA-256), `ITEM_OK` /
+  `ITEM_FAILED`, `CANCEL`, `LOCKED`, `BYE`.
+- **Item fields:** sha256, name, size, kind (`image` `gif` `video` `pdf` `text`), mime, w, h, dur_ms, taken (ms or null),
+  fav, tags (own only), marks `{ms, note}`, folder. Item refs chosen by the PC are `1…0x3FFFFFFF`; the phone's start at
+  `0x40000001`.
+- **This app as receiver:** takes `image`, `gif`, `video`; skips anything whose SHA-256 is already in the vault; stores
+  into **"Received from phone"** (remembered by id, recreated if deleted) keeping the sender's folders; HEIC/HEIF/AVIF/
+  BMP/TIFF and MOV/MKV/3GP/AVI/TS/… are kept as originals plus a playable JPEG/MP4 copy.
+- **One phone connected at a time** (a new connection replaces the old). Several phones can be paired; each is told
+  apart by its identity key, and `INFO.app` names the app (`"mediavault"`, `"baroalarm"`). A new app (e.g. the launcher's
+  file manager) can use the same protocol as another client, with its own identity and pairing.
+- **Windows permissions:** the first listen triggers the Windows firewall prompt (choose "Private networks"). Routers
+  with Wi-Fi client isolation block it.
+- **Tests:** `transfer/vectors.json` must equal the phone projects' copy; `docs/mvtp_ref.py` regenerates it byte for byte.
+- **Other networking:** none. The window talks to the backend only through Tauri IPC and the `vault://` / `local://`
+  schemes (in-process). ffmpeg reads from a `127.0.0.1` server inside the app.
 
-- New overlays use `useLayer` and check `layer.mine()` in key handlers; Esc/Backspace/mouse-back leave the top layer.
-- Background loops call `giveWay()` (window) or check `userbusy` (backend) so the UI stays smooth.
-- Long jobs show in the jobs ring (`jobs.ts`), can be stopped, and stop when the vault locks.
-- Background-driven refreshes go through `calm.ts`; don't reload the library on every event.
-- WebGL: `Depth3D` shares one context; `MediaLooks` uses one per window. WebView2 limits the total.
-- Shell: stop servers by exact pid (never `pkill -f`); don't `git reset --hard`.
-- Commit only complete, checked work. Keep changes small and in the existing style; comments explain why.
+## 7. Rules that must not break
+
+1. **Originals are never deleted or changed.** Edits, rotations and conversions are saved as copies.
+2. **Nothing decrypted is ever written to disk** in an encrypted vault (media, thumbnails, maps, caches, database,
+   transfer data). ffmpeg never gets a temp file. Only a vault the user made without encryption keeps plain files.
+3. **Fully offline.** No internet, accounts, telemetry or update checks. The phone transfer is home-network only.
+4. **The vault format is a promise.** A format change needs FORMAT.md, `vault-export`, `tools/reference_decrypt.py`
+   and an in-place upgrade, together.
+5. **The phone protocol changes only with the phone projects.** A change to `docs/transfer-protocol.md`,
+   `transfer/mvtp.rs` wire behaviour or `vectors.json` must be agreed for every app that speaks it, and copied to them.
+   The user carries messages between project chats: write a paste-ready prompt for the other chat.
+6. **Lock means lock:** keys and decrypted data are wiped, background work stops, the phone gets `LOCKED`, the
+   transfer stops listening. Both vaults must be unlocked for a transfer.
+7. **One action list:** item and folder menu entries go into `mediaActions` (Library.tsx), not into one menu only.
+8. **New backend command = four places:** the command, `generate_handler!` in `lib.rs`, a wrapper in `api.ts`, a mock
+   in `apimock.ts`.
+9. **Settings style:** new fields read old saves safely (serde defaults in `config.rs`, `normalize` in `presets.ts`);
+   settings live in Settings pages (Appearance, Viewer, Security, Storage, Background work, AI & 3D, Phone transfer,
+   About); per-vault data goes in the library's `settings` table, never in plain files.
+10. **UI:** dark only, teal accent `#2ec4b6`; plain, friendly English without jargon; messages through
+    `say(text, 'note'|'done'|'problem')`; overlays use `useLayer` and check `layer.mine()`; long jobs show in the jobs
+    ring, can be stopped and stop on lock; background refreshes go through `calm.ts`.
+11. **Removed on purpose, don't bring back:** smart search, Living subject, A light that stays put, Out of the frame.
+12. **Shell:** stop processes by exact pid (never `pkill -f` / `pgrep -f`); no `git reset --hard`; don't mass-reformat.
+
+## 8. Notes, state and how to record changes
+
+The project's notes live in the **claude.ai Project "A windows media browsing program"**, folder `claude/`:
+- `claude/context.md` — **read first**: current build, how the user likes to work, code map, open threads.
+- `claude/pending-changes.md` — build-by-build log (newest first) and the user's working preferences.
+- `claude/spec.md` (older, up to build 92), `claude/wifi-transfer-plan.md`, `claude/transfer-protocol.md`,
+  `claude/transfer-vectors.json`, `claude/mvtp_ref.py`, idea lists `claude/ideas-*.md` (next free idea number in
+  context.md).
+
+How to record changes:
+- **With the Projects tool:** `project_read` the doc, change it, `project_write` the whole doc back. After each build,
+  add an entry at the top of `pending-changes.md` (⏳ waiting, 🚀 pushed, ✅ released) and update the build number,
+  build history and open threads in `context.md`.
+- **Without it (plain Claude Code):** add a dated line to "Recent changes" below and say so in the commit message;
+  the next chat with the Project folds it into the notes. Protocol changes also go into `docs/transfer-protocol.md`.
+- How the user works: plain short answers; S / M / B estimates (minutes / ~1 h / several hours); collect requests and
+  build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
+
+### Recent changes
+- 2026-11-15: CLAUDE.md written; `docs/transfer-protocol.md` and `docs/mvtp_ref.py` added (copies of the Project docs).
+- Build 100 (2026-11-08): PC item refs stay below 0x40000000; CANCEL routed by ref range.
+- Build 99 (2026-11-08): phone transfer, PC side (`app/src-tauri/src/transfer/`, Settings → Phone transfer).
