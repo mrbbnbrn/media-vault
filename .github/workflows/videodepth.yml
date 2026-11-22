@@ -62,6 +62,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
           pip install einops easydict "numpy<2" pillow opencv-python-headless tqdm matplotlib imageio huggingface_hub onnx onnxruntime
+          # The exporter needs a recent ml_dtypes (an old one breaks it), as in depthmodels.yml.
+          pip install --upgrade "ml_dtypes>=0.5" onnxscript onnx-ir
 
       - name: Convert and check against PyTorch
         run: |
