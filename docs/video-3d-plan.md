@@ -144,3 +144,16 @@ The user saw dark specks with Lift-off / the subject layer, and preparing was ve
   don't all fit, so models could reload every frame. Now blocks of 24 frames, one model over the block at a time.
 - Tags end `_v2`: videos prepared before still play; the 3D menu offers to prepare them again.
 
+## 10. Choices and speed (2026-11-23, asked by the user)
+
+- **What to prepare:** depth only / depth + subject outline / everything (+ Layered 3D fill). Less is faster.
+- **Fill the background on every 1st / 2nd / 3rd frame** (with "everything"): the frames between reuse the last
+  fill; a new scene always gets its own. To compare whether it shows.
+- **Models for videos:** depth, outline and fill can differ from the pictures' ("same as pictures" by default).
+- **Batching:** several frames per model call (`depth_estimate_many`, `subject_estimate_many`): one turn on the
+  graphics card per call; depth runs them as one batch when the model accepts it.
+- **Video depth model** ("Video (steady)", Video Depth Anything Small, Apache-2.0): a choice in "Depth model for
+  videos" (it is a depth model, so it sits with them, not in What to prepare). 32 frames per run with one depth
+  range; runs overlap by 8 frames and are lined up at the seam. Download: `MediaVault-depth-vda-small-windows.zip`
+  (built by `.github/workflows/videodepth.yml`). It fixes depth flicker at the source, not outline flicker.
+

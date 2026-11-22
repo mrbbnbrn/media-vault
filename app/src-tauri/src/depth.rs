@@ -97,6 +97,10 @@ pub struct Manifest {
     /// when the graphics card can't be used, Fast is used instead.
     #[serde(default)]
     pub gpu_only: bool,
+    /// A video model: it takes this many frames at once (1 × frames × 3 × side × side) and gives
+    /// each frame's depth, steady from frame to frame (Video Depth Anything). Absent = one picture.
+    #[serde(default)]
+    pub frames: Option<usize>,
 }
 
 fn imagenet_mean() -> [f32; 3] {
@@ -122,6 +126,7 @@ impl Manifest {
             std: IMAGENET_STD,
             licence: Some("Apache-2.0".into()),
             gpu_only: false,
+            frames: None,
         }
     }
 
@@ -173,7 +178,17 @@ impl Manifest {
                 }
             }
         }
+        if let Some(f) = self.frames
+            && (!(2..=64).contains(&f) || self.standard_side.is_none() || self.patch.is_some())
+        {
+            return Err("its depth.json has odd video settings".into());
+        }
         Ok(())
+    }
+
+    /// Takes several frames at once (a video model).
+    pub fn clip(&self) -> Option<usize> {
+        self.frames
     }
 }
 
@@ -183,14 +198,17 @@ pub const FAST: &str = "v2-small";
 /// Fast in half precision, for the graphics card only.
 pub const FAST16: &str = "v2-small-fp16";
 pub const BEST: &str = "da3-mono-large";
+/// The video model (32 frames at once): never picked on its own, only when chosen (videos).
+pub const VIDEO: &str = "vda-small";
 /// Models no longer offered: "Balanced" (Depth Anything 3 Base, build 42) had no sky
 /// detection, so skies and back walls came out half-near — flatter than Fast. A
 /// pack left installed is ignored (its folder can be deleted).
 pub const RETIRED: [&str; 1] = ["da3-base"];
-const KNOWN: [(&str, &str, &str, &str); 3] = [
+const KNOWN: [(&str, &str, &str, &str); 4] = [
     (FAST, "Fast", "Depth Anything V2 Small", "MediaVault-depth-windows.zip"),
     (FAST16, "Fast (half precision)", "Depth Anything V2 Small (half precision)", "MediaVault-depth-v2-small-fp16-windows.zip"),
     (BEST, "Best", "Depth Anything 3 Mono Large", "MediaVault-depth-da3-mono-large-windows.zip"),
+    (VIDEO, "Video (steady)", "Video Depth Anything Small", "MediaVault-depth-vda-small-windows.zip"),
 ];
 /// When nothing is chosen (or the choice isn't installed): the best one there is.
 /// (Fast (half precision) is never picked on its own: only when chosen.)
@@ -327,7 +345,8 @@ pub fn choose<'a>(packs: &'a [Pack], wanted: &str) -> Option<&'a Pack> {
     }
     let gpu_choice = packs.iter().any(|p| p.manifest.id == wanted && p.manifest.gpu_only) || wanted == FAST16;
     let order: &[&str] = if gpu_choice { &GPU_FALLBACK } else { &PREFERENCE };
-    order.iter().find_map(|id| ready(id)).or_else(|| packs.iter().find(|p| p.usable() && !p.manifest.gpu_only))
+    // (A video model is only ever used when chosen.)
+    order.iter().find_map(|id| ready(id)).or_else(|| packs.iter().find(|p| p.usable() && !p.manifest.gpu_only && p.manifest.frames.is_none()))
 }
 
 /// "standard" or "high" (anything else is standard).
@@ -389,6 +408,8 @@ pub struct DepthInfo {
     pub detail: String,
     /// It takes any size (so "High detail" applies).
     pub dynamic: bool,
+    /// A video model: this many frames go in together (absent: one picture at a time).
+    pub frames: Option<usize>,
 }
 
 /// One row of Settings → 3D photos → Depth model.
@@ -413,6 +434,8 @@ pub struct ModelEntry {
     pub licence: Option<String>,
     /// Graphics card only (half precision): Fast is used instead when it can't run.
     pub gpu_only: bool,
+    /// Made for videos (several frames at once): offered for videos only.
+    pub video: bool,
 }
 
 fn friendly(e: &str) -> String {
@@ -441,6 +464,7 @@ pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
         high_side: input_side(&p.manifest, Detail::High),
         licence: p.manifest.licence.clone(),
         gpu_only: p.manifest.gpu_only,
+        video: p.manifest.frames.is_some(),
     };
     let mut out: Vec<ModelEntry> = KNOWN
         .iter()
@@ -460,6 +484,7 @@ pub fn catalogue(packs: &[Pack], base: Option<&Path>) -> Vec<ModelEntry> {
                 high_side: DEFAULT_SIDE,
                 licence: Some("Apache-2.0".into()),
                 gpu_only: id == FAST16,
+                video: id == VIDEO,
             },
         })
         .collect();
@@ -489,6 +514,7 @@ pub fn info(wanted: &str, detail: Detail) -> DepthInfo {
         input_side: DEFAULT_SIDE,
         detail: Detail::Standard.name().into(),
         dynamic: false,
+        frames: None,
     };
     let broken = BROKEN.lock().unwrap().clone();
     let ready: Vec<Pack> = all.iter().filter(|p| !broken.contains_key(&p.manifest.id)).cloned().collect();
@@ -516,6 +542,7 @@ pub fn info(wanted: &str, detail: Detail) -> DepthInfo {
         input_side: input_side(&pack.manifest, detail),
         detail: detail.name().into(),
         dynamic: pack.manifest.dynamic(),
+        frames: pack.manifest.frames,
     }
 }
 
@@ -531,6 +558,10 @@ struct Loaded {
     mean: [f32; 3],
     std: [f32; 3],
     gpu: bool,
+    /// A video model: frames per run.
+    clip: Option<usize>,
+    /// Takes several pictures in one run (unknown until tried).
+    batch_ok: Option<bool>,
 }
 
 /// This module's own slot: kept loaded alongside the other kinds of model (modelslot.rs).
@@ -545,10 +576,12 @@ fn load(pack: &Pack, side: usize, gpu: bool) -> Result<Loaded, String> {
     let rt = pack.runtime.as_ref().ok_or("The depth pack is incomplete (onnxruntime is missing).")?;
     let env = upscale::start_runtime(rt).map_err(|e| friendly(&e))?;
     let session = upscale::open_session(env, &pack.dir.join(&pack.manifest.file), gpu).map_err(|e| friendly(&e))?;
-    // Models of any size get exactly the size asked for; fixed ones keep their own.
-    let side = if pack.manifest.dynamic() { (side, side) } else { onnxmodel::session_side(&session, side) };
+    // Models of any size get exactly the size asked for; fixed ones keep their own
+    // (a video model's frames are the size its depth.json gives).
     let m = &pack.manifest;
-    Ok(Loaded { session, key: (m.id.clone(), side.0), side, output: m.output, mean: m.mean, std: m.std, gpu })
+    let side = if m.dynamic() || m.frames.is_some() { (side, side) } else { onnxmodel::session_side(&session, side) };
+    let batch_ok = (onnxmodel::input_dims(&session).first().copied().unwrap_or(1) > 1).then_some(true);
+    Ok(Loaded { session, key: (m.id.clone(), side.0), side, output: m.output, mean: m.mean, std: m.std, gpu, clip: m.clip(), batch_ok })
 }
 
 /// Free the model now (the vault locked or the viewer closed).
@@ -705,18 +738,35 @@ pub fn finish(raw: &[f32], w: usize, h: usize) -> Vec<u8> {
 /// edges (more of a good model's detail shows, edges stretch a little more),
 /// larger = softer. Held within 0.25–2.
 pub fn finish_soft(raw: &[f32], w: usize, h: usize, soft: f32) -> Vec<u8> {
-    let soft_k = if soft.is_finite() { soft.clamp(0.25, 2.0) } else { 1.0 };
     let n = w * h;
     if n == 0 || raw.len() != n {
         return Vec::new();
     }
-    let mut sample: Vec<f32> = raw.iter().step_by((n / 20_000).max(1)).copied().filter(|v| v.is_finite()).collect();
+    match range_of(&[raw]) {
+        Some((lo, hi)) => finish_in(raw, w, h, soft, lo, hi),
+        None => vec![0; n],
+    }
+}
+
+/// The 1st and 99th percentile of these values together (several frames of a video share one range,
+/// so its depth doesn't "breathe" from frame to frame); None when there's nothing usable.
+fn range_of(raws: &[&[f32]]) -> Option<(f32, f32)> {
+    let total: usize = raws.iter().map(|r| r.len()).sum();
+    let step = (total / 20_000).max(1);
+    let mut sample: Vec<f32> = raws.iter().flat_map(|r| r.iter().step_by(step)).copied().filter(|v| v.is_finite()).collect();
     if sample.is_empty() {
-        return vec![0; n];
+        return None;
     }
     sample.sort_by(f32::total_cmp);
     let lo = sample[sample.len() / 100];
     let hi = sample[(sample.len() * 99 / 100).min(sample.len() - 1)];
+    Some((lo, hi))
+}
+
+/// `finish_soft` with the range given.
+fn finish_in(raw: &[f32], w: usize, h: usize, soft: f32, lo: f32, hi: f32) -> Vec<u8> {
+    let soft_k = if soft.is_finite() { soft.clamp(0.25, 2.0) } else { 1.0 };
+    let n = w * h;
     let span = (hi - lo).max(1e-6);
     let mut a: Vec<f32> = raw.iter().map(|&v| if v.is_finite() { ((v - lo) / span).clamp(0.0, 1.0) } else { 0.0 }).collect();
     let mut b = vec![0.0f32; n];
@@ -780,6 +830,103 @@ fn run_once(m: &mut Loaded, rgba: &[u8], w: usize, h: usize, soft: f32) -> Resul
     Ok(DepthMap { w: ow, h: oh, data })
 }
 
+/// The model's raw output (`dims`, values) for `n` pictures (or `n` frames of a clip) as nearness:
+/// (width, height, values) each.
+fn raw_maps(output: Output, dims: &[i64], v: &[f32], n: usize) -> Result<Vec<(usize, usize, Vec<f32>)>, String> {
+    let odd = || "3D photos got something unexpected back.".to_string();
+    let (oh, ow) = match dims {
+        [.., oh, ow] if *oh > 0 && *ow > 0 => (*oh as usize, *ow as usize),
+        _ => return Err(odd()),
+    };
+    if n == 0 || v.len() != n * oh * ow {
+        return Err(odd());
+    }
+    Ok(v.chunks_exact(oh * ow)
+        .map(|c| {
+            let mut near = c.to_vec();
+            if output == Output::Depth {
+                depth_to_nearness(&mut near);
+            }
+            (ow, oh, near)
+        })
+        .collect())
+}
+
+/// Several pictures in one run (n × 3 × side × side), each finished on its own.
+fn run_batch(m: &mut Loaded, frames: &[&[u8]], w: usize, h: usize, soft: f32) -> Result<Vec<DepthMap>, String> {
+    let (sh, sw) = m.side;
+    let n = frames.len();
+    let mut input = Vec::with_capacity(n * 3 * sh * sw);
+    for f in frames {
+        input.extend(model_input(f, w, h, sw, sh, &m.mean, &m.std));
+    }
+    let output = m.output;
+    let t = ort::value::Tensor::from_array(([n, 3, sh, sw], input)).map_err(|e| format!("3D photos couldn't run ({e})."))?;
+    let out = m.session.run(ort::inputs![t]).map_err(|e| format!("3D photos couldn't run ({e})."))?;
+    let value = ["depth", "predicted_depth"].iter().find_map(|k| out.get(k)).unwrap_or(&out[0]);
+    let (shape, v) = value.try_extract_tensor::<f32>().map_err(|e| format!("3D photos got something unexpected back ({e})."))?;
+    let dims: Vec<i64> = shape.iter().copied().collect();
+    let raws = raw_maps(output, &dims, v, n)?;
+    Ok(raws.into_iter().map(|(ow, oh, v)| DepthMap { w: ow, h: oh, data: finish_soft(&v, ow, oh, soft) }).collect())
+}
+
+/// A video model's run: its `len` frames at once (fewer are padded with the last one), every frame's
+/// depth stretched over one range shared by the whole run.
+fn run_clip(m: &mut Loaded, frames: &[&[u8]], w: usize, h: usize, soft: f32, len: usize) -> Result<Vec<DepthMap>, String> {
+    let (sh, sw) = m.side;
+    let n = frames.len();
+    if n == 0 || n > len {
+        return Err("3D photos got the wrong number of frames.".into());
+    }
+    let mut input = Vec::with_capacity(len * 3 * sh * sw);
+    for i in 0..len {
+        input.extend(model_input(frames[i.min(n - 1)], w, h, sw, sh, &m.mean, &m.std));
+    }
+    let output = m.output;
+    let t = ort::value::Tensor::from_array(([1usize, len, 3, sh, sw], input)).map_err(|e| format!("3D photos couldn't run ({e})."))?;
+    let out = m.session.run(ort::inputs![t]).map_err(|e| format!("3D photos couldn't run ({e})."))?;
+    let value = ["depth", "predicted_depth"].iter().find_map(|k| out.get(k)).unwrap_or(&out[0]);
+    let (shape, v) = value.try_extract_tensor::<f32>().map_err(|e| format!("3D photos got something unexpected back ({e})."))?;
+    let dims: Vec<i64> = shape.iter().copied().collect();
+    let mut raws = raw_maps(output, &dims, v, len)?;
+    raws.truncate(n);
+    let views: Vec<&[f32]> = raws.iter().map(|r| r.2.as_slice()).collect();
+    let Some((lo, hi)) = range_of(&views) else {
+        return Ok(raws.iter().map(|(ow, oh, _)| DepthMap { w: *ow, h: *oh, data: vec![0; ow * oh] }).collect());
+    };
+    Ok(raws.iter().map(|(ow, oh, v)| DepthMap { w: *ow, h: *oh, data: finish_in(v, *ow, *oh, soft, lo, hi) }).collect())
+}
+
+/// Several frames through the loaded model: a video model all at once, else in one run when the
+/// model takes several pictures (tried once; on failure one after another from then on).
+fn run_many(m: &mut Loaded, frames: &[&[u8]], w: usize, h: usize, soft: f32) -> Result<Vec<DepthMap>, String> {
+    if let Some(len) = m.clip {
+        let mut out = Vec::with_capacity(frames.len());
+        for part in frames.chunks(len) {
+            out.extend(run_clip(m, part, w, h, soft, len)?);
+        }
+        return Ok(out);
+    }
+    if frames.len() > 1 && m.batch_ok != Some(false) {
+        match run_batch(m, frames, w, h, soft) {
+            Ok(v) => {
+                m.batch_ok = Some(true);
+                return Ok(v);
+            }
+            Err(_) => m.batch_ok = Some(false),
+        }
+    }
+    frames.iter().map(|f| run_once(m, f, w, h, soft)).collect()
+}
+
+/// One picture, also with a video model (the picture as a still clip).
+fn run_one(m: &mut Loaded, rgba: &[u8], w: usize, h: usize, soft: f32) -> Result<DepthMap, String> {
+    match m.clip {
+        Some(len) => run_clip(m, &[rgba], w, h, soft, len)?.pop().ok_or_else(|| "3D photos got nothing back.".to_string()),
+        None => run_once(m, rgba, w, h, soft),
+    }
+}
+
 fn pack_for(wanted: &str) -> Result<Pack, String> {
     let all = packs();
     let broken = BROKEN.lock().unwrap().clone();
@@ -805,15 +952,38 @@ pub fn estimate(rgba: &[u8], w: usize, h: usize, wanted: &str, detail: Detail, s
     }
     let pack = pack_for(wanted)?;
     let mut load_ms = 0.0;
-    match with_model(&pack, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft)) {
+    match with_model(&pack, detail, &mut load_ms, &mut |m| run_one(m, rgba, w, h, soft)) {
         // The graphics card couldn't run the half-precision model: Fast (or the best there is) instead.
         Err(e) if pack.manifest.gpu_only => match pack_for(wanted) {
-            Ok(next) if next.manifest.id != pack.manifest.id => with_model(&next, detail, &mut load_ms, &mut |m| run_once(m, rgba, w, h, soft)),
+            Ok(next) if next.manifest.id != pack.manifest.id => with_model(&next, detail, &mut load_ms, &mut |m| run_one(m, rgba, w, h, soft)),
             _ => Err(e),
         },
         r => r,
     }
 }
+
+/// The depth of several RGBA frames of one size (prepared 3D for videos), with the chosen model:
+/// one turn on the graphics card for all of them. A video model takes them together (as many
+/// at a time as it is made for), so their depth is steady from frame to frame.
+pub fn estimate_many(rgba: &[u8], count: usize, w: usize, h: usize, wanted: &str, detail: Detail, soft: f32) -> Result<Vec<DepthMap>, String> {
+    let one = w.checked_mul(h).and_then(|p| p.checked_mul(4)).unwrap_or(0);
+    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || !(1..=MAX_FRAMES).contains(&count) || one.checked_mul(count) != Some(rgba.len()) {
+        return Err("The frames didn't arrive whole.".into());
+    }
+    let frames: Vec<&[u8]> = rgba.chunks_exact(one).collect();
+    let pack = pack_for(wanted)?;
+    let mut load_ms = 0.0;
+    match with_model(&pack, detail, &mut load_ms, &mut |m| run_many(m, &frames, w, h, soft)) {
+        Err(e) if pack.manifest.gpu_only => match pack_for(wanted) {
+            Ok(next) if next.manifest.id != pack.manifest.id => with_model(&next, detail, &mut load_ms, &mut |m| run_many(m, &frames, w, h, soft)),
+            _ => Err(e),
+        },
+        r => r,
+    }
+}
+
+/// Most frames in one `estimate_many`.
+const MAX_FRAMES: usize = 64;
 
 /// The result of a speed test.
 #[derive(Debug, Clone, Serialize)]
@@ -859,12 +1029,13 @@ pub fn benchmark(id: &str, detail: Detail) -> Result<Benchmark, String> {
     let mut device = false;
     let ms = with_model(pack, detail, &mut load_ms, &mut |m| {
         device = m.gpu;
-        run_once(m, &picture, side, side, 1.0)?;
+        run_one(m, &picture, side, side, 1.0)?;
         let start = Instant::now();
         for _ in 0..2 {
-            run_once(m, &picture, side, side, 1.0)?;
+            run_one(m, &picture, side, side, 1.0)?;
         }
-        Ok(start.elapsed().as_secs_f64() * 1000.0 / 2.0)
+        // A video model does all its frames in one run: the time per frame.
+        Ok(start.elapsed().as_secs_f64() * 1000.0 / 2.0 / m.clip.unwrap_or(1) as f64)
     })?;
     Ok(Benchmark { ms, device: if device { "gpu" } else { "cpu" }.into(), load_ms, side })
 }
@@ -884,6 +1055,9 @@ pub struct DepthRequest {
     /// Edge softening (1 = as designed; smaller = sharper). Absent = 1.
     #[serde(default)]
     pub soft: Option<f32>,
+    /// `depth_estimate_many`: how many frames follow.
+    #[serde(default)]
+    pub count: Option<usize>,
 }
 
 /// Body: 4 bytes (little-endian) of JSON length, the request as JSON, then RGBA.
@@ -920,6 +1094,32 @@ pub async fn depth_estimate(request: tauri::ipc::Request<'_>) -> Result<tauri::i
     let detail = Detail::from_name(req.detail.as_deref());
     let map = tauri::async_runtime::spawn_blocking(move || estimate(&rgba, req.width, req.height, &req.model, detail, req.soft.unwrap_or(1.0))).await.map_err(|e| e.to_string())??;
     Ok(tauri::ipc::Response::new(map.to_bytes()))
+}
+
+/// The depth maps of several frames (`request.count` of them, one after another in the body);
+/// the answer is a u32 count (LE), then each map as `DepthMap::to_bytes` gives it.
+#[tauri::command]
+pub async fn depth_estimate_many(request: tauri::ipc::Request<'_>) -> Result<tauri::ipc::Response, String> {
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("The frames didn't arrive.".into());
+    };
+    let (req, rgba) = split_body(body)?;
+    let rgba = Zeroizing::new(rgba.to_vec());
+    let detail = Detail::from_name(req.detail.as_deref());
+    let count = req.count.unwrap_or(1);
+    let maps = tauri::async_runtime::spawn_blocking(move || estimate_many(&rgba, count, req.width, req.height, &req.model, detail, req.soft.unwrap_or(1.0)))
+        .await
+        .map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(maps_bytes(&maps)))
+}
+
+/// Several maps for the window: u32 count (LE), then each map's bytes.
+pub fn maps_bytes(maps: &[DepthMap]) -> Vec<u8> {
+    let mut out = (maps.len() as u32).to_le_bytes().to_vec();
+    for m in maps {
+        out.extend(m.to_bytes());
+    }
+    out
 }
 
 /// Settings → 3D photos → Test speed.
@@ -982,6 +1182,36 @@ mod tests {
         let (r, _) = split_body(&body).unwrap();
         assert_eq!((r.model.as_str(), Detail::from_name(r.detail.as_deref())), ("da3-base", Detail::High));
         assert_eq!(r.soft, Some(0.5));
+    }
+
+    #[test]
+    fn frames_share_one_range_and_video_packs_are_checked() {
+        // Two frames: alone, each is stretched to its own range; together, the dimmer one stays dimmer.
+        let a: Vec<f32> = (0..64 * 64).map(|i| (i % 64) as f32).collect();
+        let b: Vec<f32> = a.iter().map(|v| v * 0.5).collect();
+        let (lo, hi) = range_of(&[&a, &b]).unwrap();
+        let fa = finish_in(&a, 64, 64, 1.0, lo, hi);
+        let fb = finish_in(&b, 64, 64, 1.0, lo, hi);
+        let mean = |d: &[u8]| d.iter().map(|&v| v as f64).sum::<f64>() / d.len() as f64;
+        assert!(mean(&fb) + 20.0 < mean(&fa), "{} {}", mean(&fb), mean(&fa));
+        assert_eq!(finish_soft(&a, 64, 64, 1.0), finish_in(&a, 64, 64, 1.0, range_of(&[&a]).unwrap().0, range_of(&[&a]).unwrap().1));
+        assert!(range_of(&[&[f32::NAN][..]]).is_none());
+        // A video model's depth.json: fixed size, 2–64 frames.
+        let vda = r#"{"id":"vda-small","name":"Video (steady)","model":"Video Depth Anything Small","file":"model.onnx","output":"nearness","standardSide":518,"frames":32,"licence":"Apache-2.0"}"#;
+        let m = Manifest::parse(vda.as_bytes()).unwrap();
+        assert_eq!(m.clip(), Some(32));
+        assert!(Manifest::parse(vda.replace("32", "1").as_bytes()).is_err());
+        assert!(Manifest::parse(vda.replace(r#""standardSide":518,"#, "").as_bytes()).is_err());
+        assert!(Manifest::parse(DA3.as_bytes()).unwrap().clip().is_none());
+        // A model's output for two pictures, split; distance turned into nearness.
+        let v = [1.0f32, 2.0, 3.0, 4.0];
+        let r = raw_maps(Output::Nearness, &[2, 1, 1, 2], &v, 2).unwrap();
+        assert_eq!(r, vec![(2, 1, vec![1.0, 2.0]), (2, 1, vec![3.0, 4.0])]);
+        assert!(raw_maps(Output::Nearness, &[2, 1, 1, 2], &v, 3).is_err());
+        assert!(raw_maps(Output::Depth, &[1, 2, 2], &v, 1).unwrap()[0].2[3] < raw_maps(Output::Depth, &[1, 2, 2], &v, 1).unwrap()[0].2[0]);
+        // Several maps for the window.
+        let maps = [DepthMap { w: 1, h: 1, data: vec![7] }, DepthMap { w: 2, h: 1, data: vec![1, 2] }];
+        assert_eq!(maps_bytes(&maps), vec![2, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 7, 2, 0, 0, 0, 1, 0, 0, 0, 1, 2]);
     }
 
     #[test]
@@ -1212,7 +1442,7 @@ mod tests {
         let packs = scan(Some(base), false, None, &[]);
         let list = catalogue(&packs, Some(base));
         let ids: Vec<&str> = list.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, [FAST, FAST16, BEST, BAL, "extra"]);
+        assert_eq!(ids, [FAST, FAST16, BEST, VIDEO, BAL, "extra"]);
         let fast = &list[0];
         assert!(!fast.installed && !fast.dynamic && fast.zip.as_deref() == Some("MediaVault-depth-windows.zip"));
         assert!(fast.problem.as_deref().unwrap().contains("MediaVault-depth-windows.zip"));
@@ -1221,7 +1451,8 @@ mod tests {
         assert!(!half.installed && half.gpu_only && half.zip.as_deref() == Some("MediaVault-depth-v2-small-fp16-windows.zip"));
         assert_eq!((half.name.as_str(), half.standard_side), ("Fast (half precision)", 518));
         assert!(half.folder.as_deref().unwrap().ends_with("depth-v2-small-fp16"));
-        let bal = &list[3];
+        assert!(list[3].video && !list[3].installed);
+        let bal = &list[4];
         assert!(bal.installed && bal.problem.is_none() && bal.dynamic && bal.size_bytes > 0);
         assert_eq!((bal.standard_side, bal.high_side), (518, 756));
         assert!(!list[2].installed && list[2].folder.as_deref().unwrap().ends_with("depth-da3-mono-large"));

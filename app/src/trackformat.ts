@@ -146,14 +146,20 @@ export function covers(i: TrackIndex, t: number): boolean {
  */
 export const TRACK_WAY = 2;
 
-/** The tag of prepared 3D: the models and settings it's made with (derived.rs track names). */
-export function trackTag(p: { depth: string; subject: string; edges: number; fill: string; size: number; every: number }): string {
-  return `${p.depth}_${p.subject || 'none'}_e${p.edges.toFixed(2)}_${p.subject ? p.fill || 'simple' : 'none'}_w${p.size}_f${p.every}_v${TRACK_WAY}`;
+/**
+ * The tag of prepared 3D: the models and settings it's made with (derived.rs track names). `plate`:
+ * Layered 3D's fill made too (else "noplate"); `fillEvery` > 1 adds "_n<n>".
+ */
+export function trackTag(p: { depth: string; subject: string; edges: number; fill: string; size: number; every: number; plate?: boolean; fillEvery?: number }): string {
+  const fill = !p.subject ? 'none' : p.plate === false ? 'noplate' : p.fill || 'simple';
+  const n = p.plate !== false && p.subject && (p.fillEvery ?? 1) > 1 ? `_n${p.fillEvery}` : '';
+  return `${p.depth}_${p.subject || 'none'}_e${p.edges.toFixed(2)}_${fill}_w${p.size}_f${p.every}${n}_v${TRACK_WAY}`;
 }
 
 /** The parts of a track tag (null: not one). */
-export function parseTrackTag(tag: string): { depth: string; subject: string; edges: number; fill: string; size: number; every: number } | null {
-  const m = /^(.+?@\d+~[\d.]+)_(.+?)_e([\d.]+)_([a-z0-9-]+)_w(\d+)_f(\d)(?:_v\d+)?$/.exec(tag);
+export function parseTrackTag(tag: string): { depth: string; subject: string; edges: number; fill: string; size: number; every: number; plate: boolean; fillEvery: number } | null {
+  const m = /^(.+?@\d+~[\d.]+)_(.+?)_e([\d.]+)_([a-z0-9-]+)_w(\d+)_f(\d)(?:_n(\d))?(?:_v\d+)?$/.exec(tag);
   if (!m) return null;
-  return { depth: m[1], subject: m[2] === 'none' ? '' : m[2], edges: Number(m[3]), fill: m[4] === 'none' ? '' : m[4], size: Number(m[5]), every: Number(m[6]) };
+  const fill = m[4] === 'none' || m[4] === 'noplate' ? '' : m[4];
+  return { depth: m[1], subject: m[2] === 'none' ? '' : m[2], edges: Number(m[3]), fill, size: Number(m[5]), every: Number(m[6]), plate: m[4] !== 'none' && m[4] !== 'noplate', fillEvery: m[7] ? Number(m[7]) : 1 };
 }

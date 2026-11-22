@@ -16,50 +16,73 @@ import { useSyncExternalStore } from 'react';
 import { api, mediaUrl, onLocked, type DepthMap, type SubjectMask } from './api';
 import { viewerPrefs } from './prefs';
 import { beginJob, endJob, updateJob } from './jobs';
-import { depthPack, depthSetup, depthTag, lastSpeed, pivotOf, type DepthSetup } from './depth';
-import { lastSubjectSpeed, maskStats, subjectDepth, subjectPack, subjectSetup, subjectTag, type SubjectSetup } from './subject';
+import { depthChoice, depthTag, edgesSetting, lastSpeed, pivotOf, setupOf, type DepthSetup } from './depth';
+import { lastSubjectSpeed, maskStats, subjectChoice, subjectDepth, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
 import { bgDepthNear, edgesStrength } from './layers';
 import { inpaintChoice, inpaintPack } from './inpaint';
 import { savedChanged } from './derived';
 import { packIndex, parseIndex, trackChanged, trackTag, type TrackIndex } from './track3d';
-import { COLS, ROWS, roundInfo, smoothInfo, tileSize, type FrameInfo } from './video3dmath';
+import { alignTo, COLS, ROWS, roundInfo, smoothInfo, tileSize, type FrameInfo } from './video3dmath';
 import { errText } from './text';
 
 // ---- settings -------------------------------------------------------------------------------------
 
 export const VIDEO3D_SIZES = [512, 768, 1024] as const;
 
+export type Parts = 'depth' | 'outline' | 'all';
+
 /** The video 3D settings read safely. */
-export function videoPrefs(p = viewerPrefs()): { size: number; every: number; calm: boolean } {
+export function videoPrefs(p = viewerPrefs()): {
+  size: number; every: number; calm: boolean; parts: Parts; fillEvery: number; depthModel: string; subjectModel: string; fillModel: string;
+} {
   const size = (VIDEO3D_SIZES as readonly number[]).includes(p.video3dSize ?? 0) ? p.video3dSize! : 768;
-  return { size, every: p.video3dEvery === 2 ? 2 : 1, calm: p.video3dCalm !== false };
+  const parts: Parts = p.video3dParts === 'depth' || p.video3dParts === 'outline' ? p.video3dParts : 'all';
+  const fe = p.video3dFillEvery;
+  const id = (v: unknown) => (typeof v === 'string' && /^[a-z0-9-]{0,40}$/.test(v) ? v : '');
+  return {
+    size, every: p.video3dEvery === 2 ? 2 : 1, calm: p.video3dCalm !== false, parts,
+    fillEvery: fe === 2 || fe === 3 ? fe : 1,
+    depthModel: id(p.video3dDepthModel), subjectModel: id(p.video3dSubjectModel), fillModel: id(p.video3dFillModel),
+  };
 }
 
-/** What preparing uses now: the models in use and the video settings, and the tag it's saved under. */
+/** What preparing uses now: the models for videos and the video settings, and the tag it's saved under. */
 export interface Setup {
   depth: DepthSetup;
+  /** A video model: this many frames go in together (null: one picture model). */
+  clip: number | null;
   subject: SubjectSetup | null;
-  /** The fill model ('' = Simple) and its square size. */
+  /** Layered 3D's fill made too. */
+  plate: boolean;
+  /** The fill model ('' = Simple) and its square size, and on which frames it runs (every 1st–3rd). */
   fill: string;
   fillSide: number;
+  fillEvery: number;
   edges: number;
   size: number;
   every: number;
   tag: string;
 }
 
-/** The setup from the settings and the installed packs (null: no depth pack). */
+/**
+ * The setup from the settings and the installed packs (null: no depth model there). The models for
+ * videos are their own choice ('' = the same as for pictures); what to prepare leaves models out.
+ */
 export async function currentSetup(): Promise<Setup | null> {
-  const di = await depthPack();
-  const depth = di?.available ? depthSetup() : null;
-  if (!depth) return null;
-  const si = await subjectPack();
-  const subject = si?.available ? subjectSetup() : null;
   const p = viewerPrefs();
+  const v = videoPrefs(p);
+  const pic = depthChoice(p);
+  const di = await api.depthInfo(v.depthModel || pic.model, pic.detail).catch(() => null);
+  const depth = setupOf(di, edgesSetting(p.depthEdges));
+  if (!depth) return null;
+  const clip = di?.frames && di.frames > 1 ? di.frames : null;
+  let subject: SubjectSetup | null = null;
+  if (v.parts !== 'depth') subject = subjectSetupOf(await api.subjectInfo(v.subjectModel || subjectChoice(p)).catch(() => null));
+  const plate = !!subject && v.parts === 'all';
   let fill = '';
   let fillSide = 0;
-  if (subject) {
-    const want = inpaintChoice(p);
+  if (plate) {
+    const want = v.fillModel === 'simple' ? '' : v.fillModel || inpaintChoice(p);
     if (want) {
       const info = await inpaintPack(want);
       if (info?.available) {
@@ -68,10 +91,10 @@ export async function currentSetup(): Promise<Setup | null> {
       }
     }
   }
+  const fillEvery = plate ? v.fillEvery : 1;
   const edges = subject && p.depthEdges3d ? edgesStrength(p.depthEdgesStrength) : 0;
-  const { size, every } = videoPrefs(p);
-  const tag = trackTag({ depth: depthTag(depth), subject: subject ? subjectTag(subject) : '', edges, fill, size, every });
-  return { depth, subject, fill, fillSide, edges, size, every, tag };
+  const tag = trackTag({ depth: depthTag(depth), subject: subject ? subjectTag(subject) : '', edges, fill, size: v.size, every: v.every, plate, fillEvery });
+  return { depth, clip, subject, plate, fill, fillSide, fillEvery, edges, size: v.size, every: v.every, tag };
 }
 
 // ---- estimates ------------------------------------------------------------------------------------
@@ -90,7 +113,7 @@ export function estimate3d(items: Want3d[], s: Setup): { seconds: number; bytes:
   const big = /large|base/.test(s.depth.model);
   const depthMs = lastSpeed(s.depth.model, s.depth.detail)?.ms ?? (big ? 450 : 120);
   const subjMs = s.subject ? lastSubjectSpeed(s.subject.model)?.ms ?? 180 : 0;
-  const fillMs = s.subject ? (s.fill === 'lama' ? 260 : s.fill ? 90 : 40) : 0;
+  const fillMs = s.plate ? (s.fill === 'lama' ? 260 : s.fill ? 90 : 40) / s.fillEvery : 0;
   const perFrame = (depthMs + subjMs + fillMs + 60) / 1000;
   let frames = 0;
   let bytes = 0;
@@ -387,6 +410,11 @@ type Piece = { bytes: Uint8Array | ArrayBuffer; t0: number; t1: number; frames: 
 
 /** Frames worked out together, one model at a time (see prepareOne). */
 const BLOCK = 24;
+/** Frames per depth / outline call (one turn on the graphics card each). */
+const DEPTH_PER_CALL = 8;
+const OUTLINE_PER_CALL = 4;
+/** A video model's runs overlap by this many frames (to line them up). */
+const OVERLAP = 8;
 
 async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, stopped: () => boolean) {
   const name = (k: string) => `${s.tag}.${k}`;
@@ -399,12 +427,12 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
   const worker = newWorker();
   try {
     const { w, h } = src;
-    const init = await worker.ask<{ codec: string }>({ op: 'init', w, h, fps: src.fps, plate: !!s.subject, subject: !!s.subject });
+    const init = await worker.ask<{ codec: string }>({ op: 'init', w, h, fps: src.fps, plate: s.plate, subject: !!s.subject });
     if (!index || index.w !== w || index.h !== h) {
       index = {
         v: 1, tag: s.tag, kind: it.kind, w, h, codec: init.codec, segs: [], every: s.every, complete: false,
-        has: { subject: !!s.subject, plate: !!s.subject },
-        models: { depth: depthTag(s.depth), subject: s.subject ? subjectTag(s.subject) : '', fill: s.subject ? s.fill || 'simple' : '', edges: s.edges },
+        has: { subject: !!s.subject, plate: s.plate },
+        models: { depth: depthTag(s.depth), subject: s.subject ? subjectTag(s.subject) : '', fill: s.plate ? s.fill || 'simple' : '', edges: s.edges },
         duration: src.duration, made: Date.now(),
       };
     }
@@ -443,12 +471,18 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
     const saveAll = async (r: { segments?: Piece[] }) => {
       for (const p of r.segments ?? []) await save(p);
     };
+    // A video model sees its frames in runs of `clip`: each run starts with the last OVERLAP frames of the
+    // one before (already done), so the new run's depth can be lined up with the old one at the seam.
+    const block = s.clip ? s.clip - OVERLAP : BLOCK;
+    let before: { rgba: Uint8ClampedArray; depth: DepthMap }[] = [];
+    let k = 0;
+    let lastFill: { data: Uint8Array; w: number; h: number } | null = null;
     while (!ended && !stopped()) {
-      // A block of frames, then each model over the whole block in turn: the graphics card keeps one
-      // model loaded at a time when they don't all fit, so going model by model per frame reloaded
-      // them for every frame.
-      const block: { t: number; rgba: Uint8ClampedArray; depth?: DepthMap; mask?: SubjectMask | null }[] = [];
-      while (block.length < BLOCK) {
+      // A block of frames, then each model over the whole block in turn (several frames per call): the
+      // graphics card keeps one model loaded at a time when they don't all fit, so going model by model
+      // per frame reloaded them for every frame.
+      const frames: { t: number; rgba: Uint8ClampedArray; depth?: DepthMap; mask?: SubjectMask | null }[] = [];
+      while (frames.length < block) {
         const f = await src.next();
         if (!f) {
           ended = true;
@@ -456,25 +490,39 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
         }
         // Every second frame only, when set so.
         if (s.every === 2 && skip++ % 2 === 1) continue;
-        block.push(f);
+        frames.push(f);
       }
+      if (!frames.length) break;
       const ds = s.depth;
-      for (const b of block) {
-        if (stopped()) break;
-        put(b.rgba);
-        b.depth = await api.depthEstimate({ width: ds.side, height: ds.side, model: ds.model, detail: ds.detail, soft: ds.soft ?? 1 }, square(ds.side));
+      const dreq = { width: ds.side, height: ds.side, model: ds.model, detail: ds.detail, soft: ds.soft ?? 1 };
+      if (s.clip) {
+        const run = [...before, ...frames];
+        const maps = await api.depthEstimateMany(dreq, run.map((b) => (put(b.rgba), square(ds.side))));
+        const fresh = maps.slice(before.length);
+        // Lined up with the run before where they overlap (same frames, depth from two runs).
+        const lined = before.length ? alignTo(before.map((b) => b.depth), maps.slice(0, before.length), fresh) : fresh;
+        frames.forEach((b, i) => (b.depth = lined[i]));
+      } else {
+        for (let i = 0; i < frames.length && !stopped(); i += DEPTH_PER_CALL) {
+          const part = frames.slice(i, i + DEPTH_PER_CALL);
+          const maps = await api.depthEstimateMany(dreq, part.map((b) => (put(b.rgba), square(ds.side))));
+          part.forEach((b, j) => (b.depth = maps[j]));
+        }
       }
       const sub = s.subject;
-      for (const b of block) {
-        if (stopped() || !sub) break;
-        put(b.rgba);
-        b.mask = await api.subjectEstimate({ width: sub.side, height: sub.side, model: sub.model }, square(sub.side));
+      if (sub) {
+        for (let i = 0; i < frames.length && !stopped(); i += OUTLINE_PER_CALL) {
+          const part = frames.slice(i, i + OUTLINE_PER_CALL);
+          const masks = await api.subjectEstimateMany({ width: sub.side, height: sub.side, model: sub.model }, part.map((b) => (put(b.rgba), square(sub.side))));
+          part.forEach((b, j) => (b.mask = masks[j]));
+        }
       }
       if (stopped()) break;
+      if (s.clip) before = frames.slice(-OVERLAP).map((b) => ({ rgba: b.rgba, depth: b.depth! }));
       // Then frame by frame, in order: calmed over time (worker), its fill (one model), finished (worker).
-      for (const b of block) {
+      for (const b of frames) {
         if (stopped()) break;
-        const fillWanted = !!s.fill && !!s.fillSide;
+        const fillWanted = s.plate && !!s.fill && !!s.fillSide;
         const calm = await worker.ask<{ depth: DepthMap; mask: SubjectMask | null; hole: Uint8Array | null; cut: boolean; moving: number }>(
           { op: 'calm', t: b.t, rgba: b.rgba.slice().buffer, depth: b.depth, mask: b.mask ?? null, holeSide: fillWanted ? s.fillSide : 0 });
         const now: FrameInfo = {
@@ -487,11 +535,15 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
         info = smoothInfo(info, now, calm.cut);
         let fill: { data: ArrayBuffer; w: number; h: number } | null = null;
         if (fillWanted && calm.hole && now.st) {
-          put(b.rgba);
-          const out = await api.inpaintEstimate({ width: s.fillSide, height: s.fillSide, model: s.fill }, square(s.fillSide), calm.hole);
-          const copy = out.data.slice();
-          fill = { data: copy.buffer as ArrayBuffer, w: out.w, h: out.h };
+          // The fill model on every 1st–3rd frame (and on a new scene); the frames between reuse its fill.
+          if (!lastFill || calm.cut || k % s.fillEvery === 0) {
+            put(b.rgba);
+            const out = await api.inpaintEstimate({ width: s.fillSide, height: s.fillSide, model: s.fill }, square(s.fillSide), calm.hole);
+            lastFill = { data: out.data.slice(), w: out.w, h: out.h };
+          }
+          fill = { data: lastFill.data.slice().buffer as ArrayBuffer, w: lastFill.w, h: lastFill.h };
         }
+        k++;
         await saveAll(await worker.ask<{ segments?: Piece[] }>({ op: 'finish', fill, edges: s.edges, info: roundInfo(info) }, fill ? [fill.data] : []));
         if (total > 0) progress(Math.min(0.99, (it.kind === 'gif' ? b.t + 1 : b.t * src.fps) / total));
       }

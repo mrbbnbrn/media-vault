@@ -331,6 +331,19 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: choices and speed.** Settings →
+  AI & 3D → Videos and GIFs: **What to prepare** (depth only / + outline / everything), **Fill the background** on
+  every 1st/2nd/3rd frame (frames between reuse the fill; a new scene always gets its own), and **models for videos**
+  (depth, outline, fill; "same as pictures" by default). **Batching:** `depth_estimate_many` / `subject_estimate_many`
+  (several frames per call, one turn on the card; depth runs them as one batch when the model takes it, else one
+  by one inside the call). **Video depth model** "Video (steady)" = Video Depth Anything Small (Apache-2.0):
+  depth.json `"frames": 32`, run as 1 × 32 × 3 × 518 × 518 with one depth range per run; preparing sends runs of 32
+  that overlap by 8 and lines each run up with the one before (`alignTo`). It is offered for videos only (pictures'
+  list hides it; never picked automatically). Its pack is built by `.github/workflows/videodepth.yml` +
+  `.github/scripts/vda_export.py` (converted from PyTorch, checked against it; runs by hand or when those files
+  change) → `MediaVault-depth-vda-small-windows.zip` on a `depth-models-<date>` pre-release. Tags carry the parts
+  (`noplate`, `_n<k>`). 600 window tests; settings checked in the browser demo. Rust not compiled here (CI);
+  the video model not tried in the app (DirectML may refuse it: then it runs on the processor, slowly).
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D fixes after the user's first
   test** (dark specks with Lift-off / the subject layer, slow preparing). Shader reads a video's outline without the
   codec's faint noise (`smoothstep` in `mask()`); the last prepared frame is kept up to 4 frames while the next one

@@ -70,9 +70,9 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
     const sub = /^(.+)@\d+$/.exec(t.subject)?.[1] ?? t.subject;
     const parts = [
-      t.subject ? `outline ${names.get(sub) ?? sub}` : 'no outline',
+      t.subject ? `outline ${names.get(sub) ?? sub}` : 'depth only',
       t.edges > 0 ? 'sharper edges' : '',
-      t.fill ? fills[t.fill] ?? t.fill : '',
+      t.plate ? `${fills[t.fill || 'simple'] ?? t.fill}${t.fillEvery > 1 ? ` on every ${t.fillEvery === 2 ? '2nd' : '3rd'} frame` : ''}` : t.subject ? 'no Layered 3D' : '',
       `${t.size} px`,
       t.every === 2 ? 'every 2nd frame' : '',
     ].filter(Boolean);

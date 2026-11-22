@@ -192,6 +192,46 @@ export function blendAhead(
   return { depth: blend(depth, (l) => l.depth), mask: mask ? blend(mask, (l) => l.mask) : null };
 }
 
+/**
+ * A video model's new run lined up with the run before: where the two runs gave the same frames
+ * (`old` from the run before, `overlap` from this run), the scale and offset that turns the new
+ * depth into the old is fitted, then applied to the new frames (`fresh`), so there's no jump at the seam.
+ */
+export function alignTo(old: DepthMap[], overlap: DepthMap[], fresh: DepthMap[]): DepthMap[] {
+  let n = 0;
+  let sx = 0;
+  let sy = 0;
+  let sxx = 0;
+  let sxy = 0;
+  for (let k = 0; k < Math.min(old.length, overlap.length); k++) {
+    const a = old[k];
+    const b = overlap[k];
+    if (a.w !== b.w || a.h !== b.h) continue;
+    const step = Math.max(1, Math.floor(a.data.length / 4096));
+    for (let i = 0; i < a.data.length; i += step) {
+      const X = b.data[i];
+      const Y = a.data[i];
+      n++;
+      sx += X;
+      sy += Y;
+      sxx += X * X;
+      sxy += X * Y;
+    }
+  }
+  if (n < 50) return fresh;
+  const mx = sx / n;
+  const my = sy / n;
+  const vx = sxx / n - mx * mx;
+  const a = vx > 4 ? clamp((sxy / n - mx * my) / vx, 0.5, 2) : 1;
+  const b = clamp(my - a * mx, -120, 120);
+  if (Math.abs(a - 1) < 0.005 && Math.abs(b) < 0.5) return fresh;
+  return fresh.map((m) => {
+    const out = new Uint8Array(m.data.length);
+    for (let i = 0; i < out.length; i++) out[i] = Math.round(clamp(a * m.data[i] + b, 0, 255));
+    return { w: m.w, h: m.h, data: out };
+  });
+}
+
 /** The outline with its faint values snapped to none or all (the codec keeps them cleaner; the soft edge stays). */
 export function cleanMask(m: SubjectMask): SubjectMask {
   const out = new Uint8Array(m.data.length);

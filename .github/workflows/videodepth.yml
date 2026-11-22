@@ -1,0 +1,158 @@
+name: video depth model
+
+# Builds the optional video depth model for prepared 3D of videos and GIFs:
+# Video Depth Anything Small (Apache-2.0; the Base/Large ones are CC-BY-NC and
+# never used), as MediaVault-depth-vda-small-windows.zip, unzipping to
+# MediaVault\tools\depth-vda-small\ with model.onnx (32 frames at once),
+# depth.json ("frames": 32), ONNX Runtime + DirectML and the licences.
+# Converted here from the original PyTorch weights (Hugging Face) and checked
+# against PyTorch before it is packed (.github/scripts/vda_export.py).
+# Runs by hand (Actions → video depth model → Run workflow), and when this file
+# or the script changes (so a fix to them is tried at once).
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag (default depth-models-<today>)
+        required: false
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/videodepth.yml
+      - .github/scripts/vda_export.py
+
+permissions:
+  contents: write
+
+env:
+  # Keep in step with depthmodels.yml, depthpack.yml, upscaler.yml and facepack.yml.
+  ORT_DML_VERSION: 1.24.4
+  DIRECTML_VERSION: 1.15.4
+  VDA_REPO: https://github.com/DepthAnything/Video-Depth-Anything
+  ID: vda-small
+  NAME: Video (steady)
+  TITLE: Video Depth Anything Small
+
+jobs:
+  pack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Video Depth Anything source and the tools to convert it
+        run: |
+          set -euo pipefail
+          git clone --depth 1 "$VDA_REPO" Video-Depth-Anything
+          (cd Video-Depth-Anything && git log -1 --format='VDA source: %H %cd')
+          echo "VDA_COMMIT=$(cd Video-Depth-Anything && git rev-parse HEAD)" >> "$GITHUB_ENV"
+          grep -q "Apache License" Video-Depth-Anything/LICENSE
+          python -m pip install --upgrade pip
+          pip install --index-url https://download.pytorch.org/whl/cpu torch torchvision
+          pip install einops easydict "numpy<2" pillow opencv-python-headless tqdm matplotlib imageio huggingface_hub onnx onnxruntime
+
+      - name: Convert and check against PyTorch
+        run: |
+          set -euo pipefail
+          python .github/scripts/vda_export.py Video-Depth-Anything pack
+          ls -la pack
+          python - <<'PY'
+          import pathlib, re
+          p = pathlib.Path("pack")
+          text = " ".join(f.read_text(errors="ignore") for f in p.glob("weights-README*"))
+          m = re.search(r"license:\s*([\w.\-]+)", text, re.I)
+          lic = (m.group(1) if m else "").lower()
+          print("weights licence:", lic or "(not stated)")
+          if lic and lic not in ("apache-2.0",):
+              raise SystemExit(f"weights licence is {lic}, not Apache-2.0")
+          PY
+
+      - name: ONNX Runtime with DirectML (official NuGet packages, checked against nuget.org)
+        run: |
+          set -euo pipefail
+          mkdir -p nuget && cd nuget
+          get() {
+            local id="$1" ver="$2" lid
+            lid=$(echo "$id" | tr 'A-Z' 'a-z')
+            curl -fsSL --retry 4 -o "$lid.nupkg" "https://api.nuget.org/v3-flatcontainer/$lid/$ver/$lid.$ver.nupkg"
+            local leaf entry want got
+            leaf=$(curl -fsSL "https://api.nuget.org/v3/registration5-semver1/$lid/$ver.json")
+            entry=$(echo "$leaf" | jq -r '.catalogEntry')
+            want=$(curl -fsSL "$entry" | jq -r 'select(.packageHashAlgorithm == "SHA512") | .packageHash')
+            got=$(openssl dgst -sha512 -binary "$lid.nupkg" | base64 -w0)
+            [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$id $ver: hash does not match nuget.org"; exit 1; }
+            echo "$id $ver: SHA-512 matches nuget.org"
+            mkdir -p "$lid" && (cd "$lid" && unzip -q ../"$lid.nupkg")
+          }
+          get Microsoft.ML.OnnxRuntime.DirectML "$ORT_DML_VERSION"
+          get Microsoft.AI.DirectML "$DIRECTML_VERSION"
+          cp microsoft.ml.onnxruntime.directml/runtimes/win-x64/native/onnxruntime.dll ../pack/
+          cp microsoft.ai.directml/bin/x64-win/DirectML.dll ../pack/
+
+      - name: Manifest, licences, readme, checksums
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, pathlib
+          p = pathlib.Path("pack")
+          made = json.loads((p / "export.json").read_text())
+          manifest = {
+              "id": os.environ["ID"], "name": os.environ["NAME"], "model": os.environ["TITLE"], "file": "model.onnx",
+              "output": "nearness", "standardSide": made["side"], "frames": made["frames"],
+              "mean": [0.485, 0.456, 0.406], "std": [0.229, 0.224, 0.225], "licence": "Apache-2.0",
+          }
+          (p / "depth.json").write_text(json.dumps(manifest, indent=2))
+          print(json.dumps(manifest, indent=2))
+          PY
+          O=nuget/microsoft.ml.onnxruntime.directml
+          D=nuget/microsoft.ai.directml
+          lic() { find "$1" -maxdepth 1 -iname "$2" | head -1; }
+          {
+            echo "MEDIA VAULT — VIDEO DEPTH MODEL \"$NAME\": LICENCES"
+            echo "=================================================="
+            echo
+            echo "model.onnx   $TITLE (https://github.com/DepthAnything/Video-Depth-Anything),"
+            echo "    weights from https://huggingface.co/depth-anything/Video-Depth-Anything-Small under the Apache-2.0"
+            echo "    licence, converted to ONNX (32 frames in, their depth out) from source commit $VDA_COMMIT."
+            echo "onnxruntime.dll   ONNX Runtime $ORT_DML_VERSION with DirectML (Microsoft, MIT licence)."
+            echo "DirectML.dll      DirectML $DIRECTML_VERSION (Microsoft); redistributed under its licence below."
+            echo
+            for f in Video-Depth-Anything/LICENSE pack/weights-LICENSE* "$(lic $O 'LICENSE*')" "$(lic $O 'ThirdPartyNotices*')" "$(lic $D 'LICENSE*')" "$(lic $D 'ThirdPartyNotices*')"; do
+              [ -n "$f" ] && [ -f "$f" ] || continue
+              echo; echo "==== $(basename "$f") ===="; echo
+              cat "$f"
+            done
+          } > pack/LICENSES.txt
+          rm -f pack/weights-*
+          printf '%s\r\n' \
+            "Media Vault video depth model: $NAME ($TITLE)" \
+            "" \
+            "Unzip into the same place as the app: this adds MediaVault\\tools\\depth-$ID." \
+            "Then choose it in Settings > AI & 3D > Videos and GIFs > Depth model for videos." \
+            "It looks at 32 frames together, so prepared videos' depth stays steady (no flicker)." \
+            "" \
+            "Everything runs offline, on the graphics card (DirectML) when it can, otherwise on the processor." \
+            "Nothing decrypted is ever written to disk." > pack/README.txt
+          tag="${{ github.event.inputs.tag }}"
+          [ -n "$tag" ] || tag="depth-models-$(date -u +%Y-%m-%d)"
+          echo "TAG=$tag" >> "$GITHUB_ENV"
+          printf '%s\n' "$tag" "$TITLE (source $VDA_COMMIT)" "onnxruntime-directml $ORT_DML_VERSION" "directml $DIRECTML_VERSION" > pack/VERSION.txt
+          cp pack/export.json pack/CONVERSION.json && rm pack/export.json
+          (cd pack && sha256sum model.onnx *.dll > SHA256SUMS.txt && cat SHA256SUMS.txt)
+
+      - name: Zip and publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "z/MediaVault/tools/depth-$ID"
+          cp pack/* "z/MediaVault/tools/depth-$ID/"
+          zip_name="MediaVault-depth-$ID-windows.zip"
+          (cd z && zip -qr -6 "../$zip_name" MediaVault)
+          ls -la "$zip_name"
+          notes="Optional 3D depth models. Unzip into the same place as the app. Fast = the depth pack; Best = depth-da3-mono-large; Video (steady) = depth-vda-small, for prepared 3D of videos (Settings → AI & 3D → Videos and GIFs)."
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$zip_name" --clobber -R "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" "$zip_name" --prerelease --title "3D depth models $TAG (download once)" --notes "$notes" -R "$GITHUB_REPOSITORY"
+          fi

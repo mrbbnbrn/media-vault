@@ -97,6 +97,13 @@ pub struct ViewerSettings {
     pub video3d_size: u32,
     pub video3d_every: u32,
     pub video3d_calm: bool,
+    /// What preparing makes ("depth", "outline" or "all"), the fill on every 1st–3rd frame,
+    /// and the models for videos ("" = the same as for pictures; fill "simple" = Simple).
+    pub video3d_parts: String,
+    pub video3d_fill_every: u32,
+    pub video3d_depth_model: String,
+    pub video3d_subject_model: String,
+    pub video3d_fill_model: String,
     /// The old slideshow setting "3D photos" has been carried over to depth_auto (done once).
     pub depth_auto_migrated: bool,
     /// 3D photos: which depth model ("v2-small", "da3-mono-large"; "" = the best one installed; the retired "da3-base" falls back to it).
@@ -188,6 +195,11 @@ impl Default for ViewerSettings {
             video3d_size: 768,
             video3d_every: 1,
             video3d_calm: true,
+            video3d_parts: "all".into(),
+            video3d_fill_every: 1,
+            video3d_depth_model: String::new(),
+            video3d_subject_model: String::new(),
+            video3d_fill_model: String::new(),
             depth_auto_migrated: false,
             depth_model: String::new(),
             depth_detail: "standard".into(),
@@ -437,6 +449,15 @@ impl AppConfig {
         }
         if v.video3d_every != 2 {
             v.video3d_every = 1;
+        }
+        if !["depth", "outline", "all"].contains(&v.video3d_parts.as_str()) {
+            v.video3d_parts = "all".into();
+        }
+        v.video3d_fill_every = v.video3d_fill_every.clamp(1, 3);
+        for id in [&mut v.video3d_depth_model, &mut v.video3d_subject_model, &mut v.video3d_fill_model] {
+            if id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+                id.clear();
+            }
         }
         v.depth_beat_amount = clamp(v.depth_beat_amount, 0.2, 3.0, 1.0);
         if v.depth_beat_kind != "bounce" {

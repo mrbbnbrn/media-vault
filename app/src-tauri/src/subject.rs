@@ -624,6 +624,18 @@ fn pack_for(wanted: &str) -> Result<Pack, String> {
     })
 }
 
+/// The outlines of several RGBA frames of one size (prepared 3D for videos): one turn on the
+/// graphics card for all of them, the model loaded once.
+pub fn estimate_many(rgba: &[u8], count: usize, w: usize, h: usize, wanted: &str) -> Result<Vec<Mask>, String> {
+    let one = w.checked_mul(h).and_then(|p| p.checked_mul(4)).unwrap_or(0);
+    if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || !(1..=64).contains(&count) || one.checked_mul(count) != Some(rgba.len()) {
+        return Err("The frames didn't arrive whole.".into());
+    }
+    let pack = pack_for(wanted)?;
+    let mut load_ms = 0.0;
+    with_model(&pack, &mut load_ms, &mut |m| rgba.chunks_exact(one).map(|f| run_once(m, f, w, h)).collect())
+}
+
 /// The subject mask of an RGBA picture, with the chosen model ("" = best installed).
 pub fn estimate(rgba: &[u8], w: usize, h: usize, wanted: &str) -> Result<Mask, String> {
     if w == 0 || h == 0 || w > MAX_SIDE || h > MAX_SIDE || w.checked_mul(h).and_then(|p| p.checked_mul(4)) != Some(rgba.len()) {
@@ -698,6 +710,9 @@ pub struct SubjectRequest {
     /// The chosen model ("" or absent = best installed).
     #[serde(default)]
     pub model: String,
+    /// `subject_estimate_many`: how many frames follow.
+    #[serde(default)]
+    pub count: Option<usize>,
 }
 
 /// Body: 4 bytes (little-endian) of JSON length, the request as JSON, then RGBA.
@@ -732,6 +747,24 @@ pub async fn subject_estimate(request: tauri::ipc::Request<'_>) -> Result<tauri:
     let rgba = Zeroizing::new(rgba.to_vec());
     let mask = tauri::async_runtime::spawn_blocking(move || estimate(&rgba, req.width, req.height, &req.model)).await.map_err(|e| e.to_string())??;
     Ok(tauri::ipc::Response::new(mask.to_bytes()))
+}
+
+/// The outlines of several frames (`request.count` of them, one after another in the body); the
+/// answer is a u32 count (LE), then each outline as `Mask::to_bytes` gives it.
+#[tauri::command]
+pub async fn subject_estimate_many(request: tauri::ipc::Request<'_>) -> Result<tauri::ipc::Response, String> {
+    let tauri::ipc::InvokeBody::Raw(body) = request.body() else {
+        return Err("The frames didn't arrive.".into());
+    };
+    let (req, rgba) = split_body(body)?;
+    let rgba = Zeroizing::new(rgba.to_vec());
+    let count = req.count.unwrap_or(1);
+    let masks = tauri::async_runtime::spawn_blocking(move || estimate_many(&rgba, count, req.width, req.height, &req.model)).await.map_err(|e| e.to_string())??;
+    let mut out = (masks.len() as u32).to_le_bytes().to_vec();
+    for m in &masks {
+        out.extend(m.to_bytes());
+    }
+    Ok(tauri::ipc::Response::new(out))
 }
 
 /// Settings → Test speed.

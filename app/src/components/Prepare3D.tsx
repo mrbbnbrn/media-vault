@@ -4,7 +4,7 @@
 // size, "Delete all 3D data for videos and GIFs", what's being prepared).
 
 import { useEffect, useState } from 'react';
-import { api, type DerivedStats, type ViewerSettings } from '../api';
+import { api, type DepthModel, type DerivedStats, type InpaintModel, type SubjectModel, type ViewerSettings } from '../api';
 import { onSavedChange, savedChanged } from '../derived';
 import { formatBytes } from '../theme';
 import { plural } from '../undo';
@@ -22,13 +22,33 @@ export function aboutTime(seconds: number): string {
 
 /** What it will be made with, in words. */
 function setupWords(s: Setup): string {
-  const parts = [`depth: ${s.depth.model}`];
-  if (s.subject) parts.push(`outline: ${s.subject.model}`, `fill: ${s.fill || 'Simple'}`);
-  else parts.push('no outline pack, so no Lift-off or Layered 3D');
+  const parts = [`depth: ${s.depth.model}${s.clip ? ` (video model, ${s.clip} frames at a time)` : ''}`];
+  if (s.subject) parts.push(`outline: ${s.subject.model}`);
+  else parts.push('depth only (no Lift-off or Layered 3D)');
+  if (s.plate) parts.push(`fill: ${s.fill || 'Simple'}${s.fillEvery > 1 ? ` on every ${s.fillEvery === 2 ? '2nd' : '3rd'} frame` : ''}`);
+  else if (s.subject) parts.push('no Layered 3D');
   if (s.edges > 0) parts.push('sharper edges');
   parts.push(`${s.size} px`, s.every === 2 ? 'every 2nd frame' : 'every frame');
   return parts.join(' · ');
 }
+
+/** One setting row: label, choice, and its explanation under it. */
+function Row(props: { id: string; label: string; value: string | number; onChange: (v: string) => void; options: [string | number, string][]; help: string }) {
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <label htmlFor={props.id} style={{ fontSize: 13, minWidth: 150 }}>{props.label}</label>
+        <select id={props.id} value={props.value} onChange={(e) => props.onChange(e.target.value)}>
+          {props.options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </select>
+      </div>
+      <span className="faint" style={{ fontSize: 12, display: 'block' }}>{props.help}</span>
+    </div>
+  );
+}
+
+const usable = (m: { installed: boolean; problem: string | null }) => m.installed && !m.problem;
+const modelLabel = (m: { name: string; installed: boolean; problem: string | null }) => `${m.name}${usable(m) ? '' : m.installed ? ' (can’t be used here)' : ' (not installed)'}`;
 
 /** "Prepare 3D" for some videos and GIFs: asks first, with the estimate. `again`: its prepared 3D under this tag is deleted first. */
 export function Prepare3DDialog(props: { what: string; items: Want3d[]; again?: string | null; onClose: () => void; onStarted?: (text: string) => void }) {
@@ -105,6 +125,20 @@ export function Video3DSection(props: { viewer: ViewerSettings; setViewer: (patc
   }, []);
   const count = stats?.trackCount ?? 0;
   const bytes = stats?.trackBytes ?? 0;
+  // The models that can be chosen for videos.
+  const [dm, setDm] = useState<DepthModel[]>([]);
+  const [sm, setSm] = useState<SubjectModel[]>([]);
+  const [im, setIm] = useState<InpaintModel[]>([]);
+  useEffect(() => {
+    let live = true;
+    void api.depthModels().then((m) => live && setDm(m), () => {});
+    void api.subjectModels().then((m) => live && setSm(m), () => {});
+    void api.inpaintModels().then((m) => live && setIm(m), () => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+  const set = props.setViewer;
   return (
     <>
       <h3 style={{ margin: '18px 0 4px', fontSize: 14 }}>Videos and GIFs</h3>
@@ -114,7 +148,28 @@ export function Video3DSection(props: { viewer: ViewerSettings; setViewer: (patc
         or many from a folder's or a selection's right-click menu. Until then they play without 3D. Turn on <b>3D for GIFs and videos</b> in
         the viewer's 3D settings to see it.
       </p>
-      <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+      <Row id="v3d-parts" label="What to prepare" value={v.parts} onChange={(x) => set({ video3dParts: x })}
+        options={[['depth', 'Depth only (fastest)'], ['outline', 'Depth + subject outline'], ['all', 'Everything (+ Layered 3D fill)']]}
+        help="Depth only: the 3D motion and the 3D mouse. + subject outline: also Lift-off and 3D only on the subject. Everything: also Layered 3D (the background filled in behind the subject). Each step adds a model per frame, so less is faster." />
+      {v.parts === 'all' && (
+        <Row id="v3d-fill-every" label="Fill the background" value={v.fillEvery} onChange={(x) => set({ video3dFillEvery: Number(x) })}
+          options={[[1, 'On every frame'], [2, 'On every 2nd frame'], [3, 'On every 3rd frame']]}
+          help="Layered 3D's fill model is often the slowest step. On every 2nd or 3rd frame, the frames between reuse its fill (a new scene always gets its own). Try both on one video to see if you can tell." />
+      )}
+      <Row id="v3d-depth-model" label="Depth model for videos" value={v.depthModel} onChange={(x) => set({ video3dDepthModel: x })}
+        options={[['', 'Same as pictures'], ...dm.map((m): [string, string] => [m.id, `${modelLabel(m)}${m.video ? ' · made for video' : ''}`])]}
+        help="Video (steady) is made for video: it looks at 32 frames together, so depth doesn't flicker or breathe; about as fast as Fast. Its download: MediaVault-depth-vda-small-windows.zip (Releases page). Fast is quicker than Best; Best has finer depth." />
+      {v.parts !== 'depth' && (
+        <Row id="v3d-subject-model" label="Outline model for videos" value={v.subjectModel} onChange={(x) => set({ video3dSubjectModel: x })}
+          options={[['', 'Same as pictures'], ...sm.map((m): [string, string] => [m.id, modelLabel(m)])]}
+          help="The model that finds the subject in each frame (Lift-off, 3D only on the subject, Layered 3D). A lighter one is quicker." />
+      )}
+      {v.parts === 'all' && (
+        <Row id="v3d-fill-model" label="Fill model for videos" value={v.fillModel} onChange={(x) => set({ video3dFillModel: x })}
+          options={[['', 'Same as pictures'], ['simple', 'Simple (no download, quickest)'], ...im.map((m): [string, string] => [m.id, modelLabel(m)])]}
+          help="What fills the background behind the subject for Layered 3D. Simple is quickest; MI-GAN is quick and good; LaMa is the most convincing and the slowest." />
+      )}
+      <div className="row" style={{ flexWrap: 'wrap', gap: 8, alignItems: 'center', marginTop: 8 }}>
         <label htmlFor="v3d-size" style={{ fontSize: 13 }}>3D detail</label>
         <select id="v3d-size" value={v.size} onChange={(e) => props.setViewer({ video3dSize: Number(e.target.value) })}>
           {VIDEO3D_SIZES.map((s) => <option key={s} value={s}>{s} px{s === 768 ? ' (suggested)' : ''}</option>)}

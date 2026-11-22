@@ -392,6 +392,8 @@ export const api = {
   depthBenchmark: (id: string, detail: DepthDetail) => call<DepthBenchmark>('depth_benchmark', { id, detail }),
   /** Sends the picture's pixels (DepthInfo.inputSide square); the depth map comes back. */
   depthEstimate: (request: DepthRequest, rgba: Uint8Array) => depthEstimate(request, rgba),
+  /** Several frames of one size (prepared 3D for videos): one turn on the graphics card; a video model takes them together. */
+  depthEstimateMany: (request: DepthRequest, frames: Uint8Array[]) => estimateMany('depth_estimate_many', request, frames),
   /** The viewer closed: free the model's memory. */
   depthForget: () => call<void>('depth_forget'),
   // Subject effects (Lift-off and friends): a subject outline per picture (Rust: subject.rs; window side: subject.ts, components/Depth3D.tsx)
@@ -403,6 +405,8 @@ export const api = {
   subjectBenchmark: (id: string) => call<SubjectBenchmark>('subject_benchmark', { id }),
   /** Sends the picture's pixels (SubjectInfo.inputSide square); the subject outline comes back (255 = subject). */
   subjectEstimate: (request: SubjectRequest, rgba: Uint8Array) => subjectEstimate(request, rgba),
+  /** Several frames of one size: one turn on the graphics card, the model loaded once. */
+  subjectEstimateMany: (request: SubjectRequest, frames: Uint8Array[]) => estimateMany('subject_estimate_many', request, frames),
   /** Free the subject model's memory. */
   subjectForget: () => call<void>('subject_forget'),
   // Layered 3D: filling in the background behind the subject (Rust: inpaint.rs; window side: inpaint.ts, plate.ts)
@@ -932,6 +936,8 @@ export interface DepthInfo {
   detail?: DepthDetail;
   /** The model takes any size (so "High detail" applies). */
   dynamic?: boolean;
+  /** A video model: this many frames go in together. */
+  frames?: number | null;
 }
 
 export type DepthDetail = 'standard' | 'high';
@@ -955,6 +961,8 @@ export interface DepthModel {
   standardSide?: number;
   highSide?: number;
   licence?: string | null;
+  /** Made for videos (several frames at once): offered for videos only. */
+  video?: boolean;
 }
 
 /** A speed test: average ms per picture (warm-up not counted), where it ran, and how long loading took. */
@@ -1002,6 +1010,53 @@ async function depthEstimate(request: DepthRequest, rgba: Uint8Array): Promise<D
     noteCall('depth_estimate', performance.now() - t0);
   }
 }
+/** Several maps as `depth_estimate_many` / `subject_estimate_many` send them: u32 count, then each map. */
+export function parseMaps(buf: ArrayBuffer | Uint8Array): DepthMap[] {
+  const b = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
+  if (b.length < 4) throw new Error('The maps came back in an unexpected shape.');
+  const n = dv.getUint32(0, true);
+  const out: DepthMap[] = [];
+  let o = 4;
+  for (let i = 0; i < n; i++) {
+    if (o + 8 > b.length) throw new Error('The maps came back in an unexpected shape.');
+    const w = dv.getUint32(o, true);
+    const h = dv.getUint32(o + 4, true);
+    if (o + 8 + w * h > b.length) throw new Error('The maps came back in an unexpected shape.');
+    out.push({ w, h, data: b.slice(o + 8, o + 8 + w * h) });
+    o += 8 + w * h;
+  }
+  return out;
+}
+
+async function estimateMany(cmd: 'depth_estimate_many' | 'subject_estimate_many', request: DepthRequest | SubjectRequest, frames: Uint8Array[]): Promise<DepthMap[]> {
+  const t0 = performance.now();
+  try {
+    if (!inTauri) {
+      // The preview has no models: one frame at a time through its pretend ones.
+      const d = await demo();
+      const out: DepthMap[] = [];
+      for (const f of frames) out.push(cmd === 'depth_estimate_many' ? await d.mockDepth(request.width, request.height, f) : await d.mockSubject(request.width, request.height, f));
+      return out;
+    }
+    const all = new Uint8Array(frames.reduce((n, f) => n + f.length, 0));
+    let o = 0;
+    for (const f of frames) {
+      all.set(f, o);
+      o += f.length;
+    }
+    try {
+      const maps = parseMaps(await invoke<ArrayBuffer>(cmd, upscaleBody({ ...request, count: frames.length } as unknown as UpscaleRequest, all)));
+      if (maps.length !== frames.length) throw new Error('The maps came back in an unexpected shape.');
+      return maps;
+    } catch (e) {
+      throw new Error(typeof e === 'string' ? e : e instanceof Error ? e.message : String(e));
+    }
+  } finally {
+    noteCall(cmd, performance.now() - t0);
+  }
+}
+
 async function depthEstimateNow(request: DepthRequest, rgba: Uint8Array): Promise<DepthMap> {
   if (!inTauri) return (await demo()).mockDepth(request.width, request.height, rgba);
   try {

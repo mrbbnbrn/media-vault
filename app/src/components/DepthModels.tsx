@@ -87,7 +87,7 @@ export function DepthModelChoice(props: { value?: ViewerSettings; onChange?: (pa
             <span className="faint">The best one installed{choice.model === '' && current ? ` (now ${current.name})` : ''}</span>
           </span>
         </label>
-        {models.map((m) => {
+        {models.filter((m) => !m.video).map((m) => {
           const ok = ready(m);
           const speed: SpeedResult | undefined = lastSpeed(m.id, detailFor(m));
           const zip = m.zip ?? DEPTH_ZIPS[m.id];

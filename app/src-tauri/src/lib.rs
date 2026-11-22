@@ -822,12 +822,14 @@ pub fn run() {
             depth::depth_info,
             depth::depth_models,
             depth::depth_estimate,
+            depth::depth_estimate_many,
             depth::depth_benchmark,
             depth::depth_forget,
             // Subject outlines (subject.rs)
             subject::subject_info,
             subject::subject_models,
             subject::subject_estimate,
+            subject::subject_estimate_many,
             subject::subject_benchmark,
             subject::subject_forget,
             // Background fill (inpaint.rs)

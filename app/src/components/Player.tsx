@@ -1141,7 +1141,8 @@ export function Player(props: PlayerProps) {
     return () => {
       alive = false;
     };
-  }, [depthMoving, prefs.depthModel, prefs.depthDetail, prefs.depthEdges, prefs.subjectModel, prefs.inpaintModel, prefs.depthEdges3d, prefs.depthEdgesStrength, prefs.video3dSize, prefs.video3dEvery]);
+  }, [depthMoving, prefs.depthModel, prefs.depthDetail, prefs.depthEdges, prefs.subjectModel, prefs.inpaintModel, prefs.depthEdges3d, prefs.depthEdgesStrength, prefs.video3dSize, prefs.video3dEvery,
+    prefs.video3dParts, prefs.video3dFillEvery, prefs.video3dDepthModel, prefs.video3dSubjectModel, prefs.video3dFillModel]);
   const [track, setTrack] = useState<{ key: string; index: TrackIndex | null } | null>(null);
   const [trackTick, setTrackTick] = useState(0);
   useEffect(() => onTrackChange(() => setTrackTick((n) => n + 1)), []);

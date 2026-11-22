@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BG_FRESH, blendAhead, calmDepth, calmMask, cleanMask, GATE, lumaGrid, motionBetween, motionDamp, newBgMemory, packTiles, readTile, rememberBackground,
+  alignTo, BG_FRESH, blendAhead, calmDepth, calmMask, cleanMask, GATE, lumaGrid, motionBetween, motionDamp, newBgMemory, packTiles, readTile, rememberBackground,
   roundInfo, smoothInfo, tileRect, tileSize, type FrameInfo,
 } from './video3dmath';
 import { covers, frameStep, packIndex, packSegment, parseIndex, parseSegment, parseTrackTag, segmentFor, trackTag, type TrackIndex } from './trackformat';
@@ -98,6 +98,22 @@ describe('prepared 3D: calming with the frames after', () => {
   it('snaps the outline’s faint noise to nothing (the soft edge stays)', () => {
     const m = { w: 4, h: 1, data: new Uint8Array([5, 11, 128, 250]) };
     expect([...cleanMask(m).data]).toEqual([0, 0, 128, 255]);
+  });
+});
+
+describe('prepared 3D: the video model’s runs', () => {
+  it('lines a new run up with the one before where they overlap', () => {
+    const ramp = (k: number, off: number) => map(16, 16, (x) => Math.round(k * x * 10 + off));
+    // The new run came out 0.8× and 20 higher than the old one on the same frames.
+    const old = [ramp(1, 20), ramp(1, 30)];
+    const overlap = [ramp(0.8, 36), ramp(0.8, 44)];
+    const fresh = [ramp(0.8, 52)];
+    const out = alignTo(old, overlap, fresh);
+    // Brought back to the old run's scale: about 1 × x × 10 + 40.
+    expect(Math.abs(out[0].data[5] - (50 + 40))).toBeLessThanOrEqual(1);
+    expect(Math.abs(out[0].data[15] - (150 + 40))).toBeLessThanOrEqual(1);
+    // Nothing to line up with: as it is.
+    expect(alignTo([], [], fresh)[0]).toBe(fresh[0]);
   });
 });
 
@@ -204,12 +220,21 @@ describe('prepared 3D: saved format', () => {
     const tag = trackTag({ depth: 'da3-mono-large@518~0.5', subject: 'birefnet@1024', edges: 0.7, fill: 'lama', size: 768, every: 2 });
     expect(tag).toBe('da3-mono-large@518~0.5_birefnet@1024_e0.70_lama_w768_f2_v2');
     expect(/^[a-z0-9@~._-]+$/.test(tag)).toBe(true);
-    expect(parseTrackTag(tag)).toEqual({ depth: 'da3-mono-large@518~0.5', subject: 'birefnet@1024', edges: 0.7, fill: 'lama', size: 768, every: 2 });
+    expect(parseTrackTag(tag)).toMatchObject({ depth: 'da3-mono-large@518~0.5', subject: 'birefnet@1024', edges: 0.7, fill: 'lama', size: 768, every: 2 });
     const plain = trackTag({ depth: 'v2-small@518~1', subject: '', edges: 0, fill: '', size: 512, every: 1 });
     expect(plain).toBe('v2-small@518~1_none_e0.00_none_w512_f1_v2');
     // Tags from before the way changed still read (their videos play; the menu offers to prepare again).
     expect(parseTrackTag('v2-small@518~1_none_e0.00_none_w512_f1')?.size).toBe(512);
-    expect(parseTrackTag(plain)).toEqual({ depth: 'v2-small@518~1', subject: '', edges: 0, fill: '', size: 512, every: 1 });
+    // What to prepare and the fill on every nth frame are part of the tag.
+    const outline = trackTag({ depth: 'vda-small@518~1', subject: 'birefnet@1024', edges: 0, fill: 'lama', size: 768, every: 1, plate: false });
+    expect(outline).toBe('vda-small@518~1_birefnet@1024_e0.00_noplate_w768_f1_v2');
+    expect(parseTrackTag(outline)).toMatchObject({ depth: 'vda-small@518~1', plate: false, fill: '', fillEvery: 1 });
+    const third = trackTag({ depth: 'v2-small@518~1', subject: 'birefnet@1024', edges: 0, fill: 'migan', size: 768, every: 1, plate: true, fillEvery: 3 });
+    expect(third).toBe('v2-small@518~1_birefnet@1024_e0.00_migan_w768_f1_n3_v2');
+    expect(parseTrackTag(third)).toMatchObject({ plate: true, fill: 'migan', fillEvery: 3 });
+    expect(mapLabel('track', third, new Map()).detail).toBe('outline birefnet · MI-GAN fill on every 3rd frame · 768 px');
+    expect(mapLabel('track', outline, new Map()).detail).toBe('outline birefnet · no Layered 3D · 768 px');
+    expect(parseTrackTag(plain)).toMatchObject({ depth: 'v2-small@518~1', subject: '', edges: 0, fill: '', size: 512, every: 1 });
     const l = mapLabel('track', tag, new Map([['da3-mono-large', 'Best'], ['birefnet', 'BiRefNet']]));
     expect(l.name).toBe('Best');
     expect(l.detail).toBe('outline BiRefNet · sharper edges · LaMa fill · 768 px · every 2nd frame');
