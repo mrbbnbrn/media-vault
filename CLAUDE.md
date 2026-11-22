@@ -97,7 +97,7 @@ crates/vault-core/       the vault: crypto, packs, encrypted objects, SQLite sch
   src/vault.rs           create/open/unlock a vault, add/read/delete objects
   src/pack.rs            ~1 GiB pack files holding many encrypted objects
   src/stream.rs          chunked (1 MiB) streaming encryption, random-access reading
-  src/db.rs              library schema (SCHEMA_VERSION = 20) and in-place upgrades
+  src/db.rs              library schema (SCHEMA_VERSION = 21) and in-place upgrades
   src/export.rs          list and export items (used by vault-export)
   src/multipart.rs       reading split archives as one stream
   examples/make_demo_vault.rs   makes a test vault (used by CI)
@@ -230,7 +230,7 @@ FORMAT.md                    format description;  .lock  one writer at a time
   Each object has its own key; content is AES-256-GCM in 1 MiB chunks.
 - **No other app may write into a vault.** Other apps exchange files with it only through the phone transfer.
 
-**The library database** (inside `meta.db.enc`; `crates/vault-core/src/db.rs`, `SCHEMA_VERSION = 20`)
+**The library database** (inside `meta.db.enc`; `crates/vault-core/src/db.rs`, `SCHEMA_VERSION = 21`)
 
 | Table | Fields worth knowing |
 |---|---|
@@ -345,6 +345,10 @@ How to record changes:
   the pictures' clear/redo leave them alone (`derived_clear` kind "pictures"). Config: `depthVideoDelay` replaced by
   `video3dSize`, `video3dEvery`, `video3dCalm`. Window: 597 tests pass; worker/player/shader checked in Chromium.
   Rust not compiled on that PC (CI first); nothing tried in the real app yet.
+  **Library schema 21** (same day, after CI): the v18 `derived` table's CHECK only took 'depth' and 'outline', so
+  Layered 3D's saved layers ('plate', 'fore') were always refused (silently: plate.ts only warns) and 'track' too.
+  v21 makes the table again with all five kinds, keeping every row (`db.rs`, FORMAT.md). Older builds can't open a
+  library once a v21 build has opened it.
 - 2026-11-22 (Claude Code on the user's PC; fold into the Project notes): 12 bugs fixed, found by checking an outside
   review against the code. Vault: reclaiming space right after unlock no longer copies the last pack onto itself
   (`pack.rs` `compact_until`; reported freed bytes now true); removing objects marks the library for saving

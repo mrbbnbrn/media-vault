@@ -259,6 +259,12 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
   subject). `source` = the item's `object_id` when it was made (after a rotation the item has a
   new file and the old map is ignored). Rows go when their item is deleted for good, and their
   objects with the item's other files; all can be deleted at any time.
+  From v21 `kind` may also be 'plate' and 'fore' (Layered 3D's background plate and the
+  subject's own layer of a still picture: a packed layer starting with "MVL1") and 'track' (the
+  prepared 3D of a video or GIF, `media.kind` 'video' or 'gif': `model` is `<tag>.i` for its
+  index, "MV3I" + JSON, or `<tag>.s<n>` for piece n, "MV3S" + a JSON header + encoded frames;
+  see the app's `trackformat.ts`). The v21 upgrade makes the table again with the wider CHECK and
+  keeps every row.
 - `media.phash`, `media.sharpness`, `media.phash_state` — a picture fingerprint for finding
   look-alikes: a 64-bit perceptual hash (DCT of the 32×32 grey thumbnail, top-left 8×8
   above their median) and the variance of the Laplacian of a 64×64 grey copy

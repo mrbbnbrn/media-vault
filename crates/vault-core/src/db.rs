@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -616,6 +616,24 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- vaults without encryption (end) ----
+    // ---- more kinds of saved 3D data (begin) ----
+    if v < 21 || (has_table(conn, "derived")? && !derived_takes_tracks(conn)?) {
+        // v21: `derived` also keeps Layered 3D's layers ('plate', 'fore'; the app
+        // asked to save them before, but the v18 table only took 'depth' and
+        // 'outline', so those were refused) and the prepared 3D of videos and
+        // GIFs ('track'). SQLite can't change a CHECK, so the table is made
+        // again with its rows, all at once. Safe to run again.
+        if has_table(conn, "derived")? && !derived_takes_tracks(conn)? {
+            in_tx(conn, || {
+                conn.execute_batch(DERIVED_V21_SQL)?;
+                Ok(())
+            })?;
+        }
+        if v < 21 {
+            conn.pragma_update(None, "user_version", 21)?;
+        }
+    }
+    // ---- more kinds of saved 3D data (end) ----
     // ---- speed indexes (begin) ----
     // Indexes for the background work queues (looked at every few seconds)
     // and for folder pages. Not a new format: they are made at every opening
@@ -670,12 +688,42 @@ fn has_trigger(conn: &Connection, t: &str) -> Result<bool> {
     Ok(conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = ?", [t], |r| r.get::<_, i64>(0))? > 0)
 }
 
+/// The derived table already takes every kind of v21 (its CHECK names 'track').
+fn derived_takes_tracks(conn: &Connection) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'derived' AND instr(sql, '''track''') > 0",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// v21: the derived table made again with every kind (see `migrate`).
+const DERIVED_V21_SQL: &str = r#"
+CREATE TABLE derived_v21 (
+    media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL CHECK (kind IN ('depth', 'outline', 'plate', 'fore', 'track')),
+    model      TEXT NOT NULL,
+    object_id  TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    bytes      INTEGER NOT NULL,
+    made_at    INTEGER NOT NULL,
+    PRIMARY KEY (media_id, kind, model)
+) WITHOUT ROWID;
+INSERT INTO derived_v21 (media_id, kind, model, object_id, source, bytes, made_at)
+    SELECT media_id, kind, model, object_id, source, bytes, made_at FROM derived;
+DROP TABLE derived;
+ALTER TABLE derived_v21 RENAME TO derived;
+CREATE INDEX IF NOT EXISTS derived_kind ON derived(kind);
+CREATE INDEX IF NOT EXISTS derived_object ON derived(object_id);
+"#;
+
 const DERIVED_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS derived (
     media_id   INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
-    kind       TEXT NOT NULL CHECK (kind IN ('depth', 'outline')),
+    kind       TEXT NOT NULL CHECK (kind IN ('depth', 'outline', 'plate', 'fore', 'track')),
     model      TEXT NOT NULL,
-    object_id  TEXT NOT NULL,      -- kind 2 object: width u32 LE, height u32 LE, one byte per pixel
+    object_id  TEXT NOT NULL,      -- kind 2 object (derived.rs says what each kind holds)
     source     TEXT NOT NULL,      -- media.object_id it was made from
     bytes      INTEGER NOT NULL,
     made_at    INTEGER NOT NULL,   -- ms
@@ -1221,7 +1269,7 @@ mod tests {
         put("outline", "birefnet", "o1").unwrap();
         put("depth", "da3-mono-large", "d2").unwrap();
         assert!(put("depth", "v2-small", "d3").is_err(), "one per item, kind and model");
-        assert!(put("height", "x", "d4").is_err(), "only depth and outline");
+        assert!(put("height", "x", "d4").is_err(), "only the kinds it knows");
         // Rows survive running it again (from 17, or as it is) and saving.
         for back in ["PRAGMA user_version = 17;", ""] {
             c.execute_batch(back).unwrap();
@@ -1231,6 +1279,51 @@ mod tests {
         let c = deserialize(&serialize(&c).unwrap()).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
         // Deleting the item for good takes its rows.
+        c.execute("DELETE FROM media", []).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn v21_takes_layers_and_tracks_and_keeps_the_old_rows() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o', 'video', 'a', 'mp4', 1, 'h', 0)", []).unwrap();
+        // Back to how a v20 library looked (the v18 table: depth and outline only), with a row in it.
+        c.execute_batch(
+            "DROP TABLE derived; PRAGMA user_version = 20;
+             CREATE TABLE derived (
+               media_id INTEGER NOT NULL REFERENCES media(id) ON DELETE CASCADE,
+               kind TEXT NOT NULL CHECK (kind IN ('depth', 'outline')),
+               model TEXT NOT NULL, object_id TEXT NOT NULL, source TEXT NOT NULL,
+               bytes INTEGER NOT NULL, made_at INTEGER NOT NULL,
+               PRIMARY KEY (media_id, kind, model)) WITHOUT ROWID;
+             INSERT INTO derived VALUES (1, 'depth', 'v2-small', 'd1', 'o', 10, 5);",
+        )
+        .unwrap();
+        let put = |kind: &str, model: &str| {
+            c.execute(
+                "INSERT INTO derived(media_id, kind, model, object_id, source, bytes, made_at) VALUES (1, ?1, ?2, 'x', 'o', 10, 0)",
+                rusqlite::params![kind, model],
+            )
+        };
+        assert!(put("track", "t.s0").is_err(), "the old table refuses it");
+        assert!(!derived_takes_tracks(&c).unwrap());
+        migrate(&c).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(derived_takes_tracks(&c).unwrap());
+        // The old row is still there, and every kind is taken now.
+        let old: (String, i64) = c.query_row("SELECT object_id, made_at FROM derived WHERE kind = 'depth'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!(old, ("d1".to_string(), 5));
+        for (k, m) in [("plate", "p"), ("fore", "f"), ("track", "t.i"), ("track", "t.s0")] {
+            put(k, m).unwrap();
+        }
+        assert!(put("height", "x").is_err());
+        // Its indexes are back; running it again changes nothing; deleting the item takes the rows.
+        let idx: i64 = c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name IN ('derived_kind', 'derived_object')", [], |r| r.get(0)).unwrap();
+        assert_eq!(idx, 2);
+        migrate(&c).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 5);
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
         c.execute("DELETE FROM media", []).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
     }
