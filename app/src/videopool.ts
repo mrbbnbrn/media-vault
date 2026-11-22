@@ -36,6 +36,8 @@ export class PlayerPool<P extends PoolPlayer> {
   private spare: P[] = [];
   private used = new Set<P>();
   private resting = new WeakSet<P>();
+  /** In use when the vault locked: dropped instead of kept when released (clearAll). */
+  private cleared = new WeakSet<P>();
   private paused = false;
   readonly stats: PoolStats = { created: 0, reused: 0, warm: 0, dropped: 0, inUse: 0, spare: 0 };
 
@@ -77,6 +79,12 @@ export class PlayerPool<P extends PoolPlayer> {
     p.pause();
     p.remove();
     this.resting.delete(p);
+    if (this.cleared.delete(p)) {
+      // It was in use when the vault locked: not kept (clearAll).
+      this.drop(p);
+      this.count();
+      return;
+    }
     // Most recently used last, so a tile scrolled back finds its video still loaded.
     this.spare.push(p);
     this.count();
@@ -90,13 +98,37 @@ export class PlayerPool<P extends PoolPlayer> {
   /** Let go of spare players beyond what's sensible for the players in use. */
   trim() {
     const keep = Math.max(MIN_SPARE, Math.ceil(this.used.size * SPARE_SHARE));
-    while (this.spare.length > keep) {
-      const p = this.spare.shift()!;
+    while (this.spare.length > keep) this.drop(this.spare.shift()!);
+    this.count();
+  }
+
+  /**
+   * The vault locked: every player lets go of its video (the vault:// address
+   * and the frames it had buffered). Spare players are dropped; players still
+   * in a tile are emptied now and dropped when the tile lets go of them.
+   */
+  clearAll() {
+    if (this.trimTimer) clearTimeout(this.trimTimer);
+    this.trimTimer = null;
+    for (const p of this.spare.splice(0)) {
+      p.pause();
+      this.drop(p);
+    }
+    for (const p of this.used) {
+      p.pause();
       p.removeAttribute('src');
       p.load();
-      this.stats.dropped++;
+      this.resting.delete(p);
+      this.cleared.add(p);
     }
     this.count();
+  }
+
+  /** A player let go of for good: no address, nothing buffered. */
+  private drop(p: P) {
+    p.removeAttribute('src');
+    p.load();
+    this.stats.dropped++;
   }
 
   /** Pause every player in use (window hidden, viewer open); `resume` starts those again. */

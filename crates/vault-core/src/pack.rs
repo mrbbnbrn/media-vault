@@ -597,22 +597,29 @@ impl PackStore {
     /// rest keep their objects (copies already made are simply used instead).
     pub fn compact_until(&self, min_waste: f64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
         let mut plan = CompactPlan::default();
+        // Packs copied completely, with the space each one wastes.
+        let mut retired: Vec<(PathBuf, u64)> = Vec::new();
         for kind in [ObjectKind::Media, ObjectKind::Thumbnail] {
             if stop() {
                 break;
             }
             // If the pack being written to is itself mostly waste, start a
-            // fresh one so it can be reclaimed too.
+            // fresh one so it can be reclaimed too. Right after unlocking no
+            // writer is open yet: the next write would go to the last pack on
+            // disk, so that one counts as the pack being written to.
             {
                 let usage = self.usage()?;
                 let mut guard = self.writer_slot(kind)?.lock().unwrap();
-                if let Some(w) = guard.as_ref()
-                    && let Some(u) = usage.iter().find(|u| u.kind == kind && u.pack == w.n)
+                let target = match guard.as_ref() {
+                    Some(w) => Some(w.n),
+                    None => self.packs_on_disk(kind)?.last().copied(),
+                };
+                if let Some(n) = target
+                    && let Some(u) = usage.iter().find(|u| u.kind == kind && u.pack == n)
                     && u.size > 0
                     && (u.size.saturating_sub(u.live_bytes)) as f64 / u.size as f64 >= min_waste
                 {
-                    let next = w.n + 1;
-                    *guard = Some(self.open_writer(kind, next, true)?);
+                    *guard = Some(self.open_writer(kind, n + 1, true)?);
                 }
             }
             // Packs being compacted must not be appended to meanwhile.
@@ -658,15 +665,17 @@ impl PackStore {
                 if !whole {
                     break;
                 }
-                plan.reclaimed_bytes += waste;
-                plan.retired.push(self.path(kind, u.pack));
+                retired.push((self.path(kind, u.pack), waste));
             }
         }
-        // A pack that ended up being the target of the copies must not be retired.
-        plan.retired.retain(|p| {
+        // A pack that ended up being the target of the copies must not be
+        // retired, and its space is not freed.
+        retired.retain(|(p, _)| {
             let n = p.file_name().and_then(|n| n.to_str()).and_then(parse_pack_name);
             !matches!(n, Some((k, num)) if self.writer_slot(k).ok().and_then(|s| s.lock().unwrap().as_ref().map(|w| w.n)) == Some(num))
         });
+        plan.reclaimed_bytes = retired.iter().map(|(_, w)| *w).sum();
+        plan.retired = retired.into_iter().map(|(p, _)| p).collect();
         Ok(plan)
     }
 

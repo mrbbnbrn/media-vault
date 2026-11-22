@@ -1,4 +1,4 @@
-// The timing panel (Ctrl+Shift+T): how long things took on this PC, slow
+// The timing panel (Ctrl+Shift+Alt+T): how long things took on this PC, slow
 // presses, freezes, the busiest backend calls and messages, and what was
 // running in the background at each moment (perf.ts). "Copy report" puts it
 // all on the clipboard as text.
@@ -41,7 +41,7 @@ export function PerfPanel({ onClose }: { onClose: () => void }) {
     <div className="perf-panel" role="region" aria-label="Timing panel" onKeyDown={(e) => e.key === 'Escape' && onClose()}>
       <div className="perf-head">
         <b>Where did the time go</b>
-        <span className="faint">Ctrl+Shift+T</span>
+        <span className="faint">Ctrl+Shift+Alt+T</span>
         <span style={{ flex: 1 }} />
         <button type="button" className="link" onClick={copy}>{copied ? 'Copied' : 'Copy report'}</button>
         <button type="button" className="link" onClick={clearPerf}>Clear</button>

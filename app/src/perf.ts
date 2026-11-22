@@ -1,5 +1,5 @@
 // Where did the time go: a quiet record of how long things take on this PC.
-// Shown by the timing panel (Ctrl+Shift+T, components/PerfPanel.tsx).
+// Shown by the timing panel (Ctrl+Shift+Alt+T, components/PerfPanel.tsx).
 //
 // Recorded (in memory only, never saved, cleared on lock):
 // - steps: unlocking, opening a folder, its first thumbnails, opening a picture;

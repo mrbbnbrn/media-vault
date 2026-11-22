@@ -5,7 +5,7 @@
 // Which layer a tile wants comes from the grid (previewplan.ts).
 
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { mediaUrl, previewUrl, tinyUrl } from '../api';
+import { mediaUrl, onLocked, previewUrl, tinyUrl } from '../api';
 import { CLIP_FPS, FRAMES, frameTimes, playClip, stopClip, tinyToSource } from '../previews';
 import { PlayerPool } from '../videopool';
 import { Budget, type Layer } from '../previewplan';
@@ -29,6 +29,8 @@ export function makePlayer(): HTMLVideoElement {
 export const players = new PlayerPool<HTMLVideoElement>(makePlayer);
 onPreviewsPaused((p) => (p ? players.pauseAll() : players.resumeAll()));
 if (previewsPaused()) players.pauseAll();
+// Lock means lock: no player keeps a vault:// address or buffered frames.
+void onLocked(() => players.clearAll()).catch(() => {});
 
 /** For measurements in dev tools: `__mvPool.stats`, and `__mvPinBudget(n)` (null = automatic again). */
 (globalThis as unknown as { __mvPool?: PlayerPool<HTMLVideoElement> }).__mvPool = players;

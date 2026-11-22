@@ -39,7 +39,7 @@ export const shortcuts = (seek: number, big: number): { group: string; keys: [st
       ['Right-click › Find similar', 'Pictures that look like this one'],
       ['Drag onto a folder', 'Move items or folders there (also onto “Top level” or the folder path)'],
       ['?', 'This list'],
-      ['Ctrl+Shift+T (anywhere)', 'Timing panel: how long things take on this PC (Copy report to send it)'],
+      ['Ctrl+Shift+Alt+T (anywhere)', 'Timing panel: how long things take on this PC (Copy report to send it)'],
     ],
   },
   {

@@ -325,6 +325,21 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-22 (Claude Code on the user's PC; fold into the Project notes): 12 bugs fixed, found by checking an outside
+  review against the code. Vault: reclaiming space right after unlock no longer copies the last pack onto itself
+  (`pack.rs` `compact_until`; reported freed bytes now true); removing objects marks the library for saving
+  (`import::remove_objects`, `storage::delete_folder_previews`), so the pack index change can't be lost on lock/exit.
+  Faces: no deadlock between "delete face data" and a running analysis (`delete_faces_of` only `try_lock`s CACHE);
+  "Not the same person" pairs (person folder ids) are no longer deleted by face ids: trigger now
+  `face_not_same_folder_gone` on `folders`, the old `face_not_same_gone` is dropped whenever found (no version bump).
+  Transfer (no wire change): the receive frees itself right after the last ITEM_OK, before saving and playable copies,
+  so the phone's next OFFER isn't refused (copies one batch at a time; an OFFER in the last moment waits ≤3 s);
+  `transfer_cancel` is async and never blocks; a handshake during lock keeps no connection, `read_full` stops on lock;
+  failed pairing shuts its socket. Window: Delete 3D data shows and names all 4 kinds (plate/fore were deleted
+  unseen); drag-move ends without dropping on pointercancel/blur (drag-out to Explorer moved items); timing panel is
+  Ctrl+Shift+Alt+T so Ctrl+Shift+T reopens tabs; video preview players are emptied on lock. `reference_decrypt.py`:
+  duplicate names get " (2)" like vault-export. New tests: pack, db, 3 fake-phone, dragmove, videopool, keylayers.
+  Rust was not compiled on that PC (no toolchain): CI was the first compile.
 - 2026-11-15: section 0 (GitHub way of working); a copy of this file placed in `CONNECTED APPS\Media Vault\`.
 - 2026-11-15: CLAUDE.md written; `docs/transfer-protocol.md` and `docs/mvtp_ref.py` added (copies of the Project docs).
 - Build 100 (2026-11-08): PC item refs stay below 0x40000000; CANCEL routed by ref range.

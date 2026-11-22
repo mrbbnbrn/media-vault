@@ -77,21 +77,26 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
     if (ke.key !== 'Escape') return;
     ke.preventDefault();
     ke.stopPropagation();
-    over?.classList.remove('drop-over', 'drop-before', 'drop-after');
-    over = null;
-    up();
+    cancel();
   };
-  const up = () => {
+  // Let go of the button: dropped on the folder under the pointer (if any).
+  const up = () => end(true);
+  // Called off (pointercancel, e.g. dragout.ts handing over to a Windows drag
+  // when the pointer leaves the window, or the window losing focus): nothing moves.
+  const cancel = () => end(false);
+  const end = (drop: boolean) => {
     if (scrollTimer) clearInterval(scrollTimer);
     scrollTimer = null;
     window.removeEventListener('keydown', esc, true);
     window.removeEventListener('pointermove', move);
     window.removeEventListener('pointerup', up);
-    window.removeEventListener('pointercancel', up);
+    window.removeEventListener('pointercancel', cancel);
+    window.removeEventListener('blur', cancel);
     over?.classList.remove('drop-over', 'drop-before', 'drop-after');
     ghost?.remove();
     document.body.classList.remove('dragging');
-    if (active && over?.dataset.drop) opts.onDrop(over.dataset.drop, edge, over.dataset.order ?? null);
+    if (drop && active && over?.dataset.drop) opts.onDrop(over.dataset.drop, edge, over.dataset.order ?? null);
+    over = null;
     if (active) {
       // The end of a drag is not a click.
       const block = (ce: MouseEvent) => {
@@ -104,7 +109,8 @@ export function startMoveDrag(e: React.PointerEvent, opts: MoveDrag) {
   };
   window.addEventListener('pointermove', move);
   window.addEventListener('pointerup', up);
-  window.addEventListener('pointercancel', up);
+  window.addEventListener('pointercancel', cancel);
+  window.addEventListener('blur', cancel);
 }
 
 /** "folder:12" -> 12, "folder:top" -> null. */

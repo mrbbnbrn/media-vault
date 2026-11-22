@@ -166,6 +166,33 @@ describe('player pool', () => {
     expect(a.paused).toBe(false);
     expect(b.paused).toBe(false);
   });
+
+  it('on lock, every player lets go of its video and none is kept', () => {
+    const pool = new PlayerPool(() => new FakePlayer(), () => null);
+    const shown = ['a', 'b', 'c'].map((s) => {
+      const p = pool.acquire(s);
+      p.src = s;
+      pool.play(p);
+      return p;
+    });
+    const spare = ['d', 'e'].map((s) => {
+      const p = pool.acquire(s);
+      p.src = s;
+      return p;
+    });
+    spare.forEach((p) => pool.release(p));
+    expect(pool.stats.spare).toBe(2);
+    pool.clearAll();
+    expect([...shown, ...spare].every((p) => p.src === '' && p.paused)).toBe(true);
+    expect(pool.stats.spare).toBe(0);
+    // Tiles letting go afterwards: dropped, not kept for the next tile.
+    shown.forEach((p) => pool.release(p));
+    expect(pool.stats.spare).toBe(0);
+    expect(pool.stats.inUse).toBe(0);
+    expect(pool.stats.dropped).toBe(5);
+    // After unlocking, new tiles get new players.
+    expect(shown).not.toContain(pool.acquire('a'));
+  });
 });
 
 describe('tiny clips', () => {

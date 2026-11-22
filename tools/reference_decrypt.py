@@ -106,6 +106,20 @@ def decrypt_object(master, path, object_id, out, offset=0, entry_len=None):
             assert f.tell() == offset + entry_len, "object length mismatch"
 
 
+def free_path(d, name, taken):
+    """A free path for `name` in `d`: "photo.jpg", else "photo (2).jpg", "photo (3).jpg", ...
+    (the same rule as vault-export; names differing only in case count as taken)."""
+    i = name.rfind(".")
+    stem, ext = (name[:i], name[i:]) if i > 0 else (name, "")
+    n = 1
+    while True:
+        p = os.path.join(d, name if n == 1 else f"{stem} ({n}){ext}")
+        if p.lower() not in taken and not os.path.exists(p):
+            taken.add(p.lower())
+            return p
+        n += 1
+
+
 def main():
     vault, dest = sys.argv[1], sys.argv[2]
     h = json.load(open(os.path.join(vault, "vault.json")))
@@ -134,10 +148,13 @@ def main():
             return os.path.join(dest, *reversed(parts))
 
         count = 0
-        for obj, name, fid in db.execute("SELECT object_id, original_name, folder_id FROM media"):
+        taken = set()
+        # Same order as vault-export, so two items with one name get the same "(2)".
+        for obj, name, fid in db.execute(
+                "SELECT object_id, original_name, folder_id FROM media ORDER BY folder_id, original_name"):
             d = folder_path(fid)
             os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, name), "xb") as out:
+            with open(free_path(d, name, taken), "xb") as out:
                 oid = bytes.fromhex(obj)
                 if oid in packed:
                     path, off, n = packed[oid]

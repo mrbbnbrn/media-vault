@@ -104,7 +104,8 @@ pub(crate) async fn transfer_send(media: Vec<i64>, folders: Vec<i64>) -> Result<
         .map_err(|e| e.to_string())?
 }
 
+/// Off the main thread: telling the phone can wait on a busy connection.
 #[tauri::command]
-pub(crate) fn transfer_cancel() -> Result<(), String> {
-    server::cancel()
+pub(crate) async fn transfer_cancel() -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(server::cancel).await.map_err(|e| e.to_string())?
 }

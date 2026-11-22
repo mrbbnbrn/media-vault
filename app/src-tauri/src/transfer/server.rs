@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::io;
-use std::net::{IpAddr, SocketAddr, TcpListener, TcpStream, UdpSocket};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -144,6 +144,8 @@ pub struct Rt {
     conn: Mutex<Option<Arc<Conn>>>,
     replay: Mutex<VecDeque<([u8; 16], Instant)>>,
     last_progress: Mutex<Instant>,
+    /// Set by `on_lock`: this runtime is detached and must not take a new connection.
+    stopped: AtomicBool,
 }
 
 static RT: Mutex<Option<Arc<Rt>>> = Mutex::new(None);
@@ -182,6 +184,7 @@ pub fn on_unlock(s: Arc<Session>, hooks: Hooks, ports: Ports) {
         conn: Mutex::new(None),
         replay: Mutex::new(VecDeque::new()),
         last_progress: Mutex::new(Instant::now() - Duration::from_secs(1)),
+        stopped: AtomicBool::new(false),
     });
     *RT.lock().unwrap_or_else(|e| e.into_inner()) = Some(rt.clone());
     rt.update_listening();
@@ -191,6 +194,8 @@ pub fn on_unlock(s: Arc<Session>, hooks: Hooks, ports: Ports) {
 /// The vault is locking: tell the phone, stop everything.
 pub fn on_lock() {
     let Some(rt) = RT.lock().unwrap_or_else(|e| e.into_inner()).take() else { return };
+    // Before taking the connection: a handshake finishing now sees this under the same lock.
+    rt.stopped.store(true, Ordering::SeqCst);
     let conn = rt.conn.lock().unwrap_or_else(|e| e.into_inner()).take();
     if let Some(c) = conn {
         c.bye(true, Some("This vault locked.".into()));
@@ -302,7 +307,8 @@ pub fn send(media: &[i64], folders: &[i64]) -> Result<usize, String> {
 
 pub fn cancel() -> Result<(), String> {
     let rt = need()?;
-    if let Some(c) = rt.conn.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+    let conn = rt.conn.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(c) = conn {
         c.cancel_all();
     }
     Ok(())
@@ -313,6 +319,11 @@ pub fn cancel() -> Result<(), String> {
 impl Rt {
     pub fn session(&self) -> Arc<Session> {
         self.s.clone()
+    }
+
+    /// The vault is locking or locked: nothing may go on.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::SeqCst) || self.s.is_closed()
     }
 
     pub fn vault_name(&self) -> String {
@@ -549,6 +560,10 @@ impl Rt {
             }
         }
         let r = self.pair_inner(&mut stream, commit);
+        if !matches!(r, Ok(Some(_))) {
+            // Also ends the thread still waiting for the phone's PAIR_CONFIRM.
+            let _ = stream.shutdown(Shutdown::Both);
+        }
         let failed = match &r {
             Ok(Some(_)) => None,
             Ok(None) => Some("Pairing was cancelled.".to_string()),
@@ -719,7 +734,7 @@ impl Rt {
         }
         let z = eph.ecdh(&phone_eph)?;
         let (p2c, c2p) = mvtp::session_keys(&z, &pair_key, &th2);
-        if self.s.is_closed() {
+        if self.is_stopped() {
             return Ok(());
         }
         // One connection per phone: a new one replaces the old.
@@ -728,7 +743,15 @@ impl Rt {
             o.bye(false, Some("Your phone connected again.".into()));
         }
         let c = Conn::start(self.clone(), stream, p2c, c2p, peer.name.clone(), peer.id())?;
-        *self.conn.lock().unwrap_or_else(|e| e.into_inner()) = Some(c);
+        let mut cur = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        // The vault started locking meanwhile: never keep a connection (and the keys) on a detached runtime.
+        if self.is_stopped() {
+            drop(cur);
+            c.bye(true, Some("This vault locked.".into()));
+            return Ok(());
+        }
+        *cur = Some(c);
+        drop(cur);
         self.status_changed();
         Ok(())
     }

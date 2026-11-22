@@ -259,6 +259,48 @@ fn reclaiming_space_after_deletes() {
 }
 
 #[test]
+fn reclaiming_right_after_unlock_frees_the_last_pack_too() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("v");
+    let (v, _) = Vault::create(&root, PW, KdfParams::TEST_ONLY).unwrap();
+    let conn = db::create_empty().unwrap();
+    let ids: Vec<_> = (0..10)
+        .map(|i| (v.add_object(ObjectKind::Media, &data(i, 60_000)[..]).unwrap().0, i))
+        .collect();
+    save(&v, &conn);
+    for (id, i) in &ids {
+        if i % 5 != 0 {
+            v.delete_object(ObjectKind::Media, id).unwrap();
+        }
+    }
+    save(&v, &conn);
+    drop(v);
+
+    // Unlocked again: nothing written yet, so no pack is open for writing.
+    let (v, conn) = reopen(&root, true);
+    let size = |v: &Vault| v.pack_usage().unwrap().iter().map(|u| u.size).sum::<u64>();
+    let before = size(&v);
+    let plan = v.compact(1e-9).unwrap();
+    assert_eq!(plan.retired.len(), 1, "the only pack is retired, not copied onto itself");
+    assert!(plan.reclaimed_bytes > 0);
+    save(&v, &conn);
+    v.finish_compact(&plan).unwrap();
+    let after = size(&v);
+    assert!(after < before / 3, "{before} -> {after}");
+    assert_eq!(before - after, plan.reclaimed_bytes, "the reported space is really freed");
+    drop(v);
+
+    let (v, _) = reopen(&root, true);
+    for (id, i) in &ids {
+        if i % 5 == 0 {
+            assert_eq!(&v.read_object(ObjectKind::Media, id).unwrap()[..], &data(*i, 60_000)[..]);
+        } else {
+            assert!(v.read_object(ObjectKind::Media, id).is_err());
+        }
+    }
+}
+
+#[test]
 fn an_older_database_backup_still_finds_moved_objects() {
     let t = tempfile::tempdir().unwrap();
     let root = t.path().join("v");

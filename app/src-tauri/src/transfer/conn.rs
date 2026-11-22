@@ -8,7 +8,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{self, Read, Write};
 use std::net::{Shutdown, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -29,6 +29,9 @@ const ANSWER_WAIT: Duration = Duration::from_secs(120);
 const ITEM_WAIT: Duration = Duration::from_secs(600);
 /// Received items are saved into the library at least this often.
 const SAVE_EVERY: Duration = Duration::from_secs(20);
+/// The phone may send its next offer right after the last ITEM_OK (r2): an
+/// offer that arrives while the receiver is still wrapping up waits this long.
+const OFFER_GRACE: Duration = Duration::from_secs(3);
 
 struct Writer {
     stream: TcpStream,
@@ -70,6 +73,10 @@ pub struct Conn {
     // Receiving.
     rx: Mutex<Option<SyncSender<Rx>>>,
     recv_busy: AtomicBool,
+    /// Received batches still being saved / getting playable copies.
+    finishing: AtomicUsize,
+    /// Playable copies are made for one batch at a time.
+    playable_gate: Mutex<()>,
     // Sending.
     tx: Mutex<Option<Sender<Tx>>>,
     queue: Mutex<VecDeque<Job>>,
@@ -104,6 +111,8 @@ impl Conn {
             info: Mutex::new(None),
             rx: Mutex::new(None),
             recv_busy: AtomicBool::new(false),
+            finishing: AtomicUsize::new(0),
+            playable_gate: Mutex::new(()),
             tx: Mutex::new(None),
             queue: Mutex::new(VecDeque::new()),
             send_busy: AtomicBool::new(false),
@@ -137,7 +146,9 @@ impl Conn {
     }
 
     pub fn busy(&self) -> bool {
-        self.recv_busy.load(Ordering::SeqCst) || self.send_busy.load(Ordering::SeqCst)
+        self.recv_busy.load(Ordering::SeqCst)
+            || self.send_busy.load(Ordering::SeqCst)
+            || self.finishing.load(Ordering::SeqCst) > 0
     }
 
     /// Send one encrypted frame.
@@ -187,6 +198,11 @@ impl Conn {
         while got < buf.len() {
             if self.is_closed() {
                 return Err(io::Error::new(io::ErrorKind::NotConnected, "closed"));
+            }
+            // The vault is locking (this connection may have missed the goodbye).
+            if self.rt.is_stopped() {
+                let _ = self.send(ty::LOCKED, &[]);
+                return Err(io::Error::other("This vault locked."));
             }
             match r.read(&mut buf[got..]) {
                 Ok(0) => return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "the phone disconnected")),
@@ -252,7 +268,7 @@ impl Conn {
                     let Ok(o) = serde_json::from_slice::<Offer>(&p) else {
                         return Some("The phone sent an offer this version doesn't understand.".into());
                     };
-                    if self.recv_busy.load(Ordering::SeqCst) {
+                    if self.recv_busy.load(Ordering::SeqCst) && !self.receive_ends_soon() {
                         // One offer at a time per direction (r2): a new one now is a mistake.
                         return Some("The phone sent a new offer too early.".into());
                     }
@@ -340,6 +356,32 @@ impl Conn {
         }
     }
 
+    /// Like `to_receiver`, but never waits (for the window's Stop button): when
+    /// the receiver is behind, a helper thread hands the message over.
+    fn to_receiver_soon(&self, m: Rx) {
+        let tx = self.rx.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(tx) = tx
+            && let Err(mpsc::TrySendError::Full(m)) = tx.try_send(m)
+        {
+            let _ = std::thread::Builder::new().name("transfer-cancel".into()).spawn(move || {
+                let _ = tx.send(m);
+            });
+        }
+    }
+
+    /// An offer came while the receiver is busy: true when it finishes within
+    /// a moment (the phone answered the last item's ITEM_OK at once).
+    fn receive_ends_soon(&self) -> bool {
+        let until = Instant::now() + OFFER_GRACE;
+        while self.recv_busy.load(Ordering::SeqCst) {
+            if self.is_closed() || Instant::now() > until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        true
+    }
+
     fn to_sender(&self, m: Tx) {
         if let Some(tx) = self.tx.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
             let _ = tx.send(m);
@@ -382,12 +424,20 @@ impl Conn {
         self.recv_busy.store(true, Ordering::SeqCst);
         self.rt.status_changed();
         let me = self.clone();
-        let _ = std::thread::Builder::new().name("transfer-receive".into()).spawn(move || {
+        let started = std::thread::Builder::new().name("transfer-receive".into()).spawn(move || {
             me.receive(o, wanted, rx_, done);
-            *me.rx.lock().unwrap_or_else(|e| e.into_inner()) = None;
-            me.recv_busy.store(false, Ordering::SeqCst);
             me.rt.status_changed();
         });
+        if started.is_err() {
+            self.end_receive();
+        }
+    }
+
+    /// No more items come for the current offer: the phone may send its next
+    /// one (r2). Called once per receive, before its slow wrap-up.
+    fn end_receive(&self) {
+        *self.rx.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        self.recv_busy.store(false, Ordering::SeqCst);
     }
 
     fn reply_failed(&self, r: u32, why: u8) {
@@ -412,6 +462,7 @@ impl Conn {
         let landing = match super::store::landing_folder(&s.db()) {
             Ok(l) => l,
             Err(e) => {
+                self.end_receive();
                 done.stopped = Some(e);
                 self.rt.emit_done(&done);
                 return;
@@ -510,7 +561,8 @@ impl Conn {
                     left.remove(&r);
                     prog.done += 1;
                     self.rt.emit_progress(&prog, true);
-                    if last_save.elapsed() > SAVE_EVERY {
+                    // The last item's save comes after the loop, once the phone is free again.
+                    if !left.is_empty() && last_save.elapsed() > SAVE_EVERY {
                         last_save = Instant::now();
                         let _ = s.save();
                     }
@@ -520,16 +572,24 @@ impl Conn {
         if !left.is_empty() && stopped.is_none() {
             stopped = self.ended.lock().unwrap_or_else(|e| e.into_inner()).clone().or(Some("The connection to the phone was lost.".into()));
         }
+        // Every item has its ITEM_OK / ITEM_FAILED: the phone may offer more now,
+        // while this batch is saved and gets its playable copies (still "busy").
+        self.finishing.fetch_add(1, Ordering::SeqCst);
+        drop(rx);
+        self.end_receive();
         if !s.is_closed() && !received.is_empty() {
             let _ = s.save();
         }
         done.stopped = stopped;
         // Playable copies of formats this app can't show (the original stays).
+        // One batch at a time, so a next batch's copies wait for these.
         if !received.is_empty() && !s.is_closed() {
+            let _gate = self.playable_gate.lock().unwrap_or_else(|e| e.into_inner());
             let (n, fails) = self.rt.make_playable(&received);
             done.playable = n;
             done.failed.extend(fails);
         }
+        self.finishing.fetch_sub(1, Ordering::SeqCst);
         self.rt.emit_done(&done);
     }
 
@@ -655,8 +715,8 @@ impl Conn {
         self.cancel_send.store(true, Ordering::SeqCst);
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).clear();
         let _ = self.send(ty::CANCEL, &mvtp::CANCEL_ALL.to_be_bytes());
-        // Our own receive stops too.
-        self.to_receiver(Rx::Cancel(mvtp::CANCEL_ALL));
+        // Our own receive stops too (without waiting: this runs for the window).
+        self.to_receiver_soon(Rx::Cancel(mvtp::CANCEL_ALL));
     }
 
     fn send_all(self: &Arc<Self>, rx: Receiver<Tx>) {

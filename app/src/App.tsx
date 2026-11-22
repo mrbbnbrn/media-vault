@@ -128,7 +128,7 @@ export function App() {
   const [fatal, setFatal] = useState<string | null>(null);
   /** The viewer shrunk into the mini player (it keeps playing over the library). */
   const [mini, setMini] = useState<ViewerRoute | null>(null);
-  /** The timing panel (Ctrl+Shift+T). */
+  /** The timing panel (Ctrl+Shift+Alt+T). */
   const [perfOpen, setPerfOpen] = useState(false);
   /** Whether the open vault has a password (a vault without one is "closed", not "locked"). */
   const hadPassword = useRef(true);
@@ -231,9 +231,9 @@ export function App() {
       }
     };
     window.addEventListener('keydown', onSaveKey);
-    // Ctrl+Shift+T: the timing panel.
+    // Ctrl+Shift+Alt+T: the timing panel (Ctrl+Shift+T is "reopen the last closed tab", useTabs.ts).
     const onPerfKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyT') {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.altKey && e.code === 'KeyT') {
         e.preventDefault();
         e.stopImmediatePropagation();
         setPerfOpen((o) => !o);

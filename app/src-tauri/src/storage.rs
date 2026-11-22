@@ -201,6 +201,11 @@ pub fn delete_folder_previews(s: &Session, folders: &[i64]) -> Result<(usize, us
     for o in &gone {
         let _ = v.delete_object(ObjectKind::Thumbnail, o);
     }
+    drop(v);
+    // The pack index changed: saved with the next save (also on lock and exit).
+    if !gone.is_empty() {
+        s.mark_dirty_bg();
+    }
     Ok((videos, gone.len()))
 }
 

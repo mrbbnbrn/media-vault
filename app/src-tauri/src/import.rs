@@ -1091,6 +1091,13 @@ pub fn remove_objects(s: &Session, o: &library::Orphans) {
             let _ = v.delete_object(ObjectKind::Thumbnail, &id);
         }
     }
+    drop(v);
+    // Taking them out of the pack index is a change of its own: callers saved
+    // before removing, so without this it could be lost on lock or exit and
+    // the space would never be freed.
+    if !o.media.is_empty() || !o.thumbs.is_empty() {
+        s.mark_dirty_bg();
+    }
 }
 
 #[cfg(test)]

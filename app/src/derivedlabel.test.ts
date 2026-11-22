@@ -12,6 +12,13 @@ describe('saved map labels', () => {
     expect(mapLabel('outline', 'birefnet@512', names)).toEqual({ name: 'birefnet', detail: '512 px' });
     expect(mapLabel('depth', 'odd', names)).toEqual({ name: 'odd', detail: '' });
   });
+  it('names 3D layers (background fill, subject layer) with what they were made from', () => {
+    const all = new Map([...names, ['newfill', 'Big model']]);
+    expect(mapLabel('plate', 'da3-mono-large@518~1_birefnet-lite@1024_e0.70_lama', all)).toEqual({ name: 'Best', detail: 'outline Fast · sharper edges · LaMa fill' });
+    expect(mapLabel('fore', 'da3-mono-large@518~1_birefnet-lite@1024_e0', all)).toEqual({ name: 'Best', detail: 'outline Fast' });
+    // A fill model the label list doesn't know yet: its own name (from the inpaint models).
+    expect(mapLabel('plate', 'da3-mono-large@518~1_birefnet-lite@1024_e0_newfill', all).detail).toBe('outline Fast · Big model fill');
+  });
   it('person folders take their pictures elsewhere only when asked', () => {
     const fs = [{ id: 1, person: true }, { id: 2, person: false }];
     expect(folderFilters(fs, false)).toEqual([{ folder: 1, recursive: true, kinds: ['image'] }, { folder: 2, recursive: true, kinds: ['image'] }]);

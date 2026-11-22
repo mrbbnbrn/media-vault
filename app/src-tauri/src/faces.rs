@@ -1355,17 +1355,16 @@ pub fn delete_item_faces(conn: &Connection, ids: &[i64]) -> R<usize> {
 fn delete_faces_of(conn: &Connection, items: &str) -> R<usize> {
     let tx = conn.unchecked_transaction().map_err(e)?;
     tx.execute(&format!("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id IN ({items}))"), []).map_err(e)?;
-    tx.execute(
-        &format!(
-            "DELETE FROM face_not_same WHERE a IN (SELECT id FROM faces WHERE media_id IN ({items})) OR b IN (SELECT id FROM faces WHERE media_id IN ({items}))"
-        ),
-        [],
-    )
-    .map_err(e)?;
+    // "Not the same person" answers are about person folders, not faces: they stay.
     let n = tx.execute(&format!("DELETE FROM faces WHERE media_id IN ({items})"), []).map_err(e)?;
     tx.execute(&format!("UPDATE media SET faces_state = 0 WHERE id IN ({items})"), []).map_err(e)?;
     tx.commit().map_err(e)?;
-    *CACHE.lock().unwrap_or_else(|x| x.into_inner()) = None;
+    // The caller holds the library while the analysis (holding CACHE) may be
+    // waiting for it: never wait for CACHE here (that was a deadlock). A busy
+    // analysis learns about the deleted faces anyway (temp.faces_dirty).
+    if let Ok(mut c) = CACHE.try_lock() {
+        *c = None;
+    }
     Ok(n)
 }
 
@@ -1548,11 +1547,6 @@ pub fn reset(conn: &Connection, media: &[i64]) -> R<usize> {
     let mut n = 0;
     for &m in media {
         tx.execute("DELETE FROM face_rejects WHERE face_id IN (SELECT id FROM faces WHERE media_id = ?1)", [m]).map_err(e)?;
-        tx.execute(
-            "DELETE FROM face_not_same WHERE a IN (SELECT id FROM faces WHERE media_id = ?1) OR b IN (SELECT id FROM faces WHERE media_id = ?1)",
-            [m],
-        )
-        .map_err(e)?;
         n += tx.execute("DELETE FROM faces WHERE media_id = ?", [m]).map_err(e)?;
         tx.execute("UPDATE media SET faces_state = 2 WHERE id = ? AND kind IN ('image', 'gif', 'video')", [m]).map_err(e)?;
     }

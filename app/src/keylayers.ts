@@ -119,7 +119,7 @@ export function onLayersChange(cb: () => void): () => void {
 /** Keys that work wherever you are (lock, save, timing panel, interface size). */
 export function globalKey(e: KeyboardEvent): boolean {
   const ctrl = e.ctrlKey || e.metaKey;
-  if (ctrl && e.shiftKey && (e.code === 'KeyL' || e.code === 'KeyT')) return true;
+  if (ctrl && e.shiftKey && (e.code === 'KeyL' || (e.altKey && e.code === 'KeyT'))) return true;
   if (ctrl && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 's') return true;
   if (ctrl && ['+', '=', '-', '0', '*'].includes(e.key)) return true;
   if (e.key === 'F11' || e.key === 'Alt' || (e.altKey && e.key === 'F4')) return true;

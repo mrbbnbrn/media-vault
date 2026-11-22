@@ -42,6 +42,9 @@ describe('key layers', () => {
     const k = (o: Partial<KeyboardEvent>) => ({ ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, key: '', code: '', ...o }) as KeyboardEvent;
     expect(globalKey(k({ ctrlKey: true, shiftKey: true, code: 'KeyL', key: 'L' }))).toBe(true);
     expect(globalKey(k({ ctrlKey: true, key: 's' }))).toBe(true);
+    // The timing panel is Ctrl+Shift+Alt+T; Ctrl+Shift+T is "reopen the last closed tab" (library only).
+    expect(globalKey(k({ ctrlKey: true, shiftKey: true, altKey: true, code: 'KeyT', key: 'T' }))).toBe(true);
+    expect(globalKey(k({ ctrlKey: true, shiftKey: true, code: 'KeyT', key: 'T' }))).toBe(false);
     expect(globalKey(k({ key: 'Delete' }))).toBe(false);
     expect(globalKey(k({ ctrlKey: true, key: 'z' }))).toBe(false);
   });

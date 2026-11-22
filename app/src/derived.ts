@@ -60,7 +60,7 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
   if ((kind === 'plate' || kind === 'fore') && l) {
     const [, depth, , outline, edges, fill] = l;
     const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
-    const parts = [`outline ${names.get(outline) ?? outline}`, Number(edges) > 0 ? 'sharper edges' : '', fill ? fills[fill] ?? fill : ''].filter(Boolean);
+    const parts = [`outline ${names.get(outline) ?? outline}`, Number(edges) > 0 ? 'sharper edges' : '', fill ? fills[fill] ?? (names.has(fill) ? `${names.get(fill)} fill` : fill) : ''].filter(Boolean);
     return { name: names.get(depth) ?? depth, detail: parts.join(' · ') };
   }
   return { name: tag, detail: '' };

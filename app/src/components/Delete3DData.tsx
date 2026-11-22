@@ -3,8 +3,9 @@
 // model (the same model saved at other settings is its own line), each with
 // how many pictures and how much space, all ticked to start with; then
 // "Are you sure?". The pictures can be narrowed to those the face scan
-// found no face (or only poor faces) in, e.g. screenshots. Only the saved depth maps and outlines go: the pictures
-// never change, and the maps are worked out again when needed.
+// found no face (or only poor faces) in, e.g. screenshots. Every kind saved is listed (depth maps, outlines and
+// Layered 3D's background fills and subject layers), so nothing is deleted unseen. Only that saved data goes:
+// the pictures never change, and it is worked out again when needed.
 
 import { errText } from '../text';
 import { useEffect, useMemo, useState } from 'react';
@@ -37,6 +38,17 @@ const KIND_TITLE: Record<DerivedKind, string> = {
   fore: 'Subject layers (Lift-off, Layered 3D)',
 };
 
+/** The kinds in the order they are listed. */
+const KINDS: DerivedKind[] = ['depth', 'outline', 'plate', 'fore'];
+
+/** A kind in one word or two, for the "Are you sure?" list. */
+const KIND_SHORT: Record<DerivedKind, string> = {
+  depth: 'Depth map',
+  outline: 'Outline',
+  plate: 'Background fill',
+  fore: 'Subject layer',
+};
+
 const keyOf = (g: { kind: string; model: string }) => `${g.kind}|${g.model}`;
 
 export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDone: (text: string) => void }) {
@@ -57,8 +69,8 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
   const [confirming, setConfirming] = useState(false);
 
   useEffect(() => {
-    void Promise.all([api.depthModels().catch(() => []), api.subjectModels().catch(() => [])]).then(([d, s]) =>
-      setNames(new Map([...d, ...s].map((m) => [m.id, m.name]))),
+    void Promise.all([api.depthModels().catch(() => []), api.subjectModels().catch(() => []), api.inpaintModels().catch(() => [])]).then(
+      ([d, s, f]) => setNames(new Map([...d, ...s, ...f].map((m) => [m.id, m.name]))),
     );
   }, []);
 
@@ -128,11 +140,11 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
         <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
           {chosen.map((g) => {
             const l = mapLabel(g.kind, g.model, names);
-            return <li key={keyOf(g)}>{g.kind === 'depth' ? 'Depth' : 'Outline'}: {l.name}{l.detail ? ` · ${l.detail}` : ''} ({plural(g.count, 'picture')})</li>;
+            return <li key={keyOf(g)}>{KIND_SHORT[g.kind] ?? g.kind}: {l.name}{l.detail ? ` · ${l.detail}` : ''} ({plural(g.count, 'picture')})</li>;
           })}
         </ul>
-        Your pictures don't change. These are worked out again when they're needed, so 3D and Lift-off take a moment longer
-        to start the first time.
+        Your pictures don't change. These are worked out again when they're needed, so 3D, Lift-off and Layered 3D take a
+        moment longer to start the first time.
       </ConfirmDialog>
     );
   }
@@ -140,7 +152,8 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
   return (
     <Modal title={`Delete 3D data · ${props.what}`} onClose={props.onClose} wide>
       <div className="muted" style={{ fontSize: 14, lineHeight: 1.6 }}>
-        Choose which saved depth maps and outlines to delete for the still pictures here. GIFs and videos have none.
+        Choose which saved 3D data to delete for the still pictures here: depth maps, outlines, and Layered 3D's background
+        fills and subject layers. GIFs and videos have none.
       </div>
       {anyPerson && (
         <label className="check" style={{ marginTop: 4 }}>
@@ -178,12 +191,12 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
       {groups && groups.length > 0 && (
         <>
           <div className="faint" style={{ fontSize: 13 }}>{plural(ids?.length ?? 0, 'picture')}{which === 'all' ? ' here' : ' chosen'}.</div>
-          {(['depth', 'outline'] as const).map((kind) => {
+          {[...KINDS, ...new Set(groups.map((g) => g.kind).filter((k) => !KINDS.includes(k)))].map((kind) => {
             const list = groups.filter((g) => g.kind === kind);
             if (!list.length) return null;
             return (
               <div key={kind} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <b style={{ fontSize: 13 }}>{KIND_TITLE[kind]}</b>
+                <b style={{ fontSize: 13 }}>{KIND_TITLE[kind] ?? kind}</b>
                 {list.map((g) => {
                   const l = mapLabel(g.kind, g.model, names);
                   const k = keyOf(g);

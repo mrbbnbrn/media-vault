@@ -4,6 +4,7 @@
 
 use std::io::Write;
 use std::net::{TcpStream, UdpSocket};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,7 +13,7 @@ use sha2::{Digest, Sha256};
 use vault_core::{ObjectId, ObjectKind};
 
 use super::mvtp::{self, KeyPair, Sealer, ty};
-use super::server::{self, Hooks, Ports};
+use super::server::{self, Hooks, PlayableFn, Ports};
 use crate::session::{self, Session};
 
 /// The transfer state is global: one test at a time.
@@ -21,6 +22,10 @@ static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 type Events = Arc<Mutex<Vec<(String, Value)>>>;
 
 fn vault() -> (tempfile::TempDir, Arc<Session>, Events) {
+    vault_with(Box::new(|_, _| (0, vec![])))
+}
+
+fn vault_with(playable: PlayableFn) -> (tempfile::TempDir, Arc<Session>, Events) {
     let t = tempfile::tempdir().unwrap();
     let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
     let s = Arc::new(s);
@@ -31,7 +36,7 @@ fn vault() -> (tempfile::TempDir, Arc<Session>, Events) {
         Hooks {
             emit: Box::new(move |n, v| ev2.lock().unwrap().push((n.to_string(), v))),
             keep_awake: Box::new(|| {}),
-            playable: Box::new(|_, _| (0, vec![])),
+            playable,
         },
         Ports { tcp: 0, udp: 0 },
     );
@@ -408,4 +413,101 @@ fn strangers_and_refusals() {
     assert!(server::status().peers.is_empty());
     assert!(!server::status().listening);
     server::on_lock();
+}
+
+#[test]
+fn next_offer_right_after_the_last_item() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    // Playable copies take a while (ffmpeg): the phone must not have to wait for them.
+    let running = Arc::new(AtomicUsize::new(0));
+    let most = Arc::new(AtomicUsize::new(0));
+    let (r2, m2) = (running.clone(), most.clone());
+    let (_t, s, ev) = vault_with(Box::new(move |_: &Arc<Session>, ids: &[i64]| {
+        let now = r2.fetch_add(1, Ordering::SeqCst) + 1;
+        m2.fetch_max(now, Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(1500));
+        r2.fetch_sub(1, Ordering::SeqCst);
+        (ids.len(), vec![])
+    }));
+    let pp = pair(true, true).unwrap();
+    let mut ph = Phone::connect(&pp);
+    wait_for("connected", || server::status().connected.as_deref() == Some("Telefon"));
+    let a = bytes(70_000, 4);
+    let b = bytes(5_000, 5);
+    ph.send(ty::OFFER, &offer_json(1, &[(21, &a, "first.heic", "image", -1)]));
+    assert_eq!(ph.recv_json(ty::ANSWER)["answers"][0]["a"], "want");
+    ph.send_file(21, &a, 65_536, &sha(&a));
+    let (t, p) = ph.recv();
+    assert_eq!((t, &p[..]), (ty::ITEM_OK, &21u32.to_be_bytes()[..]));
+    // At once, as r2 allows: the next offer while the PC still works on the first batch.
+    ph.send(ty::OFFER, &offer_json(2, &[(22, &b, "second.heic", "image", -1)]));
+    assert_eq!(ph.recv_json(ty::ANSWER)["answers"][0]["a"], "want");
+    ph.send_file(22, &b, 65_536, &sha(&b));
+    let (t, p) = ph.recv();
+    assert_eq!((t, &p[..]), (ty::ITEM_OK, &22u32.to_be_bytes()[..]));
+    wait_for("both batches done", || done_events(&ev, "receive").len() == 2);
+    let ds = done_events(&ev, "receive");
+    assert!(ds.iter().all(|d| d["done"] == 1 && d["playable"] == 1 && d["stopped"].is_null()), "{ds:?}");
+    assert_eq!(most.load(Ordering::SeqCst), 1, "playable copies: one batch at a time");
+    assert!(stored(&s, "first.heic").is_some() && stored(&s, "second.heic").is_some());
+    assert_eq!(server::status().connected.as_deref(), Some("Telefon"));
+    assert!(!server::status().busy);
+    server::on_lock();
+}
+
+#[test]
+fn stop_from_the_window_ends_a_receive() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (_t, s, ev) = vault();
+    let pp = pair(true, true).unwrap();
+    let mut ph = Phone::connect(&pp);
+    wait_for("connected", || server::status().connected.as_deref() == Some("Telefon"));
+    let big = bytes(300_000, 6);
+    ph.send(ty::OFFER, &offer_json(3, &[(31, &big, "big.mp4", "video", -1)]));
+    assert_eq!(ph.recv_json(ty::ANSWER)["answers"][0]["a"], "want");
+    ph.send(ty::ITEM_START, &mvtp::item_start(31, big.len() as u64));
+    for c in big[..196_608].chunks(65_536) {
+        ph.send(ty::DATA, &[&31u32.to_be_bytes()[..], c].concat());
+    }
+    wait_for("busy", || server::status().busy);
+    let t0 = Instant::now();
+    server::cancel().unwrap();
+    assert!(t0.elapsed() < Duration::from_secs(1), "Stop never waits");
+    let (t, p) = ph.recv();
+    assert_eq!((t, &p[..]), (ty::CANCEL, &mvtp::CANCEL_ALL.to_be_bytes()[..]));
+    let (t, p) = ph.recv();
+    assert_eq!((t, &p[..]), (ty::ITEM_FAILED, &[0, 0, 0, 31, mvtp::fail::CANCELLED][..]));
+    wait_for("receive done", || !done_events(&ev, "receive").is_empty());
+    assert!(stored(&s, "big.mp4").is_none());
+    // The connection stays and takes the next offer.
+    ph.send(ty::OFFER, &offer_json(4, &[(32, b"tiny", "t.jpg", "image", -1)]));
+    assert_eq!(ph.recv_json(ty::ANSWER)["answers"][0]["a"], "want");
+    server::on_lock();
+}
+
+#[test]
+fn lock_during_a_handshake_keeps_no_session() {
+    let _one = ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+    let (_t, s, _ev) = vault();
+    let pp = pair(true, true).unwrap();
+    let (tcp, _) = server::test_ports().unwrap();
+    let dk = mvtp::disc_key(&pp.pair_key);
+    let mut st = TcpStream::connect(("127.0.0.1", tcp)).unwrap();
+    st.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let eph = KeyPair::generate();
+    let np: [u8; 32] = mvtp::random();
+    let hello1 = [&[1u8][..], &eph.public, &np, &mvtp::hint(&dk, &np)].concat();
+    mvtp::write_plain(&mut st, ty::HELLO1, &hello1).unwrap();
+    let h2 = mvtp::read_plain(&mut st, ty::HELLO2).unwrap();
+    let pc_eph: [u8; 65] = h2[..65].try_into().unwrap();
+    let npc: [u8; 32] = h2[65..97].try_into().unwrap();
+    let sig_pc: [u8; 64] = h2[97..161].try_into().unwrap();
+    let th2 = mvtp::th2(&mvtp::th(&hello1, &pc_eph, &npc), &sig_pc);
+    // The vault starts locking: the transfer hears first, the session closes a moment later.
+    server::on_lock();
+    mvtp::write_plain(&mut st, ty::HELLO3, &pp.id.sign(&mvtp::hs_phone_msg(&th2))).unwrap();
+    // No session starts on the detached transfer: the PC just closes.
+    assert!(mvtp::read_body(&mut st).is_err(), "no INFO after the lock started");
+    assert!(!s.is_closed());
+    assert!(server::status().connected.is_none());
 }
