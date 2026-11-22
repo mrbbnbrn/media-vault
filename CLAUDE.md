@@ -344,6 +344,10 @@ How to record changes:
   change) → `MediaVault-depth-vda-small-windows.zip` on a `depth-models-<date>` pre-release. Tags carry the parts
   (`noplate`, `_n<k>`). 600 window tests; settings checked in the browser demo. Rust not compiled here (CI);
   the video model not tried in the app (DirectML may refuse it: then it runs on the processor, slowly).
+  Released as **build-105**. The pack workflow needed a 12 GB swap file and a newer `ml_dtypes`; it then passed
+  (ONNX = PyTorch, correlation 1.00000; background drift between frames ~1 %; model.onnx 678 MB) and uploaded
+  `MediaVault-depth-vda-small-windows.zip` (124 MB) to the `depth-models-2026-11-22` pre-release. `build.yml` now
+  skips pushes that only change `videodepth.yml` / `vda_export.py`.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D fixes after the user's first
   test** (dark specks with Lift-off / the subject layer, slow preparing). Shader reads a video's outline without the
   codec's faint noise (`smoothstep` in `mask()`); the last prepared frame is kept up to 4 frames while the next one
