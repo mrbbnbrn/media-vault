@@ -42,6 +42,8 @@ import { kickFaceScanner, noteFaceProgress } from '../ml/facescan';
 import { useTaskPart } from '../tasks';
 import { prepareFolder, prepareFolders, prepareItems } from '../prepare';
 import { Delete3DData, type Delete3DTarget } from '../components/Delete3DData';
+import { Prepare3DDialog } from '../components/Prepare3D';
+import type { Want3d } from '../video3d';
 import { SeparateFaces, type SeparateTarget } from '../components/SeparateFaces';
 import { MediaGrid } from '../components/MediaGrid';
 import { Framed } from '../components/FramedCover';
@@ -135,6 +137,7 @@ type Dialog =
   | { t: 'emptyTrash' }
   | { t: 'forever'; ids: number[]; folder: number | null; what: string }
   | ({ t: 'del3d' } & Delete3DTarget)
+  | { t: 'prep3d'; what: string; items: Want3d[] }
   | { t: 'separate'; folder: { id: number; name: string }; items?: Item[]; what?: string }
   | { t: 'shortcuts' }
   | { t: 'sheet' }
@@ -160,6 +163,13 @@ type Dialog =
   | { t: 'why'; item: Item; query: WhyQuery };
 
 let resumeOfferedFor: string | null = null;
+
+/** The videos and GIFs among these, for "Prepare 3D" (video3d.ts). */
+function moving3d(list: Item[]): Want3d[] {
+  return list
+    .filter((i) => (i.kind === 'video' || i.kind === 'gif') && i.deletedAt == null)
+    .map((i) => ({ id: i.id, kind: i.kind as 'video' | 'gif', name: i.name, width: i.width, height: i.height, durationMs: i.durationMs }));
+}
 
 export function Library({ nav, view, setView, history, reveal, tabs, frozen = false }: {
   nav: Nav; view: LibView; setView: (v: LibView) => void;
@@ -1426,6 +1436,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       { label: 'Prepare 3D data, every installed model', hint: 'takes longer', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }), `“${f.name}”`) },
       { label: 'Pictures with faces only, models in use', hint: 'scanned ones', sepBefore: true, onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true, true), `“${f.name}”`, true, true) },
       { label: 'Pictures with faces only, every installed model', hint: 'scanned ones', onSelect: () => prepNote(prepareFolder({ id: f.id, name: f.name, person: f.person }, true), `“${f.name}”`, true) },
+      { label: 'Prepare 3D for videos and GIFs…', hint: 'once, then they play in 3D', sepBefore: true,
+        onSelect: () => { mediaOf([f], []).then((list) => setDialog({ t: 'prep3d', what: `“${f.name}”`, items: moving3d(list) })).catch((err) => setError(errText(err))); } },
       { label: 'Delete 3D data…', hint: 'choose which', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'del3d', what: `“${f.name}”`, folders: [{ id: f.id, name: f.name, person: f.person }], ids: [] }) },
     ]),
     (() => {
@@ -2086,6 +2098,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     }
     const allFav = itemsOnly && ids.every((id) => itemById(id)?.favourite);
     const pics = itemsOnly ? ids.filter((id) => itemById(id)?.kind === 'image') : [];
+    const movs = itemsOnly ? ids.filter((id) => itemById(id)?.kind === 'video' || itemById(id)?.kind === 'gif') : [];
     const picList = pictures(shownSel);
     const home = one && one.folderId != null ? folders.find((f) => f.id === one.folderId) ?? null : null;
     const here = view.kind === 'folder' ? view.id : undefined;
@@ -2159,7 +2172,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           : nF === 1 ? prepareFolder(fRefs[0], faces, inUse) : prepareFolders(fRefs, plural(nF, 'folder'), faces, inUse), what, faces, inUse);
         return (itemsOnly ? pics.length > 0 : true) && { id: `prep3d-${k}`, group: '3D data', label, hint, sepBefore: k === 2, run: go };
       }),
-      (itemsOnly ? pics.length > 0 : !nI) && { id: 'del3d', group: '3D data', label: 'Delete 3D data…', hint: 'choose which', run: () => setDialog({ t: 'del3d', what, folders: fRefs, ids: pics }) },
+      (itemsOnly ? movs.length > 0 : true) && { id: 'prep3dMoving', group: '3D data', label: 'Prepare 3D for videos and GIFs…', hint: 'once, then they play in 3D', sepBefore: true,
+        run: onAll((list) => setDialog({ t: 'prep3d', what, items: moving3d(list) })) },
+      (itemsOnly ? pics.length + movs.length > 0 : !nI) && { id: 'del3d', group: '3D data', label: 'Delete 3D data…', hint: 'choose which', run: () => setDialog({ t: 'del3d', what, folders: fRefs, ids: pics, movingIds: movs }) },
       // Several folders: preview clips off / on for all of them (one folder: its own menu has it).
       nF > 1 && !nI && { id: 'previewsOff', label: "Don't make preview clips here", hint: 'subfolders too', sepBefore: true, run: () => setPreviewClips(fs, true) },
       nF > 1 && !nI && fs.some((f) => previewsOff.has(f.id)) && { id: 'previewsOn', label: 'Make preview clips here again', hint: 'subfolders too', run: () => setPreviewClips(fs, false) },
@@ -3092,7 +3107,10 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           onApply={(items, target, copy) => separate(dialog.folder.id, items, target, copy)} />
       )}
       {dialog?.t === 'del3d' && (
-        <Delete3DData what={dialog.what} folders={dialog.folders} ids={dialog.ids} onClose={() => setDialog(null)} onDone={(text) => setNote({ text, at: 0 })} />
+        <Delete3DData what={dialog.what} folders={dialog.folders} ids={dialog.ids} movingIds={dialog.movingIds} onClose={() => setDialog(null)} onDone={(text) => setNote({ text, at: 0 })} />
+      )}
+      {dialog?.t === 'prep3d' && (
+        <Prepare3DDialog what={dialog.what} items={dialog.items} onClose={() => setDialog(null)} onStarted={(text) => setNote({ text, at: 0 })} />
       )}
       {dialog?.t === 'emptyTrash' && (
         <ConfirmDialog title="Empty the trash?" confirm="Empty trash" danger onClose={() => setDialog(null)}

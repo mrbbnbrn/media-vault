@@ -1390,10 +1390,74 @@ pub fn make_tiny(s: &Arc<Session>, tool_path: &Path, item: i64, starts: &[f64], 
     Ok(out.to_vec())
 }
 
+/// Prepared 3D (video3d.rs): ffmpeg decoding a video item's frames as raw RGBA at
+/// `w` × `h` to stdout, from `start` seconds on, every frame once (none added or
+/// dropped), with each frame's time on stderr (showinfo, "pts_time:"). Times count
+/// from the start of the video, as the window's player counts them. The server
+/// must be kept until the child is done.
+pub(crate) fn spawn_frames(s: &Arc<Session>, tool_path: &Path, item: i64, w: u32, h: u32, start: f64) -> Result<(std::process::Child, Server), String> {
+    let tool = Tool::probe(tool_path)?;
+    let row = load_row(s, item)?;
+    if row.kind != "video" {
+        return Err("Only videos are prepared this way.".into());
+    }
+    let server = Server::start().map_err(|e| format!("The video tool couldn't be prepared ({e})."))?;
+    let url = serve_row(&server, s, &row, 0)?;
+    let mut c = command(&tool.path);
+    c.args(["-hide_banner", "-nostdin", "-nostats", "-loglevel", "info"]);
+    if start > 0.0 {
+        c.args(["-ss".to_string(), format!("{start:.3}")]);
+    }
+    c.args(["-copyts", "-start_at_zero", "-i", url.as_str(), "-map", "0:v:0", "-an", "-sn", "-dn"]);
+    c.args(["-vf".to_string(), format!("scale={w}:{h}:flags=bicubic,format=rgba,showinfo")]);
+    if tool.new_options {
+        c.args(["-fps_mode", "passthrough"]);
+    } else {
+        c.args(["-vsync", "passthrough"]);
+    }
+    c.args(["-f", "rawvideo", "-pix_fmt", "rgba", "pipe:1"]);
+    let child = c
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("The video tool couldn't be started ({e})."))?;
+    Ok((child, server))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session;
+
+    #[test]
+    fn frames_for_prepared_3d() {
+        let Some(ffmpeg) = test_tool() else {
+            eprintln!("ffmpeg not found: skipped");
+            return;
+        };
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(&t);
+        let video = make(&ffmpeg, &["-f", "lavfi", "-i", "testsrc2=size=320x180:rate=25:duration=2", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-f", "mp4", "-movflags", "frag_keyframe+empty_moov", "pipe:1"]);
+        let id = import::add_bytes(&s, None, "clip.mp4", &video).unwrap();
+        for (start, want) in [(0.0, 50i64), (1.0, 25)] {
+            let (child, server) = spawn_frames(&s, &ffmpeg, id, 64, 36, start).unwrap();
+            // Both pipes read at once (one full pipe would stop ffmpeg).
+            let o = child.wait_with_output().unwrap();
+            drop(server);
+            let out = o.stdout;
+            let err = String::from_utf8_lossy(&o.stderr).into_owned();
+            assert_eq!(out.len() % (64 * 36 * 4), 0);
+            let frames = (out.len() / (64 * 36 * 4)) as i64;
+            let times: Vec<f64> = err.lines().filter(|l| l.contains("showinfo") && l.contains(" n:")).filter_map(crate::video3d::pts_time).collect();
+            assert_eq!(times.len() as i64, frames, "{err}");
+            assert!((frames - want).abs() <= 2, "{frames} frames from {start}");
+            // Counted from the start of the video, also when starting later.
+            assert!((times[0] - start).abs() < 0.05, "{times:?}");
+            assert!(times.windows(2).all(|w| w[1] > w[0]));
+        }
+        assert!(spawn_frames(&s, &ffmpeg, 999_999, 64, 36, 0.0).is_err());
+    }
 
     #[test]
     fn tiny_clips_through_memory() {

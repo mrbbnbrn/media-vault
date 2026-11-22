@@ -82,6 +82,7 @@ mod thumbpages;
 // Removing camera info, location and dates from files that leave the vault.
 mod stripmeta;
 mod videotool;
+mod video3d; // prepared 3D for videos: frames decoded for the window
 // The offline AI upscaler in the viewer (optional pack: tools/upscaler).
 mod upscale;
 mod upscale_img;
@@ -164,6 +165,7 @@ fn lock_now(app: &AppHandle, inner: &Inner, reason: LockReason) {
     depth::unload();
     subject::unload();
     inpaint::unload();
+    video3d::stop_all();
     if let Some(s) = taken {
         s.close(); // background work stops promptly
         // Again, now that it is closed: whatever a request still running put back.
@@ -842,6 +844,9 @@ pub fn run() {
             derived::derived_have,
             derived::derived_summary,
             derived::derived_remove,
+            video3d::video3d_open,
+            video3d::video3d_read,
+            video3d::video3d_close,
             derived::faces_split,
             encryption::encryption_off,
             encryption::encryption_on,

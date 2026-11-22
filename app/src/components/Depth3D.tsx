@@ -20,16 +20,24 @@
 // The outline it is drawn with is grown a little, so the subject's old edge
 // never shows from behind it. Without a depth map these work on a flat one.
 //
+// Videos and GIFs: drawn from their prepared 3D (video3d.ts, track3d.ts):
+// each frame shown is matched to its own prepared frame (by the video's exact
+// frame time, or the GIF's frame number), which holds the depth, outline,
+// Layered 3D background and subject layer as tiles of one texture, so every
+// effect works on them too. Not prepared (yet) at some time: flat there.
+//
 // Everything stays in memory (one texture, one small depth texture, one
 // outline), and the WebGL context is let go when the picture changes.
 
 import { useEffect, useRef, useState } from 'react';
 import { inTauri, type DepthInfo, type DepthMap, type ViewerSettings } from '../api';
 import {
-  cameraAt, depthChoice, depthSetup, depthTag, depthFramesLetGo, depthLetGo, depthOf, depthOfFrames, depthPack, DOLLY, easeToward, frameDepth, framePose, mouseLean, mousePose,
-  NO_DEPTH_PACK, pivotOf, scalePose, sharedCamera, SHIFT, blendDepth, depthForTime, VIDEO_DEPTH_MS, videoFrameDepth,
-  type FrameDepths, type FrameFeed, type MotionChoice, type Pose,
+  cameraAt, depthChoice, depthSetup, depthTag, depthLetGo, depthOf, depthPack, DOLLY, easeToward, framePose, mouseLean, mousePose,
+  NO_DEPTH_PACK, pivotOf, scalePose, sharedCamera, SHIFT,
+  type FrameFeed, type MotionChoice, type Pose,
 } from '../depth';
+import { TrackPlayer, type TrackIndex } from '../track3d';
+import { COLS, motionDamp, ROWS, tileRect, type FrameInfo, type TileName } from '../video3dmath';
 import { drawnRect, type Fit } from '../flip';
 import {
   fadeAt, fadeDone, fadeTo, flatDepth, maskStats, newFade, subjectDepth, subjectFrame, subjectLetGo, subjectOf,
@@ -41,6 +49,7 @@ import { savedId } from '../derived';
 import { DepthModelChoice } from './DepthModels';
 import { InpaintModelChoice } from './InpaintModels';
 import { SavedMapsSection } from './SavedMaps';
+import { Video3DSection } from './Prepare3D';
 import { SubjectModelChoice } from './SubjectModels';
 import { bitmapOffThread } from '../picturecache';
 
@@ -65,13 +74,17 @@ interface Props {
   motion?: { shape: MotionChoice; amount: number; speed: number };
   /** Not in a slideshow (kept for callers; the movement is the same either way). */
   endless?: boolean;
-  /** A moving picture (GIF, animated WebP/PNG): each frame as it's shown, drawn with that frame's own depth. */
+  /** A moving picture (GIF, animated WebP/PNG): each frame as it's shown (and its number), drawn with its prepared 3D. */
   frames?: FrameFeed;
-  /** A video: drawn frame by frame from the playing video with live depth; `delayMs` shows each frame that much later so it meets its own depth (0 = off). */
-  video?: { ref: { current: HTMLVideoElement | null }; delayMs: number };
+  /** A video: drawn frame by frame from the playing video with its prepared 3D. */
+  video?: { ref: { current: HTMLVideoElement | null } };
+  /** The prepared 3D of this video or GIF (needed for both). */
+  track?: { item: number; index: TrackIndex };
+  /** Videos and GIFs: a calmer camera (slower, smaller, less on fast scenes). */
+  calm?: boolean;
   /** 3D to the beat: `pulse` goes up by one on every beat; a push closer or a little bounce, this strong (1 = as designed). */
   beat?: { pulse: number; kind: 'push' | 'bounce'; amount: number };
-  /** Subject effects (still pictures only; ignored for GIFs and videos): each 0 = off, else its amount (1 = as designed). */
+  /** Subject effects (pictures; videos and GIFs whose prepared 3D has the outline): each 0 = off, else its amount (1 = as designed). */
   subject?: { lift: number };
   /** The depth map is wanted (false: the camera stays still anyway, so a flat one is used without asking). */
   depth?: boolean;
@@ -165,7 +178,34 @@ uniform float uZBg;
 // depth carried out past its rim; on once made (until then the picture and the depth map are used).
 uniform sampler2D uFore;
 uniform float uForeOn;
+// Videos and GIFs: every map from the prepared frame's tiles (video3dmath.ts) in one texture;
+// where each tile is, two texels to stay inside it, and how far the filled background reaches.
+uniform sampler2D uTrk;
+uniform float uTrack;
+uniform vec4 uTDepth;
+uniform vec4 uTMask;
+uniform vec4 uTPlate;
+uniform vec4 uTPlateD;
+uniform vec4 uTFore;
+uniform vec4 uTForeD;
+uniform vec2 uTIn;
+uniform float uHoleR;
 const int N = ${STEPS};
+vec2 tileAt(vec4 r, vec2 s) {
+  return r.xy + clamp(clamp(s, 0.0, 1.0) * r.zw, uTIn, r.zw - uTIn);
+}
+float trk1(vec4 r, vec2 s) {
+  return texture2D(uTrk, tileAt(r, s)).r;
+}
+float depthAt(vec2 s) {
+  return uTrack > 0.0 ? trk1(uTDepth, s) : texture2D(uDepth, s).r;
+}
+vec4 plateAt(vec2 s) {
+  return uTrack > 0.0 ? vec4(texture2D(uTrk, tileAt(uTPlate, s)).rgb, trk1(uTPlateD, s)) : texture2D(uPlate, s);
+}
+vec4 foreAt(vec2 s) {
+  return uTrack > 0.0 ? vec4(texture2D(uTrk, tileAt(uTFore, s)).rgb, trk1(uTForeD, s)) : texture2D(uFore, s);
+}
 vec3 sharpen(vec3 c, vec3 n) {
   return clamp(c * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
 }
@@ -181,18 +221,18 @@ vec3 pic(vec2 h) {
   return c;
 }
 vec3 platePic(vec2 h) {
-  vec3 c = texture2D(uPlate, h).rgb;
+  vec3 c = plateAt(h).rgb;
   if (uSharp > 0.0) {
     vec2 d = uPx / uScale;
-    vec3 n = texture2D(uPlate, h + vec2(d.x, 0.0)).rgb + texture2D(uPlate, h - vec2(d.x, 0.0)).rgb
-      + texture2D(uPlate, h + vec2(0.0, d.y)).rgb + texture2D(uPlate, h - vec2(0.0, d.y)).rgb;
+    vec3 n = plateAt(h + vec2(d.x, 0.0)).rgb + plateAt(h - vec2(d.x, 0.0)).rgb
+      + plateAt(h + vec2(0.0, d.y)).rgb + plateAt(h - vec2(0.0, d.y)).rgb;
     c = sharpen(c, n);
   }
   return c;
 }
 // The depth the background is drawn with: the plate's (subject filled in) when layered.
 float dep(vec2 s) {
-  return uLayer > 0.0 ? texture2D(uPlate, s).a : texture2D(uDepth, s).r;
+  return uLayer > 0.0 ? plateAt(s).a : depthAt(s);
 }
 // Where the moved subject at q came from (the reverse of the lift, then of the sway and breathing).
 vec2 unmove(vec2 q) {
@@ -202,7 +242,16 @@ vec2 unmove(vec2 q) {
   return uCen + (l - uCen) / uLift;
 }
 float mask(vec2 s) {
-  return texture2D(uMask, clamp(s, 0.0, 1.0)).r;
+  return uTrack > 0.0 ? trk1(uTMask, s) : texture2D(uMask, clamp(s, 0.0, 1.0)).r;
+}
+// Videos: where the background was filled in (the outline grown a little); the picture itself elsewhere.
+float holeW(vec2 s) {
+  float g = mask(s);
+  for (int i = 0; i < 8; i++) {
+    float an = float(i) * 0.7853982;
+    g = max(g, mask(s + vec2(cos(an) / uAsp, sin(an)) * uHoleR));
+  }
+  return clamp(g * 1.5, 0.0, 1.0);
 }
 // The outline softened over r (share of the height): for soft shadows.
 float softMask(vec2 s, float r) {
@@ -240,7 +289,7 @@ void main() {
     prevZ = z;
   }
   vec2 h = clamp(hit, 0.0, 1.0);
-  vec3 c = uLayer > 0.0 ? platePic(h) : pic(h);
+  vec3 c = uLayer > 0.0 ? (uTrack > 0.0 ? mix(pic(h), platePic(h), holeW(h)) : platePic(h)) : pic(h);
   if (uSubj > 0.0) {
     // The subject moves as one piece with the camera at its own depth (or, with uOwn, with the depth
     // of each of its parts), then is lifted and/or lives.
@@ -254,13 +303,13 @@ void main() {
     // (the depth map's rim holds some of the background's depth: the edge used to swim and get cut off).
     if (uForeOn > 0.0) {
       for (int i = 0; i < 4; i++) {
-        zs = texture2D(uFore, clamp(s, 0.0, 1.0)).a + lz;
+        zs = foreAt(clamp(s, 0.0, 1.0)).a + lz;
         ps = p - k * (zs - uPivot);
         s = unmove(ps);
       }
     } else {
       for (int i = 0; i < 3; i++) {
-        zs = mix(uZSubj, texture2D(uDepth, clamp(s, 0.0, 1.0)).r, mask(s)) + lz;
+        zs = mix(uZSubj, depthAt(clamp(s, 0.0, 1.0)), mask(s)) + lz;
         ps = p - k * (zs - uPivot);
         s = unmove(ps);
       }
@@ -276,7 +325,7 @@ void main() {
       }
     }
     // Its own layer: its cleaned colours (no fringe of the old background at the rim).
-    vec3 sc = uForeOn > 0.0 ? texture2D(uFore, clamp(s, 0.0, 1.0)).rgb : pic(clamp(s, 0.0, 1.0));
+    vec3 sc = uForeOn > 0.0 ? foreAt(clamp(s, 0.0, 1.0)).rgb : pic(clamp(s, 0.0, 1.0));
     vec3 o = mix(c, sc, g);
     if (uShadow > 0.0) {
       // A soft shadow down and to the right of the lifted subject, on the background only.
@@ -299,9 +348,11 @@ interface Scene {
   mask: WebGLTexture;
   plate: WebGLTexture;
   fore: WebGLTexture;
+  trk: WebGLTexture;
   u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'mask' | 'subj' | 'asp' | 'cen' | 'lift' | 'bot' | 'rot'
     | 'breath' | 'grow' | 'shadow' | 'shOff' | 'shBlur' | 'zSubj'
-    | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg' | 'fore' | 'foreOn', WebGLUniformLocation | null>;
+    | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg' | 'fore' | 'foreOn'
+    | 'trk' | 'track' | 'tDepth' | 'tMask' | 'tPlate' | 'tPlateD' | 'tFore' | 'tForeD' | 'tIn' | 'holeR', WebGLUniformLocation | null>;
 }
 
 /**
@@ -401,6 +452,35 @@ function uploadFore(s: Scene, p: { w: number; h: number; data: Uint8Array }) {
   gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, p.w, p.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, p.data);
 }
 
+/** A prepared frame of a video or GIF (its tiles) into the track texture. */
+function uploadTrack(s: Scene, img: TexImageSource) {
+  const { gl } = s;
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, s.trk);
+  gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, img);
+}
+
+/** Where the tiles of a prepared track are (once per video or GIF). */
+function trackTiles(s: Scene, index: TrackIndex) {
+  const { gl } = s;
+  const put = (u: WebGLUniformLocation | null, name: TileName) => {
+    const [x, y, w, h] = tileRect(name);
+    gl.uniform4f(u, x, y, w, h);
+  };
+  put(s.u.tDepth, 'depth');
+  put(s.u.tMask, 'mask');
+  put(s.u.tPlate, 'plate');
+  put(s.u.tPlateD, 'plateDepth');
+  put(s.u.tFore, 'fore');
+  put(s.u.tForeD, 'foreDepth');
+  gl.uniform2f(s.u.tIn, 2 / (index.w * COLS), 2 / (index.h * ROWS));
+  // The fill reaches a little past the outline (platemath.ts colourHole), at the tile's size.
+  gl.uniform1f(s.u.holeR, 4 / Math.max(1, index.h));
+}
+
 /** A depth map into the depth texture. */
 function uploadDepth(s: Scene, map: DepthMap) {
   const { gl } = s;
@@ -469,6 +549,9 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.activeTexture(gl.TEXTURE4);
   const fore = texture(gl);
   if (!fore) return null;
+  gl.activeTexture(gl.TEXTURE5);
+  const trk = texture(gl);
+  if (!trk) return null;
   const u = {
     shift: gl.getUniformLocation(prog, 'uShift'),
     dolly: gl.getUniformLocation(prog, 'uDolly'),
@@ -499,22 +582,37 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     zBg: gl.getUniformLocation(prog, 'uZBg'),
     fore: gl.getUniformLocation(prog, 'uFore'),
     foreOn: gl.getUniformLocation(prog, 'uForeOn'),
+    trk: gl.getUniformLocation(prog, 'uTrk'),
+    track: gl.getUniformLocation(prog, 'uTrack'),
+    tDepth: gl.getUniformLocation(prog, 'uTDepth'),
+    tMask: gl.getUniformLocation(prog, 'uTMask'),
+    tPlate: gl.getUniformLocation(prog, 'uTPlate'),
+    tPlateD: gl.getUniformLocation(prog, 'uTPlateD'),
+    tFore: gl.getUniformLocation(prog, 'uTFore'),
+    tForeD: gl.getUniformLocation(prog, 'uTForeD'),
+    tIn: gl.getUniformLocation(prog, 'uTIn'),
+    holeR: gl.getUniformLocation(prog, 'uHoleR'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
   gl.uniform1i(u.mask, 2);
   gl.uniform1i(u.plate, 3);
   gl.uniform1i(u.fore, 4);
+  gl.uniform1i(u.trk, 5);
+  gl.uniform1f(u.track, 0);
   gl.uniform1f(u.foreOn, 0);
   gl.uniform1f(u.subj, 0);
   gl.uniform1f(u.layer, 0);
   gl.uniform1f(u.bgStill, 0);
   gl.uniform1f(u.own, 0);
   gl.clearColor(0, 0, 0, 0);
-  const s: Scene = { gl, prog, buf, img, depth, mask, plate, fore, u };
+  const s: Scene = { gl, prog, buf, img, depth, mask, plate, fore, trk, u };
   uploadMask(s, { w: 1, h: 1, data: new Uint8Array([0]) });
   uploadPlate(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
   uploadFore(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
+  gl.activeTexture(gl.TEXTURE5);
+  gl.bindTexture(gl.TEXTURE_2D, trk);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
   return s;
 }
 
@@ -525,6 +623,7 @@ function dropScene(s: Scene) {
   gl.deleteTexture(s.mask);
   gl.deleteTexture(s.plate);
   gl.deleteTexture(s.fore);
+  gl.deleteTexture(s.trk);
   gl.deleteBuffer(s.buf);
   gl.deleteProgram(s.prog);
   gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -574,6 +673,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       </p>
       <InpaintModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
       <SavedMapsSection viewer={props.viewer} setViewer={props.setViewer} />
+      <Video3DSection viewer={props.viewer} setViewer={props.setViewer} />
     </section>
   );
 }
@@ -589,7 +689,7 @@ export function Depth3D(props: Props) {
   propsRef.current = props;
   /** The subject outline of this picture (subject effects; null until it comes, or when there's no clear subject). */
   const maskRef = useRef<{ src: string; mask: DepthMap; stats: SubjectStats } | null>(null);
-  const subjOn = !props.frames && !props.video && ((!!props.subject && props.subject.lift > 0) || layersOn(props.layers));
+  const subjOn = !props.frames && !props.video && !props.track && ((!!props.subject && props.subject.lift > 0) || layersOn(props.layers));
   // 3D to the beat: when the last beat came.
   const beatAt = useRef(-Infinity);
   const pulse = props.beat?.pulse;
@@ -622,7 +722,10 @@ export function Depth3D(props: Props) {
     let stopFrames = () => {};
     const moving = !!propsRef.current.frames;
     const vref = propsRef.current.video;
-    const vid = vref?.ref.current ? { el: vref.ref.current, delayMs: vref.delayMs } : null;
+    const vid = vref?.ref.current ? { el: vref.ref.current } : null;
+    // Videos and GIFs: their prepared 3D (nothing to show without it).
+    const tr = moving || vid ? propsRef.current.track ?? null : null;
+    let player: TrackPlayer | null = null;
     let stopVideo = () => {};
     const give = (ok: boolean) => alive && propsRef.current.onLive?.(ok);
     (async () => {
@@ -639,10 +742,7 @@ export function Depth3D(props: Props) {
       const dpr = window.devicePixelRatio || 1;
       const box = drawnRect(W, H, nw, nh, propsRef.current.fit);
       const k = Math.min(1, (box.width * dpr) / nw, 4096 / Math.max(nw, nh));
-      // A moving picture: every frame's depth first (the first frame's picture comes with the file).
-      let frames: FrameDepths | null = null;
-      // A video: its frames come straight from the playing video, its depth is worked out live.
-      const depthCanvas = vid ? new OffscreenCanvas(1, 1) : null;
+      if ((moving || vid) && !tr) return give(false);
       if (vid && vid.el.readyState < 2) {
         await new Promise<void>((ok) => {
           const done = () => ok();
@@ -656,14 +756,10 @@ export function Depth3D(props: Props) {
         const sj = propsRef.current.subject;
         return stillPic && (!!sj && sj.lift > 0);
       };
-      const depthNow = vid
-        ? videoFrameDepth(vid.el, depthCanvas!)
-        : moving
-          ? depthOfFrames(propsRef.current.src).then((f) => {
-            frames = f;
-            return f ? frameDepth(f, 0) : null;
-          })
-          : propsRef.current.depth === false && subjWanted() ? Promise.resolve(flatDepth()) : depthOf(propsRef.current.src, true);
+      // (Videos and GIFs: each frame's depth comes with its prepared frame; flat until then.)
+      const depthNow = tr
+        ? Promise.resolve(flatDepth())
+        : propsRef.current.depth === false && subjWanted() ? Promise.resolve(flatDepth()) : depthOf(propsRef.current.src, true);
       const [got, bmp] = await Promise.all([
         depthNow,
         // Decoded and resized in the worker (a high-quality resize here froze the window for up to a second).
@@ -701,113 +797,90 @@ export function Depth3D(props: Props) {
       const s = scene;
       const { lean, want } = mouseCam;
       let lastT = performance.now();
-      // Videos: live depth (smoothed over time) and, with the delay on, each frame shown a moment
-      // late so it meets its own depth.
-      let videoDraw: (() => void) | null = null;
-      if (vid && depthCanvas) {
-        const el = vid.el;
-        const delay = Math.max(0, vid.delayMs);
-        const maps: { at: number; map: DepthMap }[] = [{ at: el.currentTime, map }];
-        let smoothed: DepthMap = map;
-        let shownMap: DepthMap = map;
-        let busyDepth = false;
-        let lastAsk = 0;
-        let lastAt = -1;
-        const queue: { frame: VideoFrame; due: number; at: number }[] = [];
-        const ask = async () => {
-          if (!alive || busyDepth) return;
-          const now = performance.now();
-          // Paused on the same frame: nothing new to work out.
-          if (now - lastAsk < VIDEO_DEPTH_MS || (el.paused && el.currentTime === lastAt)) return;
-          busyDepth = true;
-          lastAsk = now;
-          const at = el.currentTime;
+      // Videos and GIFs: each frame shown with its own prepared frame (its exact time, or its number).
+      /** The prepared frame shown (null: none for this moment: flat). */
+      let trkShown: { img: unknown; info: FrameInfo } | null = null;
+      /** How far the prepared 3D is on (eased in and out, 0–1). */
+      let trkFade = 0;
+      const trkOn = () => !!trkShown;
+      /** The GIF frame shown last. */
+      let lastIndex = -1;
+      const showTrack = (at: number) => {
+        if (!player || s.gl.isContextLost()) return;
+        const f = player.frameAt(at);
+        if (!f) {
+          trkShown = null;
+          return;
+        }
+        if (f.img !== trkShown?.img) {
           try {
-            const m = await videoFrameDepth(el, depthCanvas);
-            if (!alive || !m) return;
-            // A seek or a new scene starts fresh; otherwise blended for calm depth.
-            smoothed = Math.abs(at - lastAt) > 1.5 ? m : blendDepth(smoothed, m, 0.5);
-            lastAt = at;
-            maps.push({ at, map: smoothed });
-            while (maps.length > 12) maps.shift();
+            uploadTrack(s, f.img as TexImageSource);
           } catch {
-            /* the next frame tries again */
-          } finally {
-            busyDepth = false;
+            return;
           }
-        };
-        type Rvfc = (cb: () => void) => number;
+        }
+        trkShown = { img: f.img, info: f.info };
+      };
+      if (tr) {
+        trackTiles(s, tr.index);
+        const trk = tr;
+        player = new TrackPlayer(trk.item, trk.index, () => {
+          // A frame that was missing arrived (e.g. while paused): shown now.
+          if (!alive) return;
+          if (vid) {
+            if (vid.el.paused) showTrack(vid.el.currentTime);
+          } else if (lastIndex >= 0) showTrack(lastIndex);
+          kick.current();
+        });
+      }
+      if (vid && player) {
+        const el = vid.el;
+        type Rvfc = (cb: (now: number, meta: { mediaTime: number }) => void) => number;
         const rvfc = (el as unknown as { requestVideoFrameCallback?: Rvfc }).requestVideoFrameCallback?.bind(el);
         let rvfcId = 0;
-        const onVideoFrame = () => {
+        // Each new video frame: the picture and its own prepared frame, together.
+        const onVideoFrame = (_now: number, meta: { mediaTime: number }) => {
           if (!alive) return;
-          if (delay > 0 && typeof VideoFrame !== 'undefined') {
-            try {
-              queue.push({ frame: new VideoFrame(el), due: performance.now() + delay, at: el.currentTime });
-              while (queue.length > 30) queue.shift()?.frame.close();
-            } catch {
-              /* not ready yet */
-            }
+          try {
+            if (!s.gl.isContextLost() && el.readyState >= 2) uploadPicture(s, el);
+          } catch {
+            /* not ready yet */
           }
+          showTrack(meta.mediaTime);
           kick.current();
           if (rvfc) rvfcId = rvfc(onVideoFrame);
         };
         if (rvfc) rvfcId = rvfc(onVideoFrame);
-        const poll = window.setInterval(() => void ask(), 20);
+        // Jumps while paused show no new frame by themselves.
+        const onSeeked = () => {
+          try {
+            if (!s.gl.isContextLost() && el.readyState >= 2) uploadPicture(s, el);
+          } catch {
+            /* fine */
+          }
+          showTrack(el.currentTime);
+          kick.current();
+        };
+        el.addEventListener('seeked', onSeeked);
+        showTrack(el.currentTime);
         stopVideo = () => {
-          window.clearInterval(poll);
+          el.removeEventListener('seeked', onSeeked);
           const cancel = (el as unknown as { cancelVideoFrameCallback?: (id: number) => void }).cancelVideoFrameCallback;
           if (rvfcId && cancel) cancel.call(el, rvfcId);
-          for (const q of queue) q.frame.close();
-          queue.length = 0;
-        };
-        videoDraw = () => {
-          if (s.gl.isContextLost()) return;
-          let at = el.currentTime;
-          try {
-            if (delay > 0 && queue.length) {
-              // The newest frame that is due now (older ones are dropped).
-              const now = performance.now();
-              let pick: { frame: VideoFrame; due: number; at: number } | null = null;
-              while (queue.length && queue[0].due <= now) {
-                if (pick) pick.frame.close();
-                pick = queue.shift()!;
-              }
-              if (pick) {
-                uploadPicture(s, pick.frame);
-                at = pick.at;
-                pick.frame.close();
-              }
-            } else if (el.readyState >= 2) uploadPicture(s, el);
-          } catch {
-            return;
-          }
-          const d = delay > 0 ? depthForTime(maps, at)?.map : maps[maps.length - 1]?.map;
-          if (d && d !== shownMap) {
-            uploadDepth(s, d);
-            shownMap = d;
-            // The still depth follows the scene, slowly.
-            pivot = pivot * 0.8 + pivotOf(d) * 0.2;
-          }
         };
       }
-      // Moving pictures: each frame as it's shown, with its own depth.
+      // Moving pictures: each frame as it's shown, with its own prepared frame.
       const feed = propsRef.current.frames;
-      if (feed && frames) {
-        const fd: FrameDepths = frames;
-        let shownMap = map;
+      if (feed && player) {
         stopFrames = feed.listen((image, index) => {
           if (!alive || s.gl.isContextLost()) return;
           try {
             uploadPicture(s, image);
-            const m = frameDepth(fd, index);
-            if (m && m !== shownMap) {
-              uploadDepth(s, m);
-              shownMap = m;
-            }
           } catch {
             return; // a frame already gone: the next one comes soon
           }
+          lastIndex = index;
+          showTrack(index);
           kick.current();
         });
       }
@@ -841,8 +914,20 @@ export function Depth3D(props: Props) {
         }
         const d = drawnRect(cw, ch, nw, nh, p.fit);
         const asp = d.width / Math.max(1, d.height);
-        const amount = Math.max(0, p.amount ?? 1);
         const t = performance.now();
+        // Videos and GIFs: the prepared frame's numbers; the 3D eases in where it's prepared and out where not.
+        const ti = tr && trkShown ? trkShown.info : null;
+        if (tr) {
+          const step = Math.min(1, Math.max(0, t - lastT) / 180);
+          trkFade = trkOn() ? Math.min(1, trkFade + step) : Math.max(0, trkFade - step);
+          if (ti) {
+            pivot = ti.p;
+            zSubj = ti.z ?? pivot;
+            zBg = ti.b ?? Math.min(zSubj, pivot);
+          }
+        }
+        const calmCam = !!tr && !!p.calm;
+        const amount = Math.max(0, p.amount ?? 1) * (tr ? trkFade * motionDamp(ti?.mo ?? 0, calmCam) * (calmCam ? 0.75 : 1) : 1);
         const { gl } = s;
         // Still pictures: the outline (when it has come) and the picture layers that use it.
         const mk = stillPic && maskRef.current && maskRef.current.src === p.src ? maskRef.current : null;
@@ -927,12 +1012,16 @@ export function Depth3D(props: Props) {
             kick.current();
           });
         }
-        const layered = !!plateKey && !!plate?.ready && plate.key === plateKey;
-        const foreOn = !!plateKey && !!fore?.ready && fore.key === plateKey;
+        // Videos and GIFs: what their prepared 3D holds, for the effects switched on.
+        const tLay = tr ? p.layers : undefined;
+        const tSt = ti?.st ?? null;
+        const layered = tr ? !!ti && tr.index.has.plate && !!tLay?.layered : !!plateKey && !!plate?.ready && plate.key === plateKey;
+        const foreOn = tr ? !!ti && tr.index.has.subject : !!plateKey && !!fore?.ready && fore.key === plateKey;
         // Both made: the subject's own layer over the filled background (else as before).
-        const clean = layered && foreOn;
+        // (Videos: the subject's layer is always there with the outline.)
+        const clean = tr ? foreOn : layered && foreOn;
         // 3D only on the subject: the background stays still and the subject moves against the background's depth.
-        const bgStill = !!mk && !!lay?.subjectOnly;
+        const bgStill = tr ? foreOn && !!tSt && !!tLay?.subjectOnly : !!mk && !!lay?.subjectOnly;
         const pv = bgStill ? zBg : pivot;
         if (byMouse) {
           // (After a still moment the first step is one frame, not the whole pause.)
@@ -943,15 +1032,16 @@ export function Depth3D(props: Props) {
         lastT = t;
         const halted = clock.current.halted;
         const base = byMouse ? mousePose(lean, amount)
-          : scalePose(cameraAt(sharedCamera, p.motion?.shape ?? ('random' as MotionChoice), p.motion?.speed ?? 1, now(), !halted), amount * Math.max(0, p.motion?.amount ?? 1));
+          : scalePose(cameraAt(sharedCamera, p.motion?.shape ?? ('random' as MotionChoice), (p.motion?.speed ?? 1) * (calmCam ? 0.6 : 1), now(), !halted), amount * Math.max(0, p.motion?.amount ?? 1));
         // 3D to the beat: a push closer or a little bounce on each beat.
         const b = p.beat;
         const env = b ? beatEnvelope(t - beatAt.current) : 0;
         const pose = b ? withBeat(base, b.kind, b.amount * Math.max(0.3, amount), env) : base;
         // Held within what can be shown without the picture's edges.
         const f = framePose(pose, d.width, d.height, pv);
-        videoDraw?.();
         gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.uniform1f(s.u.track, tr && ti ? 1 : 0);
+        gl.uniform1f(s.u.asp, asp);
         // Whole pixels from the top left, exactly where the plain picture is drawn (GL counts from the bottom).
         const vw = Math.round(d.width * r);
         const vh = Math.round(d.height * r);
@@ -1005,11 +1095,37 @@ export function Depth3D(props: Props) {
           }
           // Lift-off moves while it eases in or out.
           subjBusy = !fadeDone(liftF, t);
+        } else if (tr && ti) {
+          // Videos and GIFs: the same subject effects, from each prepared frame's outline and numbers.
+          const sj = p.subject;
+          if (sj && sj.lift > 0) liftAmt = sj.lift;
+          fadeTo(liftF, tSt && sj && sj.lift > 0 && clean ? 1 : 0, t);
+          const lv = fadeAt(liftF, t);
+          const on = !!tSt && (lv > 0 || bgStill || layered);
+          gl.uniform1f(s.u.subj, on ? 1 : 0);
+          if (tSt) {
+            const sf = subjectFrame(tSt, asp, { level: lv, amount: liftAmt });
+            const reach = bgStill && !layered ? (Math.hypot(f.shift.x * asp, f.shift.y) + Math.abs(f.dolly) * 0.5) * Math.abs(zSubj - zBg) * 1.3 + 0.003 : 0;
+            gl.uniform2f(s.u.cen, sf.centre.x, sf.centre.y);
+            gl.uniform1f(s.u.lift, sf.lift);
+            gl.uniform2f(s.u.bot, sf.pivot.x, sf.pivot.y);
+            gl.uniform2f(s.u.rot, Math.cos(sf.angle), Math.sin(sf.angle));
+            gl.uniform1f(s.u.breath, sf.breath);
+            gl.uniform1f(s.u.grow, layered ? 0 : Math.max(sf.grow, reach));
+            gl.uniform1f(s.u.shadow, sf.shadow);
+            gl.uniform2f(s.u.shOff, sf.shadowOffset.x, sf.shadowOffset.y);
+            gl.uniform1f(s.u.shBlur, sf.shadowBlur);
+            gl.uniform1f(s.u.zSubj, zSubj);
+            gl.uniform1f(s.u.zBg, zBg);
+          }
+          subjBusy = !fadeDone(liftF, t);
         } else gl.uniform1f(s.u.subj, 0);
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
         const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
-        if (!still || env > 0 || subjBusy) raf = requestAnimationFrame(frame);
+        // (Videos and GIFs: also while their 3D eases in or out.)
+        const fading = !!tr && trkFade !== (trkOn() ? 1 : 0);
+        if (!still || env > 0 || subjBusy || fading) raf = requestAnimationFrame(frame);
       };
       frame();
       kick.current = () => {
@@ -1049,10 +1165,10 @@ export function Depth3D(props: Props) {
       alive = false;
       if (lifted.src === src && lifted.at === Infinity) lifted.at = performance.now();
       // Left before its depth came (quick browsing): don't keep the model busy with it.
-      if (moving) depthFramesLetGo(src);
-      else if (!vid) depthLetGo(src);
+      if (!moving && !vid) depthLetGo(src);
       stopFrames();
       stopVideo();
+      player?.close();
       cancelAnimationFrame(raf);
       kick.current = () => {};
       stopMouse();
@@ -1061,7 +1177,7 @@ export function Depth3D(props: Props) {
       if (surface) giveBack(surface);
       canvasRef.current = null;
     };
-  }, [props.src, nw, nh, !!props.mouse, !!props.video, props.video?.delayMs]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [props.src, nw, nh, !!props.mouse, !!props.video, props.track?.index]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Subject effects: this picture's outline, worked out first (the neighbours' ones are worked out ahead by the viewer).
   useEffect(() => {
@@ -1084,7 +1200,7 @@ export function Depth3D(props: Props) {
   useEffect(() => {
     kick.current();
   }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift,
-    props.layers?.edges, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered]);
+    props.layers?.edges, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered, props.calm]);
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;

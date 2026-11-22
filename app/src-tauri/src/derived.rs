@@ -11,6 +11,11 @@
 //! an item for good (or emptying the trash) removes its saved maps with its
 //! other files (library.rs), Settings can clear them all, and a picture that
 //! was rotated (it has a new file) no longer counts its old maps.
+//!
+//! Videos and GIFs keep prepared 3D (kind "track", video3d.ts): an index
+//! ("MV3I", model `<tag>.i`) and the frames' 3D data in pieces ("MV3S", model
+//! `<tag>.s<n>`), where the tag names the models and settings they were made
+//! with. Counted and deleted per tag, apart from the pictures' maps.
 
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -24,7 +29,10 @@ use crate::session::Session;
 /// the 3D picture layers made from them (plate.ts): Layered 3D's background
 /// plate ("plate") and the subject's own layer ("fore"), kept as what differs
 /// from the picture itself, packed (layerpack.ts; starts with "MVL1").
-pub const KINDS: [&str; 4] = ["depth", "outline", "plate", "fore"];
+/// "track": a video's or GIF's prepared 3D (see above).
+pub const KINDS: [&str; 5] = ["depth", "outline", "plate", "fore", "track"];
+/// `clear` with this: every kind of still pictures, not the videos' and GIFs' tracks.
+pub const PICTURE_KINDS: &str = "pictures";
 /// A packed layer at most (a 1600 px plate is a few MB at worst).
 const MAX_LAYER: usize = 64 << 20;
 /// Biggest map accepted (the estimate commands give at most 2048 × 2048).
@@ -50,6 +58,13 @@ fn check_model(model: &str) -> Result<(), String> {
 
 /// What is saved, by kind: a map (as the estimate commands give it) or a packed layer.
 fn check_data(kind: &str, bytes: &[u8]) -> Result<(), String> {
+    if kind == "track" {
+        return if bytes.len() >= 8 && bytes.len() <= MAX_LAYER && (bytes.starts_with(b"MV3S") || bytes.starts_with(b"MV3I")) {
+            Ok(())
+        } else {
+            Err("The prepared 3D didn't arrive whole.".into())
+        };
+    }
     if kind == "plate" || kind == "fore" {
         return if bytes.len() >= 16 && bytes.len() <= MAX_LAYER && bytes.starts_with(b"MVL1") {
             Ok(())
@@ -71,15 +86,22 @@ fn check_map(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-/// The item's stored file, when it is a still picture (else why not).
-fn picture_source(conn: &Connection, item: i64) -> Result<String, String> {
+/// The item's stored file, when it can keep this kind (pictures: maps and layers;
+/// videos and GIFs: tracks), else why not.
+fn picture_source(conn: &Connection, item: i64, what: &str) -> Result<String, String> {
     let row: Option<(String, String)> =
         conn.query_row("SELECT kind, object_id FROM media WHERE id = ?", [item], |r| Ok((r.get(0)?, r.get(1)?))).optional().map_err(e)?;
     match row {
         None => Err("That item isn't there any more.".into()),
-        Some((kind, _)) if kind != "image" => Err("Only still pictures keep depth maps and outlines.".into()),
+        Some((kind, _)) if what == "track" && kind != "video" && kind != "gif" => Err("Only videos and GIFs keep prepared 3D.".into()),
+        Some((kind, _)) if what != "track" && kind != "image" => Err("Only still pictures keep depth maps and outlines.".into()),
         Some((_, source)) => Ok(source),
     }
+}
+
+/// A track's tag: its model name without the piece (`<tag>.i`, `<tag>.s12` → `<tag>`).
+pub fn track_tag(model: &str) -> &str {
+    model.rsplit_once('.').map(|(t, _)| t).unwrap_or(model)
 }
 
 use crate::util::now_ms;
@@ -89,12 +111,12 @@ pub fn put(s: &Session, item: i64, kind: &str, model: &str, bytes: &[u8]) -> Res
     check_kind(kind)?;
     check_model(model)?;
     check_data(kind, bytes)?;
-    picture_source(&s.db(), item)?;
+    picture_source(&s.db(), item, kind)?;
     let (oid, _) = s.vault().add_object(ObjectKind::Thumbnail, bytes).map_err(|x| x.to_string())?;
     let stored = (|| -> Result<Option<String>, String> {
         let db = s.db();
         // Looked at again now that the object is written (the item may have gone meanwhile).
-        let source = picture_source(&db, item)?;
+        let source = picture_source(&db, item, kind)?;
         let old: Option<String> = db
             .query_row("SELECT object_id FROM derived WHERE media_id = ?1 AND kind = ?2 AND model = ?3", params![item, kind, model], |r| r.get(0))
             .optional()
@@ -143,21 +165,27 @@ pub fn get(s: &Session, item: i64, kind: &str, model: &str) -> Result<Option<Zer
     Ok(s.vault().read_object(ObjectKind::Thumbnail, &id).ok().filter(|b| check_data(kind, b).is_ok()))
 }
 
-/// Remove every saved map (of one kind, or all); how many there were.
+/// Remove every saved map (of one kind, of all the pictures' kinds with
+/// `PICTURE_KINDS`, or everything); how many there were.
 pub fn clear(s: &Session, kind: Option<&str>) -> Result<u64, String> {
-    if let Some(k) = kind {
-        check_kind(k)?;
-    }
+    let (which, args): (&str, Vec<String>) = match kind {
+        None => ("1 = 1", vec![]),
+        Some(PICTURE_KINDS) => ("kind <> 'track'", vec![]),
+        Some(k) => {
+            check_kind(k)?;
+            ("kind = ?1", vec![k.to_string()])
+        }
+    };
     let ids: Vec<String> = {
         let db = s.db();
         let ids: Vec<String> = db
-            .prepare("SELECT object_id FROM derived WHERE ?1 IS NULL OR kind = ?1")
+            .prepare(&format!("SELECT object_id FROM derived WHERE {which}"))
             .map_err(e)?
-            .query_map([kind], |r| r.get(0))
+            .query_map(rusqlite::params_from_iter(args.iter()), |r| r.get(0))
             .map_err(e)?
             .collect::<rusqlite::Result<_>>()
             .map_err(e)?;
-        db.execute("DELETE FROM derived WHERE ?1 IS NULL OR kind = ?1", [kind]).map_err(e)?;
+        db.execute(&format!("DELETE FROM derived WHERE {which}"), rusqlite::params_from_iter(args.iter())).map_err(e)?;
         ids
     };
     if ids.is_empty() {
@@ -191,11 +219,13 @@ const CHUNK: usize = 500;
 use crate::util::placeholders as in_list;
 
 /// What is saved for these items, by kind and model (kinds in order, then models by name).
+/// Tracks are one line per tag (all its pieces), counting videos and GIFs.
 pub fn summary(conn: &Connection, items: &[i64]) -> Result<Vec<DerivedGroup>, String> {
     let mut acc: std::collections::BTreeMap<(String, String), (u64, u64)> = std::collections::BTreeMap::new();
+    let mut tracks: std::collections::BTreeMap<String, (std::collections::HashSet<i64>, u64)> = std::collections::BTreeMap::new();
     for part in items.chunks(CHUNK) {
         let mut st = conn
-            .prepare(&format!("SELECT kind, model, COUNT(*), IFNULL(SUM(bytes), 0) FROM derived WHERE media_id IN ({}) GROUP BY kind, model", in_list(part.len())))
+            .prepare(&format!("SELECT kind, model, COUNT(*), IFNULL(SUM(bytes), 0) FROM derived WHERE kind <> 'track' AND media_id IN ({}) GROUP BY kind, model", in_list(part.len())))
             .map_err(e)?;
         let rows = st
             .query_map(rusqlite::params_from_iter(part.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, i64>(2)?, r.get::<_, i64>(3)?)))
@@ -206,6 +236,21 @@ pub fn summary(conn: &Connection, items: &[i64]) -> Result<Vec<DerivedGroup>, St
             a.0 += n as u64;
             a.1 += b as u64;
         }
+        let mut st = conn
+            .prepare(&format!("SELECT model, media_id, bytes FROM derived WHERE kind = 'track' AND media_id IN ({})", in_list(part.len())))
+            .map_err(e)?;
+        let rows = st
+            .query_map(rusqlite::params_from_iter(part.iter()), |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?)))
+            .map_err(e)?;
+        for row in rows {
+            let (model, item, b) = row.map_err(e)?;
+            let a = tracks.entry(track_tag(&model).to_string()).or_default();
+            a.0.insert(item);
+            a.1 += b as u64;
+        }
+    }
+    for (tag, (its, bytes)) in tracks {
+        acc.insert(("track".to_string(), tag), (its.len() as u64, bytes));
     }
     let mut out: Vec<DerivedGroup> = acc.into_iter().map(|((kind, model), (count, bytes))| DerivedGroup { kind, model, count, bytes }).collect();
     out.sort_by_key(|g| (KINDS.iter().position(|k| *k == g.kind).unwrap_or(9), g.model.clone()));
@@ -213,6 +258,7 @@ pub fn summary(conn: &Connection, items: &[i64]) -> Result<Vec<DerivedGroup>, St
 }
 
 /// Remove these items' saved maps of the chosen kinds and models; how many maps went.
+/// For tracks the model is the tag (as `summary` gives it): all its pieces go.
 /// Saved before the encrypted objects are removed (a crash can't leave rows pointing at nothing).
 pub fn remove(s: &Session, items: &[i64], which: &[(String, String)]) -> Result<u64, String> {
     for (k, m) in which {
@@ -230,7 +276,8 @@ pub fn remove(s: &Session, items: &[i64], which: &[(String, String)]) -> Result<
             for part in items.chunks(CHUNK) {
                 let mut args: Vec<rusqlite::types::Value> = vec![k.clone().into(), m.clone().into()];
                 args.extend(part.iter().map(|i| rusqlite::types::Value::Integer(*i)));
-                let w = format!("kind = ?1 AND model = ?2 AND media_id IN ({})", (3..3 + part.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(","));
+                let same = if k == "track" { "substr(model, 1, length(?2) + 1) = ?2 || '.'" } else { "model = ?2" };
+                let w = format!("kind = ?1 AND {same} AND media_id IN ({})", (3..3 + part.len()).map(|i| format!("?{i}")).collect::<Vec<_>>().join(","));
                 {
                     let mut st = tx.prepare(&format!("SELECT object_id FROM derived WHERE {w}")).map_err(e)?;
                     for r in st.query_map(rusqlite::params_from_iter(args.iter()), |r| r.get::<_, String>(0)).map_err(e)? {
@@ -323,10 +370,17 @@ pub struct DerivedStats {
     /// The 3D layers (background plates and subject layers together).
     pub layer_count: u64,
     pub layer_bytes: u64,
+    /// Videos and GIFs with prepared 3D (any tag), and the space all of it takes.
+    pub track_count: u64,
+    pub track_bytes: u64,
 }
 
 pub fn stats(conn: &Connection) -> Result<DerivedStats, String> {
     let mut out = DerivedStats::default();
+    let (n, bytes): (i64, i64) = conn
+        .query_row("SELECT COUNT(DISTINCT media_id), IFNULL(SUM(bytes), 0) FROM derived WHERE kind = 'track'", [], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(e)?;
+    (out.track_count, out.track_bytes) = (n as u64, bytes as u64);
     let mut st = conn.prepare("SELECT kind, COUNT(*), IFNULL(SUM(bytes), 0) FROM derived GROUP BY kind").map_err(e)?;
     let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?))).map_err(e)?;
     for row in rows {
@@ -474,7 +528,7 @@ mod tests {
         assert_eq!(thumbs(&s), 4);
         assert_eq!(
             stats(&s.db()).unwrap(),
-            DerivedStats { depth_count: 3, depth_bytes: (8 + 12) + (8 + 4) + (8 + 1), outline_count: 1, outline_bytes: 8 + 25, layer_count: 0, layer_bytes: 0 }
+            DerivedStats { depth_count: 3, depth_bytes: (8 + 12) + (8 + 4) + (8 + 1), outline_count: 1, outline_bytes: 8 + 25, ..Default::default() }
         );
         let j = serde_json::to_value(stats(&s.db()).unwrap()).unwrap();
         for k in ["depthCount", "depthBytes", "outlineCount", "outlineBytes"] {
@@ -494,6 +548,50 @@ mod tests {
         assert_eq!((stats(&s.db()).unwrap(), thumbs(&s)), (DerivedStats::default(), 0));
         assert_eq!(clear(&s, None).unwrap(), 0);
         assert!(clear(&s, Some("thumbs")).is_err());
+    }
+
+    #[test]
+    fn videos_and_gifs_keep_tracks_apart_from_pictures() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let pic = item(&s, "image");
+        let vid = item(&s, "video");
+        let gif = item(&s, "gif");
+        let piece = |n: usize| {
+            let mut b = b"MV3S".to_vec();
+            b.extend(std::iter::repeat_n(1u8, n));
+            b
+        };
+        let tag = "v2-small@518~1_birefnet@1024_e0.00_simple_w768_f1";
+        put(&s, vid, "track", &format!("{tag}.i"), b"MV3I{\"v\":1}").unwrap();
+        put(&s, vid, "track", &format!("{tag}.s0"), &piece(10)).unwrap();
+        put(&s, vid, "track", &format!("{tag}.s1"), &piece(20)).unwrap();
+        put(&s, gif, "track", &format!("{tag}.s0"), &piece(5)).unwrap();
+        put(&s, vid, "track", "other.s0", &piece(4)).unwrap();
+        put(&s, pic, "depth", "v2-small", &map(2, 2, 1)).unwrap();
+        // Pictures can't keep tracks, videos can't keep maps, and a track is whole.
+        assert!(put(&s, pic, "track", "x.s0", &piece(1)).is_err());
+        assert!(put(&s, vid, "depth", "v2-small", &map(2, 2, 1)).is_err());
+        assert!(put(&s, vid, "track", "x.s0", b"MVL1abcdefgh").is_err());
+        assert_eq!(&get(&s, vid, "track", &format!("{tag}.s1")).unwrap().unwrap()[..], &piece(20)[..]);
+        let st = stats(&s.db()).unwrap();
+        assert_eq!((st.track_count, st.depth_count), (2, 1));
+        assert_eq!(st.track_bytes, 11 + 14 + 24 + 9 + 8);
+        // One line per tag, counting videos and GIFs.
+        let sum = summary(&s.db(), &[vid, gif, pic]).unwrap();
+        let tr: Vec<_> = sum.iter().filter(|g| g.kind == "track").map(|g| (g.model.as_str(), g.count)).collect();
+        assert_eq!(tr, vec![("other", 1), (tag, 2)]);
+        // Removing a tag takes all its pieces (not another tag that starts the same way).
+        put(&s, vid, "track", &format!("{tag}x.s0"), &piece(4)).unwrap();
+        assert_eq!(remove(&s, &[vid], &[("track".into(), tag.into())]).unwrap(), 3);
+        assert!(get(&s, gif, "track", &format!("{tag}.s0")).unwrap().is_some(), "other items keep theirs");
+        assert!(get(&s, vid, "track", &format!("{tag}x.s0")).unwrap().is_some());
+        // The pictures' clear leaves tracks; the tracks' clear leaves pictures.
+        assert_eq!(clear(&s, Some(PICTURE_KINDS)).unwrap(), 1);
+        assert_eq!(stats(&s.db()).unwrap().track_count, 2);
+        assert_eq!(clear(&s, Some("track")).unwrap(), 3);
+        assert_eq!(stats(&s.db()).unwrap(), DerivedStats::default());
+        assert_eq!(track_tag("a~0.5_e0.70.s12"), "a~0.5_e0.70");
     }
 
     #[test]

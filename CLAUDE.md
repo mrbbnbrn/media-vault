@@ -62,6 +62,7 @@ Main features:
 - **Faces:** offline face recognition, People page, auto-naming, sort into person folders, face wall, best faces,
   face time-lapse.
 - **3D photos:** depth models, subject outlines, Lift-off, Layered 3D, background fill; all results saved encrypted.
+  Videos and GIFs get the same 3D once **prepared** (every frame worked out once, saved, then played frame-exact).
 - **Discovery river**, museum, memories, duel, slot machine, statistics, today's pick.
 - **Phone transfer:** pair a phone once, then send pictures and videos both ways over home Wi-Fi.
 - **Safety:** auto-lock (idle, Windows lock, minimise), panic key Ctrl+Shift+L, hide from screenshots, 24-word recovery
@@ -127,7 +128,8 @@ app/src-tauri/           Rust backend (crate media-vault-app, binary MediaVault)
   src/videotool.rs       ffmpeg runs (input from the in-app server, output to stdout)
   src/faces*.rs, faceid*.rs   face detection and recognition
   src/depth.rs, subject.rs, inpaint.rs, upscale*.rs   ONNX models; gpuroom.rs shares the graphics card
-  src/derived.rs         saved depth maps, outlines, plates (encrypted)
+  src/derived.rs         saved depth maps, outlines, plates, videos' prepared 3D ("track") (encrypted)
+  src/video3d.rs         prepared 3D for videos: ffmpeg decodes frames (+ exact times) for the window
   src/encryption.rs, plainfiles.rs   turning encryption on/off; vaults without encryption
   src/picture.rs, thumbpages.rs, sketch.rs   native decoding, thumbnails, thumbnail pages
   src/userbusy.rs        background work steps aside while the user is busy
@@ -153,6 +155,10 @@ app/src/                 React window
   screens/MultiScreen.tsx, Settings.tsx, Start.tsx, CreateVault.tsx, Recover.tsx
   components/PhoneTransfer.tsx, transfer.ts, transferlogic.ts, mocktransfer.ts, phoneoriginal.ts   phone transfer UI
   presets.ts             PlaybackSettings (normalize old saves)
+  video3d.ts, video3dworker.ts, video3dmath.ts   preparing 3D for videos/GIFs (queue, calming, tiles, encoding)
+  track3d.ts, trackformat.ts   prepared 3D: saved format, finding it, TrackPlayer (frame-exact decoding)
+  components/Prepare3D.tsx     "Prepare 3D" dialog + Settings → AI & 3D → Videos and GIFs
+  (plan and as-built notes: docs/video-3d-plan.md)
   messages.ts, text.ts, components/Dialogs.tsx, keylayers.ts, calm.ts, bgpace.ts, jobs.ts   shared helpers
   styles.css + styles/*.css   theme variables and styles
 ```
@@ -325,6 +331,20 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-22 (Claude Code on the user's PC; fold into the Project notes): **prepared 3D for videos and GIFs**
+  (`docs/video-3d-plan.md`, approved by the user). Live video depth, "Delay videos slightly" (and
+  `playeraudio.ts`) and GIF depth-on-open are gone. A video/GIF is prepared once when asked (viewer 3D ▾ → Prepare
+  3D…, or right-click → 3D data → Prepare 3D for videos and GIFs…): ffmpeg decodes its frames with their times
+  (`video3d.rs`), each frame goes through the depth, outline and fill models in use, is calmed over time (only
+  where nothing moved; steady depth range; background seen earlier fills behind the subject), packed into 3 × 2
+  tiles and encoded with WebCodecs in a worker; 48-frame pieces + an index are saved as `derived` kind `track`
+  (tag = models + settings). Playing: `TrackPlayer` decodes ahead and hands each video frame (rVFC `mediaTime`) its
+  own prepared frame; the shader reads all maps from that one texture, so Lift-off, Layered 3D, 3D only on the
+  subject and sharper edges work on videos. Settings → AI & 3D → Videos and GIFs: detail 512/768/1024, every
+  frame / every 2nd, calmer camera, size + "Delete all 3D data for videos and GIFs"; Delete 3D data… lists them too;
+  the pictures' clear/redo leave them alone (`derived_clear` kind "pictures"). Config: `depthVideoDelay` replaced by
+  `video3dSize`, `video3dEvery`, `video3dCalm`. Window: 597 tests pass; worker/player/shader checked in Chromium.
+  Rust not compiled on that PC (CI first); nothing tried in the real app yet.
 - 2026-11-22 (Claude Code on the user's PC; fold into the Project notes): 12 bugs fixed, found by checking an outside
   review against the code. Vault: reclaiming space right after unlock no longer copies the last pack onto itself
   (`pack.rs` `compact_until`; reported freed bytes now true); removing objects marks the library for saving

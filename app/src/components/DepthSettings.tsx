@@ -137,15 +137,15 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
             <input type="checkbox" checked={!!prefs.depthMoving} onChange={(e) => saveViewerPrefs({ depthMoving: e.target.checked })} /> 3D for GIFs and videos
           </label>
           <span className="faint" style={{ fontSize: 12 }}>
-            Lets the gentle 3D motion, the 3D mouse and 3D to the beat work on GIFs and videos too (it turns none of them on by itself). GIFs: every frame's depth is worked out when one opens (flat until then); videos: worked out live while they play.
+            Lets the gentle 3D motion, the 3D mouse, 3D to the beat, Lift-off and Layered 3D work on GIFs and videos too (it turns none of them on by itself). A video or GIF needs to be prepared once first: 3D ▾ → Prepare 3D (or right-click a folder). Until then it plays without 3D.
           </span>
         </span>
         <span />
         <span className="row" style={{ flexWrap: 'wrap', gap: 4 }}>
           <label className="check">
-            <input type="checkbox" checked={!!prefs.depthVideoDelay} onChange={(e) => saveViewerPrefs({ depthVideoDelay: e.target.checked })} /> Delay videos slightly for cleaner 3D edges
+            <input type="checkbox" checked={prefs.video3dCalm !== false} onChange={(e) => saveViewerPrefs({ video3dCalm: e.target.checked })} /> Calmer 3D camera on videos
           </label>
-          <span className="faint" style={{ fontSize: 12 }}>Videos' depth is worked out live, a moment behind the picture. With this on, the picture and its sound are shown a tenth of a second late so every frame meets its own depth.</span>
+          <span className="faint" style={{ fontSize: 12 }}>The 3D camera moves slower and less on videos and GIFs, and less still in fast scenes, so it doesn't fight the video's own movement. Their other settings are in Settings → AI & 3D → Videos and GIFs.</span>
         </span>
         <Slider id="dp-moving" label="GIF / video 3D depth" title="How strongly GIFs and videos move in depth (separate from pictures)" min={0.2} max={3} step={0.1}
           value={prefs.depthMovingAmount ?? 0.6} onChange={(v) => saveViewerPrefs({ depthMovingAmount: v })} />

@@ -419,8 +419,8 @@ export const api = {
   derivedGet: (item: number, kind: DerivedKind, model: string) => derivedGet(item, kind, model),
   /** Saves a depth map or outline (the bytes as depth_estimate / subject_estimate sent them back). */
   derivedPut: (item: number, kind: DerivedKind, model: string, bytes: Uint8Array) => callRaw<void>('derived_put', { item, kind, model }, bytes),
-  /** Forgets the saved ones (of one kind, or all); how many were removed. */
-  derivedClear: (kind?: DerivedKind) => call<number>('derived_clear', kind ? { kind } : {}),
+  /** Forgets the saved ones (of one kind, all the pictures' kinds with 'pictures', or all); how many were removed. */
+  derivedClear: (kind?: DerivedKind | 'pictures') => call<number>('derived_clear', kind ? { kind } : {}),
   derivedStats: () => call<DerivedStats>('derived_stats'),
   /** Items that already have a saved map of this kind for this model. */
   derivedHave: (kind: DerivedKind, model: string) => call<number[]>('derived_have', { kind, model }),
@@ -430,6 +430,12 @@ export const api = {
   derivedSummary: (items: number[]) => call<DerivedGroup[]>('derived_summary', { items }),
   /** Remove these items' maps of these kinds and models; how many went. */
   derivedRemove: (items: number[], which: [DerivedKind, string][]) => call<number>('derived_remove', { items, which }),
+  // Prepared 3D for videos (video3d.rs): the frames decoded by ffmpeg, a few at a time
+  /** Start decoding a video's frames at this size from `start` seconds on. */
+  video3dOpen: (item: number, width: number, height: number, start: number) => call<{ id: number; width: number; height: number }>('video3d_open', { item, width, height, start }),
+  /** The next frames: u32 count, u8 1 = no more, 3 bytes, f64 times, then the RGBA frames. */
+  video3dRead: (id: number, max: number) => video3dRead(id, max),
+  video3dClose: (id: number) => call<void>('video3d_close', { id }),
 
   // saving a rotation from the viewer (rotate.rs); `quarter` = clockwise quarter turns
   /** A JPEG, losslessly (its EXIF orientation). */
@@ -1179,7 +1185,8 @@ async function inpaintEstimateNow(request: InpaintRequest, rgba: Uint8Array, mas
 // ---- saved depth maps and outlines (pictures only) -----------------------------------------------
 
 /** Saved 3D data: depth maps and outlines, and the 3D layers made from them (plate.ts). */
-export type DerivedKind = 'depth' | 'outline' | 'plate' | 'fore';
+/** 'track': a video's or GIF's prepared 3D (track3d.ts). */
+export type DerivedKind = 'depth' | 'outline' | 'plate' | 'fore' | 'track';
 
 /** What is saved for some pictures, for one kind and model (the model's name carries its settings). */
 export interface DerivedGroup {
@@ -1206,6 +1213,22 @@ export interface DerivedStats {
   /** Saved 3D layers (background plates and subject layers). */
   layerCount?: number;
   layerBytes?: number;
+  /** Videos and GIFs with prepared 3D, and the space it all takes. */
+  trackCount?: number;
+  trackBytes?: number;
+}
+
+async function video3dRead(id: number, max: number): Promise<Uint8Array> {
+  let b: ArrayBuffer | Uint8Array;
+  if (!inTauri) b = (await (await demo()).mock.call('video3d_read', { id, max })) as Uint8Array;
+  else {
+    try {
+      b = await invoke<ArrayBuffer>('video3d_read', { id, max });
+    } catch (e) {
+      throw new Error(typeof e === 'string' ? e : String(e));
+    }
+  }
+  return b instanceof Uint8Array ? b : new Uint8Array(b);
 }
 
 async function derivedGet(item: number, kind: DerivedKind, model: string): Promise<Uint8Array | null> {

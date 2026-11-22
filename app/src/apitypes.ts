@@ -58,7 +58,12 @@ export interface ViewerSettings {
   depthBeatKind?: 'push' | 'bounce';
   depthBeatAmount?: number;
   /** Live video 3D: show each video frame (and its sound) ~0.1 s late so it meets its own depth. */
-  depthVideoDelay?: boolean;
+  /** Prepared 3D for videos and GIFs (video3d.ts): the long side of its pictures (512, 768 or 1024). */
+  video3dSize?: number;
+  /** Every frame (1) or every second frame (2). */
+  video3dEvery?: number;
+  /** A calmer 3D camera on videos and GIFs (slower, smaller, less on fast scenes). */
+  video3dCalm?: boolean;
   /** The old slideshow setting "3D photos" has been carried over to depthAuto (done once). */
   depthAutoMigrated?: boolean;
   /** 3D photos: which depth model ('v2-small' Fast, 'da3-mono-large' Best; '' = the best one installed; the retired 'da3-base' falls back to the best installed). */
@@ -111,7 +116,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1,
-  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, depthVideoDelay: false, depthAutoMigrated: false,
+  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, video3dSize: 768, video3dEvery: 1, video3dCalm: true, depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   subjectModel: '', depthLift: false, depthLiftAmount: 1,
   depthEdges3d: false, depthEdgesStrength: 0.7, depthSubjectOnly: false,

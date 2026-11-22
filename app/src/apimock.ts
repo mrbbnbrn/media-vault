@@ -245,7 +245,8 @@ export const mock = {
         return mockDerived.get(`${a.item}|${a.kind}|${a.model}`) ?? new Uint8Array(0);
       case 'derived_clear': {
         let n = 0;
-        for (const k of [...mockDerived.keys()]) if (!a.kind || k.split('|')[1] === a.kind) {
+        const kindOf = (k: string) => k.split('|')[1];
+        for (const k of [...mockDerived.keys()]) if (!a.kind || kindOf(k) === a.kind || (a.kind === 'pictures' && kindOf(k) !== 'track')) {
           mockDerived.delete(k);
           n++;
         }
@@ -271,11 +272,15 @@ export const mock = {
       case 'derived_summary': {
         const want = new Set((a.items as number[]) ?? []);
         const acc = new Map<string, DerivedGroup>();
+        const counted = new Set<string>();
         for (const [k, v] of mockDerived) {
-          const [item, kind, model] = k.split('|');
+          const [item, kind, full] = k.split('|');
           if (!want.has(Number(item))) continue;
+          // Tracks: one line per tag (all its pieces), counting items.
+          const model = kind === 'track' ? full.slice(0, full.lastIndexOf('.')) : full;
           const g = acc.get(`${kind}|${model}`) ?? { kind: kind as DerivedKind, model, count: 0, bytes: 0 };
-          g.count++;
+          if (kind !== 'track' || !counted.has(`${item}|${model}`)) g.count++;
+          counted.add(`${item}|${model}`);
           g.bytes += v.length;
           acc.set(`${kind}|${model}`, g);
         }
@@ -286,7 +291,8 @@ export const mock = {
         const which = new Set(((a.which as [string, string][]) ?? []).map(([k, m]) => `${k}|${m}`));
         let n = 0;
         for (const k of [...mockDerived.keys()]) {
-          const [item, kind, model] = k.split('|');
+          const [item, kind, full] = k.split('|');
+          const model = kind === 'track' ? full.slice(0, full.lastIndexOf('.')) : full;
           if (want.has(Number(item)) && which.has(`${kind}|${model}`)) {
             mockDerived.delete(k);
             n++;
@@ -295,9 +301,13 @@ export const mock = {
         return n;
       }
       case 'derived_stats': {
-        const st: DerivedStats = { depthCount: 0, depthBytes: 0, outlineCount: 0, outlineBytes: 0 };
+        const st: DerivedStats = { depthCount: 0, depthBytes: 0, outlineCount: 0, outlineBytes: 0, trackCount: 0, trackBytes: 0 };
+        const tracks = new Set<string>();
         for (const [k, v] of mockDerived) {
-          if (k.split('|')[1] === 'depth') {
+          if (k.split('|')[1] === 'track') {
+            tracks.add(k.split('|')[0]);
+            st.trackBytes! += v.length;
+          } else if (k.split('|')[1] === 'depth') {
             st.depthCount++;
             st.depthBytes += v.length;
           } else {
@@ -305,8 +315,14 @@ export const mock = {
             st.outlineBytes += v.length;
           }
         }
+        st.trackCount = tracks.size;
         return st;
       }
+      case 'video3d_open':
+      case 'video3d_read':
+        throw new Error('Preview: preparing 3D for videos works in the real app.');
+      case 'video3d_close':
+        return;
       case 'upscale_cancel':
         mockJob += 1;
         return;

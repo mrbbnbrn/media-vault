@@ -316,7 +316,7 @@ async function runOne(r: PrepareRequest): Promise<void> {
   let ok = true;
   try {
     if (r.again) {
-      await api.derivedClear();
+      await api.derivedClear('pictures');
       // The copies in memory would otherwise be used without being saved again.
       forgetDepth();
       forgetSubjects();

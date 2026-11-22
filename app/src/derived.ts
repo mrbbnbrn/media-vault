@@ -10,6 +10,7 @@
 // (their address is mediaUrl(id)); depth.ts and subject.ts ask here.
 
 import { api, mapBytes, mediaUrl, onLocked, parseDepth, type DepthMap, type DerivedKind } from './api';
+import { parseTrackTag } from './trackformat';
 
 const ids = new Map<string, number>();
 
@@ -62,6 +63,21 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
     const parts = [`outline ${names.get(outline) ?? outline}`, Number(edges) > 0 ? 'sharper edges' : '', fill ? fills[fill] ?? (names.has(fill) ? `${names.get(fill)} fill` : fill) : ''].filter(Boolean);
     return { name: names.get(depth) ?? depth, detail: parts.join(' · ') };
+  }
+  // Videos' and GIFs' prepared 3D (trackformat.ts trackTag).
+  const t = kind === 'track' ? parseTrackTag(tag) : null;
+  if (t) {
+    const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
+    const sub = /^(.+)@\d+$/.exec(t.subject)?.[1] ?? t.subject;
+    const parts = [
+      t.subject ? `outline ${names.get(sub) ?? sub}` : 'no outline',
+      t.edges > 0 ? 'sharper edges' : '',
+      t.fill ? fills[t.fill] ?? t.fill : '',
+      `${t.size} px`,
+      t.every === 2 ? 'every 2nd frame' : '',
+    ].filter(Boolean);
+    const dm = /^(.+)@/.exec(t.depth)?.[1] ?? t.depth;
+    return { name: names.get(dm) ?? dm, detail: parts.join(' · ') };
   }
   return { name: tag, detail: '' };
 }

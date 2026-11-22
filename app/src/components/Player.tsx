@@ -12,7 +12,6 @@
 // the previous / next item; a click in those strips too (swipe.ts).
 
 import { GifBar } from './GifBar';
-import { audioRoute } from './playeraudio';
 import { errText } from '../text';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
@@ -79,6 +78,9 @@ import { useSpeedRamp } from '../speedrampHook';
 import { pickEffect, transitionMs, type Effect } from '../transitions';
 import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
 import { libraryItemMenu, trashFromViewer } from '../itemmenu';
+import { currentSetup, prep3dOf, stopPrepare3dOf, usePrep3d } from '../video3d';
+import { findTrack, onTrackChange, type TrackIndex } from '../track3d';
+import { Prepare3DDialog } from './Prepare3D';
 
 export interface PlayerHandle {
   setPaused: (paused: boolean) => void;
@@ -1129,13 +1131,60 @@ export function Player(props: PlayerProps) {
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
   const isVideo3d = item?.kind === 'video';
-  /** GIFs and videos move with their own switch; pictures with theirs (or with a subject effect on). */
-  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn : false;
+  // Videos and GIFs: their prepared 3D (video3d.ts), under the tag the settings give now or any other.
+  const movingVault = (animated || isVideo3d) && item?.itemId != null;
+  const [wantTag, setWantTag] = useState<string | null>(null);
+  useEffect(() => {
+    if (!depthMoving) return;
+    let alive = true;
+    void currentSetup().then((st) => alive && setWantTag(st?.tag ?? ''), () => alive && setWantTag(''));
+    return () => {
+      alive = false;
+    };
+  }, [depthMoving, prefs.depthModel, prefs.depthDetail, prefs.depthEdges, prefs.subjectModel, prefs.inpaintModel, prefs.depthEdges3d, prefs.depthEdgesStrength, prefs.video3dSize, prefs.video3dEvery]);
+  const [track, setTrack] = useState<{ key: string; index: TrackIndex | null } | null>(null);
+  const [trackTick, setTrackTick] = useState(0);
+  useEffect(() => onTrackChange(() => setTrackTick((n) => n + 1)), []);
+  useEffect(() => {
+    if (!depthMoving || !movingVault || wantTag == null || !item) return;
+    let alive = true;
+    const key = item.key;
+    void findTrack(item.itemId!, wantTag).then((index) => {
+      if (!alive) return;
+      setTrack((t) => {
+        // More of the same one prepared (a new piece saved while it's open): the pieces are added to the
+        // index already playing, so the 3D carries on instead of starting over.
+        if (t?.key === key && t.index && index && t.index.tag === index.tag) {
+          Object.assign(t.index, index);
+          return t;
+        }
+        return { key, index };
+      });
+    });
+    return () => {
+      alive = false;
+    };
+  }, [depthMoving, movingVault, wantTag, item?.key, trackTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  const trackHere = movingVault && track?.key === item?.key ? track.index : null;
+  // Effects on a video or GIF follow what its prepared 3D holds.
+  const trackSubject = !!trackHere?.has.subject && !mini && !props.compact;
+  const prep = usePrep3d();
+  const prepHere = item?.itemId != null ? prep3dOf(prep, item.itemId) : null;
+  /** GIFs and videos move with their own switch (once prepared); pictures with theirs (or with a subject effect on). */
+  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) && !!trackHere : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn : false;
   /** Moving on its own or with the mouse (a subject effect alone keeps the camera still). */
   const depthMotion = depthAuto || depthByMouse;
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   // (Pictures with a subject effect on show without the depth pack too: a flat depth map is used.)
-  const depth3d = depthFor && (depthPackOk || subjectOn) && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
+  const depth3d = depthFor && (depthPackOk || subjectOn || !!trackHere) && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
+  // A video or GIF with 3D on that isn't prepared yet: said once.
+  const unprepared = movingVault && depthMoving && (depthAuto || depthByMouse) && track?.key === item?.key && !track?.index && !mini && !props.compact;
+  const toldUnprepared = useRef('');
+  useEffect(() => {
+    if (!unprepared || !item || toldUnprepared.current === item.key) return;
+    toldUnprepared.current = item.key;
+    setFlash(prepHere != null ? '3D: being prepared (it shows once ready)' : `3D: this ${isVideo3d ? 'video' : 'GIF'} isn't prepared yet · 3D ▾ → Prepare 3D`);
+  }, [unprepared, item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   // Looks (MediaLooks.tsx): Mirror world on anything shown; Echo trail only on media that moves.
   const lookOk = !mini && !zoomed && !failed && !depth3d && !up.src && !!item && (isPicture || isVideo);
   const lookMirror = lookOk ? mirrorLook(s.mirror) : 'off';
@@ -1143,14 +1192,6 @@ export function Player(props: PlayerProps) {
   const lookBox = (lookMirror !== 'off' || lookEcho !== 'off') && drawn ? lookArea(drawn, stageWH.w, stageWH.h) : null;
   /** Each shown GIF frame, for the 3D layer. */
   const gifFeed = useMemo(() => frameFeed(), []);
-  // Live video 3D with the delay on: the sound is delayed by the same amount as the picture.
-  const videoDelay = depth3d && isVideo3d && !!prefs.depthVideoDelay;
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    const route = audioRoute(v, videoDelay);
-    return () => route?.(false);
-  }, [videoDelay, item?.key]);
   // 3D to the beat: listens to the music while it's on and something is in 3D.
   const beat3d = useBeatSync({ enabled: !!prefs.depthBeat && depth3d, everyBeats: 1, minSeconds: 0, onAdvance: () => {} });
   // How many pictures to prepare ahead: more when a slideshow's stays are short (layers.ts aheadCount).
@@ -1279,7 +1320,24 @@ export function Player(props: PlayerProps) {
   };
   /** The 3D photo settings window (shape, amount, speed…), from the 3D ▾ menu. */
   const [depthSettings, setDepthSettings] = useState(false);
-  const stillOnly = item?.kind === 'image' ? undefined : 'still pictures';
+  // Pictures, and videos and GIFs once prepared (with the outline pack).
+  const stillOnly = item?.kind === 'image' || item?.kind === 'gif' || item?.kind === 'video' ? undefined : 'pictures and videos';
+  /** "Prepare 3D" for the video or GIF on screen: asks first (the estimate). */
+  const [prepAsk, setPrepAsk] = useState<{ again: string | null } | null>(null);
+  const prepEntry = (): MenuItem[] => {
+    if (!item || item.itemId == null || !(isVideo3d || item.kind === 'gif')) return [];
+    const id = item.itemId;
+    const thing = isVideo3d ? 'video' : 'GIF';
+    if (prepHere != null) {
+      return [{ label: prepHere > 0 ? `Preparing 3D… ${Math.round(prepHere * 100)} %` : 'Waiting to prepare 3D…', hint: 'stop', sepBefore: true, onSelect: () => stopPrepare3dOf(id) }];
+    }
+    const idx = trackHere;
+    if (idx && idx.complete && idx.tag === wantTag) {
+      return [{ label: '3D prepared', hint: 'prepare again…', sepBefore: true, onSelect: () => setPrepAsk({ again: idx.tag }) }];
+    }
+    const label = idx && idx.tag === wantTag ? `Finish preparing 3D for this ${thing}…` : idx ? `Prepare 3D again with the models in use…` : `Prepare 3D for this ${thing}…`;
+    return [{ label, hint: idx ? 'its own settings now' : 'once, then it plays in 3D', sepBefore: true, onSelect: () => setPrepAsk({ again: null }) }];
+  };
   /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons). */
   const depthMenu = (): MenuItem[] => [
     { label: '3D for GIFs and videos', hint: 'lets the 3D work on them too', checked: depthMoving,
@@ -1288,13 +1346,14 @@ export function Player(props: PlayerProps) {
       onSelect: () => void toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)') },
     { label: 'Lift-off', hint: stillOnly ?? 'the subject comes forward', checked: depthLift, disabled: !!stillOnly, sepBefore: true,
       onSelect: () => void toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in 3D ▾ → 3D photo settings') },
-    ...(depthLift && inVault && !stillOnly ? [{ label: savingSubject ? 'Saving the subject…' : 'Save subject as PNG', hint: 'next to the original', disabled: savingSubject, onSelect: () => void saveSubject() }] : []),
+    ...(depthLift && inVault && item?.kind === 'image' ? [{ label: savingSubject ? 'Saving the subject…' : 'Save subject as PNG', hint: 'next to the original', disabled: savingSubject, onSelect: () => void saveSubject() }] : []),
     { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly,
       onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
     { label: '3D only on the subject', hint: stillOnly ?? 'background stays still', checked: depthSubjectOnly, disabled: !!stillOnly,
       onSelect: () => void toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true }) },
     { label: 'Layered 3D', hint: stillOnly ?? 'fills in behind the subject', checked: depthLayered, disabled: !!stillOnly,
       onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true }) },
+    ...prepEntry(),
     { label: '3D photo settings…', hint: 'shape, amount, speed', sepBefore: true, onSelect: () => setDepthSettings(true) },
   ];
   /** Something in the 3D ▾ menu is on (the button shows it). */
@@ -1915,17 +1974,19 @@ export function Player(props: PlayerProps) {
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'motion'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
-                subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : undefined}
+                subject={subjectOn || (trackSubject && depthLift) ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : undefined}
                 subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
-                layers={layersHere ? {
+                layers={layersHere || trackSubject ? {
                   edges: depthEdges3d ? edgesStrength(prefs.depthEdgesStrength) : 0,
                   subjectOnly: depthSubjectOnly,
                   layered: depthLayered ? { model: inpaintChoice(prefs) } : null,
                 } : undefined}
                 amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
                 mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
-                video={isVideo3d ? { ref: videoRef, delayMs: prefs.depthVideoDelay ? 100 : 0 } : undefined}
+                video={isVideo3d ? { ref: videoRef } : undefined}
                 frames={animated ? gifFeed : undefined}
+                track={trackHere && item.itemId != null && (isVideo3d || animated) ? { item: item.itemId, index: trackHere } : undefined}
+                calm={prefs.video3dCalm !== false}
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
                 motion={{ shape: motionChoice(prefs.depthShape), amount: depthMotion ? prefs.depthMotion ?? 1 : 0, speed: prefs.depthSpeed ?? 1 }}
                 endless={!slideshow} halted={(slideshow ? halted : !!props.hold) || !depthMotion}
@@ -2203,6 +2264,11 @@ export function Player(props: PlayerProps) {
       )}
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
       {depthSettings && <DepthSettingsDialog prefs={prefs} onClose={() => setDepthSettings(false)} />}
+      {prepAsk && item && item.itemId != null && (isVideo3d || item.kind === 'gif') && (
+        <Prepare3DDialog what={`“${item.name}”`} again={prepAsk.again}
+          items={[{ id: item.itemId, kind: isVideo3d ? 'video' : 'gif', name: item.name, width: depthNatural?.w ?? item.width, height: depthNatural?.h ?? item.height, durationMs: item.durationMs ?? (videoRef.current && Number.isFinite(videoRef.current.duration) ? videoRef.current.duration * 1000 : null) }]}
+          onClose={() => setPrepAsk(null)} onStarted={setFlash} />
+      )}
     </div>
   );
 }

@@ -4,8 +4,8 @@
 // how many pictures and how much space, all ticked to start with; then
 // "Are you sure?". The pictures can be narrowed to those the face scan
 // found no face (or only poor faces) in, e.g. screenshots. Every kind saved is listed (depth maps, outlines and
-// Layered 3D's background fills and subject layers), so nothing is deleted unseen. Only that saved data goes:
-// the pictures never change, and it is worked out again when needed.
+// Layered 3D's background fills and subject layers, and the videos' and GIFs' prepared 3D), so nothing is deleted
+// unseen. Only that saved data goes: the pictures and videos never change.
 
 import { errText } from '../text';
 import { useEffect, useMemo, useState } from 'react';
@@ -14,6 +14,7 @@ import { mapLabel, savedChanged } from '../derived';
 import { forgetDepth } from '../depth';
 import { folderFilters, pictureIds } from '../prepare';
 import { forgetSubjects } from '../subject';
+import { trackChanged } from '../track3d';
 import { formatBytes } from '../theme';
 import { plural } from '../undo';
 import { ConfirmDialog, Modal } from './Dialogs';
@@ -24,6 +25,8 @@ export interface Delete3DTarget {
   folders: { id: number; name: string; person: boolean }[];
   /** Pictures picked one by one (still pictures only). */
   ids: number[];
+  /** Videos and GIFs picked one by one (their prepared 3D). */
+  movingIds?: number[];
   /** Pictures found another way (the whole vault). */
   filters?: ItemFilter[];
 }
@@ -36,10 +39,11 @@ const KIND_TITLE: Record<DerivedKind, string> = {
   outline: 'Subject outlines (Lift-off and the subject effects)',
   plate: 'Background fill (Layered 3D, Lift-off)',
   fore: 'Subject layers (Lift-off, Layered 3D)',
+  track: 'Prepared 3D of videos and GIFs',
 };
 
 /** The kinds in the order they are listed. */
-const KINDS: DerivedKind[] = ['depth', 'outline', 'plate', 'fore'];
+const KINDS: DerivedKind[] = ['depth', 'outline', 'plate', 'fore', 'track'];
 
 /** A kind in one word or two, for the "Are you sure?" list. */
 const KIND_SHORT: Record<DerivedKind, string> = {
@@ -47,7 +51,11 @@ const KIND_SHORT: Record<DerivedKind, string> = {
   outline: 'Outline',
   plate: 'Background fill',
   fore: 'Subject layer',
+  track: 'Video 3D',
 };
+
+/** What a line counts: pictures, or videos and GIFs. */
+const counted = (g: { kind: string; count: number }) => (g.kind === 'track' ? plural(g.count, 'video or GIF', 'videos and GIFs') : plural(g.count, 'picture'));
 
 const keyOf = (g: { kind: string; model: string }) => `${g.kind}|${g.model}`;
 
@@ -55,6 +63,8 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
   const anyPerson = props.folders.some((f) => f.person);
   const [others, setOthers] = useState(false);
   const [all, setAll] = useState<number[] | null>(null);
+  /** The videos and GIFs here (their prepared 3D; the face choice doesn't apply to them). */
+  const [moving, setMoving] = useState<number[]>([]);
   const [split, setSplit] = useState<FaceSplit | null>(null);
   const [which, setWhich] = useState<Which>('all');
   const ids = useMemo(() => {
@@ -85,7 +95,12 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
       try {
         const list = await pictureIds([...folderFilters(props.folders, others), ...(props.filters ?? [])], props.ids);
         const sp = list.length ? await api.facesSplit(list) : { withFaces: [], noFaces: [], onlyPoor: [], unscanned: [] };
+        const mv = new Set(props.movingIds ?? []);
+        for (const f of folderFilters(props.folders, false)) {
+          for (const i of await api.queryItems({ ...f, kinds: ['video', 'gif'] })) if (i.deletedAt == null) mv.add(i.id);
+        }
         if (!live) return;
+        setMoving([...mv]);
         setAll(list);
         setSplit(sp);
       } catch (e) {
@@ -102,7 +117,8 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
     if (!ids) return;
     let live = true;
     setGroups(null);
-    void (ids.length ? api.derivedSummary(ids) : Promise.resolve([] as DerivedGroup[])).then(
+    const look = [...ids, ...moving];
+    void (look.length ? api.derivedSummary(look) : Promise.resolve([] as DerivedGroup[])).then(
       (g) => {
         if (!live) return;
         setGroups(g);
@@ -113,10 +129,11 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
     return () => {
       live = false;
     };
-  }, [ids]);
+  }, [ids, moving]);
 
   const chosen = useMemo(() => (groups ?? []).filter((g) => checked.has(keyOf(g))), [groups, checked]);
-  const maps = chosen.reduce((n, g) => n + g.count, 0);
+  const picGroups = chosen.filter((g) => g.kind !== 'track');
+  const trackGroups = chosen.filter((g) => g.kind === 'track');
   const bytes = chosen.reduce((n, g) => n + g.bytes, 0);
   const toggle = (k: string) => setChecked((c) => {
     const n = new Set(c);
@@ -129,22 +146,26 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
     return (
       <ConfirmDialog title="Are you sure?" confirm="Delete" danger onClose={props.onClose} cancel="Back" onCancel={() => setConfirming(false)}
         onConfirm={async () => {
-          const n = await api.derivedRemove(ids ?? [], chosen.map((g): [DerivedKind, string] => [g.kind, g.model]));
+          const n = picGroups.length ? await api.derivedRemove(ids ?? [], picGroups.map((g): [DerivedKind, string] => [g.kind, g.model])) : 0;
+          const t = trackGroups.length ? await api.derivedRemove(moving, trackGroups.map((g): [DerivedKind, string] => [g.kind, g.model])) : 0;
           // Copies in memory would otherwise still be used.
           forgetDepth();
           forgetSubjects();
+          if (t) trackChanged();
           savedChanged();
-          props.onDone(`Deleted ${plural(n, 'saved map')} (${formatBytes(bytes)}) of ${plural(ids?.length ?? 0, 'picture')} in ${props.what}.`);
+          props.onDone(`Deleted ${[n ? `${plural(n, 'saved map')} of ${plural(ids?.length ?? 0, 'picture')}` : '', t ? 'the prepared 3D of videos and GIFs' : ''].filter(Boolean).join(' and ')} (${formatBytes(bytes)}) in ${props.what}.`);
         }}>
-        {plural(maps, 'saved map')} ({formatBytes(bytes)}) of {which === 'all' ? 'the pictures' : which === 'noFaces' ? 'the pictures with no faces' : 'the pictures with no faces or only poor faces'} in {props.what} will be deleted:
+        {picGroups.length > 0 && <>{plural(picGroups.reduce((n, g) => n + g.count, 0), 'saved map')} of {which === 'all' ? 'the pictures' : which === 'noFaces' ? 'the pictures with no faces' : 'the pictures with no faces or only poor faces'}</>}
+        {picGroups.length > 0 && trackGroups.length > 0 && ' and '}
+        {trackGroups.length > 0 && 'the prepared 3D of videos and GIFs'} ({formatBytes(bytes)}) in {props.what} will be deleted:
         <ul style={{ margin: '8px 0', paddingLeft: 20 }}>
           {chosen.map((g) => {
             const l = mapLabel(g.kind, g.model, names);
-            return <li key={keyOf(g)}>{KIND_SHORT[g.kind] ?? g.kind}: {l.name}{l.detail ? ` · ${l.detail}` : ''} ({plural(g.count, 'picture')})</li>;
+            return <li key={keyOf(g)}>{KIND_SHORT[g.kind] ?? g.kind}: {l.name}{l.detail ? ` · ${l.detail}` : ''} ({counted(g)})</li>;
           })}
         </ul>
-        Your pictures don't change. These are worked out again when they're needed, so 3D, Lift-off and Layered 3D take a
-        moment longer to start the first time.
+        Your pictures and videos don't change. Pictures' data is worked out again when needed (3D, Lift-off and Layered 3D take a
+        moment longer to start the first time); videos and GIFs play without 3D until they're prepared again.
       </ConfirmDialog>
     );
   }
@@ -152,8 +173,8 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
   return (
     <Modal title={`Delete 3D data · ${props.what}`} onClose={props.onClose} wide>
       <div className="muted" style={{ fontSize: 14, lineHeight: 1.6 }}>
-        Choose which saved 3D data to delete for the still pictures here: depth maps, outlines, and Layered 3D's background
-        fills and subject layers. GIFs and videos have none.
+        Choose which saved 3D data to delete here: the pictures' depth maps, outlines, and Layered 3D's background
+        fills and subject layers, and the prepared 3D of videos and GIFs.
       </div>
       {anyPerson && (
         <label className="check" style={{ marginTop: 4 }}>
@@ -186,11 +207,11 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
       {err && <div className="error" role="alert">{err}</div>}
       {!groups && !err && <div className="faint">Looking at what's saved…</div>}
       {groups && groups.length === 0 && (
-        <div className="faint">{ids && ids.length ? `Nothing is saved for these ${plural(ids.length, 'picture')}.` : all && all.length ? 'No pictures here match that.' : 'There are no still pictures here.'}</div>
+        <div className="faint">{ids && ids.length + moving.length ? 'Nothing is saved for these.' : all && all.length ? 'No pictures here match that.' : 'There are no pictures, videos or GIFs here.'}</div>
       )}
       {groups && groups.length > 0 && (
         <>
-          <div className="faint" style={{ fontSize: 13 }}>{plural(ids?.length ?? 0, 'picture')}{which === 'all' ? ' here' : ' chosen'}.</div>
+          <div className="faint" style={{ fontSize: 13 }}>{plural(ids?.length ?? 0, 'picture')}{which === 'all' ? ' here' : ' chosen'}{moving.length ? `, ${plural(moving.length, 'video or GIF', 'videos and GIFs')}` : ''}.</div>
           {[...KINDS, ...new Set(groups.map((g) => g.kind).filter((k) => !KINDS.includes(k)))].map((kind) => {
             const list = groups.filter((g) => g.kind === kind);
             if (!list.length) return null;
@@ -209,7 +230,7 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
                           {l.detail && <span className="faint"> · {l.detail}</span>}
                         </span>
                       </span>
-                      <span className="faint mono" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{plural(g.count, 'picture')} · {formatBytes(g.bytes)}</span>
+                      <span className="faint mono" style={{ fontSize: 12, whiteSpace: 'nowrap' }}>{counted(g)} · {formatBytes(g.bytes)}</span>
                     </label>
                   );
                 })}
@@ -225,7 +246,7 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
       <div className="row" style={{ justifyContent: 'flex-end' }}>
         <button type="button" className="btn" onClick={props.onClose}>Cancel</button>
         <button type="button" className="btn btn-danger-solid" disabled={!chosen.length} onClick={() => setConfirming(true)}>
-          {chosen.length ? `Delete ${plural(maps, 'map')} (${formatBytes(bytes)})…` : 'Delete…'}
+          {chosen.length ? `Delete (${formatBytes(bytes)})…` : 'Delete…'}
         </button>
       </div>
     </Modal>

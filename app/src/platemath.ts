@@ -37,11 +37,26 @@ export function holeSquare(mask: SubjectMask, s: number): Uint8Array {
   return mb;
 }
 
+/** What a fill replaces, at the plate's size (0–1). */
+export function plateHole(mask: SubjectMask, w: number, h: number): Float32Array {
+  return resample(colourHole(mask), mask.w, mask.h, w, h);
+}
+
+/** Background really seen in earlier frames (videos, video3dmath.ts): used before the fill where it's fresh. */
+export interface Borrow {
+  rgb: ArrayLike<number>;
+  /** Frames since each pixel was seen. */
+  age: ArrayLike<number>;
+  /** Up to this many frames old counts (fading out towards it). */
+  fresh: number;
+}
+
 /**
  * The background plate (RGBA, `w` × `h`): colour with the subject filled in (by `fill`,
- * any size, or Simple when null), alpha = the depth with the subject filled in.
+ * any size, or Simple when null; for videos real background seen before comes first),
+ * alpha = the depth with the subject filled in.
  */
-export function composePlate(orig: Uint8ClampedArray, w: number, h: number, mask: SubjectMask, depth: DepthMap, fill: { data: ArrayLike<number>; w: number; h: number } | null): Uint8Array {
+export function composePlate(orig: Uint8ClampedArray, w: number, h: number, mask: SubjectMask, depth: DepthMap, fill: { data: ArrayLike<number>; w: number; h: number } | null, borrow?: Borrow): Uint8Array {
   const hole = colourHole(mask);
   let F: Uint8ClampedArray;
   if (fill) F = resizeRgba(fill.data, fill.w, fill.h, w, h);
@@ -52,6 +67,14 @@ export function composePlate(orig: Uint8ClampedArray, w: number, h: number, mask
     const small = resizeRgba(orig, w, h, sw, sh);
     const filled = fillRgba(small, sw, sh, resample(hole, mask.w, mask.h, sw, sh));
     F = resizeRgba(filled, sw, sh, w, h);
+  }
+  if (borrow) {
+    for (let i = 0; i < w * h; i++) {
+      const age = borrow.age[i];
+      if (age >= borrow.fresh) continue;
+      const k = 1 - age / borrow.fresh;
+      for (let c = 0; c < 3; c++) F[i * 4 + c] = F[i * 4 + c] * (1 - k) + borrow.rgb[i * 3 + c] * k;
+    }
   }
   const hf = resample(hole, mask.w, mask.h, w, h);
   // The depth: a wider area than the colour's (the depth model blurs the subject's depth a

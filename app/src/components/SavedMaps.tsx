@@ -45,7 +45,7 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
   const bytes = stats ? stats.depthBytes + stats.outlineBytes + (stats.layerBytes ?? 0) : 0;
   const clear = async () => {
     try {
-      const n = await api.derivedClear();
+      const n = await api.derivedClear('pictures');
       setNote(n ? `Cleared ${n.toLocaleString()} saved ${n === 1 ? 'map' : 'maps'}.` : 'Nothing to clear.');
     } catch (e) {
       setNote(`Couldn't clear them: ${errText(e)}`);
@@ -97,9 +97,10 @@ export function SavedMapsSection(props: { viewer: ViewerSettings; setViewer: (pa
           onDone={(text) => { setNote(text); load(); }} />
       )}
       {ask === 'clear' && (
-        <ConfirmDialog title="Delete all saved 3D data?" confirm="Delete 3D data" danger onClose={() => setAsk(null)}
+        <ConfirmDialog title="Delete all saved 3D data of pictures?" confirm="Delete 3D data" danger onClose={() => setAsk(null)}
           onConfirm={() => { setAsk(null); void clear(); }}>
           They're worked out again when needed (pictures take a moment longer to start in 3D). Your pictures don't change.
+          Videos' and GIFs' prepared 3D stays (it has its own button under Videos and GIFs).
         </ConfirmDialog>
       )}
       {ask === 'again' && (
