@@ -331,6 +331,15 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D fixes after the user's first
+  test** (dark specks with Lift-off / the subject layer, slow preparing). Shader reads a video's outline without the
+  codec's faint noise (`smoothstep` in `mask()`); the last prepared frame is kept up to 4 frames while the next one
+  decodes (no flat flash). Preparing: works in blocks of 24 frames, one model over the block at a time (the card
+  keeps one model loaded when they don't all fit, so depth → outline → fill per frame could reload them every
+  frame); each frame is also calmed with the 2 frames after it (worker finishes frames 2 late); stored outline
+  snapped clean (`cleanMask`); encoder budget 0.05 → 0.09 bits/pixel. Tags now end `_v2` (`TRACK_WAY`): videos
+  prepared before still play, the 3D menu offers "Prepare 3D again". 599 window tests; worker/player/shader checked
+  in Chromium (0 background specks from noisy outlines). Not tried in the app yet.
 - 2026-11-22 (Claude Code on the user's PC; fold into the Project notes): **prepared 3D for videos and GIFs**
   (`docs/video-3d-plan.md`, approved by the user). Live video depth, "Delay videos slightly" (and
   `playeraudio.ts`) and GIF depth-on-open are gone. A video/GIF is prepared once when asked (viewer 3D ▾ → Prepare

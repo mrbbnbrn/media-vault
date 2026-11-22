@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  BG_FRESH, calmDepth, calmMask, GATE, lumaGrid, motionBetween, motionDamp, newBgMemory, packTiles, readTile, rememberBackground,
+  BG_FRESH, blendAhead, calmDepth, calmMask, cleanMask, GATE, lumaGrid, motionBetween, motionDamp, newBgMemory, packTiles, readTile, rememberBackground,
   roundInfo, smoothInfo, tileRect, tileSize, type FrameInfo,
 } from './video3dmath';
 import { covers, frameStep, packIndex, packSegment, parseIndex, parseSegment, parseTrackTag, segmentFor, trackTag, type TrackIndex } from './trackformat';
@@ -77,6 +77,27 @@ describe('prepared 3D: calming over time', () => {
     expect(calmMask(raw, prev, still).data[0]).toBe(128);
     const moved = { gate: new Float32Array(GATE * GATE), cut: false, moving: 1 };
     expect(calmMask(raw, prev, moved).data[0]).toBe(0);
+  });
+});
+
+describe('prepared 3D: calming with the frames after', () => {
+  const still = motionBetween(new Float32Array(GATE * GATE).fill(50), new Float32Array(GATE * GATE).fill(50));
+  const moved = { gate: new Float32Array(GATE * GATE), cut: false, moving: 1 };
+  it('counts later frames only where nothing moved, and not past a new scene', () => {
+    const d = (v: number) => map(8, 8, () => v);
+    // A one-frame jump (the model's flicker) is pulled back towards the frames after it.
+    const out = blendAhead(d(200), d(200), [{ depth: d(100), mask: d(0), motion: still }, { depth: d(100), mask: d(0), motion: still }]);
+    expect(out.depth.data[0]).toBe(Math.round((200 + 50 + 25) / 1.75));
+    expect(out.mask!.data[0]).toBe(Math.round(200 / 1.75));
+    // Where things moved, the frame keeps its own.
+    expect(blendAhead(d(200), null, [{ depth: d(100), mask: null, motion: moved }]).depth.data[0]).toBe(200);
+    // A new scene next: nothing from it or after it.
+    expect(blendAhead(d(200), null, [{ depth: d(0), mask: null, motion: { ...still, cut: true } }, { depth: d(0), mask: null, motion: still }]).depth.data[0]).toBe(200);
+    expect(blendAhead(d(7), null, []).depth.data[0]).toBe(7);
+  });
+  it('snaps the outline’s faint noise to nothing (the soft edge stays)', () => {
+    const m = { w: 4, h: 1, data: new Uint8Array([5, 11, 128, 250]) };
+    expect([...cleanMask(m).data]).toEqual([0, 0, 128, 255]);
   });
 });
 
@@ -181,11 +202,13 @@ describe('prepared 3D: saved format', () => {
   });
   it('names what it was made with, and reads it back for the labels', () => {
     const tag = trackTag({ depth: 'da3-mono-large@518~0.5', subject: 'birefnet@1024', edges: 0.7, fill: 'lama', size: 768, every: 2 });
-    expect(tag).toBe('da3-mono-large@518~0.5_birefnet@1024_e0.70_lama_w768_f2');
+    expect(tag).toBe('da3-mono-large@518~0.5_birefnet@1024_e0.70_lama_w768_f2_v2');
     expect(/^[a-z0-9@~._-]+$/.test(tag)).toBe(true);
     expect(parseTrackTag(tag)).toEqual({ depth: 'da3-mono-large@518~0.5', subject: 'birefnet@1024', edges: 0.7, fill: 'lama', size: 768, every: 2 });
     const plain = trackTag({ depth: 'v2-small@518~1', subject: '', edges: 0, fill: '', size: 512, every: 1 });
-    expect(plain).toBe('v2-small@518~1_none_e0.00_none_w512_f1');
+    expect(plain).toBe('v2-small@518~1_none_e0.00_none_w512_f1_v2');
+    // Tags from before the way changed still read (their videos play; the menu offers to prepare again).
+    expect(parseTrackTag('v2-small@518~1_none_e0.00_none_w512_f1')?.size).toBe(512);
     expect(parseTrackTag(plain)).toEqual({ depth: 'v2-small@518~1', subject: '', edges: 0, fill: '', size: 512, every: 1 });
     const l = mapLabel('track', tag, new Map([['da3-mono-large', 'Best'], ['birefnet', 'BiRefNet']]));
     expect(l.name).toBe('Best');

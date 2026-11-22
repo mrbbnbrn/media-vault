@@ -4,11 +4,13 @@
 // in earlier frames) and the subject's own layer, packs it all into one
 // picture of tiles and encodes it (WebCodecs; WebP pictures if no video codec
 // works here). Every SEG_FRAMES frames a finished piece goes back to be saved.
+// Each frame is finished LOOK frames late: its depth and outline are calmed
+// again with the frames after it (where nothing moved), not only those before.
 //
 // In:  { id, op: 'init', w, h, fps, plate, subject }        → { id, codec }
 //      { id, op: 'calm', t, rgba, depth, mask, holeSide }    → { id, depth, mask, hole, cut, moving }
-//      { id, op: 'finish', fill, edges, info }               → { id, segment? }
-//      { id, op: 'end' }                                     → { id, segment? }
+//      { id, op: 'finish', fill, edges, info }               → { id, segments }
+//      { id, op: 'end' }                                     → { id, segments }
 // A piece: { bytes, t0, t1, frames }. Out on failure: { id, error }.
 
 import type { DepthMap, SubjectMask } from './api';
@@ -16,7 +18,7 @@ import { refineEdges } from './layers';
 import { composeFore, composePlate, holeSquare, plateHole } from './platemath';
 import { SEG_FRAMES, packSegment } from './trackformat';
 import {
-  BG_FRESH, calmDepth, calmMask, COLS, lumaGrid, motionBetween, newBgMemory, packTiles, rememberBackground, ROWS,
+  BG_FRESH, blendAhead, calmDepth, calmMask, cleanMask, COLS, LOOK, lumaGrid, motionBetween, newBgMemory, packTiles, rememberBackground, ROWS,
   type BgMemory, type FrameInfo, type Motion,
 } from './video3dmath';
 
@@ -27,6 +29,9 @@ type Msg =
   | { id: number; op: 'end' };
 
 const post = (msg: unknown, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);
+
+/** Bits per pixel the encoder gets: enough that the grey tiles (depth, outline) come through clean. */
+const BPP = 0.09;
 
 /** Video codecs tried in turn (the window must be able to decode it too). */
 const CODECS = ['vp09.00.40.08', 'av01.0.08M.08', 'avc1.640033'];
@@ -51,12 +56,15 @@ let prevDepth: DepthMap | null = null;
 let prevMask: SubjectMask | null = null;
 let bg: BgMemory | null = null;
 // This frame's, between 'calm' and 'finish'.
-let cur: { t: number; rgba: Uint8ClampedArray; depth: DepthMap; mask: SubjectMask | null; motion: Motion } | null = null;
+type Calmed = { t: number; rgba: Uint8ClampedArray; luma: Float32Array; depth: DepthMap; mask: SubjectMask | null; motion: Motion };
+let cur: Calmed | null = null;
+/** Frames waiting for the LOOK frames after them, with what 'finish' brought. */
+let pending: (Calmed & { fill: { data: ArrayBuffer; w: number; h: number } | null; edges: number; info: FrameInfo })[] = [];
 
 function encoderConfig(c: string): VideoEncoderConfig {
   const cw = W * COLS;
   const ch = H * ROWS;
-  const bitrate = Math.round(Math.min(20e6, Math.max(300e3, cw * ch * FPS * 0.05)));
+  const bitrate = Math.round(Math.min(30e6, Math.max(400e3, cw * ch * FPS * BPP)));
   return { codec: c, width: cw, height: ch, bitrate, framerate: FPS, latencyMode: 'quality', ...(c.startsWith('avc1') ? { avc: { format: 'annexb' } } : {}) } as VideoEncoderConfig;
 }
 
@@ -129,6 +137,43 @@ async function closeSegment(): Promise<{ bytes: Uint8Array; t0: number; t1: numb
   return { bytes: packSegment(codec, W * COLS, H * ROWS, frames), t0: first.t, t1: last.t, frames: frames.length };
 }
 
+type Piece = { bytes: Uint8Array; t0: number; t1: number; frames: number };
+
+function reply(id: number, segments: Piece[]) {
+  post({ id, segments }, segments.map((x) => x.bytes.buffer as ArrayBuffer));
+}
+
+/** The oldest waiting frame: calmed with the frames after it, its layers made, packed and encoded. */
+async function finishOne(): Promise<Piece[]> {
+  const c = pending.shift()!;
+  // Each later frame counts where nothing moved between it and this one (up to a new scene).
+  const later = pending.slice(0, LOOK).map((n) => ({ depth: n.depth, mask: n.mask, motion: motionBetween(n.luma, c.luma) }));
+  const calmed = blendAhead(c.depth, c.mask, later);
+  const mask = calmed.mask ? cleanMask(calmed.mask) : null;
+  const depth = mask && c.edges > 0 ? refineEdges(calmed.depth, mask, c.edges) : calmed.depth;
+  let plate: Uint8Array | null = null;
+  let fore: Uint8Array | null = null;
+  if (mask) {
+    if (wantPlate) {
+      const fill = c.fill ? { data: new Uint8ClampedArray(c.fill.data), w: c.fill.w, h: c.fill.h } : null;
+      plate = composePlate(c.rgba, W, H, mask, depth, fill, bg ? { rgb: bg.rgb, age: bg.age, fresh: BG_FRESH } : undefined);
+      if (bg) rememberBackground(bg, c.rgba, plateHole(mask, W, H), c.motion);
+    }
+    fore = composeFore(c.rgba, W, H, mask, depth);
+  } else if (bg) rememberBackground(bg, c.rgba, new Float32Array(W * H), c.motion);
+  const packed = packTiles(W, H, { plate, fore, mask, depth });
+  // Timestamps must go up (a frame without a time of its own gets one just after the last).
+  let ts = Math.round(c.t * 1e6);
+  if (!(ts > lastTs)) ts = lastTs + 1;
+  lastTs = ts;
+  const key = seg.length === 0;
+  const webp = await encodeFrame(packed, ts, key);
+  seg.push({ t: c.t, key, i: c.info, ts, webp });
+  if (seg.length < SEG_FRAMES) return [];
+  const done = await closeSegment();
+  return done ? [done] : [];
+}
+
 self.onmessage = async (e: MessageEvent<Msg>) => {
   const m = e.data;
   try {
@@ -144,6 +189,7 @@ self.onmessage = async (e: MessageEvent<Msg>) => {
       prevMask = null;
       bg = wantPlate ? newBgMemory(W, H) : null;
       seg = [];
+      pending = [];
       out.clear();
       lastTs = -1;
       encodeError = null;
@@ -159,7 +205,7 @@ self.onmessage = async (e: MessageEvent<Msg>) => {
       const mask = wantSubject && m.mask ? calmMask(m.mask, prevMask, motion) : null;
       prevDepth = depth;
       prevMask = mask;
-      cur = { t: m.t, rgba, depth, mask, motion };
+      cur = { t: m.t, rgba, luma, depth, mask, motion };
       const hole = mask && m.holeSide > 0 ? holeSquare(mask, m.holeSide) : null;
       post({ id: m.id, depth, mask, hole, cut: motion.cut, moving: motion.moving });
       return;
@@ -168,41 +214,25 @@ self.onmessage = async (e: MessageEvent<Msg>) => {
       const c = cur;
       cur = null;
       if (!c) throw new Error('No frame to finish.');
-      const depth = c.mask && m.edges > 0 ? refineEdges(c.depth, c.mask, m.edges) : c.depth;
-      let plate: Uint8Array | null = null;
-      let fore: Uint8Array | null = null;
-      if (c.mask) {
-        if (wantPlate) {
-          const fill = m.fill ? { data: new Uint8ClampedArray(m.fill.data), w: m.fill.w, h: m.fill.h } : null;
-          plate = composePlate(c.rgba, W, H, c.mask, depth, fill, bg ? { rgb: bg.rgb, age: bg.age, fresh: BG_FRESH } : undefined);
-          if (bg) rememberBackground(bg, c.rgba, plateHole(c.mask, W, H), c.motion);
-        }
-        fore = composeFore(c.rgba, W, H, c.mask, depth);
-      } else if (bg) rememberBackground(bg, c.rgba, new Float32Array(W * H), c.motion);
-      const packed = packTiles(W, H, { plate, fore, mask: c.mask, depth });
-      // Timestamps must go up (a frame without a time of its own gets one just after the last).
-      let ts = Math.round(c.t * 1e6);
-      if (!(ts > lastTs)) ts = lastTs + 1;
-      lastTs = ts;
-      const key = seg.length === 0;
-      const webp = await encodeFrame(packed, ts, key);
-      seg.push({ t: c.t, key, i: m.info, ts, webp });
-      let segment = null;
-      if (seg.length >= SEG_FRAMES) segment = await closeSegment();
-      if (segment) post({ id: m.id, segment }, [segment.bytes.buffer as ArrayBuffer]);
-      else post({ id: m.id });
+      pending.push({ ...c, fill: m.fill, edges: m.edges, info: m.info });
+      const segments: Piece[] = [];
+      // The frame LOOK frames back now has the frames after it.
+      while (pending.length > LOOK) segments.push(...(await finishOne()));
+      reply(m.id, segments);
       return;
     }
-    // 'end': the last piece, then the encoder is let go.
-    const segment = await closeSegment();
+    // 'end': the frames still waiting (with fewer after them), the last piece, then the encoder is let go.
+    const segments: Piece[] = [];
+    while (pending.length) segments.push(...(await finishOne()));
+    const last = await closeSegment();
+    if (last) segments.push(last);
     try {
       encoder?.close();
     } catch {
       /* already closed */
     }
     encoder = null;
-    if (segment) post({ id: m.id, segment }, [segment.bytes.buffer as ArrayBuffer]);
-    else post({ id: m.id });
+    reply(m.id, segments);
   } catch (err) {
     post({ id: m.id, error: String(err) });
   }

@@ -150,6 +150,58 @@ export function calmMask(raw: SubjectMask, prev: SubjectMask | null, m: Motion, 
   return { w, h, data: out };
 }
 
+/** Frames after each frame that count when calming it (it is finished this many frames late). */
+export const LOOK = 2;
+/** How much each later frame counts (the next one, the one after). */
+const AHEAD_WEIGHT = [0.5, 0.25];
+
+/**
+ * The depth and outline calmed again with the frames after (already calmed
+ * with the ones before): each later frame counts where nothing moved between it
+ * and this one (`motion` from this frame to it), and not at all from a new scene on.
+ */
+export function blendAhead(
+  depth: DepthMap,
+  mask: SubjectMask | null,
+  later: { depth: DepthMap; mask: SubjectMask | null; motion: Motion }[],
+): { depth: DepthMap; mask: SubjectMask | null } {
+  const use: typeof later = [];
+  for (const l of later) {
+    if (l.motion.cut) break;
+    use.push(l);
+  }
+  if (!use.length) return { depth, mask };
+  const blend = (m: DepthMap, pick: (l: (typeof use)[number]) => DepthMap | null): DepthMap => {
+    const others = use.map((l, k) => ({ map: pick(l), gate: l.motion.gate, w: AHEAD_WEIGHT[k] ?? 0 })).filter((o) => o.map && o.map.w === m.w && o.map.h === m.h && o.w > 0);
+    if (!others.length) return m;
+    const out = new Uint8Array(m.w * m.h);
+    for (let y = 0; y < m.h; y++)
+      for (let x = 0; x < m.w; x++) {
+        const i = y * m.w + x;
+        let acc = m.data[i];
+        let ws = 1;
+        for (const o of others) {
+          const w = o.w * gateAt(o.gate, (x + 0.5) / m.w, (y + 0.5) / m.h);
+          acc += o.map!.data[i] * w;
+          ws += w;
+        }
+        out[i] = Math.round(acc / ws);
+      }
+    return { w: m.w, h: m.h, data: out };
+  };
+  return { depth: blend(depth, (l) => l.depth), mask: mask ? blend(mask, (l) => l.mask) : null };
+}
+
+/** The outline with its faint values snapped to none or all (the codec keeps them cleaner; the soft edge stays). */
+export function cleanMask(m: SubjectMask): SubjectMask {
+  const out = new Uint8Array(m.data.length);
+  for (let i = 0; i < out.length; i++) {
+    const v = m.data[i];
+    out[i] = v < 12 ? 0 : v > 243 ? 255 : v;
+  }
+  return { w: m.w, h: m.h, data: out };
+}
+
 // ---- background memory (Layered 3D) ----------------------------------------------------------
 
 /** Frames a remembered background pixel stays usable. */

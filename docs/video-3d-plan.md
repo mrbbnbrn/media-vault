@@ -132,3 +132,15 @@ player gave every one of the 60 frames back at its own time (none missing or wro
 compiled and drew a real WebM with its prepared 3D (Lift-off shadow on). ffmpeg's frame command checked by hand
 (50 frames from 0, 25 frames from 1 s with the right times). **Not tested:** Rust (not compiled on this PC; CI
 compiles and tests it), a whole prepare in the real app with real models, real videos, speed and size.
+
+## 9. After the first test (2026-11-23)
+
+The user saw dark specks with Lift-off / the subject layer, and preparing was very slow.
+- Specks: the outline goes through a video codec, whose faint noise Lift-off's shadow and the subject layer turned
+  dark. Now the stored outline is snapped clean, the encoder gets more bits (0.09 bits/pixel), and the shader reads
+  the outline without faint values. The last frame stays a few frames while the next decodes.
+- Smoothing now also uses the 2 frames after each frame (where nothing moved).
+- Speed: preparing ran depth → outline → fill on each frame, and the card keeps one model loaded at a time when they
+  don't all fit, so models could reload every frame. Now blocks of 24 frames, one model over the block at a time.
+- Tags end `_v2`: videos prepared before still play; the 3D menu offers to prepare them again.
+

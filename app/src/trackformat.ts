@@ -139,14 +139,21 @@ export function covers(i: TrackIndex, t: number): boolean {
   return t >= i.segs[0].t0 - half && t <= i.segs[i.segs.length - 1].t1 + half;
 }
 
+/**
+ * How preparing works now: raised when a change makes newly prepared videos better, so ones prepared
+ * before count as "made with other settings" (they still play; the 3D menu offers to prepare them again).
+ * 2: smoothed with later frames too, cleaner outline, more bits (2026-11-23).
+ */
+export const TRACK_WAY = 2;
+
 /** The tag of prepared 3D: the models and settings it's made with (derived.rs track names). */
 export function trackTag(p: { depth: string; subject: string; edges: number; fill: string; size: number; every: number }): string {
-  return `${p.depth}_${p.subject || 'none'}_e${p.edges.toFixed(2)}_${p.subject ? p.fill || 'simple' : 'none'}_w${p.size}_f${p.every}`;
+  return `${p.depth}_${p.subject || 'none'}_e${p.edges.toFixed(2)}_${p.subject ? p.fill || 'simple' : 'none'}_w${p.size}_f${p.every}_v${TRACK_WAY}`;
 }
 
 /** The parts of a track tag (null: not one). */
 export function parseTrackTag(tag: string): { depth: string; subject: string; edges: number; fill: string; size: number; every: number } | null {
-  const m = /^(.+?@\d+~[\d.]+)_(.+?)_e([\d.]+)_([a-z0-9-]+)_w(\d+)_f(\d)$/.exec(tag);
+  const m = /^(.+?@\d+~[\d.]+)_(.+?)_e([\d.]+)_([a-z0-9-]+)_w(\d+)_f(\d)(?:_v\d+)?$/.exec(tag);
   if (!m) return null;
   return { depth: m[1], subject: m[2] === 'none' ? '' : m[2], edges: Number(m[3]), fill: m[4] === 'none' ? '' : m[4], size: Number(m[5]), every: Number(m[6]) };
 }

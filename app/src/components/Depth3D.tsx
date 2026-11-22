@@ -242,7 +242,9 @@ vec2 unmove(vec2 q) {
   return uCen + (l - uCen) / uLift;
 }
 float mask(vec2 s) {
-  return uTrack > 0.0 ? trk1(uTMask, s) : texture2D(uMask, clamp(s, 0.0, 1.0)).r;
+  // Videos: the outline comes through a video codec, which adds faint noise everywhere; read without it
+  // (else Lift-off's shadow and the subject layer turn it into dark specks).
+  return uTrack > 0.0 ? smoothstep(0.12, 0.88, trk1(uTMask, s)) : texture2D(uMask, clamp(s, 0.0, 1.0)).r;
 }
 // Videos: where the background was filled in (the outline grown a little); the picture itself elsewhere.
 float holeW(vec2 s) {
@@ -799,7 +801,7 @@ export function Depth3D(props: Props) {
       let lastT = performance.now();
       // Videos and GIFs: each frame shown with its own prepared frame (its exact time, or its number).
       /** The prepared frame shown (null: none for this moment: flat). */
-      let trkShown: { img: unknown; info: FrameInfo } | null = null;
+      let trkShown: { img: unknown; info: FrameInfo; t: number } | null = null;
       /** How far the prepared 3D is on (eased in and out, 0–1). */
       let trkFade = 0;
       const trkOn = () => !!trkShown;
@@ -809,7 +811,8 @@ export function Depth3D(props: Props) {
         if (!player || s.gl.isContextLost()) return;
         const f = player.frameAt(at);
         if (!f) {
-          trkShown = null;
+          // Its own frame isn't decoded yet: the last one stays a few frames (no flat flash), then flat.
+          if (trkShown && Math.abs(at - trkShown.t) > player.step * 4) trkShown = null;
           return;
         }
         if (f.img !== trkShown?.img) {
@@ -819,7 +822,7 @@ export function Depth3D(props: Props) {
             return;
           }
         }
-        trkShown = { img: f.img, info: f.info };
+        trkShown = { img: f.img, info: f.info, t: f.t };
       };
       if (tr) {
         trackTiles(s, tr.index);

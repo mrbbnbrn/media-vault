@@ -101,7 +101,7 @@ export function estimate3d(items: Want3d[], s: Setup): { seconds: number; bytes:
     frames += n;
     const t = tileSize(it.width || 1920, it.height || 1080, s.size);
     // The encoder's budget (video3dworker.ts): an upper end; still scenes come out smaller.
-    bytes += (t.w * COLS * t.h * ROWS * fps * 0.05 * secs) / 8 / s.every;
+    bytes += (t.w * COLS * t.h * ROWS * fps * 0.09 * secs) / 8 / s.every;
   }
   return { seconds: frames * perFrame, bytes, frames };
 }
@@ -385,6 +385,9 @@ function newWorker() {
 
 type Piece = { bytes: Uint8Array | ArrayBuffer; t0: number; t1: number; frames: number };
 
+/** Frames worked out together, one model at a time (see prepareOne). */
+const BLOCK = 24;
+
 async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, stopped: () => boolean) {
   const name = (k: string) => `${s.tag}.${k}`;
   let index = parseIndex(await api.derivedGet(it.id, 'track', name('i')));
@@ -435,50 +438,74 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
     let info: FrameInfo | null = null;
     const total = src.duration > 0 ? (it.kind === 'gif' ? src.duration : src.duration * src.fps) : 0;
     let skip = 0;
-    for (;;) {
-      if (stopped()) break;
-      const f = await src.next();
-      if (!f) {
-        const p = await worker.ask<{ segment?: Piece }>({ op: 'end' });
-        if (p.segment) await save(p.segment);
-        if (!idx.segs.length) throw new Error('no frames came out of it');
-        idx.complete = true;
-        await api.derivedPut(it.id, 'track', name('i'), packIndex(idx));
-        trackChanged(it.id);
-        progress(1);
-        return;
+    let ended = false;
+    const put = (rgba: Uint8ClampedArray) => pctx.putImageData(new ImageData(rgba as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
+    const saveAll = async (r: { segments?: Piece[] }) => {
+      for (const p of r.segments ?? []) await save(p);
+    };
+    while (!ended && !stopped()) {
+      // A block of frames, then each model over the whole block in turn: the graphics card keeps one
+      // model loaded at a time when they don't all fit, so going model by model per frame reloaded
+      // them for every frame.
+      const block: { t: number; rgba: Uint8ClampedArray; depth?: DepthMap; mask?: SubjectMask | null }[] = [];
+      while (block.length < BLOCK) {
+        const f = await src.next();
+        if (!f) {
+          ended = true;
+          break;
+        }
+        // Every second frame only, when set so.
+        if (s.every === 2 && skip++ % 2 === 1) continue;
+        block.push(f);
       }
-      // Every second frame only, when set so.
-      if (s.every === 2 && skip++ % 2 === 1) continue;
-      pctx.putImageData(new ImageData(f.rgba as Uint8ClampedArray<ArrayBuffer>, w, h), 0, 0);
       const ds = s.depth;
-      const depth: DepthMap = await api.depthEstimate({ width: ds.side, height: ds.side, model: ds.model, detail: ds.detail, soft: ds.soft ?? 1 }, square(ds.side));
-      const mask: SubjectMask | null = s.subject ? await api.subjectEstimate({ width: s.subject.side, height: s.subject.side, model: s.subject.model }, square(s.subject.side)) : null;
-      const fillPx = s.fill && s.fillSide ? square(s.fillSide) : null;
-      const rgba = f.rgba.buffer as ArrayBuffer;
-      const calm = await worker.ask<{ depth: DepthMap; mask: SubjectMask | null; hole: Uint8Array | null; cut: boolean; moving: number }>(
-        { op: 'calm', t: f.t, rgba, depth, mask, holeSide: fillPx ? s.fillSide : 0 }, [rgba]);
-      const now: FrameInfo = {
-        p: pivotOf(calm.depth),
-        z: calm.mask ? subjectDepth(calm.depth, calm.mask) : null,
-        b: calm.mask ? bgDepthNear(calm.depth, calm.mask) : null,
-        st: calm.mask ? maskStats(calm.mask) : null,
-        mo: calm.moving,
-      };
-      info = smoothInfo(info, now, calm.cut);
-      let fill: { data: ArrayBuffer; w: number; h: number } | null = null;
-      if (fillPx && calm.hole && now.st) {
-        const out = await api.inpaintEstimate({ width: s.fillSide, height: s.fillSide, model: s.fill }, fillPx, calm.hole);
-        const copy = out.data.slice();
-        fill = { data: copy.buffer as ArrayBuffer, w: out.w, h: out.h };
+      for (const b of block) {
+        if (stopped()) break;
+        put(b.rgba);
+        b.depth = await api.depthEstimate({ width: ds.side, height: ds.side, model: ds.model, detail: ds.detail, soft: ds.soft ?? 1 }, square(ds.side));
       }
-      const r = await worker.ask<{ segment?: Piece }>({ op: 'finish', fill, edges: s.edges, info: roundInfo(info) }, fill ? [fill.data] : []);
-      if (r.segment) await save(r.segment);
-      if (total > 0) progress(Math.min(0.99, (it.kind === 'gif' ? f.t + 1 : f.t * src.fps) / total));
+      const sub = s.subject;
+      for (const b of block) {
+        if (stopped() || !sub) break;
+        put(b.rgba);
+        b.mask = await api.subjectEstimate({ width: sub.side, height: sub.side, model: sub.model }, square(sub.side));
+      }
+      if (stopped()) break;
+      // Then frame by frame, in order: calmed over time (worker), its fill (one model), finished (worker).
+      for (const b of block) {
+        if (stopped()) break;
+        const fillWanted = !!s.fill && !!s.fillSide;
+        const calm = await worker.ask<{ depth: DepthMap; mask: SubjectMask | null; hole: Uint8Array | null; cut: boolean; moving: number }>(
+          { op: 'calm', t: b.t, rgba: b.rgba.slice().buffer, depth: b.depth, mask: b.mask ?? null, holeSide: fillWanted ? s.fillSide : 0 });
+        const now: FrameInfo = {
+          p: pivotOf(calm.depth),
+          z: calm.mask ? subjectDepth(calm.depth, calm.mask) : null,
+          b: calm.mask ? bgDepthNear(calm.depth, calm.mask) : null,
+          st: calm.mask ? maskStats(calm.mask) : null,
+          mo: calm.moving,
+        };
+        info = smoothInfo(info, now, calm.cut);
+        let fill: { data: ArrayBuffer; w: number; h: number } | null = null;
+        if (fillWanted && calm.hole && now.st) {
+          put(b.rgba);
+          const out = await api.inpaintEstimate({ width: s.fillSide, height: s.fillSide, model: s.fill }, square(s.fillSide), calm.hole);
+          const copy = out.data.slice();
+          fill = { data: copy.buffer as ArrayBuffer, w: out.w, h: out.h };
+        }
+        await saveAll(await worker.ask<{ segments?: Piece[] }>({ op: 'finish', fill, edges: s.edges, info: roundInfo(info) }, fill ? [fill.data] : []));
+        if (total > 0) progress(Math.min(0.99, (it.kind === 'gif' ? b.t + 1 : b.t * src.fps) / total));
+      }
     }
-    // Stopped: what was made so far is kept (the next time carries on from there).
-    const p = await worker.ask<{ segment?: Piece }>({ op: 'end' });
-    if (p.segment) await save(p.segment);
+    // The frames still waiting and the last piece.
+    await saveAll(await worker.ask<{ segments?: Piece[] }>({ op: 'end' }));
+    if (ended && !stopped()) {
+      if (!idx.segs.length) throw new Error('no frames came out of it');
+      idx.complete = true;
+      await api.derivedPut(it.id, 'track', name('i'), packIndex(idx));
+      trackChanged(it.id);
+      progress(1);
+    }
+    // (Stopped: what was made so far is kept; the next time carries on from there.)
   } finally {
     worker.close();
     src.close();
