@@ -10,12 +10,23 @@ Checked against PyTorch on a made-up moving clip before it is packed; writes exp
 Usage: python vda_export.py <repo dir> <out dir>
 """
 
+import gc
 import json
 import pathlib
 import sys
+import traceback
 
 import numpy as np
 import torch
+
+
+def say(text: str) -> None:
+    """A line that shows on the run's page (its log needs admin rights to read)."""
+    print(f"::notice::{text}", flush=True)
+
+
+def fail(text: str) -> None:
+    print(f"::error::{text}", flush=True)
 
 REPO = pathlib.Path(sys.argv[1]).resolve()
 OUT = pathlib.Path(sys.argv[2])
@@ -56,27 +67,48 @@ def clip() -> torch.Tensor:
     return torch.from_numpy(np.stack(frames)[None].astype(np.float32))
 
 
-x = clip()
-with torch.no_grad():
-    ref = model(x).numpy()
-print("PyTorch output:", ref.shape)
-assert ref.shape == (1, T, SIDE, SIDE), ref.shape
+try:
+    x = clip()
+    with torch.inference_mode():
+        ref = model(x).numpy()
+    say(f"PyTorch ran: {ref.shape}")
+    assert ref.shape == (1, T, SIDE, SIDE), ref.shape
+    np.save(OUT / "ref.npy", ref)
+    del ref
+    gc.collect()
 
-torch.onnx.export(
-    model,
-    (x,),
-    str(OUT / "model.onnx"),
-    input_names=["frames"],
-    output_names=["depth"],
-    opset_version=17,
-    do_constant_folding=True,
-    dynamo=False,
-)
+    with torch.no_grad():
+        torch.onnx.export(
+            model,
+            (x,),
+            str(OUT / "model.onnx"),
+            input_names=["frames"],
+            output_names=["depth"],
+            opset_version=17,
+            do_constant_folding=True,
+            dynamo=False,
+        )
+    say(f"exported: {(OUT / 'model.onnx').stat().st_size / 1e6:.0f} MB")
+    xs = x.numpy()
+    del model, x
+    gc.collect()
 
-import onnxruntime as ort  # noqa: E402
+    import onnxruntime as ort  # noqa: E402
 
-sess = ort.InferenceSession(str(OUT / "model.onnx"), providers=["CPUExecutionProvider"])
-got = sess.run(None, {"frames": x.numpy()})[0]
+    so = ort.SessionOptions()
+    so.enable_cpu_mem_arena = False
+    so.enable_mem_pattern = False
+    sess = ort.InferenceSession(str(OUT / "model.onnx"), sess_options=so, providers=["CPUExecutionProvider"])
+    got = sess.run(None, {"frames": xs})[0]
+    del sess
+    gc.collect()
+    ref = np.load(OUT / "ref.npy")
+    (OUT / "ref.npy").unlink()
+    say(f"ONNX Runtime ran: {got.shape}")
+except Exception as e:  # shown on the run's page
+    fail(f"{type(e).__name__}: {str(e)[:500]} | {traceback.format_exc()[-1500:]}".replace(chr(10), " | "))
+    raise
+
 assert got.shape == ref.shape, (got.shape, ref.shape)
 worst = 1.0
 for t in range(T):
@@ -84,10 +116,12 @@ for t in range(T):
     b = got[0, t].ravel()
     c = float(np.corrcoef(a, b)[0, 1])
     worst = min(worst, c)
-print("worst per-frame correlation ONNX vs PyTorch:", worst)
-assert worst > 0.995, worst
+say(f"worst per-frame correlation ONNX vs PyTorch: {worst:.5f}")
+if worst <= 0.995:
+    fail(f"ONNX differs from PyTorch (worst correlation {worst})")
+    raise SystemExit(1)
 # Steady: neighbouring frames of the background stay alike (the model's whole point).
 bg = got[0, :, : SIDE // 5, :].reshape(T, -1)
 drift = float(np.max(np.abs(np.diff(bg.mean(axis=1)))) / (np.abs(bg).mean() + 1e-6))
-print("background drift between frames (share):", drift)
+say(f"background drift between frames (share): {drift:.4f}")
 (OUT / "export.json").write_text(json.dumps({"frames": T, "side": SIDE, "worstCorrelation": worst, "backgroundDrift": drift, "weights": HF}, indent=2))

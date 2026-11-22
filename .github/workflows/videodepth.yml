@@ -40,6 +40,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 32 frames at full size need more memory than the runner has: a big swap file (the first try ran out).
+      - name: More memory (swap)
+        run: |
+          set -euo pipefail
+          sudo swapoff -a || true
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          free -h
+          echo "::notice::memory: $(free -h | awk '/Mem/{print $2}') + swap $(free -h | awk '/Swap/{print $2}')"
+
       - name: Video Depth Anything source and the tools to convert it
         run: |
           set -euo pipefail

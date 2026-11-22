@@ -2,6 +2,10 @@ name: build
 
 on:
   push:
+    # The video depth model's pack has its own workflow (videodepth.yml): changing only it builds no app.
+    paths-ignore:
+      - .github/workflows/videodepth.yml
+      - .github/scripts/vda_export.py
   pull_request:
   workflow_dispatch:
 
