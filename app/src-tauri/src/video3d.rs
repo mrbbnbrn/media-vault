@@ -5,7 +5,7 @@
 //! saves it (derived.rs, kind "track"); GIFs are decoded in the window itself.
 //!
 //! One decoder per video being prepared, kept here between calls. It stops
-//! when the window closes it, when the vault locks, or after two minutes
+//! when the window closes it, when the vault locks, or after ten minutes
 //! without being asked for frames.
 
 use std::collections::{HashMap, VecDeque};
@@ -26,7 +26,7 @@ const MAX_BATCH: usize = 64 << 20;
 /// Biggest frame side accepted.
 const MAX_SIDE: u32 = 4096;
 /// A decoder nobody asked for frames this long is stopped.
-const IDLE: Duration = Duration::from_secs(120);
+const IDLE: Duration = Duration::from_secs(600);
 
 struct Decoder {
     session: Arc<Session>,

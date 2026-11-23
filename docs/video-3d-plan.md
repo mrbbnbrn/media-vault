@@ -174,3 +174,17 @@ The user wanted the choices per video, not in Settings, and videos to ignore the
   subject, calmer camera) are saved, at once, nothing prepared ("Save" instead of "Prepare").
 - **Settings → AI & 3D → Videos and GIFs:** only what's being prepared, the space used, Stop, Delete all.
 
+
+## 12. Long videos stopped part way (2026-11-23, Claude Code on the user's PC)
+
+The user: preparing bigger, higher-resolution videos always failed after a while (GIFs fine), no message seen.
+Cause: the app stops a video's frame reader (ffmpeg) when it isn't asked for frames for a while (was 2 minutes),
+and the window asks only between blocks of frames (24, or the video model's run). A block of big frames (models,
+fill, calming, encoding) can take longer than that, so the next read failed ("That video isn't being prepared any
+more"). GIFs are decoded in the window, so they never hit it.
+- `video3d.rs`: the idle stop is now 10 minutes.
+- `video3d.ts` `frameReader`: a reader that fails mid-way is opened again just after the last frame it gave (frames up
+  to it skipped), up to 3 times in a row without a frame; so nothing is lost or made twice.
+- The Prepare 3D window shows why the last one failed (it was only in the jobs list).
+Checked: 3 new tests with a pretend reader that stops every 2 reads (all 30 frames once, in order), 634 window
+tests, tsc. Rust compiled by CI only. Not tried in the real app yet. If it still fails, the window now says why.

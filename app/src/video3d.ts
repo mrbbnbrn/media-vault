@@ -145,9 +145,11 @@ export interface Prep3dState {
   /** The one being prepared now (fraction 0–1). */
   current: { id: number; name: string; fraction: number } | null;
   queue: { id: number; name: string }[];
+  /** Why the last one that failed failed ('' = none since the app started), shown in the Prepare 3D window. */
+  lastError?: string;
 }
 
-let state: Prep3dState = { running: false, current: null, queue: [] };
+let state: Prep3dState = { running: false, current: null, queue: [], lastError: '' };
 const subs = new Set<() => void>();
 function set(patch: Partial<Prep3dState>) {
   state = { ...state, ...patch };
@@ -240,6 +242,7 @@ async function run() {
       } catch (e) {
         failed++;
         lastError = `${it.name}: ${errText(e)}`;
+        set({ lastError });
         console.warn('Preparing 3D failed:', lastError);
       }
       updateJob(JOB, { done: done + failed });
@@ -257,12 +260,12 @@ async function run() {
 
 // ---- one item ---------------------------------------------------------------------------------------
 
-interface Frame {
+export interface Frame {
   t: number;
   rgba: Uint8ClampedArray;
 }
 
-interface Source {
+export interface Source {
   w: number;
   h: number;
   fps: number;
@@ -304,22 +307,53 @@ function probeVideo(src: string): Promise<{ w: number; h: number; duration: numb
 async function videoSource(id: number, size: number, start: number): Promise<Source> {
   const meta = await probeVideo(mediaUrl(id));
   const { w, h } = tileSize(meta.w, meta.h, size);
-  const open = await api.video3dOpen(id, w, h, start);
+  return frameReader({
+    open: (from) => api.video3dOpen(id, w, h, from),
+    read: (rid) => api.video3dRead(rid, 8),
+    close: (rid) => api.video3dClose(rid),
+  }, w, h, start, meta.duration);
+}
+
+/** How the frames of a video come from the app (video3d.rs), as `frameReader` uses them. */
+export interface FrameIo {
+  open(from: number): Promise<{ id: number }>;
+  read(id: number): Promise<Uint8Array>;
+  close(id: number): Promise<unknown>;
+}
+
+/** A video's frames, `w` × `h`, from `start` seconds on (exported for its tests). */
+export async function frameReader(io: FrameIo, w: number, h: number, start: number, duration: number): Promise<Source> {
+  let open = await io.open(start);
   let buf: Frame[] = [];
   let ended = false;
   let fps = 30;
   let lastT = NaN;
   const seen: number[] = [];
+  /** Decoders opened again in a row without a frame coming (a reader that keeps failing is given up). */
+  let retries = 0;
+  /** After opening again: frames up to the last one already handed out are skipped. */
+  let after = -Infinity;
   return {
     w,
     h,
     get fps() {
       return fps;
     },
-    duration: meta.duration,
+    duration,
     async next() {
       while (!buf.length && !ended) {
-        const b = await api.video3dRead(open.id, 8);
+        let b: Uint8Array;
+        try {
+          b = await io.read(open.id);
+        } catch (e) {
+          // The reader was stopped (a long block of frames left it unasked for too long, or ffmpeg
+          // ended early): opened again just after the last frame, and carried on from there.
+          if (retries++ >= 3 || !Number.isFinite(lastT)) throw e;
+          void io.close(open.id).catch(() => {});
+          open = await io.open(lastT + 0.0005);
+          after = lastT;
+          continue;
+        }
         const dv = new DataView(b.buffer, b.byteOffset, b.byteLength);
         const n = dv.getUint32(0, true);
         ended = b[4] === 1;
@@ -327,6 +361,8 @@ async function videoSource(id: number, size: number, start: number): Promise<Sou
         for (let i = 0; i < n; i++) {
           let t = dv.getFloat64(8 + i * 8, true);
           if (!Number.isFinite(t)) t = Number.isFinite(lastT) ? lastT + 1 / fps : start;
+          if (t <= after) continue;
+          retries = 0;
           if (seen.length < 12) {
             seen.push(t);
             if (seen.length >= 3) fps = Math.min(240, Math.max(1, (seen.length - 1) / Math.max(1e-3, seen[seen.length - 1] - seen[0])));
@@ -340,7 +376,7 @@ async function videoSource(id: number, size: number, start: number): Promise<Sou
     },
     close() {
       buf = [];
-      void api.video3dClose(open.id).catch(() => {});
+      void io.close(open.id).catch(() => {});
     },
   };
 }

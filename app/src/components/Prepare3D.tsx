@@ -253,6 +253,11 @@ export function Video3DSection() {
           ? `Preparing “${prep.current.name}”: ${Math.round(prep.current.fraction * 100)} %${prep.queue.length ? ` · ${plural(prep.queue.length, 'more')} waiting` : ''}.`
           : 'Nothing is being prepared.'}
         {' '}Saved: {stats ? `${plural(count, 'video or GIF', 'videos and GIFs')} with 3D, ${formatBytes(bytes)}` : '…'}.
+        {prep.lastError && (
+          <div className="muted" style={{ marginTop: 4 }}>
+            Last time it failed: {prep.lastError}. What was made is kept; preparing it again carries on from there.
+          </div>
+        )}
       </div>
       <div className="row" style={{ gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
         {prep.running && <button type="button" className="btn btn-sm" onClick={stopPrepare3d}>Stop preparing</button>}
