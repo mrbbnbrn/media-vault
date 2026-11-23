@@ -344,7 +344,8 @@ How to record changes:
   3D only on the subject, calmer camera) is saved, with nothing to prepare. Settings → AI & 3D → Videos and GIFs now
   only shows what's being prepared, the space, Stop and "Delete all 3D data for videos and GIFs". Files:
   `Prepare3D.tsx`, `video3d.ts`, `trackformat.ts`, `Player.tsx`, `DepthSettings.tsx`, `Depth3D.tsx`, `apitypes.ts`,
-  `config.rs`, tests. Checked: tsc, 603 vitest, the window in the browser demo. Not tried in the real app.
+  `config.rs`, tests. Checked: tsc, 603 vitest, the window in the browser demo. Released as build-107; the user
+  tried it in the app: works.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: choices and speed.** Settings →
   AI & 3D → Videos and GIFs: **What to prepare** (depth only / + outline / everything), **Fill the background** on
   every 1st/2nd/3rd frame (frames between reuse the fill; a new scene always gets its own), and **models for videos**
