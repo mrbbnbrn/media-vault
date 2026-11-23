@@ -92,14 +92,21 @@ pub struct ViewerSettings {
     pub depth_beat: bool,
     pub depth_beat_kind: String,
     pub depth_beat_amount: f64,
-    /// Prepared 3D for videos and GIFs: the long side of its pictures (512, 768 or 1024),
-    /// every frame (1) or every second frame (2), and a calmer 3D camera on them.
+    /// Prepared 3D for videos and GIFs: what the Prepare 3D window was last set to (each video keeps
+    /// its own choices with its 3D). The long side of its pictures (512, 768 or 1024), every frame (1)
+    /// or every second frame (2), a calmer 3D camera on them.
     pub video3d_size: u32,
     pub video3d_every: u32,
     pub video3d_calm: bool,
-    /// What preparing makes ("depth", "outline" or "all"), the fill on every 1st–3rd frame,
-    /// and the models for videos ("" = the same as for pictures; fill "simple" = Simple).
-    pub video3d_parts: String,
+    /// The effects ticked: Lift-off (and its amount 0.3–3), 3D only on the subject, sharper depth
+    /// edges (and their strength 0.2–1), Layered 3D with its fill on every 1st–3rd frame.
+    pub video3d_lift: bool,
+    pub video3d_lift_amount: f64,
+    pub video3d_subject_only: bool,
+    pub video3d_edges: bool,
+    pub video3d_edges_amount: f64,
+    pub video3d_layered: bool,
+    /// The models ("" = the same as for pictures; fill "simple" = Simple).
     pub video3d_fill_every: u32,
     pub video3d_depth_model: String,
     pub video3d_subject_model: String,
@@ -195,7 +202,12 @@ impl Default for ViewerSettings {
             video3d_size: 768,
             video3d_every: 1,
             video3d_calm: true,
-            video3d_parts: "all".into(),
+            video3d_lift: false,
+            video3d_lift_amount: 1.0,
+            video3d_subject_only: false,
+            video3d_edges: false,
+            video3d_edges_amount: 0.7,
+            video3d_layered: false,
             video3d_fill_every: 1,
             video3d_depth_model: String::new(),
             video3d_subject_model: String::new(),
@@ -450,9 +462,8 @@ impl AppConfig {
         if v.video3d_every != 2 {
             v.video3d_every = 1;
         }
-        if !["depth", "outline", "all"].contains(&v.video3d_parts.as_str()) {
-            v.video3d_parts = "all".into();
-        }
+        v.video3d_lift_amount = clamp(v.video3d_lift_amount, 0.3, 3.0, 1.0);
+        v.video3d_edges_amount = clamp(v.video3d_edges_amount, 0.2, 1.0, 0.7);
         v.video3d_fill_every = v.video3d_fill_every.clamp(1, 3);
         for id in [&mut v.video3d_depth_model, &mut v.video3d_subject_model, &mut v.video3d_fill_model] {
             if id.len() > 40 || !id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
@@ -583,6 +594,22 @@ mod tests {
         assert_eq!(c.lock.safety_net_minutes, 0);
         assert!(c.fullscreen_controls_on_mouse);
         assert!(c.block_capture);
+    }
+
+    #[test]
+    fn video_3d_window_choices_are_kept_and_checked() {
+        // An older file (with the retired "video3dParts") reads with nothing ticked.
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"video3dParts":"all"}}"#).unwrap().sanitized();
+        assert!(!c.viewer.video3d_lift && !c.viewer.video3d_layered && !c.viewer.video3d_edges && !c.viewer.video3d_subject_only);
+        assert_eq!(c.viewer.video3d_lift_amount, 1.0);
+        let c: AppConfig = serde_json::from_str::<AppConfig>(
+            r#"{"viewer":{"video3dLift":true,"video3dLiftAmount":9,"video3dEdges":true,"video3dEdgesAmount":0.01,"video3dLayered":true}}"#,
+        )
+        .unwrap()
+        .sanitized();
+        assert!(c.viewer.video3d_lift && c.viewer.video3d_edges && c.viewer.video3d_layered);
+        assert_eq!(c.viewer.video3d_lift_amount, 3.0);
+        assert_eq!(c.viewer.video3d_edges_amount, 0.2);
     }
 
     #[test]

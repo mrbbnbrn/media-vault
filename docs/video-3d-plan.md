@@ -157,3 +157,20 @@ The user saw dark specks with Lift-off / the subject layer, and preparing was ve
   range; runs overlap by 8 frames and are lined up at the seam. Download: `MediaVault-depth-vda-small-windows.zip`
   (built by `.github/workflows/videodepth.yml`). It fixes depth flicker at the source, not outline flicker.
 
+## 11. The Prepare 3D window (2026-11-23, asked by the user)
+
+The user wanted the choices per video, not in Settings, and videos to ignore the pictures' 3D switches.
+
+- **Prepare 3D** (viewer 3D ▾, right-click a video / selection / folder) opens a window: every effect has a tick box
+  and its model next to it: Depth (always, depth model incl. Video (steady)), Lift-off (amount), 3D only on the
+  subject, Sharper depth edges (strength), Layered 3D (fill model, fill every 1st/2nd/3rd frame); the outline model
+  shows when a ticked effect needs it; 3D detail, frames, calmer camera. Each with its explanation. Live estimate
+  (time, space, how many already have 3D and get replaced). The window remembers the last choices.
+- **Per video:** the choices are saved in the video's track index (`choices`). Playing uses only those
+  (`trackLook`): depth only ticked → no Lift-off even if Lift-off is on for pictures. In 3D ▾ the picture effects are
+  greyed out on videos and GIFs. Videos prepared before this play with everything their 3D holds.
+- **Replace:** preparing a video again deletes its 3D made with other choices first. Same models and baked parts
+  (depth, outline, fill, sharper edges, size, frames) → only the play choices (Lift-off + amount, 3D only on the
+  subject, calmer camera) are saved, at once, nothing prepared ("Save" instead of "Prepare").
+- **Settings → AI & 3D → Videos and GIFs:** only what's being prepared, the space used, Stop, Delete all.
+

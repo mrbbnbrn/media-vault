@@ -3,9 +3,12 @@
 // video's or folder's right-click menu), then saved in the vault so the video
 // plays with 3D smoothly, frame by frame (track3d.ts, Depth3D.tsx).
 //
-// For each frame, the same models as for pictures, with the settings in use:
-// depth (any model), the subject outline (Lift-off, 3D only on the subject),
-// sharper depth edges, and Layered 3D's background fill. The worker
+// What is made, and with which models, is ticked in the Prepare 3D window
+// (Prepare3D.tsx) for those videos; each video keeps its choices with its 3D
+// and plays with only those (the pictures' 3D switches never apply to it).
+// Preparing a video again replaces what it had. For each frame: depth (any
+// model), the subject outline (Lift-off, 3D only on the subject), sharper depth
+// edges, and Layered 3D's background fill. The worker
 // (video3dworker.ts) calms it over time and encodes it; each finished piece is
 // saved at once, so a stopped job carries on where it stopped next time.
 //
@@ -13,40 +16,41 @@
 // One video at a time; the others wait in the queue. Stops on lock.
 
 import { useSyncExternalStore } from 'react';
-import { api, mediaUrl, onLocked, type DepthMap, type SubjectMask } from './api';
-import { viewerPrefs } from './prefs';
+import { api, mediaUrl, onLocked, type DepthMap, type DerivedKind, type SubjectMask } from './api';
+import { saveViewerPrefs, viewerPrefs } from './prefs';
 import { beginJob, endJob, updateJob } from './jobs';
 import { depthChoice, depthTag, edgesSetting, lastSpeed, pivotOf, setupOf, type DepthSetup } from './depth';
 import { lastSubjectSpeed, maskStats, subjectChoice, subjectDepth, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
 import { bgDepthNear, edgesStrength } from './layers';
 import { inpaintChoice, inpaintPack } from './inpaint';
 import { savedChanged } from './derived';
-import { packIndex, parseIndex, trackChanged, trackTag, type TrackIndex } from './track3d';
+import { cleanChoices, findTrack, needsOutline, packIndex, parseIndex, trackChanged, trackTag, type TrackIndex, type Video3dChoices } from './track3d';
 import { alignTo, COLS, ROWS, roundInfo, smoothInfo, tileSize, type FrameInfo } from './video3dmath';
 import { errText } from './text';
 
 // ---- settings -------------------------------------------------------------------------------------
 
-export const VIDEO3D_SIZES = [512, 768, 1024] as const;
+export { VIDEO3D_SIZES, cleanChoices } from './trackformat';
 
-export type Parts = 'depth' | 'outline' | 'all';
-
-/** The video 3D settings read safely. */
-export function videoPrefs(p = viewerPrefs()): {
-  size: number; every: number; calm: boolean; parts: Parts; fillEvery: number; depthModel: string; subjectModel: string; fillModel: string;
-} {
-  const size = (VIDEO3D_SIZES as readonly number[]).includes(p.video3dSize ?? 0) ? p.video3dSize! : 768;
-  const parts: Parts = p.video3dParts === 'depth' || p.video3dParts === 'outline' ? p.video3dParts : 'all';
-  const fe = p.video3dFillEvery;
-  const id = (v: unknown) => (typeof v === 'string' && /^[a-z0-9-]{0,40}$/.test(v) ? v : '');
-  return {
-    size, every: p.video3dEvery === 2 ? 2 : 1, calm: p.video3dCalm !== false, parts,
-    fillEvery: fe === 2 || fe === 3 ? fe : 1,
-    depthModel: id(p.video3dDepthModel), subjectModel: id(p.video3dSubjectModel), fillModel: id(p.video3dFillModel),
-  };
+/** What the Prepare 3D window was last set to (it opens with these for a video without 3D). */
+export function lastChoices(p = viewerPrefs()): Video3dChoices {
+  return cleanChoices({
+    depthModel: p.video3dDepthModel, lift: p.video3dLift, liftAmount: p.video3dLiftAmount, subjectOnly: p.video3dSubjectOnly,
+    edges: p.video3dEdges, edgesAmount: p.video3dEdgesAmount, layered: p.video3dLayered, fillModel: p.video3dFillModel,
+    fillEvery: p.video3dFillEvery, subjectModel: p.video3dSubjectModel, size: p.video3dSize, every: p.video3dEvery, calm: p.video3dCalm,
+  });
 }
 
-/** What preparing uses now: the models for videos and the video settings, and the tag it's saved under. */
+/** Remembered for the next time the window opens. */
+export function rememberChoices(c: Video3dChoices) {
+  void saveViewerPrefs({
+    video3dDepthModel: c.depthModel, video3dLift: c.lift, video3dLiftAmount: c.liftAmount, video3dSubjectOnly: c.subjectOnly,
+    video3dEdges: c.edges, video3dEdgesAmount: c.edgesAmount, video3dLayered: c.layered, video3dFillModel: c.fillModel,
+    video3dFillEvery: c.fillEvery, video3dSubjectModel: c.subjectModel, video3dSize: c.size, video3dEvery: c.every, video3dCalm: c.calm,
+  });
+}
+
+/** What preparing makes from the window's choices and the installed packs, and the tag it's saved under. */
 export interface Setup {
   depth: DepthSetup;
   /** A video model: this many frames go in together (null: one picture model). */
@@ -62,39 +66,44 @@ export interface Setup {
   size: number;
   every: number;
   tag: string;
+  /** Ticked, but its model isn't there (said in the window). */
+  missing: string[];
 }
 
 /**
- * The setup from the settings and the installed packs (null: no depth model there). The models for
- * videos are their own choice ('' = the same as for pictures); what to prepare leaves models out.
+ * The setup for these choices (null: no depth model there). Models left '' are the ones the pictures use;
+ * the outline is made only when a ticked effect needs it, the fill only for Layered 3D.
  */
-export async function currentSetup(): Promise<Setup | null> {
+export async function setupFor(c: Video3dChoices): Promise<Setup | null> {
   const p = viewerPrefs();
-  const v = videoPrefs(p);
   const pic = depthChoice(p);
-  const di = await api.depthInfo(v.depthModel || pic.model, pic.detail).catch(() => null);
+  const di = await api.depthInfo(c.depthModel || pic.model, pic.detail).catch(() => null);
   const depth = setupOf(di, edgesSetting(p.depthEdges));
   if (!depth) return null;
   const clip = di?.frames && di.frames > 1 ? di.frames : null;
+  const missing: string[] = [];
   let subject: SubjectSetup | null = null;
-  if (v.parts !== 'depth') subject = subjectSetupOf(await api.subjectInfo(v.subjectModel || subjectChoice(p)).catch(() => null));
-  const plate = !!subject && v.parts === 'all';
+  if (needsOutline(c)) {
+    subject = subjectSetupOf(await api.subjectInfo(c.subjectModel || subjectChoice(p)).catch(() => null));
+    if (!subject) missing.push('no outline model is installed, so Lift-off, 3D only on the subject, sharper edges and Layered 3D are left out');
+  }
+  const plate = !!subject && c.layered;
   let fill = '';
   let fillSide = 0;
   if (plate) {
-    const want = v.fillModel === 'simple' ? '' : v.fillModel || inpaintChoice(p);
+    const want = c.fillModel === 'simple' ? '' : c.fillModel || inpaintChoice(p);
     if (want) {
       const info = await inpaintPack(want);
       if (info?.available) {
         fill = info.model ?? want;
         fillSide = info.inputSide && info.inputSide > 0 ? info.inputSide : 512;
-      }
+      } else missing.push(`the fill model “${want}” isn't installed, so Simple fills in`);
     }
   }
-  const fillEvery = plate ? v.fillEvery : 1;
-  const edges = subject && p.depthEdges3d ? edgesStrength(p.depthEdgesStrength) : 0;
-  const tag = trackTag({ depth: depthTag(depth), subject: subject ? subjectTag(subject) : '', edges, fill, size: v.size, every: v.every, plate, fillEvery });
-  return { depth, clip, subject, plate, fill, fillSide, fillEvery, edges, size: v.size, every: v.every, tag };
+  const fillEvery = plate ? c.fillEvery : 1;
+  const edges = subject && c.edges ? edgesStrength(c.edgesAmount) : 0;
+  const tag = trackTag({ depth: depthTag(depth), subject: subject ? subjectTag(subject) : '', edges, fill, size: c.size, every: c.every, plate, fillEvery });
+  return { depth, clip, subject, plate, fill, fillSide, fillEvery, edges, size: c.size, every: c.every, tag, missing };
 }
 
 // ---- estimates ------------------------------------------------------------------------------------
@@ -168,15 +177,24 @@ export function prep3dOf(s: Prep3dState, id: number): number | null {
 const JOB = 'video3d';
 let stopAll = false;
 let stopOne: number | null = null;
-let queue: Want3d[] = [];
+let queue: { it: Want3d; c: Video3dChoices }[] = [];
 let done = 0;
 let failed = 0;
 let lastError = '';
 
-/** Prepare these videos and GIFs (added to the queue; ones already waiting are skipped). */
-export function prepare3d(items: Want3d[]) {
-  for (const it of items) if (!queue.some((q) => q.id === it.id) && state.current?.id !== it.id) queue.push(it);
-  set({ queue: queue.map((q) => ({ id: q.id, name: q.name })) });
+const queued = () => queue.map((q) => ({ id: q.it.id, name: q.it.name }));
+
+/**
+ * Prepare these videos and GIFs with these choices (added to the queue; one already waiting takes the new
+ * choices). What a video had before is replaced; when only how it plays changed, that's saved at once.
+ */
+export function prepare3d(items: Want3d[], c: Video3dChoices) {
+  for (const it of items) {
+    const known = queue.find((q) => q.it.id === it.id);
+    if (known) known.c = c;
+    else if (state.current?.id !== it.id) queue.push({ it, c });
+  }
+  set({ queue: queued() });
   if (!state.running) void run();
 }
 
@@ -189,8 +207,8 @@ export function stopPrepare3d() {
 
 /** Stop one item (taken out of the queue, or stopped if it's being prepared). */
 export function stopPrepare3dOf(id: number) {
-  queue = queue.filter((q) => q.id !== id);
-  set({ queue: queue.map((q) => ({ id: q.id, name: q.name })) });
+  queue = queue.filter((q) => q.it.id !== id);
+  set({ queue: queued() });
   if (state.current?.id === id) stopOne = id;
 }
 
@@ -205,14 +223,16 @@ async function run() {
   beginJob({ id: JOB, label: 'Preparing 3D for videos', long: true, unit: 'videos', total: queue.length, cancel: stopPrepare3d, cancelLabel: 'Stop' });
   try {
     while (queue.length && !stopAll) {
-      const it = queue.shift()!;
-      set({ current: { id: it.id, name: it.name, fraction: 0 }, queue: queue.map((q) => ({ id: q.id, name: q.name })) });
+      const { it, c } = queue.shift()!;
+      set({ current: { id: it.id, name: it.name, fraction: 0 }, queue: queued() });
       updateJob(JOB, { total: done + failed + 1 + queue.length, detail: it.name });
       stopOne = null;
       try {
-        const setup = await currentSetup();
+        const setup = await setupFor(c);
         if (!setup) throw new Error("3D needs a depth pack (Settings → AI & 3D).");
-        await prepareOne(it, setup, (f) => {
+        // Replaces what it had: its 3D made with other choices goes first.
+        await forgetOthers(it.id, setup.tag);
+        await prepareOne(it, setup, c, (f) => {
           set({ current: { id: it.id, name: it.name, fraction: f } });
           updateJob(JOB, { fraction: (done + failed + f) / Math.max(1, done + failed + 1 + queue.length) });
         }, () => stopAll || stopOne === it.id);
@@ -416,10 +436,19 @@ const OUTLINE_PER_CALL = 4;
 /** A video model's runs overlap by this many frames (to line them up). */
 const OVERLAP = 8;
 
-async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, stopped: () => boolean) {
+async function prepareOne(it: Want3d, s: Setup, c: Video3dChoices, progress: (f: number) => void, stopped: () => boolean) {
   const name = (k: string) => `${s.tag}.${k}`;
   let index = parseIndex(await api.derivedGet(it.id, 'track', name('i')));
-  if (index?.complete) return;
+  if (index) {
+    // Made with the same setup (only how it plays may have changed): its choices are saved at once.
+    index.choices = c;
+    await api.derivedPut(it.id, 'track', name('i'), packIndex(index));
+    trackChanged(it.id);
+    if (index.complete) {
+      progress(1);
+      return;
+    }
+  }
   const last = index?.segs[index.segs.length - 1];
   // Carries on after the last saved piece.
   const from = last ? (it.kind === 'gif' ? last.t1 + 1 : last.t1 + 0.0005) : 0;
@@ -433,7 +462,7 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
         v: 1, tag: s.tag, kind: it.kind, w, h, codec: init.codec, segs: [], every: s.every, complete: false,
         has: { subject: !!s.subject, plate: s.plate },
         models: { depth: depthTag(s.depth), subject: s.subject ? subjectTag(s.subject) : '', fill: s.plate ? s.fill || 'simple' : '', edges: s.edges },
-        duration: src.duration, made: Date.now(),
+        duration: src.duration, made: Date.now(), choices: c,
       };
     }
     const idx: TrackIndex = index;
@@ -564,11 +593,30 @@ async function prepareOne(it: Want3d, s: Setup, progress: (f: number) => void, s
   }
 }
 
-/** Delete an item's prepared 3D made with this tag (to prepare it again). */
-export async function forget3d(id: number, tag: string) {
-  await api.derivedRemove([id], [['track', tag]]);
+/** Delete an item's prepared 3D made with any other tag than `keep` ('' = all of it). */
+export async function forgetOthers(id: number, keep: string) {
+  const tags = (await api.derivedSummary([id])).filter((g) => g.kind === 'track' && g.model !== keep).map((g) => g.model);
+  if (!tags.length) return;
+  await api.derivedRemove([id], tags.map((t): [DerivedKind, string] => ['track', t]));
   trackChanged(id);
   savedChanged();
+}
+
+/**
+ * For the window: of these videos, how many have prepared 3D, and which are already made with this setup
+ * and finished (for those only how they play changes). Looked at for the first `max` only.
+ */
+export async function existing3d(items: Want3d[], tag: string, max = 60): Promise<{ looked: number; has: number; same: Set<number> }> {
+  const some = items.slice(0, max);
+  const same = new Set<number>();
+  let has = 0;
+  await Promise.all(some.map(async (it) => {
+    const i = await findTrack(it.id, tag);
+    if (!i) return;
+    has++;
+    if (i.tag === tag && i.complete) same.add(it.id);
+  }));
+  return { looked: some.length, has, same };
 }
 
 export { trackChanged };

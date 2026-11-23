@@ -57,15 +57,22 @@ export interface ViewerSettings {
   depthBeat?: boolean;
   depthBeatKind?: 'push' | 'bounce';
   depthBeatAmount?: number;
-  /** Live video 3D: show each video frame (and its sound) ~0.1 s late so it meets its own depth. */
-  /** Prepared 3D for videos and GIFs (video3d.ts): the long side of its pictures (512, 768 or 1024). */
+  /**
+   * Prepared 3D for videos and GIFs (video3d.ts): what the Prepare 3D window was last set to (each video
+   * keeps its own choices with its 3D; the pictures' switches never apply to it). The long side of its pictures (512, 768 or 1024).
+   */
   video3dSize?: number;
   /** Every frame (1) or every second frame (2). */
   video3dEvery?: number;
   /** A calmer 3D camera on videos and GIFs (slower, smaller, less on fast scenes). */
   video3dCalm?: boolean;
-  /** What preparing makes: 'depth' only, + 'outline' (Lift-off, 3D only on the subject), or 'all' (+ Layered 3D's fill). */
-  video3dParts?: string;
+  /** The effects ticked: Lift-off (amount 0.3–3), 3D only on the subject, sharper depth edges (strength 0.2–1), Layered 3D. */
+  video3dLift?: boolean;
+  video3dLiftAmount?: number;
+  video3dSubjectOnly?: boolean;
+  video3dEdges?: boolean;
+  video3dEdgesAmount?: number;
+  video3dLayered?: boolean;
   /** Layered 3D's fill worked out on every frame (1), every 2nd (2) or every 3rd (3); the others reuse it. */
   video3dFillEvery?: number;
   /** Models for videos ('' = the same as for pictures): depth (may be a video model), outline, fill ('simple' = Simple). */
@@ -124,7 +131,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   smoothFit: true, smoothZoom: true, sharpen: false, seekSeconds: 5, seekBigSeconds: 30, muted: true, soundVolume: 0, gridColumns: 0,
   ambient: false, faceBoxes: false, alignFaces: false, openCloseAnim: true, slideRing: true, hiddenFaces: false,
   depthMouse: false, depthAmount: 1, depthReact: 1,
-  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, video3dSize: 768, video3dEvery: 1, video3dCalm: true, video3dParts: 'all', video3dFillEvery: 1, video3dDepthModel: '', video3dSubjectModel: '', video3dFillModel: '', depthAutoMigrated: false,
+  depthAuto: false, depthMotion: 1, depthSpeed: 1, depthShape: 'random', depthEdges: 0, depthMoving: false, depthMovingAmount: 0.6, depthBeat: false, depthBeatKind: 'push', depthBeatAmount: 1, video3dSize: 768, video3dEvery: 1, video3dCalm: true, video3dLift: false, video3dLiftAmount: 1, video3dSubjectOnly: false, video3dEdges: false, video3dEdgesAmount: 0.7, video3dLayered: false, video3dFillEvery: 1, video3dDepthModel: '', video3dSubjectModel: '', video3dFillModel: '', depthAutoMigrated: false,
   depthModel: '', depthDetail: 'standard',
   subjectModel: '', depthLift: false, depthLiftAmount: 1,
   depthEdges3d: false, depthEdgesStrength: 0.7, depthSubjectOnly: false,

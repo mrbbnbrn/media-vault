@@ -331,6 +331,20 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: the Prepare 3D window** (asked
+  by the user). Prepare 3D (viewer 3D ▾, or right-click a video, a selection or a folder) opens a window where each
+  effect is ticked with its model: Depth (always; depth model), Lift-off (+ amount), 3D only on the subject, Sharper
+  depth edges (+ strength), Layered 3D (fill model + fill every 1st/2nd/3rd frame), the outline model (when a ticked
+  effect needs it), 3D detail, frames, calmer camera; live estimate; remembers the last choices (config
+  `video3d_lift`, `_lift_amount`, `_subject_only`, `_edges`, `_edges_amount`, `_layered`; `video3d_parts` retired).
+  **Each video keeps its choices** in its track index (`TrackIndex.choices`, `trackformat.ts`) and plays with only
+  those (`trackLook`): the pictures' Lift-off / Layered 3D / … switches never apply to videos and GIFs (greyed out in
+  3D ▾ for them). Old prepared videos (no choices) play with everything their 3D holds. **Preparing again replaces**
+  what the video had (`forgetOthers`); when the models and baked parts are the same, only how it plays (Lift-off,
+  3D only on the subject, calmer camera) is saved, with nothing to prepare. Settings → AI & 3D → Videos and GIFs now
+  only shows what's being prepared, the space, Stop and "Delete all 3D data for videos and GIFs". Files:
+  `Prepare3D.tsx`, `video3d.ts`, `trackformat.ts`, `Player.tsx`, `DepthSettings.tsx`, `Depth3D.tsx`, `apitypes.ts`,
+  `config.rs`, tests. Checked: tsc, 603 vitest, the window in the browser demo. Not tried in the real app.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: choices and speed.** Settings →
   AI & 3D → Videos and GIFs: **What to prepare** (depth only / + outline / everything), **Fill the background** on
   every 1st/2nd/3rd frame (frames between reuse the fill; a new scene always gets its own), and **models for videos**

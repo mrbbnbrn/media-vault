@@ -78,8 +78,8 @@ import { useSpeedRamp } from '../speedrampHook';
 import { pickEffect, transitionMs, type Effect } from '../transitions';
 import { edgeZoneAt, followPx, isSideways, onPicture, swipeEnd, DRAG_START, type Side } from '../swipe';
 import { libraryItemMenu, trashFromViewer } from '../itemmenu';
-import { currentSetup, prep3dOf, stopPrepare3dOf, usePrep3d } from '../video3d';
-import { findTrack, onTrackChange, type TrackIndex } from '../track3d';
+import { prep3dOf, stopPrepare3dOf, usePrep3d } from '../video3d';
+import { findTrack, onTrackChange, trackLook, type TrackIndex, type Video3dChoices } from '../track3d';
 import { Prepare3DDialog } from './Prepare3D';
 
 export interface PlayerHandle {
@@ -1131,26 +1131,16 @@ export function Player(props: PlayerProps) {
   // Moving pictures (GIFs, animated WebP/PNG) have their own switch; a one-frame GIF counts as a picture.
   const animated = item?.kind === 'gif' && (imgInfo?.frames ?? 0) > 1;
   const isVideo3d = item?.kind === 'video';
-  // Videos and GIFs: their prepared 3D (video3d.ts), under the tag the settings give now or any other.
+  // Videos and GIFs: their prepared 3D (video3d.ts): one per video, made with the choices ticked for it.
   const movingVault = (animated || isVideo3d) && item?.itemId != null;
-  const [wantTag, setWantTag] = useState<string | null>(null);
-  useEffect(() => {
-    if (!depthMoving) return;
-    let alive = true;
-    void currentSetup().then((st) => alive && setWantTag(st?.tag ?? ''), () => alive && setWantTag(''));
-    return () => {
-      alive = false;
-    };
-  }, [depthMoving, prefs.depthModel, prefs.depthDetail, prefs.depthEdges, prefs.subjectModel, prefs.inpaintModel, prefs.depthEdges3d, prefs.depthEdgesStrength, prefs.video3dSize, prefs.video3dEvery,
-    prefs.video3dParts, prefs.video3dFillEvery, prefs.video3dDepthModel, prefs.video3dSubjectModel, prefs.video3dFillModel]);
   const [track, setTrack] = useState<{ key: string; index: TrackIndex | null } | null>(null);
   const [trackTick, setTrackTick] = useState(0);
   useEffect(() => onTrackChange(() => setTrackTick((n) => n + 1)), []);
   useEffect(() => {
-    if (!depthMoving || !movingVault || wantTag == null || !item) return;
+    if (!movingVault || !item) return;
     let alive = true;
     const key = item.key;
-    void findTrack(item.itemId!, wantTag).then((index) => {
+    void findTrack(item.itemId!, '').then((index) => {
       if (!alive) return;
       setTrack((t) => {
         // More of the same one prepared (a new piece saved while it's open): the pieces are added to the
@@ -1165,10 +1155,10 @@ export function Player(props: PlayerProps) {
     return () => {
       alive = false;
     };
-  }, [depthMoving, movingVault, wantTag, item?.key, trackTick]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [movingVault, item?.key, trackTick]); // eslint-disable-line react-hooks/exhaustive-deps
   const trackHere = movingVault && track?.key === item?.key ? track.index : null;
-  // Effects on a video or GIF follow what its prepared 3D holds.
-  const trackSubject = !!trackHere?.has.subject && !mini && !props.compact;
+  // Effects on a video or GIF: only what was ticked in its Prepare 3D window (never the pictures' switches).
+  const look = trackHere && !mini && !props.compact ? trackLook(trackHere) : null;
   const prep = usePrep3d();
   const prepHere = item?.itemId != null ? prep3dOf(prep, item.itemId) : null;
   /** GIFs and videos move with their own switch (once prepared); pictures with theirs (or with a subject effect on). */
@@ -1321,10 +1311,10 @@ export function Player(props: PlayerProps) {
   };
   /** The 3D photo settings window (shape, amount, speed…), from the 3D ▾ menu. */
   const [depthSettings, setDepthSettings] = useState(false);
-  // Pictures, and videos and GIFs once prepared (with the outline pack).
-  const stillOnly = item?.kind === 'image' || item?.kind === 'gif' || item?.kind === 'video' ? undefined : 'pictures and videos';
-  /** "Prepare 3D" for the video or GIF on screen: asks first (the estimate). */
-  const [prepAsk, setPrepAsk] = useState<{ again: string | null } | null>(null);
+  // Pictures only: a video's or GIF's effects are ticked in its own Prepare 3D window.
+  const stillOnly = isVideo3d || animated ? 'pictures · this one: Prepare 3D' : item?.kind === 'image' || item?.kind === 'gif' ? undefined : 'pictures';
+  /** The Prepare 3D window for the video or GIF on screen (with its own choices when it has 3D). */
+  const [prepAsk, setPrepAsk] = useState<{ initial: Video3dChoices | null } | null>(null);
   const prepEntry = (): MenuItem[] => {
     if (!item || item.itemId == null || !(isVideo3d || item.kind === 'gif')) return [];
     const id = item.itemId;
@@ -1333,11 +1323,12 @@ export function Player(props: PlayerProps) {
       return [{ label: prepHere > 0 ? `Preparing 3D… ${Math.round(prepHere * 100)} %` : 'Waiting to prepare 3D…', hint: 'stop', sepBefore: true, onSelect: () => stopPrepare3dOf(id) }];
     }
     const idx = trackHere;
-    if (idx && idx.complete && idx.tag === wantTag) {
-      return [{ label: '3D prepared', hint: 'prepare again…', sepBefore: true, onSelect: () => setPrepAsk({ again: idx.tag }) }];
+    const initial = idx?.choices ?? null;
+    if (idx && idx.complete) {
+      return [{ label: `3D prepared · change what this ${thing} has…`, hint: 'its Prepare 3D', sepBefore: true, onSelect: () => setPrepAsk({ initial }) }];
     }
-    const label = idx && idx.tag === wantTag ? `Finish preparing 3D for this ${thing}…` : idx ? `Prepare 3D again with the models in use…` : `Prepare 3D for this ${thing}…`;
-    return [{ label, hint: idx ? 'its own settings now' : 'once, then it plays in 3D', sepBefore: true, onSelect: () => setPrepAsk({ again: null }) }];
+    const label = idx ? `Finish preparing 3D for this ${thing}…` : `Prepare 3D for this ${thing}…`;
+    return [{ label, hint: 'pick what it gets', sepBefore: true, onSelect: () => setPrepAsk({ initial }) }];
   };
   /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons). */
   const depthMenu = (): MenuItem[] => [
@@ -1975,19 +1966,24 @@ export function Player(props: PlayerProps) {
             {/* 3D photos (begin) */}
             {depth3d && item && depthNatural && (
               <Depth3D key={`3d:${item.key}:${tick}:${depthByMouse ? 'mouse' : 'motion'}:${depthModelKey}:${depthMotion || !subjectOn ? 'depth' : 'flat'}`} src={item.src} natural={depthNatural} fit={s.fit}
-                subject={subjectOn || (trackSubject && depthLift) ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : undefined}
+                subject={subjectOn ? { lift: depthLift ? effectAmount(prefs.depthLiftAmount) : 0 } : look && look.lift > 0 ? { lift: look.lift } : undefined}
                 subjectModel={subjectModelKey} depth={depthMotion || !subjectOn}
-                layers={layersHere || trackSubject ? {
+                layers={layersHere ? {
                   edges: depthEdges3d ? edgesStrength(prefs.depthEdgesStrength) : 0,
                   subjectOnly: depthSubjectOnly,
                   layered: depthLayered ? { model: inpaintChoice(prefs) } : null,
+                } : look ? {
+                  // (Sharper edges are in the video's saved depth already.)
+                  edges: 0,
+                  subjectOnly: look.subjectOnly,
+                  layered: look.layered ? { model: '' } : null,
                 } : undefined}
                 amount={animated || isVideo3d ? prefs.depthMovingAmount ?? 0.6 : prefs.depthAmount ?? 1}
                 mouse={depthByMouse ? { react: prefs.depthReact ?? 1 } : undefined}
                 video={isVideo3d ? { ref: videoRef } : undefined}
                 frames={animated ? gifFeed : undefined}
                 track={trackHere && item.itemId != null && (isVideo3d || animated) ? { item: item.itemId, index: trackHere } : undefined}
-                calm={prefs.video3dCalm !== false}
+                calm={look ? look.calm : true}
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
                 motion={{ shape: motionChoice(prefs.depthShape), amount: depthMotion ? prefs.depthMotion ?? 1 : 0, speed: prefs.depthSpeed ?? 1 }}
                 endless={!slideshow} halted={(slideshow ? halted : !!props.hold) || !depthMotion}
@@ -2266,7 +2262,7 @@ export function Player(props: PlayerProps) {
       {help && <ShortcutsDialog onClose={() => setHelp(false)} />}
       {depthSettings && <DepthSettingsDialog prefs={prefs} onClose={() => setDepthSettings(false)} />}
       {prepAsk && item && item.itemId != null && (isVideo3d || item.kind === 'gif') && (
-        <Prepare3DDialog what={`“${item.name}”`} again={prepAsk.again}
+        <Prepare3DDialog what={`“${item.name}”`} initial={prepAsk.initial}
           items={[{ id: item.itemId, kind: isVideo3d ? 'video' : 'gif', name: item.name, width: depthNatural?.w ?? item.width, height: depthNatural?.h ?? item.height, durationMs: item.durationMs ?? (videoRef.current && Number.isFinite(videoRef.current.duration) ? videoRef.current.duration * 1000 : null) }]}
           onClose={() => setPrepAsk(null)} onStarted={setFlash} />
       )}

@@ -3,7 +3,7 @@ import {
   alignTo, BG_FRESH, blendAhead, calmDepth, calmMask, cleanMask, GATE, lumaGrid, motionBetween, motionDamp, newBgMemory, packTiles, readTile, rememberBackground,
   roundInfo, smoothInfo, tileRect, tileSize, type FrameInfo,
 } from './video3dmath';
-import { covers, frameStep, packIndex, packSegment, parseIndex, parseSegment, parseTrackTag, segmentFor, trackTag, type TrackIndex } from './trackformat';
+import { cleanChoices, covers, frameStep, needsOutline, packIndex, packSegment, parseIndex, parseSegment, parseTrackTag, segmentFor, trackLook, trackTag, type TrackIndex } from './trackformat';
 import { composePlate, plateHole } from './platemath';
 import { mapLabel } from './derived';
 
@@ -238,5 +238,35 @@ describe('prepared 3D: saved format', () => {
     const l = mapLabel('track', tag, new Map([['da3-mono-large', 'Best'], ['birefnet', 'BiRefNet']]));
     expect(l.name).toBe('Best');
     expect(l.detail).toBe('outline BiRefNet · sharper edges · LaMa fill · 768 px · every 2nd frame');
+  });
+});
+
+describe('prepared 3D: each video’s own choices', () => {
+  const index = (has: { subject: boolean; plate: boolean }, choices?: TrackIndex['choices']): TrackIndex => ({
+    v: 1, tag: 't', kind: 'video', w: 16, h: 9, codec: 'vp09', segs: [], every: 1, complete: true, has,
+    models: { depth: 'd', subject: has.subject ? 's' : '', fill: has.plate ? 'simple' : '', edges: 0 }, duration: 1, made: 1, choices,
+  });
+  it('plays with only what was ticked, never more than the saved 3D holds', () => {
+    // Only depth ticked, though the outline and fill were made: no Lift-off, no Layered 3D.
+    const depthOnly = cleanChoices({ lift: false, layered: false });
+    expect(trackLook(index({ subject: true, plate: true }, depthOnly))).toEqual({ lift: 0, subjectOnly: false, layered: false, calm: true });
+    // Lift-off ticked with its amount, and 3D only on the subject; calmer camera off.
+    const lift = cleanChoices({ lift: true, liftAmount: 1.8, subjectOnly: true, calm: false });
+    expect(trackLook(index({ subject: true, plate: false }, lift))).toEqual({ lift: 1.8, subjectOnly: true, layered: false, calm: false });
+    // Ticked, but the saved 3D has no outline (its model wasn't there): off.
+    expect(trackLook(index({ subject: false, plate: false }, lift)).lift).toBe(0);
+    // Prepared before the window: everything its saved 3D holds.
+    expect(trackLook(index({ subject: true, plate: true }))).toEqual({ lift: 1, subjectOnly: false, layered: true, calm: true });
+  });
+  it('reads the choices safely and knows which need the outline', () => {
+    const c = cleanChoices({ liftAmount: 99, edgesAmount: -1, fillEvery: 7, size: 333, every: 5, depthModel: 'Bad Id!', fillModel: 'lama' });
+    expect(c).toMatchObject({ liftAmount: 3, edgesAmount: 0.7, fillEvery: 1, size: 768, every: 1, depthModel: '', fillModel: 'lama', calm: true });
+    expect(needsOutline(cleanChoices({}))).toBe(false);
+    expect(needsOutline(cleanChoices({ edges: true }))).toBe(true);
+    expect(needsOutline(cleanChoices({ layered: true }))).toBe(true);
+  });
+  it('keeps its choices in the saved index', () => {
+    const i = index({ subject: true, plate: false }, cleanChoices({ lift: true, depthModel: 'vda-small' }));
+    expect(parseIndex(packIndex(i))?.choices).toMatchObject({ lift: true, depthModel: 'vda-small' });
   });
 });

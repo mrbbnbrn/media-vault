@@ -675,7 +675,7 @@ export function DepthSection(props: { viewer: ViewerSettings; setViewer: (patch:
       </p>
       <InpaintModelChoice value={props.viewer} onChange={props.setViewer} speedTests />
       <SavedMapsSection viewer={props.viewer} setViewer={props.setViewer} />
-      <Video3DSection viewer={props.viewer} setViewer={props.setViewer} />
+      <Video3DSection />
     </section>
   );
 }

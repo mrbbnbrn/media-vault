@@ -16,6 +16,60 @@ export interface TrackSeg {
   bytes: number;
 }
 
+/**
+ * What a video's Prepare 3D window was set to: its own 3D (the pictures' 3D switches never apply to it).
+ * Models: '' = the one the pictures use; fill 'simple' = Simple. Lift-off, 3D only on the subject and the
+ * calmer camera are only how it plays (changed without preparing again); the rest is in the saved 3D.
+ */
+export interface Video3dChoices {
+  depthModel: string;
+  lift: boolean;
+  liftAmount: number;
+  subjectOnly: boolean;
+  edges: boolean;
+  edgesAmount: number;
+  layered: boolean;
+  fillModel: string;
+  /** The fill on every 1st–3rd frame (the others reuse it). */
+  fillEvery: number;
+  subjectModel: string;
+  size: number;
+  every: number;
+  calm: boolean;
+}
+
+/** The sizes prepared 3D can be made at (long side). */
+export const VIDEO3D_SIZES = [512, 768, 1024] as const;
+
+const modelId = (v: unknown) => (typeof v === 'string' && /^[a-z0-9-]{0,40}$/.test(v) ? v : '');
+const amount = (v: unknown, lo: number, hi: number, d: number) => (typeof v === 'number' && Number.isFinite(v) && v > 0 ? Math.min(hi, Math.max(lo, v)) : d);
+
+/** The Prepare 3D window's choices read safely (what it was last set to, or a video's own). */
+export function cleanChoices(c: Partial<Video3dChoices> | null | undefined): Video3dChoices {
+  const x = c ?? {};
+  const fe = x.fillEvery;
+  return {
+    depthModel: modelId(x.depthModel),
+    lift: !!x.lift,
+    liftAmount: amount(x.liftAmount, 0.3, 3, 1),
+    subjectOnly: !!x.subjectOnly,
+    edges: !!x.edges,
+    edgesAmount: amount(x.edgesAmount, 0.2, 1, 0.7),
+    layered: !!x.layered,
+    fillModel: modelId(x.fillModel),
+    fillEvery: fe === 2 || fe === 3 ? fe : 1,
+    subjectModel: modelId(x.subjectModel),
+    size: (VIDEO3D_SIZES as readonly number[]).includes(x.size ?? 0) ? x.size! : 768,
+    every: x.every === 2 ? 2 : 1,
+    calm: x.calm !== false,
+  };
+}
+
+/** Ticked effects that need the subject's outline. */
+export function needsOutline(c: Pick<Video3dChoices, 'lift' | 'subjectOnly' | 'edges' | 'layered'>): boolean {
+  return c.lift || c.subjectOnly || c.edges || c.layered;
+}
+
 export interface TrackIndex {
   v: 1;
   tag: string;
@@ -36,6 +90,21 @@ export interface TrackIndex {
   /** The video's length (seconds; GIFs: frames), when known. */
   duration: number;
   made: number;
+  /** The choices it was prepared with (absent: prepared before 2026-11-23's Prepare 3D window). */
+  choices?: Video3dChoices;
+}
+
+/** How a prepared video plays: only what was ticked for it (and what its saved 3D holds). lift 0 = off. */
+export function trackLook(i: TrackIndex): { lift: number; subjectOnly: boolean; layered: boolean; calm: boolean } {
+  const c = i.choices;
+  // Prepared before the window: everything its saved 3D holds.
+  if (!c) return { lift: i.has.subject ? 1 : 0, subjectOnly: false, layered: i.has.plate, calm: true };
+  return {
+    lift: c.lift && i.has.subject ? Math.min(3, Math.max(0.3, Number.isFinite(c.liftAmount) ? c.liftAmount : 1)) : 0,
+    subjectOnly: c.subjectOnly && i.has.subject,
+    layered: c.layered && i.has.plate,
+    calm: c.calm !== false,
+  };
 }
 
 export interface SegFrame {
