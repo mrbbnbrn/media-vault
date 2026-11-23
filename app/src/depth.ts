@@ -579,9 +579,10 @@ export function shiftUv(pose: Pose, w: number, h: number): { x: number; y: numbe
  * How much the picture is enlarged so the moved picture still fills its own
  * frame (the edges never show). `pivot` is the depth that stays still.
  */
-export function cropScale(shift: { x: number; y: number }, dolly: number, pivot: number): number {
+export function cropScale(shift: { x: number; y: number }, dolly: number, pivot: number, room = 0): number {
   const most = furthest(shift, dolly, pivot);
-  return 1 / Math.max(1 - 2 * MOST, 1 - 2 * most);
+  // With a painted border of `room` the picture may move that far before its (new) edges show; never smaller than it is.
+  return Math.max(1, 1 / Math.max(1 - 2 * MOST, 1 + 2 * Math.max(0, room) - 2 * most));
 }
 
 /** The furthest any sample moves (share of the picture), with the picture not enlarged. */
@@ -599,17 +600,31 @@ const MOST = 0.3;
  * would need the picture enlarged more than 2.5 times (the strongest amount
  * and depth together) is scaled down to fit, so the edges never show.
  */
-export function framePose(pose: Pose, w: number, h: number, pivot: number): { shift: { x: number; y: number }; dolly: number; scale: number } {
-  let shift = shiftUv(pose, w, h);
-  let dolly = pose.dolly;
+export function framePose(pose: Pose, w: number, h: number, pivot: number, room?: BorderRoom | null): { shift: { x: number; y: number }; dolly: number; scale: number } {
+  // Border fill: a painted border of `room` (share of the picture each way) around the picture,
+  // spent on less zoom, or on bigger moves (the camera goes further, about as much zoom as without it).
+  const m = room ? Math.max(0, Math.min(room.x, room.y)) : 0;
+  const p = m > 0 && room?.use === 'moves' ? scalePose(pose, 1 + m / MOVES_PER) : pose;
+  let shift = shiftUv(p, w, h);
+  let dolly = p.dolly;
   const most = furthest(shift, dolly, pivot);
   if (most > MOST) {
     const k = MOST / most;
     shift = { x: shift.x * k, y: shift.y * k };
     dolly *= k;
   }
-  return { shift, dolly, scale: cropScale(shift, dolly, pivot) };
+  return { shift, dolly, scale: cropScale(shift, dolly, pivot, m) };
 }
+
+/** Border fill's room (share of the picture each way) and what it's spent on. */
+export interface BorderRoom {
+  x: number;
+  y: number;
+  use: 'zoom' | 'moves';
+}
+
+/** Bigger moves: the camera goes this much further per share of border (8 % border = 3 times as far). */
+const MOVES_PER = 0.04;
 
 /**
  * The depth that stays still: the average depth of the middle of the picture

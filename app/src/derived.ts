@@ -56,8 +56,24 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     const [, model, side] = o;
     return { name: names.get(model) ?? model, detail: Number(side) === 1024 ? '' : `${side} px` };
   }
+  const fillNames: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };
+  const fillName = (f: string) => fillNames[f] ?? (names.has(f) ? `${names.get(f)} fill` : f);
+  // Border fill: depth tag _ b<size %> _ fill (looklayers.ts borderTag).
+  const b = /^(.+?)@\d+~[\d.]+_b(\d+)_([a-z0-9-]+)$/.exec(tag);
+  if (kind === 'plate' && b) {
+    const [, depth, size, fill] = b;
+    return { name: names.get(depth) ?? depth, detail: `border fill ${size} % · ${fillName(fill)}` };
+  }
+  // More layers: depth tag _ outline tag (or nomask) _ e<edges> _ m<max><cut> _ fill _ l<n><key> _ <layer> (looklayers.ts).
+  const ml = /^(.+?)@\d+~[\d.]+_(.+?)_e([\d.]+)_m(\d)([smb])_([a-z0-9-]+)_l(\d)[0-9a-z]*_(\d)$/.exec(tag);
+  if (kind === 'plate' && ml) {
+    const [, depth, outline, edges, , , fill, n, j] = ml;
+    const sub = /^(.+)@\d+$/.exec(outline)?.[1];
+    const parts = [`More layers: layer ${Number(j) + 1} of ${n}`, sub ? `outline ${names.get(sub) ?? sub}` : '', Number(edges) > 0 ? 'sharper edges' : '', fillName(fill)].filter(Boolean);
+    return { name: names.get(depth) ?? depth, detail: parts.join(' · ') };
+  }
   // 3D layers: depth tag _ outline tag _ e<edges> [_ fill] (plate.ts layerTags).
-  const l = /^(.+?)@(\d+)~[\d.]+_(.+?)@\d+_e([\d.]+)(?:_(.+))?$/.exec(tag);
+  const l =/^(.+?)@(\d+)~[\d.]+_(.+?)@\d+_e([\d.]+)(?:_(.+))?$/.exec(tag);
   if ((kind === 'plate' || kind === 'fore') && l) {
     const [, depth, , outline, edges, fill] = l;
     const fills: Record<string, string> = { simple: 'Simple fill', lama: 'LaMa fill', migan: 'MI-GAN fill' };

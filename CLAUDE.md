@@ -331,6 +331,20 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **five 3D looks for pictures**
+  (`docs/picture-3d-looks-plan.md`, approved by the user; as-built notes at its end). All pictures only, off by
+  default, each its own switch in 3D ▾ (now in groups: Motion · Subject · Looks · Edges and layers · Save) and its
+  settings in 3D photo settings: **Focus** (lens blur by depth in a second pass; on the subject / under the mouse /
+  the biggest face; focus pull; blur, sharp range, round lights, miniature), **Depth light** (light and crease shade
+  from the depth texture's new facing/crease channels; follows the camera / mouse / slow sweep / one side; none near
+  depth jumps), **Border fill** (a painted border, Simple / MI-GAN / LaMa; less zoom or bigger moves, switchable;
+  plain edges carried on), **More layers** (the picture cut at real depth jumps into up to 3–4 layers, each with its
+  band behind nearer things filled and its own depth; slopes never cut), **Wiggle** (the camera jumps between 2–4
+  views; 3D ▾ → Save wiggle as GIF saves those views next to the picture, Ctrl+Z undoes). Border fill and More layers
+  are made off the window's thread (`lookworker.ts`, `looklayers.ts`), saved as `derived` kind `plate` with their
+  own tags (no schema change), and made by Prepare 3D data too. Config: `depthFocus*`, `depthLight*`,
+  `depthBorder*`, `depthMulti*`, `depthWiggle*` (`config.rs`, cleaned on load). Checked: tsc, 630 vitest, the looks
+  drawn in Chromium on a generated scene; Rust not compiled here (CI). Not tried in the real app yet.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: the Prepare 3D window** (asked
   by the user). Prepare 3D (viewer 3D ▾, or right-click a video, a selection or a folder) opens a window where each
   effect is ticked with its model: Depth (always; depth model), Lift-off (+ amount), 3D only on the subject, Sharper

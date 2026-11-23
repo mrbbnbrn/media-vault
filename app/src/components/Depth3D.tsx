@@ -26,6 +26,15 @@
 // Layered 3D background and subject layer as tiles of one texture, so every
 // effect works on them too. Not prepared (yet) at some time: flat there.
 //
+// 3D looks (still pictures; docs/picture-3d-looks-plan.md): Depth light
+// (the depth texture also carries each spot's facing and crease), Border fill
+// (a painted border around the picture: less zoom or bigger moves), More
+// layers (the picture cut at its depth jumps, each layer marched with its own
+// depth, the nearest seen in front), Focus (a second pass blurs the drawn
+// picture by each part's depth) and Wiggle (the camera jumps between views;
+// captureWiggle draws them off screen for Save wiggle as GIF). Each eases in
+// after the picture appears, so it still starts exactly like the plain one.
+//
 // Everything stays in memory (one texture, one small depth texture, one
 // outline), and the WebGL context is let go when the picture changes.
 
@@ -52,6 +61,13 @@ import { SavedMapsSection } from './SavedMaps';
 import { Video3DSection } from './Prepare3D';
 import { SubjectModelChoice } from './SubjectModels';
 import { bitmapOffThread } from '../picturecache';
+import {
+  blurReach, depthAtPoint, depthSpread, depthTexture, farDepth, FLAT_SPREAD, focusPullAt, focusPullMoving, leanOfShift, lightDir, lightTint,
+  sharpRange, wigglePose, wiggleViewPose, type FocusPull, type LightFollow, type LightSide, type WiggleOptions,
+} from '../depthlook';
+import { borderFor, borderTag, layersFor, layersTag, type Border, type Layers } from '../looklayers';
+import type { CutSize } from '../layersmath';
+
 
 interface Props {
   src: string;
@@ -95,7 +111,51 @@ interface Props {
    * a light that stays put, 3D only on the subject, and layered 3D (the background filled in behind the subject).
    */
   layers?: PictureLayers;
+  /** The 3D looks (still pictures only): Focus, Depth light, Border fill, More layers, Wiggle. */
+  looks?: PictureLooks;
 }
+
+/** The 3D looks for still pictures (docs/picture-3d-looks-plan.md); each null = off. */
+export interface PictureLooks {
+  focus: {
+    on: 'subject' | 'mouse' | 'face';
+    /** The nearest face's middle (0–1 each way), for "Nearest face". */
+    face: { x: number; y: number } | null;
+    pull: FocusPull;
+    pullSec: number;
+    blur: number;
+    range: number;
+    round: boolean;
+    mini: boolean;
+  } | null;
+  light: { follow: LightFollow; side: LightSide; strength: number; crease: number; warmth: number; softSubject: boolean } | null;
+  border: { size: number; use: 'zoom' | 'moves'; model: string } | null;
+  multi: { max: number; cut: CutSize; model: string } | null;
+  wiggle: WiggleOptions | null;
+  /** The outline model is there: the looks use the outline (Focus on the subject, Softer on the subject, More layers). */
+  outline: boolean;
+}
+
+/** A capture of the wiggle's views (Save wiggle as GIF): RGBA rows top to bottom, one per view. */
+export interface WiggleCapture {
+  w: number;
+  h: number;
+  views: Uint8Array[];
+  /** Something wanted isn't ready yet (the depth, the layers, the border): better to wait a moment. */
+  pending: boolean;
+}
+
+const capturers = new Map<string, (width: number) => Promise<WiggleCapture | null>>();
+/** The views of the 3D picture showing `src`, drawn with every look that's on (null: it isn't showing in 3D). */
+export function captureWiggle(src: string, width: number): Promise<WiggleCapture | null> {
+  const c = capturers.get(src);
+  return c ? c(width) : Promise.resolve(null);
+}
+
+/** The wiggle's own clock (ms), carried from picture to picture and stopped while paused. */
+const wiggleClock = { ms: 0, last: Number.NaN };
+/** Where the mouse is over the picture (0–1 each way), for focus and light that follow it. */
+const lookMouse = { x: 0.5, y: 0.5, lean: { x: 0, y: 0 } };
 
 export interface PictureLayers {
   edges: number;
@@ -190,7 +250,36 @@ uniform vec4 uTFore;
 uniform vec4 uTForeD;
 uniform vec2 uTIn;
 uniform float uHoleR;
+// 3D looks (still pictures; docs/picture-3d-looks-plan.md).
+// Border fill: the painted border around the picture (rgb, a = depth), where the picture lies in it.
+uniform float uBorder;
+uniform sampler2D uBord;
+uniform vec2 uBOff;
+uniform vec2 uBIn;
+// More layers: how many (0 = off, else 2–4), layers 0 … n−1 stacked in one texture (a = each layer's own
+// depth, carried out past its edges), each tile's share of it and a half texel, and where layers 1–3 are
+// the surface (r, g, b).
+uniform float uMulti;
+uniform sampler2D uLAtlas;
+uniform sampler2D uLCov;
+uniform float uLTile;
+uniform float uLIn;
+// Depth light: strength, crease shade, where the light comes from, its colour, softer on the subject.
+uniform float uLight;
+uniform float uCrease;
+uniform vec3 uLDir;
+uniform vec3 uLTint;
+uniform float uLSoft;
+// Drawing into the focus pass: alpha carries the depth of what is seen.
+uniform float uOutZ;
 const int N = ${STEPS};
+bool inPic(vec2 s) {
+  return s.x >= 0.0 && s.x <= 1.0 && s.y >= 0.0 && s.y <= 1.0;
+}
+// The painted border at a point outside the picture.
+vec4 bordAt(vec2 s) {
+  return texture2D(uBord, clamp(uBOff + s * uBIn, 0.0, 1.0));
+}
 vec2 tileAt(vec4 r, vec2 s) {
   return r.xy + clamp(clamp(s, 0.0, 1.0) * r.zw, uTIn, r.zw - uTIn);
 }
@@ -198,7 +287,9 @@ float trk1(vec4 r, vec2 s) {
   return texture2D(uTrk, tileAt(r, s)).r;
 }
 float depthAt(vec2 s) {
-  return uTrack > 0.0 ? trk1(uTDepth, s) : texture2D(uDepth, s).r;
+  if (uTrack > 0.0) return trk1(uTDepth, s);
+  if (uBorder > 0.0 && !inPic(s)) return bordAt(s).a;
+  return texture2D(uDepth, s).r;
 }
 vec4 plateAt(vec2 s) {
   return uTrack > 0.0 ? vec4(texture2D(uTrk, tileAt(uTPlate, s)).rgb, trk1(uTPlateD, s)) : texture2D(uPlate, s);
@@ -210,6 +301,8 @@ vec3 sharpen(vec3 c, vec3 n) {
   return clamp(c * (1.0 + 4.0 * uSharp) - n * uSharp, 0.0, 1.0);
 }
 vec3 pic(vec2 h) {
+  if (uBorder > 0.0 && !inPic(h)) return bordAt(h).rgb;
+  h = clamp(h, 0.0, 1.0);
   vec3 c = texture2D(uImg, h).rgb;
   if (uSharp > 0.0) {
     // The same light sharpening as the plain picture (0 -a 0 / -a 1+4a -a / 0 -a 0), one screen pixel apart.
@@ -221,6 +314,8 @@ vec3 pic(vec2 h) {
   return c;
 }
 vec3 platePic(vec2 h) {
+  if (uBorder > 0.0 && !inPic(h)) return bordAt(h).rgb;
+  h = clamp(h, 0.0, 1.0);
   vec3 c = plateAt(h).rgb;
   if (uSharp > 0.0) {
     vec2 d = uPx / uScale;
@@ -232,7 +327,56 @@ vec3 platePic(vec2 h) {
 }
 // The depth the background is drawn with: the plate's (subject filled in) when layered.
 float dep(vec2 s) {
-  return uLayer > 0.0 ? plateAt(s).a : depthAt(s);
+  if (uLayer > 0.0 && !(uBorder > 0.0 && !inPic(s))) return plateAt(s).a;
+  return depthAt(s);
+}
+// More layers: layer j's depth, colour and where it is the surface (far 0 … near n−1; the nearest is the picture).
+vec2 tileUv(int j, vec2 s) {
+  vec2 c = clamp(s, 0.0, 1.0);
+  return vec2(c.x, (float(j) + clamp(c.y, uLIn, 1.0 - uLIn)) * uLTile);
+}
+float lDep(int j, int nl, vec2 s) {
+  if (j == 0 && uBorder > 0.0 && !inPic(s)) return bordAt(s).a;
+  return texture2D(uLAtlas, tileUv(j, s)).a;
+}
+vec3 lCol(int j, int nl, vec2 h) {
+  if (j == nl - 1) return pic(h);
+  if (j == 0 && uBorder > 0.0 && !inPic(h)) return bordAt(h).rgb;
+  return texture2D(uLAtlas, tileUv(j, h)).rgb;
+}
+float lCov(int j, vec2 s) {
+  if (j == 0) return 1.0;
+  if (!inPic(s)) return 0.0;
+  vec3 c = texture2D(uLCov, s).rgb;
+  float v = j == 1 ? c.r : j == 2 ? c.g : c.b;
+  return smoothstep(0.3, 0.7, v);
+}
+// From the nearest depth to the farthest through layer j (j < 0: the picture as drawn without layers):
+// where the first surface met is, and its depth.
+vec3 march(int j, int nl, vec2 p, vec2 kb) {
+  vec2 hit = p + kb * uPivot;
+  float hz = 0.0;
+  float prevZ = 1.0;
+  float prevDiff = -1.0;
+  for (int i = 0; i <= N; i++) {
+    float z = 1.0 - float(i) / float(N);
+    vec2 s = p - kb * (z - uPivot);
+    float diff = (j < 0 ? dep(s) : lDep(j, nl, s)) - z;
+    if (diff >= 0.0) {
+      if (i == 0) {
+        hit = s;
+        hz = z;
+      } else {
+        float t = prevDiff / (prevDiff - diff);
+        hz = mix(prevZ, z, t);
+        hit = p - kb * (hz - uPivot);
+      }
+      return vec3(hit, hz);
+    }
+    prevDiff = diff;
+    prevZ = z;
+  }
+  return vec3(hit, 0.0);
 }
 // Where the moved subject at q came from (the reverse of the lift, then of the sway and breathing).
 vec2 unmove(vec2 q) {
@@ -270,28 +414,46 @@ void main() {
   vec2 k = uShift + (p - uFocus) * uDolly;
   // The background's camera (still with 3D only on the subject).
   vec2 kb = k * (1.0 - uBgStill);
-  // From the nearest depth to the farthest: the first surface met is the one seen.
-  vec2 hit = p + kb * uPivot;
-  float prevZ = 1.0;
-  float prevDiff = -1.0;
-  for (int i = 0; i <= N; i++) {
-    float z = 1.0 - float(i) / float(N);
-    vec2 s = p - kb * (z - uPivot);
-    float diff = dep(s) - z;
-    if (diff >= 0.0) {
-      if (i == 0) {
-        hit = s;
-      } else {
-        float t = prevDiff / (prevDiff - diff);
-        hit = p - kb * (mix(prevZ, z, t) - uPivot);
+  vec3 c;
+  vec2 h;
+  float hz;
+  // What the light reads its surface from, and that surface's depth.
+  vec2 nh;
+  float nz;
+  int nl = int(uMulti + 0.5);
+  if (nl >= 2) {
+    // More layers: each layer marched from the nearest, the nearest one seen in front (soft where it ends).
+    vec3 col = vec3(0.0);
+    float acc = 0.0;
+    float za = 0.0;
+    nh = p;
+    nz = 0.0;
+    for (int jj = 3; jj >= 0; jj--) {
+      if (jj >= nl || acc > 0.995) continue;
+      vec3 r = march(jj, nl, p, kb);
+      float a = lCov(jj, r.xy) * (1.0 - acc);
+      if (a > 0.0) {
+        col += a * lCol(jj, nl, r.xy);
+        za += a * r.z;
+        if (acc < 0.5) {
+          nh = r.xy;
+          nz = lDep(jj, nl, r.xy);
+        }
+        acc += a;
       }
-      break;
     }
-    prevDiff = diff;
-    prevZ = z;
+    c = col / max(acc, 0.0001);
+    hz = za / max(acc, 0.0001);
+    h = nh;
+  } else {
+    // From the nearest depth to the farthest: the first surface met is the one seen.
+    vec3 r = march(-1, 0, p, kb);
+    h = uBorder > 0.0 ? r.xy : clamp(r.xy, 0.0, 1.0);
+    hz = r.z;
+    c = uLayer > 0.0 ? (uTrack > 0.0 ? mix(pic(h), platePic(h), holeW(h)) : platePic(h)) : pic(h);
+    nh = h;
+    nz = dep(h);
   }
-  vec2 h = clamp(hit, 0.0, 1.0);
-  vec3 c = uLayer > 0.0 ? (uTrack > 0.0 ? mix(pic(h), platePic(h), holeW(h)) : platePic(h)) : pic(h);
   if (uSubj > 0.0) {
     // The subject moves as one piece with the camera at its own depth (or, with uOwn, with the depth
     // of each of its parts), then is lifted and/or lives.
@@ -335,8 +497,71 @@ void main() {
       o *= 1.0 - uShadow * softMask(s2, uShBlur) * (1.0 - m);
     }
     c = o;
+    if (g > 0.5) {
+      hz = zs;
+      nh = clamp(s, 0.0, 1.0);
+      nz = depthAt(nh);
+    }
   }
-  gl_FragColor = vec4(c, 1.0);
+  if (uLight > 0.0 || uCrease > 0.0) {
+    // Depth light: the surface's facing (from the depth map's texture) lit from uLDir; with the light
+    // where the camera is, nothing changes. Flat where what's drawn isn't the depth map's own surface
+    // (a filled-in background, the painted border), so no ghost of a near thing's shape lands there.
+    vec4 nd = texture2D(uDepth, clamp(nh, 0.0, 1.0));
+    float ok = inPic(nh) ? 1.0 - smoothstep(0.04, 0.1, abs(nd.r - nz)) : 0.0;
+    vec2 nxy = (nd.gb - 0.5) * 2.0 * ok;
+    float nzz = sqrt(max(0.0, 1.0 - dot(nxy, nxy)));
+    vec3 n = vec3(nxy, nzz);
+    float dif = dot(n, uLDir) - nzz * uLDir.z;
+    float soft = 1.0 - uLSoft * 0.6 * mask(nh);
+    vec3 tint = dif > 0.0 ? uLTint : vec3(1.0);
+    c = c + c * tint * (uLight * 1.8 * dif * soft);
+    c *= 1.0 - uCrease * 0.55 * nd.a * ok * soft;
+    c = clamp(c, 0.0, 1.0);
+  }
+  gl_FragColor = vec4(c, uOutZ > 0.0 ? clamp(hz, 0.0, 1.0) : 1.0);
+}`;
+
+// Focus (depth of field): the 3D picture drawn first (alpha = depth) is blurred by how far each part is
+// from the focus depth, sampled around each pixel; a farther sample counts only as far as this pixel's
+// own blur reaches, so a sharp subject never smears onto a blurred background or the other way round.
+// Miniature: blurred by height instead (a sharp band across the middle).
+const BLUR_FRAG = `
+precision highp float;
+varying vec2 vUv;
+uniform sampler2D uSrc;
+uniform vec2 uPx;
+uniform float uR;
+uniform float uFz;
+uniform float uRange;
+uniform float uMini;
+uniform float uRound;
+uniform float uN;
+float coc(float z, float y) {
+  if (uMini > 0.5) return clamp((abs(y - 0.55) - (0.1 + uRange)) / 0.3, 0.0, 1.0);
+  return clamp((abs(z - uFz) - uRange) / 0.25, 0.0, 1.0);
+}
+void main() {
+  vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+  vec4 c0 = texture2D(uSrc, uv);
+  float cs = coc(c0.a, vUv.y) * uR;
+  vec3 col = c0.rgb;
+  float tot = 1.0;
+  float ang = 0.0;
+  for (int i = 0; i < 64; i++) {
+    if (float(i) >= uN) break;
+    float r = uR * sqrt((float(i) + 0.5) / uN);
+    ang += 2.39996323;
+    vec2 o = vec2(cos(ang), sin(ang)) * r;
+    vec4 sm = texture2D(uSrc, clamp(uv + o * uPx, 0.0, 1.0));
+    float ss = coc(sm.a, vUv.y - o.y * uPx.y) * uR;
+    if (sm.a < c0.a) ss = min(ss, cs * 2.0);
+    float m = smoothstep(r - 0.5, r + 0.5, ss);
+    float wgt = 1.0 + uRound * 6.0 * max(0.0, dot(sm.rgb, vec3(0.3, 0.59, 0.11)) - 0.7) * m;
+    col += mix(col / tot, sm.rgb, m) * wgt;
+    tot += wgt;
+  }
+  gl_FragColor = vec4(col / tot, 1.0);
 }`;
 
 type Gl = WebGLRenderingContext;
@@ -351,11 +576,36 @@ interface Scene {
   plate: WebGLTexture;
   fore: WebGLTexture;
   trk: WebGLTexture;
+  /** The 3D looks' textures (border, More layers' layers and coverage): only when the card has the texture units for them. */
+  bord: WebGLTexture | null;
+  latlas: WebGLTexture | null;
+  lcov: WebGLTexture | null;
   u: Record<'shift' | 'dolly' | 'scale' | 'pivot' | 'focus' | 'img' | 'depth' | 'px' | 'sharp' | 'mask' | 'subj' | 'asp' | 'cen' | 'lift' | 'bot' | 'rot'
     | 'breath' | 'grow' | 'shadow' | 'shOff' | 'shBlur' | 'zSubj'
     | 'bgStill' | 'own' | 'plate' | 'layer' | 'zBg' | 'fore' | 'foreOn'
-    | 'trk' | 'track' | 'tDepth' | 'tMask' | 'tPlate' | 'tPlateD' | 'tFore' | 'tForeD' | 'tIn' | 'holeR', WebGLUniformLocation | null>;
+    | 'trk' | 'track' | 'tDepth' | 'tMask' | 'tPlate' | 'tPlateD' | 'tFore' | 'tForeD' | 'tIn' | 'holeR'
+    | 'border' | 'bord' | 'bOff' | 'bIn' | 'multi' | 'lAtlas' | 'lCov' | 'lTile' | 'lIn'
+    | 'light' | 'crease' | 'lDir' | 'lTint' | 'lSoft' | 'outZ', WebGLUniformLocation | null>;
+  /** Focus: the blur pass (made the first time it's needed) and the off-screen pictures it reads (and captures draw into). */
+  blur: BlurPass | null | undefined;
+  targets: Map<string, Target>;
 }
+
+interface BlurPass {
+  prog: WebGLProgram;
+  u: Record<'src' | 'px' | 'r' | 'fz' | 'range' | 'mini' | 'round' | 'n', WebGLUniformLocation | null>;
+}
+
+/** An off-screen picture to draw into. */
+interface Target {
+  fb: WebGLFramebuffer;
+  tex: WebGLTexture;
+  w: number;
+  h: number;
+}
+
+/** The texture unit the blur pass reads from (the 3D program never samples it). */
+const BLUR_UNIT = 9;
 
 /**
  * One drawing surface (canvas + WebGL) shared by every picture: making a new
@@ -483,13 +733,79 @@ function trackTiles(s: Scene, index: TrackIndex) {
   gl.uniform1f(s.u.holeR, 4 / Math.max(1, index.h));
 }
 
-/** A depth map into the depth texture. */
+/** A depth map into the depth texture (R = depth, G/B = the surface's facing, A = crease: depthlook.ts). */
 function uploadDepth(s: Scene, map: DepthMap) {
   const { gl } = s;
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, s.depth);
-  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.LUMINANCE, map.w, map.h, 0, gl.LUMINANCE, gl.UNSIGNED_BYTE, map.data);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, map.w, map.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, depthTexture(map));
+}
+
+/** An RGBA picture into one of the looks' textures (on its own unit). */
+function uploadRgba(s: Scene, tex: WebGLTexture | null, unit: number, w: number, h: number, data: Uint8Array) {
+  if (!tex) return;
+  const { gl } = s;
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, data);
+}
+
+/** An off-screen picture of this size (kept by name, made again when the size changes). */
+function target(s: Scene, name: string, w: number, h: number): Target | null {
+  const { gl } = s;
+  const known = s.targets.get(name);
+  if (known && known.w === w && known.h === h) return known;
+  if (known) {
+    gl.deleteFramebuffer(known.fb);
+    gl.deleteTexture(known.tex);
+    s.targets.delete(name);
+  }
+  gl.activeTexture(gl.TEXTURE0 + BLUR_UNIT);
+  const tex = texture(gl);
+  const fb = gl.createFramebuffer();
+  if (!tex || !fb) return null;
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fb);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  const ok = gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE;
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  if (!ok) {
+    gl.deleteFramebuffer(fb);
+    gl.deleteTexture(tex);
+    return null;
+  }
+  const t = { fb, tex, w, h };
+  s.targets.set(name, t);
+  return t;
+}
+
+/** The blur pass's program (made once; null if it can't be). */
+function blurPass(s: Scene): BlurPass | null {
+  if (s.blur !== undefined) return s.blur;
+  const { gl } = s;
+  s.blur = null;
+  const vs = compile(gl, gl.VERTEX_SHADER, VERT);
+  const fs = compile(gl, gl.FRAGMENT_SHADER, BLUR_FRAG);
+  const prog = gl.createProgram();
+  if (!vs || !fs || !prog) return null;
+  gl.attachShader(prog, vs);
+  gl.attachShader(prog, fs);
+  gl.bindAttribLocation(prog, 0, 'aPos');
+  gl.linkProgram(prog);
+  gl.deleteShader(vs);
+  gl.deleteShader(fs);
+  if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return null;
+  const at = (n: string) => gl.getUniformLocation(prog, n);
+  const u = { src: at('uSrc'), px: at('uPx'), r: at('uR'), fz: at('uFz'), range: at('uRange'), mini: at('uMini'), round: at('uRound'), n: at('uN') };
+  gl.useProgram(prog);
+  gl.uniform1i(u.src, BLUR_UNIT);
+  gl.useProgram(s.prog);
+  s.blur = { prog, u };
+  return s.blur;
 }
 
 function compile(gl: Gl, type: number, text: string): WebGLShader | null {
@@ -524,6 +840,8 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   if (!vs || !fs || !prog) return null;
   gl.attachShader(prog, vs);
   gl.attachShader(prog, fs);
+  // (The blur pass uses the same corner buffer at the same place.)
+  gl.bindAttribLocation(prog, 0, 'aPos');
   gl.linkProgram(prog);
   gl.deleteShader(vs);
   gl.deleteShader(fs);
@@ -533,9 +851,8 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   if (!buf) return null;
   gl.bindBuffer(gl.ARRAY_BUFFER, buf);
   gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, 'aPos');
-  gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
   gl.activeTexture(gl.TEXTURE0);
   const img = texture(gl);
   if (!img) return null;
@@ -554,6 +871,15 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.activeTexture(gl.TEXTURE5);
   const trk = texture(gl);
   if (!trk) return null;
+  // Border fill and More layers need three more texture units (and the blur pass one): most cards have 16.
+  const units = Number(gl.getParameter(gl.MAX_TEXTURE_IMAGE_UNITS)) || 8;
+  const roomy = units > BLUR_UNIT;
+  gl.activeTexture(gl.TEXTURE6);
+  const bord = roomy ? texture(gl) : null;
+  gl.activeTexture(gl.TEXTURE7);
+  const latlas = roomy ? texture(gl) : null;
+  gl.activeTexture(gl.TEXTURE8);
+  const lcov = roomy ? texture(gl) : null;
   const u = {
     shift: gl.getUniformLocation(prog, 'uShift'),
     dolly: gl.getUniformLocation(prog, 'uDolly'),
@@ -594,6 +920,21 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
     tForeD: gl.getUniformLocation(prog, 'uTForeD'),
     tIn: gl.getUniformLocation(prog, 'uTIn'),
     holeR: gl.getUniformLocation(prog, 'uHoleR'),
+    border: gl.getUniformLocation(prog, 'uBorder'),
+    bord: gl.getUniformLocation(prog, 'uBord'),
+    bOff: gl.getUniformLocation(prog, 'uBOff'),
+    bIn: gl.getUniformLocation(prog, 'uBIn'),
+    multi: gl.getUniformLocation(prog, 'uMulti'),
+    lAtlas: gl.getUniformLocation(prog, 'uLAtlas'),
+    lCov: gl.getUniformLocation(prog, 'uLCov'),
+    lTile: gl.getUniformLocation(prog, 'uLTile'),
+    lIn: gl.getUniformLocation(prog, 'uLIn'),
+    light: gl.getUniformLocation(prog, 'uLight'),
+    crease: gl.getUniformLocation(prog, 'uCrease'),
+    lDir: gl.getUniformLocation(prog, 'uLDir'),
+    lTint: gl.getUniformLocation(prog, 'uLTint'),
+    lSoft: gl.getUniformLocation(prog, 'uLSoft'),
+    outZ: gl.getUniformLocation(prog, 'uOutZ'),
   };
   gl.uniform1i(u.img, 0);
   gl.uniform1i(u.depth, 1);
@@ -601,6 +942,17 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.uniform1i(u.plate, 3);
   gl.uniform1i(u.fore, 4);
   gl.uniform1i(u.trk, 5);
+  // (Without the units for them, the looks' samplers share unit 0: they're never switched on then.)
+  gl.uniform1i(u.bord, roomy ? 6 : 0);
+  gl.uniform1i(u.lAtlas, roomy ? 7 : 0);
+  gl.uniform1i(u.lCov, roomy ? 8 : 0);
+  gl.uniform1f(u.border, 0);
+  gl.uniform1f(u.multi, 0);
+  gl.uniform1f(u.light, 0);
+  gl.uniform1f(u.crease, 0);
+  gl.uniform1f(u.outZ, 0);
+  gl.uniform3f(u.lDir, 0, 0, 1);
+  gl.uniform3f(u.lTint, 1, 1, 1);
   gl.uniform1f(u.track, 0);
   gl.uniform1f(u.foreOn, 0);
   gl.uniform1f(u.subj, 0);
@@ -608,7 +960,7 @@ function makeScene(canvas: HTMLCanvasElement): Scene | null {
   gl.uniform1f(u.bgStill, 0);
   gl.uniform1f(u.own, 0);
   gl.clearColor(0, 0, 0, 0);
-  const s: Scene = { gl, prog, buf, img, depth, mask, plate, fore, trk, u };
+  const s: Scene = { gl, prog, buf, img, depth, mask, plate, fore, trk, bord, latlas, lcov, u, blur: undefined, targets: new Map() };
   uploadMask(s, { w: 1, h: 1, data: new Uint8Array([0]) });
   uploadPlate(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
   uploadFore(s, { w: 1, h: 1, data: new Uint8Array([0, 0, 0, 0]) });
@@ -626,6 +978,15 @@ function dropScene(s: Scene) {
   gl.deleteTexture(s.plate);
   gl.deleteTexture(s.fore);
   gl.deleteTexture(s.trk);
+  if (s.bord) gl.deleteTexture(s.bord);
+  if (s.latlas) gl.deleteTexture(s.latlas);
+  if (s.lcov) gl.deleteTexture(s.lcov);
+  for (const t of s.targets.values()) {
+    gl.deleteFramebuffer(t.fb);
+    gl.deleteTexture(t.tex);
+  }
+  s.targets.clear();
+  if (s.blur) gl.deleteProgram(s.blur.prog);
   gl.deleteBuffer(s.buf);
   gl.deleteProgram(s.prog);
   gl.getExtension('WEBGL_lose_context')?.loseContext();
@@ -691,7 +1052,9 @@ export function Depth3D(props: Props) {
   propsRef.current = props;
   /** The subject outline of this picture (subject effects; null until it comes, or when there's no clear subject). */
   const maskRef = useRef<{ src: string; mask: DepthMap; stats: SubjectStats } | null>(null);
-  const subjOn = !props.frames && !props.video && !props.track && ((!!props.subject && props.subject.lift > 0) || layersOn(props.layers));
+  const subjOn = !props.frames && !props.video && !props.track && ((!!props.subject && props.subject.lift > 0) || layersOn(props.layers) || !!props.looks?.outline);
+  /** The outline has been asked for this picture (found or not): More layers waits for it. */
+  const maskDone = useRef('');
   // 3D to the beat: when the last beat came.
   const beatAt = useRef(-Infinity);
   const pulse = props.beat?.pulse;
@@ -897,6 +1260,23 @@ export function Depth3D(props: Props) {
       let refining = '';
       let plate: { key: string; ready: boolean } | null = null;
       let fore: { key: string; ready: boolean } | null = null;
+      // 3D looks: the border and the layers (made once, in the background), the depth map's spread and
+      // far depth (flat pictures get no focus or light), the looks' fades, the focus depth as eased.
+      let bord: { key: string; got: Border | null } | null = null;
+      let lays: { key: string; got: Layers | null } | null = null;
+      let spreadOf: DepthMap | null = null;
+      let spread = 0;
+      let far = 0;
+      const focusF = newFade(0);
+      const lightF = newFade(0);
+      let focusZ = -1;
+      const liveAt = performance.now();
+      /** Save wiggle as GIF: a capture asked for (done at the end of the next frame). */
+      let capReq: { width: number; ok: (c: WiggleCapture | null) => void } | null = null;
+      // The looks as last on (they fade out with these after being switched off).
+      let lastLight: PictureLooks['light'] = null;
+      let lastFocus: PictureLooks['focus'] = null;
+      let lastFocusT = performance.now();
       const srcNow = propsRef.current.src;
       const keepLift = lifted.src === srcNow && performance.now() - lifted.at < 600;
       const liftF = newFade(0);
@@ -1015,6 +1395,62 @@ export function Depth3D(props: Props) {
             kick.current();
           });
         }
+        // ---- 3D looks (still pictures) ----
+        const lk = stillPic ? p.looks : undefined;
+        if (shownDepth !== spreadOf) {
+          spreadOf = shownDepth;
+          spread = shownDepth.w > 1 ? depthSpread(shownDepth) : 0;
+          far = farDepth(shownDepth);
+        }
+        // A flat picture (a document, a screenshot) gets no focus blur and no depth light.
+        const flatPic = !realDepth || spread < FLAT_SPREAD;
+        const roomy = !!s.bord;
+        const lookId = stillPic && realDepth && ds ? savedId(p.src) : null;
+        let pending = false;
+        // Border fill: made once the depth is final; until then the picture zooms as before.
+        const bdw = lk?.border && realDepth && roomy && ds && depthFinal ? lk.border : null;
+        const bKey = bdw ? `${depthId}|${edgeK.toFixed(2)}|b${bdw.size}|${bdw.model}|${p.natural.w}x${p.natural.h}` : '';
+        if (bdw && bord?.key !== bKey) {
+          const key = bKey;
+          bord = { key, got: null };
+          void borderFor(key, { src: p.src, natural: layerSize, size: bdw.size, depth: wantDepth, model: bdw.model, save: lookId != null ? { id: lookId, tag: borderTag(depthTag(ds!), bdw.size, bdw.model) } : undefined }).then((g) => {
+            if (!alive || !g || bord?.key !== key || s.gl.isContextLost()) return;
+            try {
+              uploadRgba(s, s.bord, 6, g.W, g.H, g.data);
+              bord.got = g;
+            } catch {
+              return;
+            }
+            kick.current();
+          });
+        }
+        const bOn = !!bdw && bord?.key === bKey && !!bord.got;
+        if (bdw && !bOn) pending = true;
+        // More layers: made once the depth is final and the outline has been asked for (when there is one).
+        const mw = lk?.multi && realDepth && roomy && ds && depthFinal && (!lk.outline || maskDone.current === p.src) ? lk.multi : null;
+        if (lk?.multi && !mw) pending = true;
+        const mMax = mw ? mw.max : 0;
+        const mKey = mw ? `${depthId}|${edgeK.toFixed(2)}|m${mMax}${mw.cut}|${mw.model}|${mk ? 'm' : 'n'}|${p.natural.w}x${p.natural.h}` : '';
+        if (mw && lays?.key !== mKey) {
+          const key = mKey;
+          lays = { key, got: null };
+          const tag = layersTag(depthTag(ds!), mk ? p.subjectModel ?? '' : '', edgeK, mMax, mw.cut, mw.model);
+          void layersFor(key, { src: p.src, natural: layerSize, depth: wantDepth, mask: mk?.mask ?? null, max: mMax, cut: mw.cut, model: mw.model, save: lookId != null ? { id: lookId, tag } : undefined }).then((g) => {
+            if (!alive || lays?.key !== key || s.gl.isContextLost()) return;
+            if (g) {
+              try {
+                uploadRgba(s, s.latlas, 7, g.w, g.h * g.n, g.atlas);
+                uploadRgba(s, s.lcov, 8, g.cov.w, g.cov.h, g.cov.data);
+              } catch {
+                return;
+              }
+            }
+            lays.got = g;
+            kick.current();
+          });
+        }
+        const lOn = !!mw && lays?.key === mKey && !!lays.got;
+        if (mw && lays?.key === mKey && !lays.got) pending = true;
         // Videos and GIFs: what their prepared 3D holds, for the effects switched on.
         const tLay = tr ? p.layers : undefined;
         const tSt = ti?.st ?? null;
@@ -1034,14 +1470,23 @@ export function Depth3D(props: Props) {
         }
         lastT = t;
         const halted = clock.current.halted;
-        const base = byMouse ? mousePose(lean, amount)
+        // Wiggle (pictures): the camera jumps between its views on its own clock (it wins over the mouse).
+        const wig = lk?.wiggle ?? null;
+        if (wig) {
+          const wt = now();
+          if (Number.isFinite(wiggleClock.last) && !halted) wiggleClock.ms += Math.min(100, Math.max(0, wt - wiggleClock.last));
+          wiggleClock.last = wt;
+        }
+        const motionAmount = amount * Math.max(0, p.motion?.amount ?? 1);
+        const base = wig ? wigglePose(wiggleClock.ms, wig, motionAmount) : byMouse ? mousePose(lean, amount)
           : scalePose(cameraAt(sharedCamera, p.motion?.shape ?? ('random' as MotionChoice), (p.motion?.speed ?? 1) * (calmCam ? 0.6 : 1), now(), !halted), amount * Math.max(0, p.motion?.amount ?? 1));
         // 3D to the beat: a push closer or a little bounce on each beat.
         const b = p.beat;
         const env = b ? beatEnvelope(t - beatAt.current) : 0;
         const pose = b ? withBeat(base, b.kind, b.amount * Math.max(0.3, amount), env) : base;
-        // Held within what can be shown without the picture's edges.
-        const f = framePose(pose, d.width, d.height, pv);
+        // Held within what can be shown without the picture's edges (with Border fill: its painted edges).
+        const room = bOn && bord?.got ? { x: bord.got.b / bord.got.w, y: bord.got.b / bord.got.h, use: lk!.border!.use } : null;
+        const f = framePose(pose, d.width, d.height, pv, room);
         gl.clear(gl.COLOR_BUFFER_BIT);
         gl.uniform1f(s.u.track, tr && ti ? 1 : 0);
         gl.uniform1f(s.u.asp, asp);
@@ -1056,7 +1501,43 @@ export function Depth3D(props: Props) {
         gl.uniform2f(s.u.focus, 0.5, 0.5);
         gl.uniform2f(s.u.px, 1 / Math.max(1, vw), 1 / Math.max(1, vh));
         gl.uniform1f(s.u.sharp, p.sharpen ? 0.35 : 0);
-        gl.uniform1f(s.u.layer, layered ? 1 : 0);
+        // (More layers draws the whole background itself.)
+        gl.uniform1f(s.u.layer, layered && !lOn ? 1 : 0);
+        gl.uniform1f(s.u.border, bOn ? 1 : 0);
+        if (bOn && bord?.got) {
+          const g = bord.got;
+          gl.uniform2f(s.u.bOff, g.b / g.W, g.b / g.H);
+          gl.uniform2f(s.u.bIn, g.w / g.W, g.h / g.H);
+        }
+        gl.uniform1f(s.u.multi, lOn && lays?.got ? lays.got.n : 0);
+        if (lOn && lays?.got) {
+          gl.uniform1f(s.u.lTile, 1 / lays.got.n);
+          gl.uniform1f(s.u.lIn, 0.5 / Math.max(1, lays.got.h));
+        }
+        // Looks ease in after the picture appears (it starts exactly like the plain picture) and when switched on or off.
+        const lookIn = Math.min(1, Math.max(0, (t - liveAt) / 700));
+        const lookK = lookIn * lookIn * (3 - 2 * lookIn);
+        const lw = lk?.light && !flatPic ? lk.light : null;
+        fadeTo(lightF, lw ? 1 : 0, t);
+        const lightV = fadeAt(lightF, t) * lookK;
+        const lightLast = lw ?? lastLight;
+        if (lw) lastLight = lw;
+        const setLight = (shift: { x: number; y: number }) => {
+          if (!lightLast || lightV <= 0) {
+            gl.uniform1f(s.u.light, 0);
+            gl.uniform1f(s.u.crease, 0);
+            return;
+          }
+          const ln = lightLast.follow === 'mouse' ? lookMouse.lean : leanOfShift(shift, asp);
+          const [lx, ly, lz] = lightDir(lightLast.follow, ln, lightLast.side, t);
+          const [tr0, tg0, tb0] = lightTint(lightLast.warmth);
+          gl.uniform3f(s.u.lDir, lx, ly, lz);
+          gl.uniform3f(s.u.lTint, tr0, tg0, tb0);
+          gl.uniform1f(s.u.light, lightLast.strength * lightV);
+          gl.uniform1f(s.u.crease, lightLast.crease * lightV);
+          gl.uniform1f(s.u.lSoft, lightLast.softSubject && shownMask ? 1 : 0);
+        };
+        setLight(f.shift);
         gl.uniform1f(s.u.foreOn, clean ? 1 : 0);
         gl.uniform1f(s.u.bgStill, bgStill ? 1 : 0);
         gl.uniform1f(s.u.own, bgStill || layered ? 1 : 0);
@@ -1123,9 +1604,100 @@ export function Depth3D(props: Props) {
           }
           subjBusy = !fadeDone(liftF, t);
         } else gl.uniform1f(s.u.subj, 0);
-        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+        // Focus: what stays sharp (eased), pulled over time; blurred in a second pass.
+        const fw = lk?.focus && !flatPic && roomy ? lk.focus : null;
+        fadeTo(focusF, fw ? 1 : 0, t);
+        const focusV = fadeAt(focusF, t) * lookK;
+        if (fw) lastFocus = fw;
+        const fl = fw ?? lastFocus;
+        let focusBusy = false;
+        if (fl) {
+          const target = fl.on === 'mouse' ? depthAtPoint(shownDepth, lookMouse.x, lookMouse.y)
+            : fl.on === 'face' && fl.face ? depthAtPoint(shownDepth, fl.face.x, fl.face.y)
+              : shownMask ? zSubj : pivot;
+          const goal = focusPullAt(fl.pull, t - liveAt, fl.pullSec, target, Math.min(far, target));
+          const dtF = Math.min(50, Math.max(0, t - lastFocusT));
+          focusZ = focusZ < 0 || fl.pull !== 'off' ? goal : easeToward(focusZ, goal, dtF / 2.5);
+          focusBusy = Math.abs(focusZ - goal) > 0.002 || focusPullMoving(fl.pull, t - liveAt, fl.pullSec);
+        }
+        lastFocusT = t;
+        const blurPx = (cw2: number, ch2: number) => (fl ? blurReach(fl.blur) * Math.min(ch2, cw2 * 1.5) * focusV : 0);
+        const bp = fl && focusV > 0 ? blurPass(s) : null;
+        /** Draws the 3D picture into `out` (null: the screen at `vp`), through the focus pass when it's on. */
+        const draw = (out: Target | null, vp: [number, number, number, number], name: string) => {
+          const R = blurPx(vp[2], vp[3]);
+          const pass = bp && R > 0.3 ? target(s, name, vp[2], vp[3]) : null;
+          if (!pass) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, out ? out.fb : null);
+            gl.viewport(...vp);
+            gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+            return;
+          }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, pass.fb);
+          gl.viewport(0, 0, vp[2], vp[3]);
+          gl.clear(gl.COLOR_BUFFER_BIT);
+          gl.uniform1f(s.u.outZ, 1);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          gl.uniform1f(s.u.outZ, 0);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, out ? out.fb : null);
+          gl.viewport(...vp);
+          gl.useProgram(bp!.prog);
+          gl.activeTexture(gl.TEXTURE0 + BLUR_UNIT);
+          gl.bindTexture(gl.TEXTURE_2D, pass.tex);
+          gl.uniform2f(bp!.u.px, 1 / vp[2], 1 / vp[3]);
+          gl.uniform1f(bp!.u.r, R);
+          gl.uniform1f(bp!.u.fz, focusZ);
+          gl.uniform1f(bp!.u.range, sharpRange(fl!.range));
+          gl.uniform1f(bp!.u.mini, fl!.mini ? 1 : 0);
+          gl.uniform1f(bp!.u.round, fl!.round ? 1 : 0);
+          gl.uniform1f(bp!.u.n, 40);
+          gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+          gl.useProgram(s.prog);
+        };
+        draw(null, [Math.round(d.left * r), bh - Math.round(d.top * r) - vh, vw, vh], 'pass');
+        // Save wiggle as GIF: each view drawn off screen at the GIF's size, with every look as it is now.
+        if (capReq) {
+          const req = capReq;
+          capReq = null;
+          try {
+            const cw = Math.max(16, Math.round(req.width));
+            const chh = Math.max(16, Math.round(cw / Math.max(0.05, asp)));
+            const out = target(s, 'cap', cw, chh);
+            const wo = wig ?? { views: 3, speed: 5, order: 'bounce' as const, dir: 'side' as const, smooth: false };
+            if (!out) throw new Error('no target');
+            gl.uniform2f(s.u.px, 1 / cw, 1 / chh);
+            const views: Uint8Array[] = [];
+            for (let i = 0; i < wo.views; i++) {
+              const fv = framePose(wiggleViewPose(i, wo, motionAmount || amount), cw, chh, pv, room);
+              gl.uniform2f(s.u.shift, fv.shift.x, fv.shift.y);
+              gl.uniform1f(s.u.dolly, fv.dolly);
+              gl.uniform1f(s.u.scale, fv.scale);
+              setLight(fv.shift);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, out.fb);
+              gl.clear(gl.COLOR_BUFFER_BIT);
+              draw(out, [0, 0, cw, chh], 'cap-pass');
+              const px = new Uint8Array(cw * chh * 4);
+              gl.bindFramebuffer(gl.FRAMEBUFFER, out.fb);
+              gl.readPixels(0, 0, cw, chh, gl.RGBA, gl.UNSIGNED_BYTE, px);
+              // GL reads from the bottom row up.
+              const rows = new Uint8Array(px.length);
+              const line = cw * 4;
+              for (let y = 0; y < chh; y++) rows.set(px.subarray((chh - 1 - y) * line, (chh - y) * line), y * line);
+              views.push(rows);
+            }
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            req.ok({ w: cw, h: chh, views, pending: pending || !realDepth });
+          } catch {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+            req.ok(null);
+          }
+          // The screen is drawn again as it was.
+          raf = requestAnimationFrame(frame);
+          return;
+        }
         // Still (paused, done moving, or the camera has caught up with the mouse): no need to keep drawing.
-        const still = byMouse ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted;
+        const looksBusy = !fadeDone(focusF, t) || !fadeDone(lightF, t) || lookIn < 1 || (focusV > 0 && focusBusy) || (lightV > 0 && lightLast?.follow === 'sweep');
+        const still = (byMouse && !wig ? Math.abs(lean.x - want.x) + Math.abs(lean.y - want.y) <= 0.0005 : halted) && !looksBusy;
         // (Videos and GIFs: also while their 3D eases in or out.)
         const fading = !!tr && trkFade !== (trkOn() ? 1 : 0);
         if (!still || env > 0 || subjBusy || fading) raf = requestAnimationFrame(frame);
@@ -1160,6 +1732,36 @@ export function Depth3D(props: Props) {
           window.removeEventListener('blur', onLeave);
         };
       }
+      if (stillPic) {
+        const csrc = propsRef.current.src;
+        const cap = (width: number) => new Promise<WiggleCapture | null>((ok) => {
+          if (!alive) return ok(null);
+          capReq = { width, ok };
+          kick.current();
+        });
+        capturers.set(csrc, cap);
+        const onLookMove = (e: PointerEvent) => {
+          const lk = propsRef.current.looks;
+          if (!lk || !(lk.focus?.on === 'mouse' || lk.light?.follow === 'mouse')) return;
+          const b = canvas.getBoundingClientRect();
+          const d = drawnRect(b.width, b.height, nw, nh, propsRef.current.fit);
+          const x = (e.clientX - b.left - d.left) / (d.width || 1);
+          const y = (e.clientY - b.top - d.top) / (d.height || 1);
+          lookMouse.x = Math.min(1, Math.max(0, x));
+          lookMouse.y = Math.min(1, Math.max(0, y));
+          lookMouse.lean = { x: Math.min(1, Math.max(-1, x * 2 - 1)), y: Math.min(1, Math.max(-1, y * 2 - 1)) };
+          kick.current();
+        };
+        window.addEventListener('pointermove', onLookMove);
+        const prevStop = stopMouse;
+        stopMouse = () => {
+          prevStop();
+          window.removeEventListener('pointermove', onLookMove);
+          if (capturers.get(csrc) === cap) capturers.delete(csrc);
+          capReq?.ok(null);
+          capReq = null;
+        };
+      }
       setLive(true);
       give(true);
     })().catch(() => give(false));
@@ -1191,6 +1793,7 @@ export function Depth3D(props: Props) {
       if (!alive) return;
       const stats = maskStats(m);
       maskRef.current = m && stats ? { src, mask: m, stats } : null;
+      maskDone.current = src;
       kick.current();
     });
     return () => {
@@ -1203,7 +1806,7 @@ export function Depth3D(props: Props) {
   useEffect(() => {
     kick.current();
   }, [props.halted, props.fit, props.amount, props.motion?.amount, props.motion?.speed, props.motion?.shape, props.subject?.lift,
-    props.layers?.edges, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered, props.calm]);
+    props.layers?.edges, props.layers?.subjectOnly, props.layers?.layered?.model, !!props.layers?.layered, props.calm, props.looks]);
   useEffect(() => {
     const el = hostRef.current;
     if (!el) return;

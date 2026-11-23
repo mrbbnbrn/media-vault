@@ -55,6 +55,9 @@ import { beginStep, endStep, stepRunning } from '../perf';
 import { setVideoPlaying } from '../bgpace';
 // The 3D picture and the upscale comparison (both WebGL) load when first used.
 const Depth3D = lazyPart(() => import('./Depth3D').then((m) => m.Depth3D));
+import type { PictureLooks } from './Depth3D';
+import { wiggleOptions } from '../depthlook';
+import { wiggleGif, wiggleGifSize } from '../wiggle';
 const UpscaleCompare = lazyPart(() => import('./UpscaleCompare').then((m) => m.UpscaleCompare));
 // 3D photos (end)
 import {
@@ -1107,8 +1110,16 @@ export function Player(props: PlayerProps) {
   const depthEdges3d = !!prefs.depthEdges3d;
   const depthSubjectOnly = !!prefs.depthSubjectOnly;
   const depthLayered = !!prefs.depthLayered;
+  // 3D looks (still pictures only; docs/picture-3d-looks-plan.md).
+  const depthFocus = !!prefs.depthFocus;
+  const depthLight = !!prefs.depthLight;
+  const depthBorder = !!prefs.depthBorder;
+  const depthMulti = !!prefs.depthMulti;
+  const depthWiggle = !!prefs.depthWiggle;
+  /** A look that uses the outline when it's there (Focus on the subject, Softer on the subject, More layers). */
+  const looksOutline = (depthFocus && (prefs.depthFocusOn ?? 'subject') === 'subject') || (depthLight && prefs.depthLightSoftSubject !== false) || depthMulti;
   /** Something that uses the subject outline is on. */
-  const outlineWanted = depthLift || depthEdges3d || depthSubjectOnly || depthLayered;
+  const outlineWanted = depthLift || depthEdges3d || depthSubjectOnly || depthLayered || looksOutline;
   const [subjectPackOk, setSubjectPackOk] = useState(false);
   /** The subject model and size in use: the outline is worked out again when it changes. */
   const [subjectModelKey, setSubjectModelKey] = useState('');
@@ -1161,10 +1172,67 @@ export function Player(props: PlayerProps) {
   const look = trackHere && !mini && !props.compact ? trackLook(trackHere) : null;
   const prep = usePrep3d();
   const prepHere = item?.itemId != null ? prep3dOf(prep, item.itemId) : null;
-  /** GIFs and videos move with their own switch (once prepared); pictures with theirs (or with a subject effect on). */
-  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) && !!trackHere : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn : false;
-  /** Moving on its own or with the mouse (a subject effect alone keeps the camera still). */
-  const depthMotion = depthAuto || depthByMouse;
+  /** A still picture (a one-frame GIF counts): the 3D looks apply to it. */
+  const stillHere = (item?.kind === 'image' || (item?.kind === 'gif' && !animated)) && !mini && !props.compact;
+  /** Wiggle moves the camera on its own (pictures, with the depth pack). */
+  const wiggleHere = stillHere && depthWiggle && depthPackOk;
+  /** Focus and Depth light show on a still camera too. */
+  const looksShow = stillHere && depthPackOk && (depthFocus || depthLight);
+  /** GIFs and videos move with their own switch (once prepared); pictures with theirs (or with a subject effect or a look on). */
+  const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) && !!trackHere : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn || wiggleHere || looksShow : false;
+  /** Moving on its own, with the mouse or wiggling (a subject effect or a look alone keeps the camera still). */
+  const depthMotion = depthAuto || depthByMouse || wiggleHere;
+  // Focus on the nearest face: the biggest face found in this picture (pictures in the vault with face data).
+  const [faceSpot, setFaceSpot] = useState<{ key: string; at: { x: number; y: number } | null } | null>(null);
+  const wantFace = stillHere && depthFocus && prefs.depthFocusOn === 'face' && item?.itemId != null;
+  useEffect(() => {
+    if (!wantFace || !item) return;
+    let alive = true;
+    const key = item.key;
+    api.facesOf(item.itemId!, false).then((list) => {
+      if (!alive) return;
+      const big = list.filter((f) => !f.hidden).sort((a, b) => b.w * b.h - a.w * a.h)[0];
+      setFaceSpot({ key, at: big ? { x: big.x + big.w / 2, y: big.y + big.h / 2 } : null });
+    }).catch(() => alive && setFaceSpot({ key, at: null }));
+    return () => {
+      alive = false;
+    };
+  }, [wantFace, item?.key]); // eslint-disable-line react-hooks/exhaustive-deps
+  const faceAt = faceSpot && faceSpot.key === item?.key ? faceSpot.at : null;
+  const fill = inpaintChoice(prefs);
+  /** The looks for the 3D picture (null each when off; none at all for GIFs and videos). */
+  const looksHere = useMemo<PictureLooks | undefined>(() => {
+    if (!stillHere) return undefined;
+    const p = prefs;
+    return {
+      focus: depthFocus ? {
+        on: p.depthFocusOn === 'mouse' || p.depthFocusOn === 'face' ? p.depthFocusOn : 'subject',
+        face: faceAt,
+        pull: p.depthFocusPull === 'start' || p.depthFocusPull === 'swing' ? p.depthFocusPull : 'off',
+        pullSec: p.depthFocusPullSec ?? 1.5,
+        blur: p.depthFocusBlur ?? 0.4,
+        range: p.depthFocusRange ?? 0.3,
+        round: !!p.depthFocusRound,
+        mini: !!p.depthFocusMini,
+      } : null,
+      light: depthLight ? {
+        follow: p.depthLightFollow ?? 'camera',
+        side: p.depthLightSide ?? 'topleft',
+        strength: p.depthLightStrength ?? 0.3,
+        crease: p.depthLightCrease ?? 0.3,
+        warmth: p.depthLightWarmth ?? 0,
+        softSubject: p.depthLightSoftSubject !== false,
+      } : null,
+      border: depthBorder ? { size: p.depthBorderSize ?? 0.08, use: p.depthBorderUse === 'moves' ? 'moves' : 'zoom', model: fill } : null,
+      multi: depthMulti ? { max: p.depthMultiMax === 3 ? 3 : 4, cut: p.depthMultiCut === 'small' || p.depthMultiCut === 'big' ? p.depthMultiCut : 'medium', model: fill } : null,
+      wiggle: wiggleHere ? wiggleOptions(p) : null,
+      outline: subjectPackOk && looksOutline,
+    };
+  }, [stillHere, depthFocus, depthLight, depthBorder, depthMulti, wiggleHere, faceAt, fill, subjectPackOk, looksOutline,
+    prefs.depthFocusOn, prefs.depthFocusPull, prefs.depthFocusPullSec, prefs.depthFocusBlur, prefs.depthFocusRange, prefs.depthFocusRound, prefs.depthFocusMini,
+    prefs.depthLightFollow, prefs.depthLightSide, prefs.depthLightStrength, prefs.depthLightCrease, prefs.depthLightWarmth, prefs.depthLightSoftSubject,
+    prefs.depthBorderSize, prefs.depthBorderUse, prefs.depthMultiMax, prefs.depthMultiCut,
+    prefs.depthWiggleViews, prefs.depthWiggleSpeed, prefs.depthWiggleOrder, prefs.depthWiggleDir, prefs.depthWiggleSmooth]); // eslint-disable-line react-hooks/exhaustive-deps
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   // (Pictures with a subject effect on show without the depth pack too: a flat depth map is used.)
   const depth3d = depthFor && (depthPackOk || subjectOn || !!trackHere) && !mini && !zoomed && !failed && rot === 0 && !up.src && !!depthNatural && !props.compact;
@@ -1283,6 +1351,44 @@ export function Player(props: PlayerProps) {
       setSavingSubject(false);
     }
   };
+  /** Save wiggle as GIF: the wiggle's views as drawn now (every look that's on), one looping GIF next to the original; Ctrl+Z undoes it. */
+  const [savingWiggle, setSavingWiggle] = useState(false);
+  const wiggleWidth = () => {
+    const w = prefs.depthWiggleGifWidth;
+    return w === 480 || w === 800 ? w : 640;
+  };
+  const wiggleMb = () => {
+    const w = wiggleWidth();
+    const asp = imgInfo && imgInfo.height ? imgInfo.width / imgInfo.height : 1.5;
+    const o = wiggleOptions(prefs);
+    return (wiggleGifSize(w, Math.round(w / asp), o.views) / 1e6).toFixed(1);
+  };
+  const saveWiggle = async () => {
+    if (!item || item.itemId == null || savingWiggle) return;
+    const it = item;
+    setSavingWiggle(true);
+    setFlash('Making the wiggle GIF…');
+    try {
+      const { captureWiggle } = await import('./Depth3D');
+      const cap = await captureWiggle(it.src, wiggleWidth());
+      if (!cap) throw new Error('The 3D picture isn\'t showing (turn the 3D on for this picture).');
+      if (cap.pending) {
+        setFlash('Still working out this picture\'s 3D (layers, border or depth) · try again in a moment');
+        return;
+      }
+      const bytes = wiggleGif(cap.views, cap.w, cap.h, wiggleOptions(prefs));
+      const name = derivedName(it.name, null, 'gif', 'wiggle');
+      const id = await api.addFileBytes(it.folderId, name, bytes);
+      kickThumbnails();
+      pushUndo(`Saved “${name}”`, () => api.deleteItems([id]));
+      lastTurn.current = peekUndo();
+      setFlash(`Saved “${name}” (${(bytes.length / 1e6).toFixed(1)} MB) in this folder · Ctrl+Z undoes it`);
+    } catch (e) {
+      setFlash(`Couldn't save the wiggle: ${errText(e)}`);
+    } finally {
+      setSavingWiggle(false);
+    }
+  };
   /** Turns one of the 3D switches on or off (checks for the depth pack first). */
   const toggleDepth = async (patch: Partial<ViewerSettings>, on: boolean, text: string) => {
     if (on) {
@@ -1330,26 +1436,67 @@ export function Player(props: PlayerProps) {
     const label = idx ? `Finish preparing 3D for this ${thing}…` : `Prepare 3D for this ${thing}…`;
     return [{ label, hint: 'pick what it gets', sepBefore: true, onSelect: () => setPrepAsk({ initial }) }];
   };
-  /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons). */
+  /** The 3D ▾ menu: every 3D switch except the gentle motion and the mouse (their own buttons), in groups. */
+  const moving = depthAuto || !!prefs.depthMouse || depthWiggle;
+  const seeIt = (text: string) => (moving ? text : `${text} · turn on the gentle motion, the 3D mouse or Wiggle to see it`);
+  const toggleLook = async (patch: Partial<ViewerSettings>, on: boolean, text: string, fillHint = false) => {
+    if (on && fillHint) {
+      const fm = inpaintChoice(prefs);
+      if (fm) {
+        const fi = await inpaintPack(fm, true);
+        if (!fi?.available) text = `${text} · ${noFillText(fm)}`;
+      }
+    }
+    await toggleDepth(patch, on, text);
+  };
   const depthMenu = (): MenuItem[] => [
+    // Motion.
     { label: '3D for GIFs and videos', hint: 'lets the 3D work on them too', checked: depthMoving,
       onSelect: () => void toggleDepth({ depthMoving: !depthMoving }, !depthMoving, depthMoving ? '3D for GIFs and videos off' : (depthAuto || prefs.depthMouse) ? '3D for GIFs and videos on' : '3D for GIFs and videos on · turn on the gentle motion or the 3D mouse to see it') },
     { label: '3D to the beat', hint: prefs.depthBeat && beat3d.bpm ? `${Math.round(beat3d.bpm)} BPM` : 'pulses with music', checked: !!prefs.depthBeat,
       onSelect: () => void toggleDepth({ depthBeat: !prefs.depthBeat }, !prefs.depthBeat, prefs.depthBeat ? '3D to the beat off' : '3D to the beat on · play some music (the 3D needs to be on too)') },
+    { label: 'Wiggle', hint: stillOnly ?? 'jumps between viewpoints', checked: depthWiggle, disabled: !!stillOnly,
+      onSelect: () => void toggleDepth({ depthWiggle: !depthWiggle }, !depthWiggle, depthWiggle ? 'Wiggle off' : 'Wiggle on · views and speed in 3D ▾ → 3D photo settings') },
+    // Subject.
     { label: 'Lift-off', hint: stillOnly ?? 'the subject comes forward', checked: depthLift, disabled: !!stillOnly, sepBefore: true,
       onSelect: () => void toggleSubject({ depthLift: !depthLift }, !depthLift, depthLift ? 'Lift-off off' : 'Lift-off on · amount in 3D ▾ → 3D photo settings') },
     ...(depthLift && inVault && item?.kind === 'image' ? [{ label: savingSubject ? 'Saving the subject…' : 'Save subject as PNG', hint: 'next to the original', disabled: savingSubject, onSelect: () => void saveSubject() }] : []),
-    { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly,
-      onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
     { label: '3D only on the subject', hint: stillOnly ?? 'background stays still', checked: depthSubjectOnly, disabled: !!stillOnly,
-      onSelect: () => void toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : (depthAuto || prefs.depthMouse) ? '3D only on the subject' : '3D only on the subject · turn on the gentle motion or the 3D mouse to see it', { depth: true }) },
-    { label: 'Layered 3D', hint: stillOnly ?? 'fills in behind the subject', checked: depthLayered, disabled: !!stillOnly,
-      onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : (depthAuto || prefs.depthMouse) ? 'Layered 3D on' : 'Layered 3D on · turn on the gentle motion or the 3D mouse to see it', { depth: true, fill: true }) },
+      onSelect: () => void toggleLayer({ depthSubjectOnly: !depthSubjectOnly }, !depthSubjectOnly, depthSubjectOnly ? '3D on the whole picture again' : seeIt('3D only on the subject'), { depth: true }) },
+    // Looks.
+    { label: 'Focus', hint: stillOnly ?? 'lens blur by depth', checked: depthFocus, disabled: !!stillOnly, sepBefore: true,
+      onSelect: () => void toggleDepth({ depthFocus: !depthFocus }, !depthFocus, depthFocus ? 'Focus off' : 'Focus on · what stays sharp and the focus pull in 3D ▾ → 3D photo settings') },
+    { label: 'Depth light', hint: stillOnly ?? 'light and shade from depth', checked: depthLight, disabled: !!stillOnly,
+      onSelect: () => void toggleDepth({ depthLight: !depthLight }, !depthLight, depthLight ? 'Depth light off' : (prefs.depthLightFollow ?? 'camera') === 'camera' ? seeIt('Depth light on · it follows the camera') : 'Depth light on') },
+    // Edges and layers.
+    { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly, sepBefore: true,
+      onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
+    { label: 'Layered 3D', hint: stillOnly ?? (depthMulti && depthLayered ? 'the subject over More layers' : 'fills in behind the subject'), checked: depthLayered, disabled: !!stillOnly,
+      onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : seeIt('Layered 3D on'), { depth: true, fill: true }) },
+    { label: 'More layers', hint: stillOnly ?? 'cut at every big depth jump', checked: depthMulti, disabled: !!stillOnly,
+      onSelect: () => void toggleLook({ depthMulti: !depthMulti }, !depthMulti, depthMulti ? 'More layers off' : seeIt('More layers on · worked out once per picture'), true) },
+    { label: 'Border fill', hint: stillOnly ?? 'paints around the picture', checked: depthBorder, disabled: !!stillOnly,
+      onSelect: () => void toggleLook({ depthBorder: !depthBorder }, !depthBorder, depthBorder ? 'Border fill off' : seeIt(prefs.depthBorderUse === 'moves' ? 'Border fill on · bigger moves' : 'Border fill on · less zoom'), true) },
+    ...(depthBorder && !stillOnly ? [{
+      label: prefs.depthBorderUse === 'moves' ? 'Border: bigger moves' : 'Border: less zoom', hint: 'click to switch',
+      onSelect: () => {
+        const use = prefs.depthBorderUse === 'moves' ? 'zoom' : 'moves';
+        saveViewerPrefs({ depthBorderUse: use });
+        setFlash(use === 'moves' ? 'Border fill: bigger moves (the camera goes further)' : 'Border fill: less zoom (your framing is kept)');
+      },
+    }] : []),
+    // Save.
+    ...(depthWiggle && inVault && stillHere && item?.itemId != null ? [{
+      label: savingWiggle ? 'Saving the wiggle…' : 'Save wiggle as GIF', sepBefore: true, disabled: savingWiggle || !depth3d,
+      hint: depth3d ? `same folder · about ${wiggleMb()} MB` : 'needs the 3D on this picture',
+      onSelect: () => void saveWiggle(),
+    }] : []),
     ...prepEntry(),
-    { label: '3D photo settings…', hint: 'shape, amount, speed', sepBefore: true, onSelect: () => setDepthSettings(true) },
+    { label: '3D photo settings…', hint: 'shape, amount, speed, looks', sepBefore: true, onSelect: () => setDepthSettings(true) },
   ];
   /** Something in the 3D ▾ menu is on (the button shows it). */
-  const depthMenuOn = depthMoving || !!prefs.depthBeat || depthLift || depthEdges3d || depthSubjectOnly || depthLayered;
+  const depthMenuOn = depthMoving || !!prefs.depthBeat || depthLift || depthEdges3d || depthSubjectOnly || depthLayered
+    || depthFocus || depthLight || depthBorder || depthMulti || depthWiggle;
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
   // ---- video and GIF tools ------------------------------------------------------------------
@@ -1987,6 +2134,7 @@ export function Player(props: PlayerProps) {
                 beat={prefs.depthBeat ? { pulse: beat3d.pulse, kind: prefs.depthBeatKind === 'bounce' ? 'bounce' : 'push', amount: prefs.depthBeatAmount ?? 1 } : undefined}
                 motion={{ shape: motionChoice(prefs.depthShape), amount: depthMotion ? prefs.depthMotion ?? 1 : 0, speed: prefs.depthSpeed ?? 1 }}
                 endless={!slideshow} halted={(slideshow ? halted : !!props.hold) || !depthMotion}
+                looks={looksHere}
                 showMs={s.imageSeconds * 1000} sharpen={prefs.sharpen && prefs.smoothFit} />
             )}
             {/* 3D photos (end) */}

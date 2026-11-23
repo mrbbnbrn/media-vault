@@ -37,7 +37,7 @@ type Which = 'all' | 'noFaces' | 'noGood';
 const KIND_TITLE: Record<DerivedKind, string> = {
   depth: 'Depth maps (3D photos)',
   outline: 'Subject outlines (Lift-off and the subject effects)',
-  plate: 'Background fill (Layered 3D, Lift-off)',
+  plate: 'Background fills (Layered 3D, Lift-off, Border fill, More layers)',
   fore: 'Subject layers (Lift-off, Layered 3D)',
   track: 'Prepared 3D of videos and GIFs',
 };
