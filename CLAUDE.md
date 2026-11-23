@@ -344,7 +344,8 @@ How to record changes:
   are made off the window's thread (`lookworker.ts`, `looklayers.ts`), saved as `derived` kind `plate` with their
   own tags (no schema change), and made by Prepare 3D data too. Config: `depthFocus*`, `depthLight*`,
   `depthBorder*`, `depthMulti*`, `depthWiggle*` (`config.rs`, cleaned on load). Checked: tsc, 630 vitest, the looks
-  drawn in Chromium on a generated scene; Rust not compiled here (CI). Not tried in the real app yet.
+  drawn in Chromium on a generated scene; CI (Rust + Linux/Windows tests) passed. Released as **build-108**. Not tried
+  in the real app yet.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **video 3D: the Prepare 3D window** (asked
   by the user). Prepare 3D (viewer 3D ▾, or right-click a video, a selection or a folder) opens a window where each
   effect is ticked with its model: Depth (always; depth model), Lift-off (+ amount), 3D only on the subject, Sharper
