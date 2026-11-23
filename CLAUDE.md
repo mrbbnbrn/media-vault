@@ -334,7 +334,7 @@ How to record changes:
 - 2026-11-23 (Claude Code on the user's PC, evening): **More layers smudge trails fixed**: each layer kept half of a
   soft depth jump's ramp at its edge (tilted edges stretch into streaks; the far layer's fill floated halfway up).
   Ramps are now marked (`plan.edge`) and each layer is flat up to its edge; saved layers' tag `r2` → `r3`.
-  `layersmath.ts`, `looklayers.ts`, 1 new test. `docs/picture-3d-looks-plan.md` "Second fix". Not tried in the app yet.
+  `layersmath.ts`, `looklayers.ts`, 1 new test. `docs/picture-3d-looks-plan.md` "Second fix". Released as **build-111**. Not tried in the app yet.
 - 2026-11-23 (Claude Code on the user's PC, later): **long videos failed part way while preparing 3D**: the frame
   reader was stopped after 2 minutes unasked (a block of big frames can take longer). Idle stop now 10 min
   (`video3d.rs`), and `frameReader` (`video3d.ts`) opens a stopped reader again after the last frame (none lost or
