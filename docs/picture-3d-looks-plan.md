@@ -288,3 +288,18 @@ room/framePose, layer cuts incl. slopes/slivers/subject, layer bands, coverage, 
 without its media server, so a throwaway test page drew the 3D on a generated scene): Focus blur, Depth light,
 More layers (stretching gone at the edges), Border fill (bigger moves, less zoom, painted edge), Wiggle capture;
 the 3D photo settings window. **Not tried in the real app or on real photos yet**, nor with LaMa / MI-GAN fills.
+
+### Fix after the user's first try (2026-11-23, later)
+
+The user saw More layers leave the background behind near things unfilled. Found on depth maps with soft edges
+(as real depth models make them; the generated test scene had hard ones):
+- **A soft jump became thin extra layers** (a rim round a person: 3–4 layers instead of 2), and their filled band,
+  pulled from the rim, covered the revealed background with smeared edge colours. Each jump's two sides are now read
+  across its whole ramp (the farthest and nearest depth within ~2 % of the picture), so the ramp votes for one cut.
+- **The cut sat off-centre on soft edges** (one level shared by every jump it splits), leaving a rim of the near thing
+  on the far layer. Each pixel on a ramp is now split at that jump's own middle.
+- **The fill only reached the 7 % band** behind near things; a big camera move (Bigger moves, strong 3D) could see past
+  it to a copy of the near thing. The colour is now filled everywhere behind nearer things (right along a jump-free
+  meeting the picture's own pixels stay, so no seams). Small bits are merged until none are left.
+- Saved layers get a new tag part (`…_l<n><key>r2_<j>`): ones saved before this fix are not read (made again).
+Checked: 2 new tests (fail on the old code), 631 window tests, tsc. Not tried in the real app yet.

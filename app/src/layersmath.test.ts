@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { borderCanvas, borderNeedsFill, composeBorder, composeLayer, layerCoverage, planLayers } from './layersmath';
 import { mapLabel } from './derived';
+import { boxBlur } from './layers';
 
 const map = (w: number, h: number, f: (x: number, y: number) => number) => {
   const data = new Uint8Array(w * h);
@@ -38,6 +39,28 @@ describe('More layers: where the picture is cut', () => {
     expect(planLayers(four, null, 3, 'small')!.n).toBe(3);
     expect(planLayers(four, null, 4, 'small')!.n).toBe(4);
   });
+  it('a soft jump (as real depth models make them) is one cut in its middle, not thin rim layers', () => {
+    // A person (near) before a wall, its depth edge a ramp over ~13 pixels.
+    const W = 260;
+    const H = 200;
+    const raw = new Float32Array(W * H);
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) raw[y * W + x] = ((x - 130) / 40) ** 2 + ((y - 120) / 80) ** 2 < 1 ? 170 : 50 + (y / H) * 20;
+    const soft = boxBlur(raw, W, H, 6);
+    const d = map(W, H, (x, y) => soft[y * W + x]);
+    const p = planLayers(d, null, 4, 'medium')!;
+    expect(p.n).toBe(2);
+    // Along the middle row the cut is where the depth is halfway up the ramp.
+    const row = 120;
+    let cutX = 0;
+    for (let x = 0; x < W; x++)
+      if (p.cls[row * W + x] === 1) {
+        cutX = x;
+        break;
+      }
+    const half = (d.data[row * W + 60] + d.data[row * W + 130]) / 2;
+    expect(Math.abs(d.data[row * W + cutX] - half)).toBeLessThan(15);
+  });
   it('small bits (hair, leaves) are not layers of their own', () => {
     const dots = map(120, 90, (x, y) => (x % 30 === 0 && y % 30 === 0 ? 250 : 40));
     expect(planLayers(dots, null, 4, 'small')).toBeNull();
@@ -60,11 +83,13 @@ describe('More layers: where the picture is cut', () => {
     const orig = rgba(120, 90, (_x, y) => (y > 45 ? [200, 0, 0] : [0, 0, 200]));
     const l0 = composeLayer(orig, 120, 90, scene, p, 0, null);
     const at = (x: number, y: number) => Array.from(l0.subarray((y * 120 + x) * 4, (y * 120 + x) * 4 + 4));
-    // The band: the wall's blue and depth carried down; outside it the picture's colours as they are,
-    // and the layer's own depth (the wall's) carried on under the table: no ramp up to the table.
+    // The band: the wall's blue and depth carried down; further in behind the table filled too (a big
+    // camera move sees past the band: no copy of the table there), and the layer's own depth (the
+    // wall's) carried on under the table: no ramp up to the table.
     expect(at(10, 48)[2]).toBeGreaterThan(150);
     expect(at(10, 48)[3]).toBeLessThan(80);
-    expect(at(10, 88).slice(0, 3)).toEqual([200, 0, 0]);
+    expect(at(10, 88)[0]).toBeLessThan(60);
+    expect(at(10, 88)[2]).toBeGreaterThan(150);
     expect(at(10, 88)[3]).toBeLessThan(80);
     expect(at(10, 10)).toEqual([0, 0, 200, 40]);
     // The nearest layer (the box): its own depth carried out over the wall beside it.
@@ -115,5 +140,6 @@ describe('saved looks labels', () => {
     expect(mapLabel('plate', 'da3-mono-large@518~1_birefnet-lite@1024_e0.70_m4m_simple_l3abc_1', names))
       .toEqual({ name: 'Best', detail: 'More layers: layer 2 of 3 · outline Fast · sharper edges · Simple fill' });
     expect(mapLabel('plate', 'da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2x_0', names).detail).toBe('More layers: layer 1 of 2 · MI-GAN fill');
+    expect(mapLabel('plate', 'da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2xr2_1', names).detail).toBe('More layers: layer 2 of 2 · MI-GAN fill');
   });
 });

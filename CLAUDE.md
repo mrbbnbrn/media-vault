@@ -331,6 +331,11 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-23 (Claude Code on the user's PC, later): **More layers fix** after the user saw the background behind
+  near things left unfilled: on soft depth edges (real depth models) a jump made thin extra rim layers and the cut sat
+  off-centre; now one cut per jump in its middle, the fill reaches everywhere behind nearer things, small bits merged
+  until none left; saved layers get `r2` in their tag (older ones made again). `layersmath.ts`, `looklayers.ts`,
+  tests. Details: `docs/picture-3d-looks-plan.md` "Fix after the user's first try". Not tried in the real app yet.
 - 2026-11-23 (Claude Code on the user's PC; fold into the Project notes): **five 3D looks for pictures**
   (`docs/picture-3d-looks-plan.md`, approved by the user; as-built notes at its end). All pictures only, off by
   default, each its own switch in 3D ▾ (now in groups: Motion · Subject · Looks · Edges and layers · Save) and its

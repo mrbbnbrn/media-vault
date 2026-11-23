@@ -94,14 +94,20 @@ export function planLayers(depth: DepthMap, mask: SubjectMask | null, max: numbe
 
   // Real jumps: the depth either side of each, weighted by how big the jump is.
   // Each jump's two sides (far, near) and size; a jump between them is split by any cut level in between.
+  // A real depth model's jump is soft (a ramp over several pixels): its two sides are read across the
+  // whole ramp (the farthest and nearest depth a little way round it, any direction), so every pixel
+  // on it votes for the same cut in its middle and the ramp itself never becomes thin layers of its
+  // own (a rim round a person).
+  const R = Math.max(4, Math.round(Math.min(w, h) * 0.02));
+  const lo = squareMinMax(D, w, h, R, false);
+  const hi = squareMinMax(D, w, h, R, true);
   const pairs: number[] = [];
   for (let y = 2; y < h - 2; y++)
     for (let x = 2; x < w - 2; x++) {
-      for (const [a, b] of [[at(x - 2, y), at(x + 2, y)], [at(x, y - 2), at(x, y + 2)]]) {
-        const d = Math.abs(a - b);
-        if (d < T) continue;
-        pairs.push(Math.min(a, b), Math.max(a, b), d);
-      }
+      const d = Math.max(Math.abs(at(x - 2, y) - at(x + 2, y)), Math.abs(at(x, y - 2) - at(x, y + 2)));
+      if (d < T) continue;
+      const i = y * w + x;
+      pairs.push(lo[i], hi[i], d);
     }
   // The strongest few cut levels, far enough apart; each needs a jump line of a few per cent of the
   // picture. A jump that a level already splits doesn't vote again (a box in front of both a table and
@@ -134,10 +140,14 @@ export function planLayers(depth: DepthMap, mask: SubjectMask | null, max: numbe
   if (!levels.length && !subj) return null;
 
   // Each pixel's layer: how many cut levels it is nearer than; the subject on top.
+  // On a jump's ramp the cut is made in the middle of that jump (not at the level, which is shared by
+  // every jump it splits), so no rim of the near thing stays on the far layer, or the other way round.
   const cls = new Uint8Array(n0);
   for (let i = 0; i < n0; i++) {
     let c = 0;
-    for (const l of levels) if (D[i] > l) c++;
+    const ramp = hi[i] - lo[i] >= T;
+    const mid = (lo[i] + hi[i]) / 2;
+    for (const l of levels) if (D[i] > (ramp && lo[i] < l && hi[i] > l ? mid : l)) c++;
     cls[i] = c;
   }
   let n = levels.length + 1;
@@ -145,7 +155,8 @@ export function planLayers(depth: DepthMap, mask: SubjectMask | null, max: numbe
     for (let i = 0; i < n0; i++) if (subj[i]) cls[i] = n;
     n++;
   }
-  dropSmallBits(cls, w, h, Math.round(n0 * MIN_AREA));
+  // (Again until nothing changes: a bit can be joined to one that is itself joined later.)
+  for (let pass = 0; pass < 4 && dropSmallBits(cls, w, h, Math.round(n0 * MIN_AREA)); pass++);
   // A layer that lost all its pixels is gone: the rest close up.
   const seen = new Uint8Array(n);
   for (let i = 0; i < n0; i++) seen[cls[i]] = 1;
@@ -191,9 +202,41 @@ export function planLayers(depth: DepthMap, mask: SubjectMask | null, max: numbe
   return { w, h, n, cls, holes };
 }
 
+/** The smallest (or largest) value within `r` pixels each way (a square), for every pixel. */
+function squareMinMax(v: Float32Array, w: number, h: number, r: number, max: boolean): Float32Array {
+  const s = max ? 1 : -1;
+  const row = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const o = y * w;
+    for (let x = 0; x < w; x++) {
+      let m = v[o + x] * s;
+      const e = Math.min(w - 1, x + r);
+      for (let k = Math.max(0, x - r); k <= e; k++) {
+        const t = v[o + k] * s;
+        if (t > m) m = t;
+      }
+      row[o + x] = m;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const e = Math.min(h - 1, y + r);
+    for (let x = 0; x < w; x++) {
+      let m = row[y * w + x];
+      for (let k = Math.max(0, y - r); k <= e; k++) {
+        const t = row[k * w + x];
+        if (t > m) m = t;
+      }
+      out[y * w + x] = m * s;
+    }
+  }
+  return out;
+}
+
 /** Bits of a layer smaller than `minArea` pixels, or thin slivers, join the layer most of their border touches. */
-function dropSmallBits(cls: Uint8Array, w: number, h: number, minArea: number) {
+function dropSmallBits(cls: Uint8Array, w: number, h: number, minArea: number): boolean {
   const n = w * h;
+  let changed = false;
   const seen = new Uint8Array(n);
   const stack = new Int32Array(n);
   const bit: number[] = [];
@@ -236,7 +279,9 @@ function dropSmallBits(cls: Uint8Array, w: number, h: number, minArea: number) {
     let best = -1;
     for (const [k, v] of touch) if (v > best) [to, best] = [k, v];
     for (const i of bit) cls[i] = to;
+    changed = true;
   }
+  return changed;
 }
 
 /** The area a fill model fills for layer `j` (all of what's nearer, so it never copies their colours), at its square size (0 / 255). */
@@ -251,7 +296,8 @@ export function layerModelHole(plan: LayerPlan, j: number, side: number): Uint8A
 
 /**
  * Layer `j` at the picture's size `w` × `h`: RGBA, the picture with its band
- * filled in (`fill`: a model's result for this layer, any size, or Simple when
+ * (and all behind nearer things, but right along a jump-free meeting) filled in
+ * (`fill`: a model's result for this layer, any size, or Simple when
  * null; the nearest layer has no band), alpha = its own depth: the layer's
  * surface (its pixels, and its band filled from its own side) carried straight
  * out past its edges, so marching it never meets the picture's soft depth ramp
@@ -279,8 +325,12 @@ export function composeLayer(orig: ArrayLike<number>, w: number, h: number, dept
   }
   const own = pushPull(surf, on, pw, ph);
   const dBig = resample(own, pw, ph, w, h);
+  // The colour is filled in the band and everywhere further in behind nearer things too (a big camera
+  // move, Border fill's Bigger moves, can see past the band: never a copy of the near thing there).
+  // Only right along a meeting with no jump (a slope crossing a cut) the picture's own pixels stay.
+  const distKnown = distanceTo(known, pw, ph);
   const hf = new Float32Array(pw * ph);
-  for (let i = 0; i < hf.length; i++) hf[i] = hole[i] / 255;
+  for (let i = 0; i < hf.length; i++) hf[i] = hole[i] || (plan.cls[i] > j && distKnown[i] > 2) ? 1 : 0;
   const hBig = resample(hf, pw, ph, w, h);
   // The colour: the model's, or Simple from this layer's side on a small copy.
   let F: ArrayLike<number>;

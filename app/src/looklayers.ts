@@ -244,8 +244,9 @@ export interface LayersRequest {
 
 /** The tag layer `j` is saved under (what they were made from + the cut's own key). */
 function layerTag(base: string, plan: LayerPlan, j: number): string {
-  // (A different cut of the same picture never reads old layers.)
-  return `${base}_l${planKey(plan)}_${j}`;
+  // (A different cut of the same picture never reads old layers. 'r2': made since the soft-edge fix of
+  // 2026-11-23, the cut in each jump's middle and the fill reaching all behind: older ones aren't read.)
+  return `${base}_l${planKey(plan)}r2_${j}`;
 }
 
 /** The base tag (depth, outline, edges, how many and where cut, fill). */
