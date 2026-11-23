@@ -334,7 +334,7 @@ How to record changes:
 - 2026-11-23 (Claude Code on the user's PC, later): **long videos failed part way while preparing 3D**: the frame
   reader was stopped after 2 minutes unasked (a block of big frames can take longer). Idle stop now 10 min
   (`video3d.rs`), and `frameReader` (`video3d.ts`) opens a stopped reader again after the last frame (none lost or
-  twice); the Prepare 3D window shows the last failure. 3 new tests. `docs/video-3d-plan.md` §12. Not tried in the app yet.
+  twice); the Prepare 3D window shows the last failure. 3 new tests. `docs/video-3d-plan.md` §12. Released as **build-110**. Not tried in the app yet.
 - 2026-11-23 (Claude Code on the user's PC, later): **More layers fix** after the user saw the background behind
   near things left unfilled: on soft depth edges (real depth models) a jump made thin extra rim layers and the cut sat
   off-centre; now one cut per jump in its middle, the fill reaches everywhere behind nearer things, small bits merged
