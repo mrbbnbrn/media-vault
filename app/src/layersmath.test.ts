@@ -61,6 +61,25 @@ describe('More layers: where the picture is cut', () => {
     const half = (d.data[row * W + 60] + d.data[row * W + 130]) / 2;
     expect(Math.abs(d.data[row * W + cutX] - half)).toBeLessThan(15);
   });
+  it('each layer is flat right up to a soft jump: no half-ramp at its edge (it stretches into streaks)', () => {
+    const W = 260;
+    const H = 200;
+    const raw = new Float32Array(W * H);
+    for (let y = 0; y < H; y++)
+      for (let x = 0; x < W; x++) raw[y * W + x] = ((x - 130) / 40) ** 2 + ((y - 120) / 80) ** 2 < 1 ? 170 : 62;
+    const soft = boxBlur(raw, W, H, 6);
+    const d = map(W, H, (x, y) => soft[y * W + x]);
+    const p = planLayers(d, null, 4, 'medium')!;
+    expect(p.n).toBe(2);
+    const orig = rgba(W, H, () => [128, 128, 128]);
+    const far = composeLayer(orig, W, H, d, p, 0, null);
+    const near = composeLayer(orig, W, H, d, p, 1, null);
+    // Across the ramp (x 80 … 100 on the middle row) and into the band: far stays at the wall, near at the person.
+    for (let x = 60; x <= 120; x += 2) {
+      expect(Math.abs(far[(120 * W + x) * 4 + 3] - 62)).toBeLessThan(5);
+      expect(Math.abs(near[(120 * W + x) * 4 + 3] - 170)).toBeLessThan(5);
+    }
+  });
   it('small bits (hair, leaves) are not layers of their own', () => {
     const dots = map(120, 90, (x, y) => (x % 30 === 0 && y % 30 === 0 ? 250 : 40));
     expect(planLayers(dots, null, 4, 'small')).toBeNull();
@@ -140,6 +159,6 @@ describe('saved looks labels', () => {
     expect(mapLabel('plate', 'da3-mono-large@518~1_birefnet-lite@1024_e0.70_m4m_simple_l3abc_1', names))
       .toEqual({ name: 'Best', detail: 'More layers: layer 2 of 3 · outline Fast · sharper edges · Simple fill' });
     expect(mapLabel('plate', 'da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2x_0', names).detail).toBe('More layers: layer 1 of 2 · MI-GAN fill');
-    expect(mapLabel('plate', 'da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2xr2_1', names).detail).toBe('More layers: layer 2 of 2 · MI-GAN fill');
+    expect(mapLabel('plate', 'da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2xr3_1', names).detail).toBe('More layers: layer 2 of 2 · MI-GAN fill');
   });
 });

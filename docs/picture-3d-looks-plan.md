@@ -303,3 +303,17 @@ The user saw More layers leave the background behind near things unfilled. Found
   meeting the picture's own pixels stay, so no seams). Small bits are merged until none are left.
 - Saved layers get a new tag part (`…_l<n><key>r2_<j>`): ones saved before this fix are not read (made again).
 Checked: 2 new tests (fail on the old code), 631 window tests, tsc. Not tried in the real app yet.
+
+### Second fix: smudge trails (2026-11-23, evening)
+
+The user's photo (Layered 3D + More layers) showed horizontal smudge trails beside the shoulder and hand; plain
+Layered 3D was clean. Cause: each layer took its depth straight from the depth map right up to the cut, so the far
+layer kept the lower half of the soft jump's ramp and the near layer the upper half. A tilted edge stretches into
+streaks when the camera moves, and the far layer's filled band, pulled from the top of its half-ramp, floated
+halfway to the near thing (measured on a soft test edge: far layer 62 → ~95 at the edge, fill at ~85; near layer
+170 → ~112).
+- `planLayers` now marks the ramps (`plan.edge`: a big depth change within R and another layer within 3R).
+- `composeLayer` never reads depth there: the layer's own flat depth is carried over its ramp, and the band behind
+  nearer things is pulled from flat ground only. Now far 62 and near 170 all the way across.
+- Saved layers' tag part `r2` → `r3` (made again).
+Checked: 1 new test (fails on the old code), 635 window tests, tsc. Not tried in the real app yet.

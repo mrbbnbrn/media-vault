@@ -42,6 +42,13 @@ export interface LayerPlan {
   cls: Uint8Array;
   /** For each layer but the nearest: the band behind nearer things that is filled in (0 / 255). */
   holes: Uint8Array[];
+  /**
+   * The soft ramp of a jump between two layers (1): a real depth model blurs each jump over several
+   * pixels. No layer takes its depth from there (half a ramp on each side tilts both layers' edges, and
+   * a tilted edge stretches into streaks when the camera moves): each layer's own flat side is carried
+   * over it instead.
+   */
+  edge: Uint8Array;
 }
 
 /** Bits smaller than this share of the picture are not layers of their own (hair, leaves, fences). */
@@ -199,7 +206,13 @@ export function planLayers(depth: DepthMap, mask: SubjectMask | null, max: numbe
       }
     holes.push(any ? hole : new Uint8Array(n0));
   }
-  return { w, h, n, cls, holes };
+  // The ramps: a big depth change within R, and another layer near (a ramp can be wider than R).
+  const cf = Float32Array.from(cls);
+  const cLo = squareMinMax(cf, w, h, R * 3, false);
+  const cHi = squareMinMax(cf, w, h, R * 3, true);
+  const edge = new Uint8Array(n0);
+  for (let i = 0; i < n0; i++) if (cHi[i] !== cLo[i] && hi[i] - lo[i] >= T * 0.6) edge[i] = 1;
+  return { w, h, n, cls, holes, edge };
 }
 
 /** The smallest (or largest) value within `r` pixels each way (a square), for every pixel. */
@@ -310,13 +323,28 @@ export function composeLayer(orig: ArrayLike<number>, w: number, h: number, dept
   const known = new Float32Array(pw * ph);
   for (let i = 0; i < known.length; i++) known[i] = plan.cls[i] <= j ? 1 : 0;
   const hole = plan.holes[j] ?? new Uint8Array(pw * ph);
+  // Depth is only read off flat ground: never off a jump's soft ramp (plan.edge), so each layer stays
+  // flat right up to its edge and its band lies at its own depth, not halfway up the jump.
+  const edge = plan.edge ?? new Uint8Array(pw * ph);
+  const flatSide = new Float32Array(pw * ph);
+  const flatOwn = new Float32Array(pw * ph);
+  let ownAny = false;
+  for (let i = 0; i < flatSide.length; i++) {
+    if (edge[i]) continue;
+    if (plan.cls[i] <= j) flatSide[i] = 1;
+    if (plan.cls[i] === j) {
+      flatOwn[i] = 1;
+      ownAny = true;
+    }
+  }
   // The band's depth: pulled in from this layer's side only.
-  const df = pushPull(depth.data, known, pw, ph);
+  const df = pushPull(depth.data, ownAny ? flatSide : known, pw, ph);
+  const dOwn = ownAny ? pushPull(depth.data, flatOwn, pw, ph) : null;
   const surf = new Float32Array(pw * ph);
   const on = new Float32Array(pw * ph);
   for (let i = 0; i < surf.length; i++) {
     if (plan.cls[i] === j) {
-      surf[i] = depth.data[i];
+      surf[i] = dOwn && edge[i] ? dOwn[i] : depth.data[i];
       on[i] = 1;
     } else if (hole[i]) {
       surf[i] = df[i];

@@ -246,7 +246,7 @@ export interface LayersRequest {
 function layerTag(base: string, plan: LayerPlan, j: number): string {
   // (A different cut of the same picture never reads old layers. 'r2': made since the soft-edge fix of
   // 2026-11-23, the cut in each jump's middle and the fill reaching all behind: older ones aren't read.)
-  return `${base}_l${planKey(plan)}r2_${j}`;
+  return `${base}_l${planKey(plan)}r3_${j}`;
 }
 
 /** The base tag (depth, outline, edges, how many and where cut, fill). */
