@@ -338,7 +338,8 @@ How to record changes:
   for that folder earlier in the same offer); otherwise it is sent and stored as a second item. Receiver rule only, no
   wire change, no version bump. Here: `items::answer` + `items::target` (finds the folder without making it),
   `items::have_in`, `store::landing_if_any`; new unit test + the fake-phone "have" case now offers the same folder.
-  Baro Alarm 0.53 got the same rule. Rust not compiled on this PC (no toolchain): CI is the first compile.
+  Baro Alarm 0.53 got the same rule. Rust not compiled on this PC; CI (Rust + Linux/Windows tests) passed.
+  Released as **build-112**. Not tried between the apps yet.
 - 2026-11-23 (Claude Code on the user's PC, evening): **More layers smudge trails fixed**: each layer kept half of a
   soft depth jump's ramp at its edge (tilted edges stretch into streaks; the far layer's fill floated halfway up).
   Ramps are now marked (`plan.edge`) and each layer is flat up to its edge; saved layers' tag `r2` → `r3`.
