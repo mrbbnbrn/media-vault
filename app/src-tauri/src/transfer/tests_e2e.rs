@@ -298,8 +298,8 @@ fn pair_find_connect_and_transfer_both_ways() {
     let fav: i64 = s.db().query_row("SELECT favourite FROM media WHERE id = ?", [got_id], |r| r.get(0)).unwrap();
     assert_eq!(fav, 1);
 
-    // The same file offered again: "have".
-    ph.send(ty::OFFER, &offer_json(8, &[(4, &a, "again.heic", "image", -1)]));
+    // The same file offered again for the same folder: "have" (§9.2: only the target folder counts).
+    ph.send(ty::OFFER, &offer_json(8, &[(4, &a, "again.heic", "image", 1)]));
     let ansv = ph.recv_json(ty::ANSWER);
     assert_eq!(ansv["answers"][0]["a"], "have");
 

@@ -275,7 +275,8 @@ Everything here follows `docs/transfer-protocol.md` (MVTP/1 r2). Summary:
 - **Item fields:** sha256, name, size, kind (`image` `gif` `video` `pdf` `text`), mime, w, h, dur_ms, taken (ms or null),
   fav, tags (own only), marks `{ms, note}`, folder. Item refs chosen by the PC are `1…0x3FFFFFFF`; the phone's start at
   `0x40000001`.
-- **This app as receiver:** takes `image`, `gif`, `video`; skips anything whose SHA-256 is already in the vault; stores
+- **This app as receiver:** takes `image`, `gif`, `video`; skips a file only when the same SHA-256 is already in the
+  folder it would land in (a copy in another folder doesn't count; since 2026-11-25); stores
   into **"Received from phone"** (remembered by id, recreated if deleted) keeping the sender's folders; HEIC/HEIF/AVIF/
   BMP/TIFF and MOV/MKV/3GP/AVI/TS/… are kept as originals plus a playable JPEG/MP4 copy.
 - **One phone connected at a time** (a new connection replaces the old). Several phones can be paired; each is told
@@ -331,6 +332,13 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-25 (Claude Code on the user's PC): **phone transfer: "already have" only counts the target folder**
+  (asked by the user: sending folder "Trees" skipped files that were in "Autumn"). MVTP §9.2 r2 note 2026-11-25: the
+  receiver answers `have` only when the same file is already in the folder the item would land in (or was wanted
+  for that folder earlier in the same offer); otherwise it is sent and stored as a second item. Receiver rule only, no
+  wire change, no version bump. Here: `items::answer` + `items::target` (finds the folder without making it),
+  `items::have_in`, `store::landing_if_any`; new unit test + the fake-phone "have" case now offers the same folder.
+  Baro Alarm 0.53 got the same rule. Rust not compiled on this PC (no toolchain): CI is the first compile.
 - 2026-11-23 (Claude Code on the user's PC, evening): **More layers smudge trails fixed**: each layer kept half of a
   soft depth jump's ramp at its edge (tilted edges stretch into streaks; the far layer's fill floated halfway up).
   Ramps are now marked (`plan.edge`) and each layer is flat up to its edge; saved layers' tag `r2` → `r3`.

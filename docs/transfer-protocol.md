@@ -1,6 +1,6 @@
 # MVTP/1 — Media Vault ⇄ Baro Alarm Wi-Fi transfer protocol
 
-Version 1, written 2026-11-08, revision 2 (17:40: Baro Alarm review changes 1–6 applied, marked **[r2]**; 18:50: ref ranges note; test vectors unchanged). Shared by both projects; **change it in both places or not at all.**
+Version 1, written 2026-11-08, revision 2 (17:40: Baro Alarm review changes 1–6 applied, marked **[r2]**; 18:50: ref ranges note; test vectors unchanged; 2026-11-25: `have` counts only the target folder, §9.2). Shared by both projects; **change it in both places or not at all.**
 Companion files: `transfer-vectors.json` (test vectors) and `mvtp_ref.py` (Python reference that generates and re-checks them).
 Design background and decisions: `wifi-transfer-plan.md`.
 
@@ -228,7 +228,13 @@ Either side can send at any time after INFO. Each side sends **at most one item 
 ```
 `a` is one of:
 - `want` — send it.
-- `have` — the receiver already has a non-trashed item with the same sha256 (anywhere in its vault). Not sent.
+- `have` — the receiver already has a non-trashed item with the same sha256 **in the folder this item would land in** (§10: the landing folder plus the item's path). Not sent.
+  **[r2 note, 2026-11-25]** Before this note the check was "anywhere in its vault". Now a copy in another folder does
+  not count: the item is sent again (`want`) and stored as a second, separate item in its target folder. Also `have`
+  for a second item with the same sha256 **and the same target folder** in the same offer. A target folder that
+  doesn't exist yet holds nothing, so its items are `want`. No wire change and no version bump: only the receiver's
+  rule changes; a sender of any build handles `want` / `have` as before. Receivers with the new rule: Baro Alarm 0.53,
+  Media Vault build-112 (planned).
 - `cant` — kind not supported (the phone answers `cant` for `pdf` and `text`).
 - `nospace` — not enough free space.
 
@@ -259,7 +265,7 @@ ITEM_END ref sha256  ───────▶  check: total == size, sha == ITEM
 - The receiver adds an item to its index only after the hash check. Thumbnails/previews are made afterwards from its own vault copy.
 - The sender moves on to the next item only after ITEM_OK or ITEM_FAILED.
 - **CANCEL ref** (either side): stop that item; the receiver discards it and replies ITEM_FAILED 4. `FFFFFFFF` cancels all items in both directions on this connection; the connection stays open.
-- **Resuming:** an interrupted item starts again from 0 next time. Finished items are skipped through `have`.
+- **Resuming:** an interrupted item starts again from 0 next time. Finished items are skipped through `have` (same target folder, §9.2).
 
 ## 12. Locking and errors
 

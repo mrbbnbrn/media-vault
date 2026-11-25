@@ -239,26 +239,36 @@ pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32)
 
 // ---- receiving: answering an offer --------------------------------------------
 
-/// Answer an offer: want / have (same file anywhere in the vault) / cant
-/// (a kind this vault doesn't take) / nospace (§9.2).
+/// Answer an offer: want / have / cant (a kind this vault doesn't take) /
+/// nospace (§9.2). "have" only when the same file is already in the folder the
+/// item would land in, or was already wanted for that folder in this offer
+/// (r2 note 2026-11-25): a copy in another folder doesn't count.
 pub fn answer(conn: &Connection, offer: &Offer, free: Option<u64>) -> Answer {
     let mut budget = free.map(|f| f.saturating_sub(256 << 20));
-    let mut wanted_sha = HashSet::new();
+    let landing = super::store::landing_if_any(conn);
+    let mut targets: HashMap<i64, String> = HashMap::new();
+    let mut wanted = HashSet::new();
     let answers = offer
         .items
         .iter()
         .map(|it| {
             let a = if !KINDS.contains(&it.kind.as_str()) || !valid_sha(&it.sha256) {
                 ans::CANT
-            } else if !wanted_sha.insert(it.sha256.to_ascii_lowercase()) || have(conn, &it.sha256) {
-                ans::HAVE
-            } else if budget.is_some_and(|b| b < it.size) {
-                ans::NOSPACE
             } else {
-                if let Some(b) = budget.as_mut() {
-                    *b -= it.size;
+                let sha = it.sha256.to_ascii_lowercase();
+                let t = targets.entry(it.folder).or_insert_with(|| target(conn, landing, offer, it.folder)).clone();
+                let key = format!("{t}\0{sha}");
+                if wanted.contains(&key) || t.parse::<i64>().is_ok_and(|fid| have_in(conn, fid, &sha)) {
+                    ans::HAVE
+                } else if budget.is_some_and(|b| b < it.size) {
+                    ans::NOSPACE
+                } else {
+                    if let Some(b) = budget.as_mut() {
+                        *b -= it.size;
+                    }
+                    wanted.insert(key);
+                    ans::WANT
                 }
-                ans::WANT
             };
             AnswerOne { i: it.i, a: a.into() }
         })
@@ -266,16 +276,43 @@ pub fn answer(conn: &Connection, offer: &Offer, free: Option<u64>) -> Answer {
     Answer { offer: offer.offer, answers }
 }
 
+/// Where `Tree::folder` would put an item of offer folder `f`, without making
+/// anything: the folder's id when it exists already; else the last existing
+/// folder's id (or "new") plus the missing names, so items for the same new
+/// folder get the same key. A broken tree gives "bad" (its items fail later).
+pub fn target(conn: &Connection, landing: Option<i64>, offer: &Offer, f: i64) -> String {
+    let mut chain = Vec::new();
+    let mut cur = f;
+    while cur >= 0 {
+        let Some(of) = offer.folders.iter().find(|x| x.f == cur) else { return "bad".into() };
+        if chain.len() > 64 {
+            return "bad".into();
+        }
+        chain.push(clean_folder_name(&of.name));
+        cur = of.parent;
+    }
+    chain.reverse();
+    let rest = |n: usize| chain[n..].iter().map(|x| format!("\0{}", x.trim().to_ascii_lowercase())).collect::<String>();
+    let Some(mut parent) = landing else { return format!("new{}", rest(0)) };
+    for (n, name) in chain.iter().enumerate() {
+        match crate::library::find_child(conn, Some(parent), name) {
+            Ok(Some(id)) => parent = id,
+            _ => return format!("{parent}{}", rest(n)),
+        }
+    }
+    parent.to_string()
+}
+
 pub fn valid_sha(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// The same file (same SHA-256) anywhere in the vault, not in the trash?
+/// The same file (same SHA-256) in folder `folder`, not in the trash?
 /// (The library keeps hashes in lowercase hex.)
-pub fn have(conn: &Connection, sha: &str) -> bool {
+pub fn have_in(conn: &Connection, folder: i64, sha: &str) -> bool {
     conn.query_row(
-        "SELECT 1 FROM media WHERE sha256 = ?1 AND deleted_at IS NULL LIMIT 1",
-        [sha.to_ascii_lowercase()],
+        "SELECT 1 FROM media WHERE folder_id = ?1 AND sha256 = ?2 AND deleted_at IS NULL LIMIT 1",
+        params![folder, sha.to_ascii_lowercase()],
         |_| Ok(()),
     )
     .optional()
@@ -431,10 +468,11 @@ mod tests {
     #[test]
     fn answers() {
         let c = db();
+        let landing = super::super::store::landing_folder(&c).unwrap();
         let sha_have = "aa".repeat(32);
         c.execute(
-            "INSERT INTO media(object_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o1','image','x.jpg','jpg',1,?1,1)",
-            [&sha_have],
+            "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES ('o1',?1,'image','x.jpg','jpg',1,?2,1)",
+            params![landing, sha_have],
         )
         .unwrap();
         let offer = Offer {
@@ -454,6 +492,56 @@ mod tests {
         assert_eq!(got, ["want", "have", "cant", "have", "cant"]);
         let small = answer(&c, &offer, Some((256 << 20) + 5));
         assert_eq!(small.answers[0].a, "nospace");
+    }
+
+    /// §9.2 r2 note 2026-11-25: "have" only counts the folder the item lands in.
+    #[test]
+    fn have_only_in_target_folder() {
+        let c = db();
+        let (a, b, cc) = ("aa".repeat(32), "bb".repeat(32), "cc".repeat(32));
+        // Nothing made yet: everything is new.
+        let none = Offer { offer: 1, last: true, folders: vec![], items: vec![item(1, &a, "image", -1)] };
+        assert_eq!(answer(&c, &none, None).answers[0].a, "want");
+        assert!(super::super::store::landing_if_any(&c).is_none(), "answering makes no folder");
+        let landing = super::super::store::landing_folder(&c).unwrap();
+        let trees = crate::library::get_or_create_folder(&c, Some(landing), "Trees").unwrap();
+        let autumn = crate::library::get_or_create_folder(&c, Some(landing), "Autumn").unwrap();
+        let put = |obj: &str, folder: i64, sha: &str, deleted: Option<i64>| {
+            c.execute(
+                "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, deleted_at) VALUES (?1,?2,'image','x.jpg','jpg',1,?3,1,?4)",
+                params![obj, folder, sha, deleted],
+            )
+            .unwrap();
+        };
+        put("o1", autumn, &a, None); // a: only in Autumn
+        put("o2", trees, &b, None); // b: in Trees
+        put("o3", trees, &cc, Some(5)); // c: in Trees, but in the trash
+        let f = |f: i64, parent: i64, name: &str| OfferFolder { f, parent, name: name.into(), tags: vec![] };
+        let offer = Offer {
+            offer: 2,
+            last: true,
+            folders: vec![f(0, -1, " trees "), f(1, -1, "New one"), f(2, 1, "Deep")],
+            items: vec![
+                item(1, &a, "image", 0),                 // only elsewhere → sent into Trees
+                item(2, &b.to_ascii_uppercase(), "image", 0), // already in Trees
+                item(3, &cc, "image", 0),                // only a trashed copy → sent
+                item(4, &a, "image", 0),                 // twice for Trees in one offer
+                item(5, &a, "image", 1),                 // a new folder → sent
+                item(6, &a, "image", 1),                 // twice for that new folder
+                item(7, &a, "image", 2),                 // a deeper new folder → sent
+                item(8, &a, "image", -1),                // the landing folder holds nothing → sent
+            ],
+        };
+        let got: Vec<String> = answer(&c, &offer, None).answers.into_iter().map(|x| x.a).collect();
+        assert_eq!(got, ["want", "have", "want", "have", "want", "have", "want", "want"]);
+        // Keys: an existing folder = its id; a missing one = the last existing id + the missing names.
+        let l = Some(landing);
+        assert_eq!(target(&c, l, &offer, 0), trees.to_string());
+        assert_eq!(target(&c, l, &offer, 1), format!("{landing}\0new one"));
+        assert_eq!(target(&c, l, &offer, 2), format!("{landing}\0new one\0deep"));
+        assert_eq!(target(&c, None, &offer, 0), "new\0trees");
+        let looped = Offer { offer: 3, last: true, folders: vec![f(0, 1, "a"), f(1, 0, "b")], items: vec![] };
+        assert_eq!(target(&c, l, &looped, 0), "bad");
     }
 
     #[test]

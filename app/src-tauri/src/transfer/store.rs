@@ -110,6 +110,23 @@ pub fn forget(conn: &Connection, id: &str) -> Result<bool, String> {
     Ok(removed)
 }
 
+/// The landing folder as `landing_folder` would pick it, without making it
+/// (None = it doesn't exist yet). Used to answer offers (§9.2).
+pub fn landing_if_any(conn: &Connection) -> Option<i64> {
+    if let Some(id) = get(conn, K_LANDING).and_then(|v| v.parse::<i64>().ok()) {
+        let live = conn
+            .query_row("SELECT 1 FROM folders WHERE id = ? AND deleted_at IS NULL", [id], |_| Ok(()))
+            .optional()
+            .ok()
+            .flatten()
+            .is_some();
+        if live {
+            return Some(id);
+        }
+    }
+    crate::library::find_child(conn, None, "Received from phone").ok().flatten()
+}
+
 /// The "Received from phone" folder: the one remembered (even if renamed),
 /// else found or made at the top level.
 pub fn landing_folder(conn: &Connection) -> Result<i64, String> {
