@@ -307,8 +307,8 @@ fn pair_find_connect_and_transfer_both_ways() {
     let c = bytes(150_000, 3);
     let top = crate::library::get_or_create_folder(&s.db(), None, "Trips").unwrap();
     let new_id = crate::import::add_bytes(&s, Some(top), "c.jpg", &c).unwrap();
-    let n = server::send(&[got_id, new_id], &[]).unwrap();
-    assert_eq!(n, 2);
+    let (n, skipped) = server::send(&[got_id, new_id], &[]).unwrap();
+    assert_eq!((n, skipped), (2, 0));
     let off = ph.recv_json(ty::OFFER);
     assert_eq!(off["last"], true);
     let items = off["items"].as_array().unwrap();

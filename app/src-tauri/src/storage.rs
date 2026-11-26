@@ -485,7 +485,7 @@ mod tests {
         }
         import::run(
             &s,
-            &import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true },
+            &import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false },
             &AtomicBool::new(false),
             &mut |_| {},
         );
@@ -594,7 +594,7 @@ mod tests {
         for i in 0..20 {
             std::fs::write(src.join(format!("{i:02}.jpg")), vec![i as u8; 100_000 + i]).unwrap();
         }
-        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false };
         assert_eq!(import::run(&s, &job, &AtomicBool::new(false), &mut |_| {}).imported, 20);
         // One item of 20 (5%): below the 20% the Reclaim button waits for.
         let items = library::query_items(&s.db(), &library::ItemFilter::default()).unwrap();
@@ -638,7 +638,7 @@ mod tests {
                 paths: vec![src.display().to_string()],
                 target: None,
                 password: None,
-                archive_folder: true,
+                archive_folder: true, keep_archives: false,
             },
             &AtomicBool::new(false),
             &mut |_| {},

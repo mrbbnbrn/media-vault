@@ -27,6 +27,8 @@ pub const TEXT_EXT: &[&str] = &[
     "txt", "md", "log", "csv", "json", "xml", "nfo", "ini", "srt", "vtt", "yaml", "yml",
 ];
 pub const PDF_EXT: &[&str] = &["pdf"];
+/// Music the app plays itself (what the web engine can play).
+pub const AUDIO_EXT: &[&str] = &["mp3", "m4a", "aac", "flac", "wav", "ogg", "oga", "opus", "weba"];
 
 pub fn ext_of(name: &str) -> String {
     Path::new(name)
@@ -35,7 +37,8 @@ pub fn ext_of(name: &str) -> String {
         .unwrap_or_default()
 }
 
-/// "image", "gif", "video", "text" or "pdf" by file extension; None if not supported.
+/// "image", "gif", "video", "text" or "pdf" by file extension; None if the
+/// app can't show it (it can still be stored: see [`stored_kind`]).
 pub fn kind_by_ext(name: &str) -> Option<&'static str> {
     let e = ext_of(name);
     if IMAGE_EXT.contains(&e.as_str()) {
@@ -62,11 +65,40 @@ pub fn is_animated_webp(head: &[u8]) -> bool {
         && head[20] & 0x02 != 0
 }
 
-fn kind_for(name: &str, head: &[u8]) -> Option<&'static str> {
+/// The kind a file is stored as: what [`kind_by_ext`] says, else "audio" for
+/// music, else "file" (any other file: kept and exported, never opened).
+pub fn stored_kind(name: &str) -> &'static str {
     match kind_by_ext(name) {
-        Some("image") if ext_of(name) == "webp" && is_animated_webp(head) => Some("gif"),
+        Some(k) => k,
+        None if AUDIO_EXT.contains(&ext_of(name).as_str()) => "audio",
+        None => "file",
+    }
+}
+
+fn kind_for(name: &str, head: &[u8]) -> &'static str {
+    match stored_kind(name) {
+        "image" if ext_of(name) == "webp" && is_animated_webp(head) => "gif",
         k => k,
     }
+}
+
+/// The thumbnail an item starts with: none to make ('') for other files (the
+/// grid draws their type instead), else NULL (made in the background; music
+/// only has its length looked up there).
+pub fn first_thumb(kind: &str) -> Option<&'static str> {
+    (kind == "file").then_some("")
+}
+
+/// Files the system leaves in folders on its own (thumbnail caches, folder
+/// settings, Office lock files, macOS extras): never imported.
+pub fn is_junk(name: &str) -> bool {
+    let n = Path::new(name)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_else(|| name.to_ascii_lowercase());
+    matches!(n.as_str(), "thumbs.db" | "ehthumbs.db" | "desktop.ini" | ".ds_store")
+        || n.starts_with("~$")
+        || n.starts_with("._")
 }
 
 pub fn is_archive_name(name: &str) -> bool {
@@ -129,7 +161,9 @@ enum Source {
     Archive { first: PathBuf, parts: Vec<PathBuf> },
 }
 
-fn classify(paths: &[String]) -> (Vec<Source>, Vec<(String, String)>) {
+/// What was dropped. With `keep_archives`, a .7z (or each part of a split
+/// one) is an ordinary file to store as it is.
+fn classify(paths: &[String], keep_archives: bool) -> (Vec<Source>, Vec<(String, String)>) {
     let mut out = Vec::new();
     let mut errors = Vec::new();
     let mut seen_sets: Vec<PathBuf> = Vec::new();
@@ -141,7 +175,7 @@ fn classify(paths: &[String]) -> (Vec<Source>, Vec<(String, String)>) {
             .unwrap_or_default();
         if path.is_dir() {
             out.push(Source::Dir(path));
-        } else if path.is_file() && is_archive_name(&name) {
+        } else if path.is_file() && !keep_archives && is_archive_name(&name) {
             let parts = match find_parts(&path) {
                 Ok(Some(parts)) => parts,
                 Ok(None) => vec![path.clone()],
@@ -236,7 +270,7 @@ fn archive_info(first: &Path, parts: &[PathBuf]) -> ArchiveInfo {
                 .archive()
                 .files
                 .iter()
-                .filter(|f| f.has_stream && kind_by_ext(&f.name).is_some())
+                .filter(|f| f.has_stream && !is_junk(&f.name))
                 .count();
         }
         // Encrypted file names: the contents can't be listed without the password.
@@ -247,7 +281,7 @@ fn archive_info(first: &Path, parts: &[PathBuf]) -> ArchiveInfo {
 }
 
 pub fn inspect(paths: &[String]) -> DropSummary {
-    let (sources, errors) = classify(paths);
+    let (sources, errors) = classify(paths, false);
     let mut s = DropSummary {
         unsupported: errors.len(),
         ..Default::default()
@@ -255,7 +289,7 @@ pub fn inspect(paths: &[String]) -> DropSummary {
     for src in sources {
         match src {
             Source::File(p) => {
-                if kind_by_ext(&p.to_string_lossy()).is_some() {
+                if !is_junk(&p.to_string_lossy()) {
                     s.files += 1
                 } else {
                     s.unsupported += 1
@@ -264,7 +298,7 @@ pub fn inspect(paths: &[String]) -> DropSummary {
             Source::Dir(d) => {
                 s.folders += 1;
                 for f in walk_files(&d) {
-                    if kind_by_ext(&f.to_string_lossy()).is_some() {
+                    if !is_junk(&f.to_string_lossy()) {
                         s.files += 1
                     } else {
                         s.unsupported += 1
@@ -309,7 +343,7 @@ pub struct Report {
     pub job: u64,
     pub imported: usize,
     pub duplicates: usize,
-    /// Files that aren't supported media (listed by name, first 50).
+    /// Files the system made by itself, like Thumbs.db (listed by name, first 50).
     pub skipped: Vec<String>,
     pub skipped_count: usize,
     pub failed: Vec<(String, String)>,
@@ -325,6 +359,8 @@ pub struct Job {
     pub password: Option<String>,
     /// Put each archive's contents in a new folder named after it (default).
     pub archive_folder: bool,
+    /// Store .7z archives as they are (one file each) instead of unpacking them.
+    pub keep_archives: bool,
 }
 
 struct Ctx<'a> {
@@ -485,7 +521,7 @@ fn insert_item(
     written: &vault_core::stream::WrittenObject,
     head: &[u8],
 ) -> Result<Added, String> {
-    let kind = kind_for(name, head).unwrap_or("image");
+    let kind = kind_for(name, head);
     let db = ctx.s.db();
     let display = Path::new(name)
         .file_name()
@@ -501,9 +537,9 @@ fn insert_item(
             None => Some(0),
         };
     db.execute(
-        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at, file_mtime) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-        params![id.to_hex(), folder, kind, display, ext, written.plaintext_len as i64, written.sha256_hex, now_secs(), taken, mtime],
+        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at, file_mtime, thumb_object_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        params![id.to_hex(), folder, kind, display, ext, written.plaintext_len as i64, written.sha256_hex, now_secs(), taken, mtime, first_thumb(kind)],
     )
     .map_err(|e| e.to_string())?;
     drop(db);
@@ -601,13 +637,13 @@ struct FileJob {
     source: Option<String>,
 }
 
-/// A file's job, or None if it isn't a supported kind (counted as skipped).
+/// A file's job, or None for a file the system made on its own (counted as skipped).
 fn file_job(ctx: &mut Ctx, folder: Option<i64>, path: &Path, source: bool) -> Option<FileJob> {
     let name = path
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    if kind_by_ext(&name).is_none() {
+    if is_junk(&name) {
         ctx.skip(&name);
         ctx.done += 1;
         return None;
@@ -854,7 +890,7 @@ fn import_archive(
         let Some(name) = segs.pop() else {
             return Ok(true);
         };
-        if kind_by_ext(&name).is_none() {
+        if is_junk(&name) {
             ctx.skip(&name);
             ctx.done += 1;
             io::copy(rd, &mut io::sink())?; // keep the stream in step
@@ -910,7 +946,7 @@ pub fn run(
     progress: &mut dyn FnMut(&Progress),
 ) -> Report {
     let started = Instant::now();
-    let (sources, errors) = classify(&job.paths);
+    let (sources, errors) = classify(&job.paths, job.keep_archives);
     let bytes = AtomicU64::new(0);
     let mut ctx = Ctx {
         s,
@@ -940,7 +976,7 @@ pub fn run(
             }
             Source::Dir(d) => {
                 let files = walk_files(d);
-                need += files.iter().filter(|f| kind_by_ext(&f.to_string_lossy()).is_some()).map(|f| size_of(f)).sum::<u64>();
+                need += files.iter().filter(|f| !is_junk(&f.to_string_lossy())).map(|f| size_of(f)).sum::<u64>();
                 files.len()
             }
             Source::Archive { first, parts } => {
@@ -1027,8 +1063,7 @@ pub fn add_bytes(
     name: &str,
     bytes: &[u8],
 ) -> Result<i64, String> {
-    let kind = kind_for(name, bytes).ok_or("That file type can't be added.")?;
-    add_bytes_as(s, folder, name, bytes, kind)
+    add_bytes_as(s, folder, name, bytes, kind_for(name, bytes))
 }
 
 /// `add_bytes` with the kind chosen by the caller (files received from the
@@ -1059,9 +1094,9 @@ pub fn add_bytes_as(
         .map_err(|e| e.to_string())?;
     let db = s.db();
     let inserted = db.execute(
-        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at) \
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0)",
-        params![id.to_hex(), folder, kind, name, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs()],
+        "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, taken_at, thumb_object_id) \
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+        params![id.to_hex(), folder, kind, name, ext_of(name), written.plaintext_len as i64, written.sha256_hex, now_secs(), first_thumb(kind)],
     );
     if let Err(err) = inserted {
         drop(db);
@@ -1138,8 +1173,83 @@ mod tests {
         let mut anim = b"RIFF\0\0\0\0WEBPVP8X\0\0\0\0\x02".to_vec();
         anim.resize(32, 0);
         assert!(is_animated_webp(&anim));
-        assert_eq!(kind_for("a.webp", &anim), Some("gif"));
-        assert_eq!(kind_for("a.webp", b"RIFF"), Some("image"));
+        assert_eq!(kind_for("a.webp", &anim), "gif");
+        assert_eq!(kind_for("a.webp", b"RIFF"), "image");
+        // Everything else is stored too: music as audio, the rest as files.
+        for n in ["a.mp3", "b.M4A", "c.aac", "d.flac", "e.wav", "f.ogg", "g.oga", "h.opus", "i.weba"] {
+            assert_eq!(stored_kind(n), "audio", "{n}");
+        }
+        assert_eq!(stored_kind("setup.exe"), "file");
+        assert_eq!(stored_kind("Report.DOCX"), "file");
+        assert_eq!(stored_kind("backup.zip"), "file");
+        assert_eq!(stored_kind("no extension"), "file");
+        assert_eq!(stored_kind("a.jpg"), "image");
+        assert_eq!(kind_for("song.mp3", b"ID3"), "audio");
+        for j in ["Thumbs.db", "desktop.ini", ".DS_Store", "~$Report.docx", "._a.jpg", "sub/dir/thumbs.db", "ehthumbs.db"] {
+            assert!(is_junk(j), "{j}");
+        }
+        for n in ["a.db", "desktop.ini.txt", "Report.docx", "x~$y.txt"] {
+            assert!(!is_junk(n), "{n}");
+        }
+    }
+
+    #[test]
+    fn any_file_is_stored_and_a_7z_can_stay_packed() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let src = t.path().join("Mixed");
+        fs::create_dir_all(&src).unwrap();
+        fs::write(src.join("song.mp3"), b"ID3 music").unwrap();
+        fs::write(src.join("Report.docx"), b"PK docx").unwrap();
+        fs::write(src.join("backup.zip"), b"PK zip").unwrap();
+        fs::write(src.join("desktop.ini"), b"[x]").unwrap();
+        fs::write(src.join("~$Report.docx"), b"lock").unwrap();
+        let summary = inspect(&[src.display().to_string()]);
+        assert_eq!((summary.files, summary.unsupported), (3, 2));
+        let r = run(&s, &job(vec![src.display().to_string()], None), &AtomicBool::new(false), &mut |_| {});
+        assert!(r.failed.is_empty(), "{:?}", r.failed);
+        assert_eq!((r.imported, r.skipped_count), (3, 2));
+        let mixed = library::find_child(&s.db(), None, "Mixed").unwrap().unwrap();
+        let kinds: Vec<(String, String)> = s
+            .db()
+            .prepare("SELECT original_name, kind FROM media WHERE folder_id = ? ORDER BY original_name")
+            .unwrap()
+            .query_map([mixed], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(
+            kinds,
+            vec![
+                ("Report.docx".to_string(), "file".to_string()),
+                ("backup.zip".to_string(), "file".to_string()),
+                ("song.mp3".to_string(), "audio".to_string()),
+            ]
+        );
+        // Other files never wait for a thumbnail; music waits (its length is looked up then).
+        let thumb = |n: &str| -> Option<String> {
+            s.db().query_row("SELECT thumb_object_id FROM media WHERE original_name = ?", [n], |r| r.get(0)).unwrap()
+        };
+        assert_eq!(thumb("Report.docx").as_deref(), Some(""));
+        assert_eq!(thumb("song.mp3"), None);
+        // A .7z is unpacked (any kind inside is kept), or stored as it is when asked.
+        let arc = t.path().join("Box.7z");
+        make_7z(&arc, None, false, &[("a.jpg", b"jpeg"), ("notes.odt", b"odt"), ("Thumbs.db", b"x")]);
+        assert_eq!(inspect(&[arc.display().to_string()]).archives[0].media, 2);
+        let r = run(&s, &job(vec![arc.display().to_string()], None), &AtomicBool::new(false), &mut |_| {});
+        assert_eq!((r.imported, r.skipped_count), (2, 1));
+        let unpacked = library::find_child(&s.db(), None, "Box").unwrap().unwrap();
+        assert_eq!(names(&s, Some(unpacked)), vec!["a.jpg", "notes.odt"]);
+        let keep = Job { keep_archives: true, ..job(vec![arc.display().to_string()], None) };
+        let r = run(&s, &keep, &AtomicBool::new(false), &mut |_| {});
+        assert_eq!(r.imported, 1);
+        let packed: (String, i64) = s
+            .db()
+            .query_row("SELECT kind, size FROM media WHERE original_name = 'Box.7z' AND folder_id IS NULL", [], |r| Ok((r.get(0)?, r.get(1)?)))
+            .unwrap();
+        assert_eq!(packed, ("file".to_string(), fs::metadata(&arc).unwrap().len() as i64));
+        // The originals outside the vault are left as they were.
+        assert!(arc.is_file() && src.join("song.mp3").is_file());
     }
 
     #[test]
@@ -1166,7 +1276,7 @@ mod tests {
             paths: vec![src.display().to_string(), loose.display().to_string()],
             target: Some(target),
             password: None,
-            archive_folder: true,
+            archive_folder: true, keep_archives: false,
         };
         let cancel = AtomicBool::new(false);
         let mut events = 0;
@@ -1343,7 +1453,7 @@ mod tests {
             paths,
             target: None,
             password: pw.map(String::from),
-            archive_folder: true,
+            archive_folder: true, keep_archives: false,
         }
     }
 
@@ -1361,6 +1471,7 @@ mod tests {
                 ("People/Alex/a.jpg", b"jpeg"),
                 ("clip.mp4", &big),
                 ("setup.exe", b"x"),
+                ("Thumbs.db", b"x"),
             ],
         );
 
@@ -1399,7 +1510,7 @@ mod tests {
             &mut |_| {},
         );
         assert!(r.failed.is_empty(), "{:?}", r.failed);
-        assert_eq!((r.imported, r.skipped_count), (2, 1));
+        assert_eq!((r.imported, r.skipped_count), (3, 1));
         let beach = library::find_child(&s.db(), None, "Beach 2024")
             .unwrap()
             .unwrap();
@@ -1407,7 +1518,7 @@ mod tests {
         let alex = library::find_child(&s.db(), people, "Alex")
             .unwrap()
             .unwrap();
-        assert_eq!(names(&s, Some(beach)), vec!["clip.mp4"]);
+        assert_eq!(names(&s, Some(beach)), vec!["clip.mp4", "setup.exe"]);
         assert_eq!(names(&s, Some(alex)), vec!["a.jpg"]);
         let clip = library::query_items(
             &s.db(),
@@ -1416,8 +1527,11 @@ mod tests {
                 ..Default::default()
             },
         )
-        .unwrap()[0]
-            .id;
+        .unwrap()
+        .into_iter()
+        .find(|i| i.name == "clip.mp4")
+        .unwrap()
+        .id;
         let obj: String = s
             .db()
             .query_row("SELECT object_id FROM media WHERE id = ?", [clip], |r| {
@@ -1529,7 +1643,7 @@ mod tests {
                 paths: vec![f.display().to_string()],
                 target: None,
                 password: None,
-                archive_folder: true,
+                archive_folder: true, keep_archives: false,
             },
             &cancel,
             &mut |_| {},
@@ -1568,7 +1682,7 @@ mod seed {
                 paths,
                 target: None,
                 password: None,
-                archive_folder: true,
+                archive_folder: true, keep_archives: false,
             },
             &AtomicBool::new(false),
             &mut |_| {},

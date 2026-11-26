@@ -190,7 +190,9 @@ Decrypting `meta.db.enc` gives a normal SQLite 3 database file. Save it as
 - `folders(id, parent_id, name, pinned, color, emoji, person, deleted_at, …)` — the folder tree; `parent_id` NULL = top level;
   `person` = 1 marks a person folder for face recognition
 - `media(id, object_id, thumb_object_id, folder_id, kind, original_name, ext, size, sha256, favourite, weight, taken_at, views, deleted_at, …)`
-  — `kind` is image, gif, video, text or pdf; `folder_id` NULL = top level.
+  — `kind` is image, gif, video, text or pdf; from v22 also audio (music, played in the app) and file
+  (any other file, kept exactly as it was and only exported; the v22 upgrade makes the table again
+  with the wider CHECK and keeps every row). Every kind is stored the same way. `folder_id` NULL = top level.
   A non-NULL `deleted_at` (milliseconds) means the item or folder is in the app's
   trash; it is still fully stored and can be recovered like anything else.
 - `bookmarks(id, media_id, position_ms, note)` — bookmarks inside videos

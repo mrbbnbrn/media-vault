@@ -193,7 +193,7 @@ fn bench_encrypt_decrypt_and_import() {
         import::TEST_SMALL_FILE.store(small, std::sync::atomic::Ordering::SeqCst);
         import::TEST_IN_FLIGHT.store(in_flight, std::sync::atomic::Ordering::SeqCst);
         let t0 = Instant::now();
-        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false };
         let r = import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
         let secs = t0.elapsed().as_secs_f64();
         assert_eq!(r.imported, 81, "{:?}", r.failed);

@@ -260,7 +260,7 @@ mod tests {
         std::fs::write(src.join("c.jpg"), vec![3u8; 3000]).unwrap();
         import::run(
             &s,
-            &import::Job { id: 1, paths: vec![src.join("Alex").display().to_string(), src.join("c.jpg").display().to_string()], target: None, password: None, archive_folder: true },
+            &import::Job { id: 1, paths: vec![src.join("Alex").display().to_string(), src.join("c.jpg").display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false },
             &AtomicBool::new(false),
             &mut |_| {},
         );
@@ -295,7 +295,7 @@ mod tests {
         let src = t.path().join("cam.jpg");
         let original = crate::stripmeta::tiny_camera_jpeg();
         std::fs::write(&src, &original).unwrap();
-        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true };
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false };
         import::run(&s, &job, &AtomicBool::new(false), &mut |_| {});
         let out = t.path().join("out");
         std::fs::create_dir_all(&out).unwrap();

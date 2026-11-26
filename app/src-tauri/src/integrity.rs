@@ -140,7 +140,7 @@ mod tests {
         }
         import::run(
             &s,
-            &import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true },
+            &import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false },
             &AtomicBool::new(false),
             &mut |_| {},
         );

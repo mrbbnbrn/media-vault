@@ -568,7 +568,7 @@ mod tests {
                 ],
                 target: None,
                 password: None,
-                archive_folder: true,
+                archive_folder: true, keep_archives: false,
             },
             &AtomicBool::new(false),
             &mut |_| {},
@@ -655,7 +655,7 @@ mod tests {
         let src = f.out.join("cam");
         std::fs::create_dir_all(&src).unwrap();
         std::fs::write(src.join("cam.jpg"), crate::stripmeta::tiny_camera_jpeg()).unwrap();
-        let job = import::Job { id: 2, paths: vec![src.join("cam.jpg").display().to_string()], target: None, password: None, archive_folder: true };
+        let job = import::Job { id: 2, paths: vec![src.join("cam.jpg").display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false };
         assert_eq!(import::run(&f.s, &job, &AtomicBool::new(false), &mut |_| {}).imported, 1);
         let cam = id_of(&f.s, "cam.jpg");
         for strip in [false, true] {

@@ -95,11 +95,13 @@ pub(crate) async fn transfer_forget(id: String) -> Result<(), String> {
 #[derive(serde::Serialize)]
 pub(crate) struct Queued {
     items: usize,
+    /// Left out: the phone's vault takes only pictures, GIFs and videos.
+    skipped: usize,
 }
 
 #[tauri::command]
 pub(crate) async fn transfer_send(media: Vec<i64>, folders: Vec<i64>) -> Result<Queued, String> {
-    tauri::async_runtime::spawn_blocking(move || server::send(&media, &folders).map(|items| Queued { items }))
+    tauri::async_runtime::spawn_blocking(move || server::send(&media, &folders).map(|(items, skipped)| Queued { items, skipped }))
         .await
         .map_err(|e| e.to_string())?
 }

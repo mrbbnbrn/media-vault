@@ -254,13 +254,14 @@ pub(crate) async fn newest_item_id(state: State<'_, Shared>) -> Result<i64, Stri
     read_db(state.inner(), |c| c.query_row("SELECT COALESCE(MAX(id), 0) FROM media", [], |r| r.get(0)).map_err(|e| e.to_string())).await
 }
 
-/// The window couldn't decode this file (e.g. an unsupported video codec).
+/// The window couldn't decode this file (e.g. an unsupported video codec),
+/// or it has no picture (music: `duration_ms` = its length, when found).
 #[tauri::command]
-pub(crate) async fn thumb_failed(state: State<'_, Shared>, id: i64) -> Result<(), String> {
+pub(crate) async fn thumb_failed(state: State<'_, Shared>, id: i64, duration_ms: Option<i64>) -> Result<(), String> {
     edit_db_derived(state.inner(), move |c| {
         c.execute(
-            "UPDATE media SET thumb_object_id = '' WHERE id = ? AND thumb_object_id IS NULL",
-            [id],
+            "UPDATE media SET thumb_object_id = '', duration_ms = COALESCE(?2, duration_ms) WHERE id = ?1 AND thumb_object_id IS NULL",
+            rusqlite::params![id, duration_ms.filter(|ms| *ms > 0)],
         )
         .map_err(|e| e.to_string())?;
         Ok(())
@@ -437,6 +438,7 @@ pub(crate) fn start_import(
     target: Option<i64>,
     password: Option<String>,
     archive_folder: Option<bool>,
+    keep_archives: Option<bool>,
 ) -> Result<u64, String> {
     let s = sess(&state)?;
     let inner = state.inner().clone();
@@ -451,6 +453,7 @@ pub(crate) fn start_import(
             target,
             password,
             archive_folder: archive_folder.unwrap_or(true),
+            keep_archives: keep_archives.unwrap_or(false),
         };
         let report = import::run(&s, &job, &cancel, &mut |p| {
             // import.rs already sends at most about ten a second.

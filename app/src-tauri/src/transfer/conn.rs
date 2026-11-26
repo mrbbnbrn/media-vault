@@ -679,8 +679,9 @@ impl Conn {
 
     // ---- sending ---------------------------------------------------------------------------
 
-    /// Queue items to send to the phone. Returns how many.
-    pub fn queue_send(self: &Arc<Self>, media: &[i64], folders: &[i64]) -> Result<usize, String> {
+    /// Queue items to send to the phone. Returns how many, and how many were
+    /// left out because the phone's vault can't keep them.
+    pub fn queue_send(self: &Arc<Self>, media: &[i64], folders: &[i64]) -> Result<(usize, usize), String> {
         let first = *self.next_ref.lock().unwrap_or_else(|e| e.into_inner());
         let ob = {
             let s = self.rt.session();
@@ -688,9 +689,13 @@ impl Conn {
             items::outbox(&db, media, folders, first)?
         };
         let n = ob.items.len();
+        if n == 0 && ob.skipped > 0 {
+            return Err(format!("Nothing was sent. {}", items::skipped_text(ob.skipped)));
+        }
         if n == 0 {
             return Err("There's nothing to send in what you picked.".into());
         }
+        let skipped = ob.skipped;
         let after = ob.items.last().map(|o| mvtp::next_pc_ref(o.item.i)).unwrap_or(first);
         *self.next_ref.lock().unwrap_or_else(|e| e.into_inner()) = after;
         self.queue.lock().unwrap_or_else(|e| e.into_inner()).push_back(Job { folders: ob.folders, items: ob.items });
@@ -707,7 +712,7 @@ impl Conn {
             });
             self.rt.status_changed();
         }
-        Ok(n)
+        Ok((n, skipped))
     }
 
     /// Stop everything in both directions (the connection stays).

@@ -95,6 +95,18 @@ pub struct Outgoing {
 pub struct Outbox {
     pub folders: Vec<OfferFolder>,
     pub items: Vec<Outgoing>,
+    /// Items left out: the phone's vault takes only [`PHONE_KINDS`].
+    pub skipped: usize,
+}
+
+/// What the phone's hidden vault takes; anything else (music, other files,
+/// text, PDFs) stays on the PC. Not a protocol change: it is only offered less.
+pub const PHONE_KINDS: &[&str] = &["image", "gif", "video"];
+
+/// What the window says about items left out of a send.
+pub fn skipped_text(n: usize) -> String {
+    let what = if n == 1 { "1 file was".to_string() } else { format!("{n} files were") };
+    format!("{what} skipped: the phone's vault takes only pictures, GIFs and videos.")
 }
 
 /// Items in these folders and all folders under them (not in the trash).
@@ -140,6 +152,7 @@ pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32)
     // Library folder id → offer number.
     let mut fno: HashMap<i64, i64> = HashMap::new();
     let mut items = Vec::new();
+    let mut skipped = 0;
     let mut next_ref = first_ref;
     for id in ids {
         type Row = (String, Option<i64>, String, String, i64, Option<i64>, Option<i64>, Option<i64>, String, Option<i64>, bool);
@@ -167,6 +180,11 @@ pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32)
             .optional()
             .map_err(|e| e.to_string())?;
         let Some((object_id, folder, kind, name, size, w, h, dur, sha, taken, fav)) = row else { continue };
+        if !PHONE_KINDS.contains(&kind.as_str()) {
+            // Before its folders are numbered: a folder of only these isn't offered at all.
+            skipped += 1;
+            continue;
+        }
         // The folder path, from the top down; each folder numbered once.
         let mut path = Vec::new();
         let mut cur = folder;
@@ -234,7 +252,7 @@ pub fn outbox(conn: &Connection, media: &[i64], folders: &[i64], first_ref: u32)
         });
         next_ref = super::mvtp::next_pc_ref(next_ref);
     }
-    Ok(Outbox { folders: out_folders, items })
+    Ok(Outbox { folders: out_folders, items, skipped })
 }
 
 // ---- receiving: answering an offer --------------------------------------------
@@ -621,5 +639,36 @@ mod tests {
         // Picking the item itself still sends its whole folder path.
         let ob2 = outbox(&c, &[mid], &[], 0).unwrap();
         assert_eq!(ob2.folders.len(), 2);
+        assert_eq!(ob2.skipped, 0);
+    }
+
+    #[test]
+    fn outbox_leaves_out_what_the_phone_cant_keep() {
+        let c = db();
+        let top = crate::library::get_or_create_folder(&c, None, "Mixed").unwrap();
+        let music = crate::library::get_or_create_folder(&c, Some(top), "Music").unwrap();
+        for (i, (folder, kind, name)) in [
+            (top, "image", "a.jpg"),
+            (top, "file", "Report.docx"),
+            (top, "pdf", "b.pdf"),
+            (music, "audio", "song.mp3"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            c.execute(
+                "INSERT INTO media(object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES (?1, ?2, ?3, ?4, 'x', 1, ?5, 1)",
+                params![format!("o{i}"), folder, kind, name, format!("{i}").repeat(64)],
+            )
+            .unwrap();
+        }
+        let ob = outbox(&c, &[], &[top], 1).unwrap();
+        assert_eq!(ob.items.len(), 1);
+        assert_eq!(ob.items[0].item.name, "a.jpg");
+        assert_eq!(ob.skipped, 3);
+        // The folder holding only music isn't offered.
+        assert_eq!(ob.folders.iter().map(|f| f.name.as_str()).collect::<Vec<_>>(), vec!["Mixed"]);
+        assert_eq!(skipped_text(1), "1 file was skipped: the phone's vault takes only pictures, GIFs and videos.");
+        assert!(skipped_text(3).starts_with("3 files were skipped"));
     }
 }

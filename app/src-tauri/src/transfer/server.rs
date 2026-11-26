@@ -296,11 +296,15 @@ pub fn forget(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub fn send(media: &[i64], folders: &[i64]) -> Result<usize, String> {
+/// Queue a send. Returns (items queued, items left out: see `items::PHONE_KINDS`).
+pub fn send(media: &[i64], folders: &[i64]) -> Result<(usize, usize), String> {
     let rt = need()?;
     let conn = rt.conn.lock().unwrap_or_else(|e| e.into_inner()).clone();
     let Some(c) = conn.filter(|c| !c.is_closed()) else {
-        return Err("Your phone isn't connected. Open Aktarım on your phone first (both on the same Wi-Fi).".into());
+        return Err(
+            "Your phone isn't connected. Unlock the hidden vault in Baro Alarm on your phone (older Baro Alarm: open Aktarım), both on the same Wi-Fi."
+                .into(),
+        );
     };
     c.queue_send(media, folders)
 }

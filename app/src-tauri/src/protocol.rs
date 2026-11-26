@@ -52,6 +52,14 @@ pub fn mime_for(ext: &str) -> &'static str {
         "mp4" | "m4v" => "video/mp4",
         "webm" => "video/webm",
         "pdf" => "application/pdf",
+        // Music (played in the app; streamed in ranges like videos).
+        "mp3" => "audio/mpeg",
+        "m4a" => "audio/mp4",
+        "aac" => "audio/aac",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" | "opus" => "audio/ogg",
+        "weba" => "audio/webm",
         // Text is decoded by the window itself (it guesses the encoding).
         "txt" | "md" | "log" | "csv" | "json" | "xml" | "nfo" | "ini" | "srt" | "vtt" | "yaml"
         | "yml" => "text/plain",
@@ -763,6 +771,15 @@ mod tests {
             Some((0, MAX_CHUNK - 1))
         );
         assert_eq!(parse_range(Some("items=0-1"), 1000), None);
+    }
+
+    #[test]
+    fn music_goes_with_its_own_type() {
+        for e in crate::import::AUDIO_EXT {
+            assert!(mime_for(e).starts_with("audio/"), "{e}");
+        }
+        assert_eq!(mime_for("mp3"), "audio/mpeg");
+        assert_eq!(mime_for("docx"), "application/octet-stream");
     }
 
     #[test]

@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use crate::pack::{IndexChange, Location};
 use crate::stream::{ObjectId, ObjectKind};
 
-pub const SCHEMA_VERSION: i64 = 21;
+pub const SCHEMA_VERSION: i64 = 22;
 
 const SCHEMA_V1: &str = r#"
 CREATE TABLE folders (
@@ -634,6 +634,21 @@ fn migrate(conn: &Connection) -> Result<()> {
         }
     }
     // ---- more kinds of saved 3D data (end) ----
+    // ---- any kind of file (begin) ----
+    if v < 22 || !media_takes_files(conn)? {
+        // v22: the vault keeps any file: music ('audio', played in the app) and
+        // every other file ('file', only stored and exported). SQLite can't
+        // change a CHECK, so the media table is made again with every row,
+        // column, index and trigger (the standard SQLite procedure). Safe to
+        // run again.
+        if !media_takes_files(conn)? {
+            rebuild_media_for_files(conn)?;
+        }
+        if v < 22 {
+            conn.pragma_update(None, "user_version", 22)?;
+        }
+    }
+    // ---- any kind of file (end) ----
     // ---- speed indexes (begin) ----
     // Indexes for the background work queues (looked at every few seconds)
     // and for folder pages. Not a new format: they are made at every opening
@@ -696,6 +711,80 @@ fn derived_takes_tracks(conn: &Connection) -> Result<bool> {
         |r| r.get(0),
     )?;
     Ok(n > 0)
+}
+
+/// Every kind an item can be (the media table's CHECK from v22 on).
+pub const MEDIA_KINDS_SQL: &str = "'image', 'gif', 'video', 'text', 'pdf', 'audio', 'file'";
+
+/// The media table already takes music and other files (v22; its CHECK names 'file').
+fn media_takes_files(conn: &Connection) -> Result<bool> {
+    let n: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'media' AND instr(sql, '''file''') > 0",
+        [],
+        |r| r.get(0),
+    )?;
+    Ok(n > 0)
+}
+
+/// The media table's CREATE statement with its kind rule widened to every
+/// kind of v22 (and named `to` instead of `media`). Columns added over the
+/// years are part of the stored statement, so all of them are kept.
+fn widen_media_kinds(sql: &str, to: &str, kinds: &str) -> Result<String> {
+    let at = sql.find("kind IN (").ok_or_else(|| Error::Corrupt("media table without a kind rule".into()))?;
+    let open = at + "kind IN (".len();
+    let close = sql[open..].find(')').map(|i| open + i).ok_or_else(|| Error::Corrupt("media table's kind rule unreadable".into()))?;
+    let widened = format!("{}{}{}", &sql[..open], kinds, &sql[close..]);
+    // The first "media" is the table's name (`CREATE TABLE media (` or, after
+    // an earlier rebuild, `CREATE TABLE "media" (`).
+    Ok(widened.replacen("media", to, 1))
+}
+
+/// v22: make the media table again with the wider kind rule (see `migrate`).
+fn rebuild_media_for_files(conn: &Connection) -> Result<()> {
+    rebuild_media_with_kinds(conn, MEDIA_KINDS_SQL)
+}
+
+/// The media table made again, every row, column, index and trigger kept,
+/// with `kinds` (a quoted SQL list) as its kind rule.
+fn rebuild_media_with_kinds(conn: &Connection, kinds: &str) -> Result<()> {
+    let sql: String = conn.query_row("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'media'", [], |r| r.get(0))?;
+    let new_sql = widen_media_kinds(&sql, "media_v22", kinds)?;
+    let cols: Vec<String> = {
+        let mut st = conn.prepare("PRAGMA table_info(media)")?;
+        st.query_map([], |r| r.get::<_, String>(1))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    // Indexes and triggers go with the old table: made again afterwards.
+    let again: Vec<String> = {
+        let mut st = conn.prepare(
+            "SELECT sql FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = 'media' AND sql IS NOT NULL \
+             ORDER BY type = 'trigger', name",
+        )?;
+        st.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let list = cols.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+    let mut batch = format!(
+        "BEGIN; {new_sql}; INSERT INTO media_v22 ({list}) SELECT {list} FROM media; DROP TABLE media; \
+         ALTER TABLE media_v22 RENAME TO media;"
+    );
+    for s in &again {
+        batch.push(' ');
+        batch.push_str(s);
+        batch.push(';');
+    }
+    batch.push_str(" COMMIT;");
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
+    let r = conn.execute_batch(&batch);
+    if let Err(e) = r {
+        let _ = conn.execute_batch("ROLLBACK;");
+        conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+        return Err(e.into());
+    }
+    conn.execute_batch("PRAGMA foreign_keys = ON;")?;
+    let bad: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |r| r.get(0))?;
+    if bad != 0 {
+        return Err(Error::Corrupt(format!("{bad} broken references after upgrade")));
+    }
+    Ok(())
 }
 
 /// v21: the derived table made again with every kind (see `migrate`).
@@ -1326,6 +1415,69 @@ mod tests {
         let c = deserialize(&serialize(&c).unwrap()).unwrap();
         c.execute("DELETE FROM media", []).unwrap();
         assert_eq!(c.query_row("SELECT COUNT(*) FROM derived", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
+    fn v22_takes_music_and_any_file_and_keeps_everything() {
+        let c = create_empty().unwrap();
+        c.execute("INSERT INTO folders(id, name, created_at) VALUES (7, 'Trip', 0)", []).unwrap();
+        c.execute(
+            "INSERT INTO media(id, object_id, folder_id, kind, original_name, ext, size, sha256, imported_at, favourite, note, weight) \
+             VALUES (1, 'o1', 7, 'image', 'a.jpg', 'jpg', 10, 'h1', 5, 1, 'hi', 3)",
+            [],
+        )
+        .unwrap();
+        c.execute("INSERT INTO media(id, object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES (2, 'o2', 7, 'pdf', 'b.pdf', 'pdf', 20, 'h2', 6)", []).unwrap();
+        c.execute("UPDATE folders SET cover_media_id = 1 WHERE id = 7", []).unwrap();
+        c.execute("INSERT INTO tags(id, name) VALUES (1, 'sun')", []).unwrap();
+        c.execute("INSERT INTO media_tags VALUES (1, 1)", []).unwrap();
+        c.execute("INSERT INTO bookmarks(media_id, position_ms, created_at) VALUES (2, 5, 0)", []).unwrap();
+        // Back to how a v21 library looked: five kinds only.
+        rebuild_media_with_kinds(&c, "'image', 'gif', 'video', 'text', 'pdf'").unwrap();
+        c.execute_batch("PRAGMA user_version = 21;").unwrap();
+        let put = |c: &Connection, id: i64, kind: &str| {
+            c.execute(
+                "INSERT INTO media(id, object_id, folder_id, kind, original_name, ext, size, sha256, imported_at) VALUES (?1, ?2, 7, ?3, 'x', 'x', 1, 'h', 0)",
+                rusqlite::params![id, format!("n{id}"), kind],
+            )
+        };
+        assert!(put(&c, 3, "audio").is_err(), "the old table refuses music");
+        assert!(!media_takes_files(&c).unwrap());
+        let count_parts = |c: &Connection| -> i64 {
+            c.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type IN ('index', 'trigger') AND tbl_name = 'media'", [], |r| r.get(0)).unwrap()
+        };
+        let parts_before = count_parts(&c);
+        assert!(parts_before >= 8, "{parts_before}");
+        let c = deserialize(&serialize(&c).unwrap()).unwrap();
+        let v: i64 = c.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+        assert!(media_takes_files(&c).unwrap());
+        // Every row and column kept.
+        let row: (String, i64, String, f64, i64) = c
+            .query_row("SELECT original_name, favourite, note, weight, folder_id FROM media WHERE id = 1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+            })
+            .unwrap();
+        assert_eq!(row, ("a.jpg".to_string(), 1, "hi".to_string(), 3.0, 7));
+        // Indexes and triggers are back.
+        assert_eq!(count_parts(&c), parts_before);
+        put(&c, 3, "audio").unwrap();
+        put(&c, 4, "file").unwrap();
+        assert!(put(&c, 5, "spreadsheet").is_err());
+        // The folder counts follow (the triggers work).
+        let n: i64 = c.query_row("SELECT items FROM folder_stats WHERE folder_id = 7", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 4);
+        assert!(check_folder_stats(&c).unwrap());
+        // References from other tables still work: deleting items takes their tags and marks.
+        c.execute("DELETE FROM media WHERE id IN (1, 2)", []).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM media_tags", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM bookmarks", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+        let cover: Option<i64> = c.query_row("SELECT cover_media_id FROM folders WHERE id = 7", [], |r| r.get(0)).unwrap();
+        assert_eq!(cover, None);
+        // Running it again changes nothing.
+        migrate(&c).unwrap();
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM media", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        assert_eq!(count_parts(&c), parts_before);
     }
 
     #[test]

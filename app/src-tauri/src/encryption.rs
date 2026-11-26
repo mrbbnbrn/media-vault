@@ -279,7 +279,7 @@ mod tests {
     use vault_core::ObjectId;
 
     fn job(path: &std::path::Path) -> import::Job {
-        import::Job { id: 1, paths: vec![path.display().to_string()], target: None, password: None, archive_folder: true }
+        import::Job { id: 1, paths: vec![path.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false }
     }
 
     fn files_under(dir: &std::path::Path) -> Vec<String> {

@@ -74,7 +74,7 @@ pub fn prepare(local: &LocalAccess) -> Result<(Session, SelfTestInfo), String> {
             paths: vec![src.display().to_string()],
             target: None,
             password: None,
-            archive_folder: true,
+            archive_folder: true, keep_archives: false,
         },
         &AtomicBool::new(false),
         &mut |_| {},
@@ -91,7 +91,7 @@ pub fn prepare(local: &LocalAccess) -> Result<(Session, SelfTestInfo), String> {
     if let Some(extra) = std::env::var_os("MV_SELFTEST_EXTRA") {
         import::run(
             &s,
-            &import::Job { id: 1, paths: vec![PathBuf::from(extra).display().to_string()], target: None, password: None, archive_folder: true },
+            &import::Job { id: 1, paths: vec![PathBuf::from(extra).display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false },
             &AtomicBool::new(false),
             &mut |_| {},
         );
