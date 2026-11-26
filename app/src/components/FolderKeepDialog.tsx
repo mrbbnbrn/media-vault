@@ -35,9 +35,11 @@ export function FolderKeepDialog(props: {
       <div className="muted" style={{ fontSize: 14, lineHeight: 1.6 }}>
         {props.lead && <>{props.lead} </>}
         <strong>{protectedText(props.keep, props.folders)}</strong>
-        <br />
-        Keep them: everything else goes to the trash; they stay where they are, and so do the folders holding them.
-        Delete all: everything goes to the trash. Either way you can restore from the trash for 30 days, or press Ctrl+Z right away.
+        <ul style={{ margin: '8px 0', paddingLeft: 18 }}>
+          <li><b>Keep them:</b> everything else goes to the trash. These stay where they are, and so do the folders holding them.</li>
+          <li><b>Delete all:</b> everything goes to the trash.</li>
+        </ul>
+        Either way you can restore from the trash for 30 days, or press Ctrl+Z right away.
       </div>
       {err && <div className="error" role="alert">{err}</div>}
       <div className="row" style={{ justifyContent: 'flex-end' }} onKeyDown={(e) => {

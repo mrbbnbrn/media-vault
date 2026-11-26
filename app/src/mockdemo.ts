@@ -330,9 +330,10 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     case 'delete_folders_keeping': {
       const ids = a.ids as number[];
       const stamp = Date.now();
-      const hit = items.filter((i) => i.deletedAt == null && !i.favourite && i.copyOf == null && i.folderId != null && ids.some((f) => below(f).includes(i.folderId!)));
+      const inside = items.filter((i) => i.deletedAt == null && i.folderId != null && ids.some((f) => below(f).includes(i.folderId!)));
+      const hit = inside.filter((i) => !i.favourite && i.copyOf == null);
       for (const it of hit) it.deletedAt = stamp;
-      return { stamp, items: hit.length, folders: 0, kept: 0, gone: [] };
+      return { stamp, items: hit.length, folders: 0, kept: inside.length - hit.length, gone: [] };
     }
     case 'restore_trashed':
       for (const it of items) if (it.deletedAt === a.stamp) it.deletedAt = null;
