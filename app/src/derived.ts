@@ -64,14 +64,6 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     const [, depth, size, fill] = b;
     return { name: names.get(depth) ?? depth, detail: `border fill ${size} % · ${fillName(fill)}` };
   }
-  // More layers: depth tag _ outline tag (or nomask) _ e<edges> _ m<max><cut> _ fill _ l<n><key> _ <layer> (looklayers.ts).
-  const ml = /^(.+?)@\d+~[\d.]+_(.+?)_e([\d.]+)_m(\d)([smb])_([a-z0-9-]+)_l(\d)[0-9a-z]*_(\d)$/.exec(tag);
-  if (kind === 'plate' && ml) {
-    const [, depth, outline, edges, , , fill, n, j] = ml;
-    const sub = /^(.+)@\d+$/.exec(outline)?.[1];
-    const parts = [`More layers: layer ${Number(j) + 1} of ${n}`, sub ? `outline ${names.get(sub) ?? sub}` : '', Number(edges) > 0 ? 'sharper edges' : '', fillName(fill)].filter(Boolean);
-    return { name: names.get(depth) ?? depth, detail: parts.join(' · ') };
-  }
   // 3D layers: depth tag _ outline tag _ e<edges> [_ fill] (plate.ts layerTags).
   const l =/^(.+?)@(\d+)~[\d.]+_(.+?)@\d+_e([\d.]+)(?:_(.+))?$/.exec(tag);
   if ((kind === 'plate' || kind === 'fore') && l) {
@@ -96,6 +88,16 @@ export function mapLabel(kind: DerivedKind, tag: string, names: Map<string, stri
     return { name: names.get(dm) ?? dm, detail: parts.join(' · ') };
   }
   return { name: tag, detail: '' };
+}
+
+/**
+ * A save of the removed look More layers (2026-11-27): depth tag _ outline tag
+ * (or nomask) _ e<edges> _ m<max><cut> _ fill _ l<n><key>[r2|r3] _ <layer>.
+ * Not listed in Delete 3D data; the backend deletes them once after unlock
+ * (derived.rs `is_more_layers_tag`, the same shape).
+ */
+export function isMoreLayersTag(kind: string, tag: string): boolean {
+  return kind === 'plate' && /^.+?@\d+~[\d.]+_.+?_e[\d.]+_m\d[smb]_[a-z0-9-]+_l\d[0-9a-z]*_\d$/.test(tag);
 }
 
 /** The saved map of this picture for this model (null when none is saved, or it can't be read). */

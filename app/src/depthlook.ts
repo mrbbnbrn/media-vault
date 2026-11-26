@@ -1,83 +1,15 @@
 // The 3D looks for still pictures (docs/picture-3d-looks-plan.md), the maths
 // only (tested directly; drawn by Depth3D.tsx):
-// - Depth light: each picture's depth map becomes one RGBA texture: R = the
-//   depth, G/B = which way the surface faces (worked out from a smoothed copy
-//   so the 8-bit depth gives no stripes; steep jumps count as "no surface"),
-//   A = how much it lies in a crease (farther than what's around it).
-//   Where the light comes from (follows the camera, the mouse, a slow sweep, or one side).
 // - Focus: the depth under a point (averaged over a small spot), the focus
 //   pull over time, whether a picture is too flat for any of this.
 // - Wiggle: the viewpoints, their order and timing, and each one's camera pose.
 // - Border fill: how big the painted border is and how much room it gives.
 
 import type { DepthMap } from './api';
-import { boxBlur, distanceTo } from './layers';
 import { SHIFT, type Pose } from './depth';
 
 const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
 const finite = (v: unknown, d: number) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
-
-// ---- depth texture with surface directions and creases -----------------------------------------
-
-/** How strongly a depth slope tilts the surface (per depth level per texel of the map). */
-const TILT = 1.7;
-/** Slopes steeper than this (levels per texel) are a jump between things, not a surface: no light there. */
-const JUMP_FROM = 1.6;
-const JUMP_TO = 3.2;
-
-/**
- * The depth map as RGBA for the shader: R = depth, G/B = the surface's facing
- * (x right, y down; 128 = facing the camera), A = crease (0 none … 255 deep).
- */
-export function depthTexture(map: DepthMap): Uint8Array {
-  const { w, h, data } = map;
-  const n = w * h;
-  const out = new Uint8Array(n * 4);
-  if (!w || !h || data.length < n) return out;
-  const f = new Float32Array(n);
-  for (let i = 0; i < n; i++) f[i] = data[i];
-  // Smoothed twice (in floats, so the 8-bit steps go away), and a wide copy for creases.
-  const sm = boxBlur(boxBlur(f, w, h, 2), w, h, 2);
-  const wideR = Math.max(3, Math.round(Math.min(w, h) / 40));
-  const wide = boxBlur(boxBlur(f, w, h, wideR), w, h, 4);
-  // Jumps between things (on the lightly smoothed map): no light near them, and no crease shade as far
-  // as the wide copy reaches, else near things get a bright rim and a dark halo around them.
-  const lt = boxBlur(f, w, h, 1);
-  const jump = new Uint8Array(n);
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const gx = (lt[y * w + Math.min(w - 1, x + 1)] - lt[y * w + Math.max(0, x - 1)]) / 2;
-      const gy = (lt[Math.min(h - 1, y + 1) * w + x] - lt[Math.max(0, y - 1) * w + x]) / 2;
-      if (Math.hypot(gx, gy) > JUMP_FROM) jump[i] = 1;
-    }
-  const dist = distanceTo(jump, w, h);
-  const at = (x: number, y: number) => sm[clamp(y, 0, h - 1) * w + clamp(x, 0, w - 1)];
-  for (let y = 0; y < h; y++)
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      // Nearer = bigger: a surface nearer on its right faces left.
-      const gx = (at(x + 2, y) - at(x - 2, y)) / 4;
-      const gy = (at(x, y + 2) - at(x, y - 2)) / 4;
-      const g = Math.hypot(gx, gy);
-      // (The smoothing and the slope reach about 6 texels: past that, the slope is the surface itself.)
-      const near = clamp((dist[i] - 7) / 3, 0, 1);
-      const keep = (1 - clamp((g - JUMP_FROM) / (JUMP_TO - JUMP_FROM), 0, 1)) * near;
-      let nx = -gx * TILT * keep;
-      let ny = -gy * TILT * keep;
-      const len = Math.hypot(nx, ny, 1);
-      nx /= len;
-      ny /= len;
-      const o = i * 4;
-      out[o] = data[i];
-      out[o + 1] = Math.round(clamp(128 + nx * 127, 1, 255));
-      out[o + 2] = Math.round(clamp(128 + ny * 127, 1, 255));
-      // Farther than its surroundings by up to 14 levels = a full crease (not near jumps: no halo along outlines).
-      const away = clamp((dist[i] - (wideR + 6)) / 6, 0, 1);
-      out[o + 3] = Math.round(clamp((wide[i] - sm[i]) / 14, 0, 1) * away * 255);
-    }
-  return out;
-}
 
 /** The spread of a depth map's values (5th to 95th percentile, 0–1): tiny = a flat picture (a document, a screenshot). */
 export function depthSpread(map: DepthMap): number {
@@ -111,7 +43,7 @@ export function depthSpread(map: DepthMap): number {
   return Math.max(0, b - a) / 255;
 }
 
-/** Below this spread the picture counts as flat: no focus blur and no depth light on it. */
+/** Below this spread the picture counts as flat: no focus blur on it. */
 export const FLAT_SPREAD = 0.06;
 
 /** The depth (0–1) at a point of the picture (0–1 each way), averaged over a small spot (no flicker on hair and edges). */
@@ -200,61 +132,6 @@ export function sharpRange(v: unknown): number {
 /** The biggest blur (share of the picture's height) for the "Blur strength" setting (0–1): 2.5 % at 100 %. */
 export function blurReach(v: unknown): number {
   return clamp(finite(v, 0.4), 0, 1) * 0.025;
-}
-
-// ---- depth light --------------------------------------------------------------------------------
-
-export type LightFollow = 'camera' | 'mouse' | 'sweep' | 'fixed';
-export type LightSide = 'left' | 'right' | 'top' | 'topleft' | 'topright';
-
-const SIDES: Record<LightSide, [number, number]> = {
-  left: [-1, 0], right: [1, 0], top: [0, -1], topleft: [-0.71, -0.71], topright: [0.71, -0.71],
-};
-
-/** How far the light leans at most (sideways share of its direction). */
-const LIGHT_LEAN = 0.75;
-
-/**
- * Where the light comes from (unit vector: x right, y down, z towards the
- * viewer). `lean` is the camera's (or the mouse's) lean, −1…1 each way: with
- * no lean the light comes from the camera, so the picture looks as it is.
- */
-export function lightDir(follow: LightFollow, lean: { x: number; y: number }, side: LightSide, ms: number): [number, number, number] {
-  let x = 0;
-  let y = 0;
-  if (follow === 'fixed') [x, y] = SIDES[side] ?? SIDES.topleft;
-  else if (follow === 'sweep') {
-    // Once round in 12 s, a little from above.
-    const a = (finite(ms, 0) / 12000) * 2 * Math.PI;
-    x = Math.cos(a);
-    y = Math.sin(a) * 0.6 - 0.2;
-  } else {
-    x = clamp(finite(lean.x, 0), -1, 1);
-    y = clamp(finite(lean.y, 0), -1, 1);
-  }
-  x *= LIGHT_LEAN;
-  y *= LIGHT_LEAN;
-  const z = Math.sqrt(Math.max(0.05, 1 - x * x - y * y));
-  const l = Math.hypot(x, y, z);
-  return [x / l, y / l, z / l];
-}
-
-/**
- * Where the camera is (−1…1 each way) for a picture shift (share of the picture, as framePose
- * gives it): near things move with the shift, so the camera is on the other side.
- */
-export function leanOfShift(shift: { x: number; y: number }, asp: number): { x: number; y: number } {
-  const a = asp > 0 && Number.isFinite(asp) ? asp : 1;
-  // framePose's shift is in picture coordinates (depth.ts shiftUv); back to shares of the shorter side.
-  const px = shift.x * Math.max(1, a);
-  const py = shift.y * Math.max(1, 1 / a);
-  return { x: clamp((-px / SHIFT) * 0.8, -1, 1), y: clamp((-py / SHIFT) * 0.8, -1, 1) };
-}
-
-/** The light's colour for the warmth setting (−1 cool … 1 warm), as an RGB multiplier of the highlights. */
-export function lightTint(warmth: unknown): [number, number, number] {
-  const w = clamp(finite(warmth, 0), -1, 1);
-  return w >= 0 ? [1, 1 - 0.05 * w, 1 - 0.16 * w] : [1 + 0.1 * w, 1 + 0.03 * w, 1];
 }
 
 // ---- wiggle -------------------------------------------------------------------------------------

@@ -201,6 +201,127 @@ pub fn clear(s: &Session, kind: Option<&str>) -> Result<u64, String> {
     Ok(ids.len() as u64)
 }
 
+// ---- More layers, removed 2026-11-27 ---------------------------------------------------------------
+
+/// Set (to the number deleted) once the saved More layers of this library were deleted.
+pub const MORE_LAYERS_GONE: &str = "cleanup:morelayers-2026-11";
+
+/// Whether a saved plate's tag is one of More layers' layers (the look was
+/// removed 2026-11-27 at the user's request). Shape (looklayers.ts, all three
+/// generations: no suffix, `r2`, `r3`):
+/// `<model>@<side>~<soft>_<outline@side | nomask>_e<edges>_m<3|4><s|m|b>_<fill>_l<n><key>[r2|r3]_<j>`.
+/// Layered 3D / Lift-off (`<depth>_<outline>_e<edges>[_<fill>]`) and Border
+/// fill (`<depth>_b<size>_<fill>`) never have the `_m<d><s|m|b>_…_l<d>…_<d>` tail.
+/// The window has the same test (derived.ts `isMoreLayersTag`).
+pub fn is_more_layers_tag(tag: &str) -> bool {
+    // The depth tag first: `<model>@<digits>~<digits and dots>_`.
+    let Some((model, rest)) = tag.split_once('@') else { return false };
+    if model.is_empty() {
+        return false;
+    }
+    let Some((side, rest)) = rest.split_once('~') else { return false };
+    if side.is_empty() || !side.bytes().all(|b| b.is_ascii_digit()) {
+        return false;
+    }
+    let Some((soft, rest)) = rest.split_once('_') else { return false };
+    if soft.is_empty() || !soft.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
+        return false;
+    }
+    // From the end: `_<j>` (one digit), then `_l<n><key>`, `_<fill>`, `_m<max><cut>`, and `<outline>_e<edges>`.
+    let parts: Vec<&str> = rest.rsplitn(5, '_').collect();
+    let [j, l, fill, m, head] = parts[..] else { return false };
+    if j.len() != 1 || !j.as_bytes()[0].is_ascii_digit() {
+        return false;
+    }
+    let lb = l.as_bytes();
+    if lb.len() < 2 || lb[0] != b'l' || !lb[1].is_ascii_digit() || !lb[2..].iter().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()) {
+        return false;
+    }
+    if fill.is_empty() || !fill.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return false;
+    }
+    let mb = m.as_bytes();
+    if mb.len() != 3 || mb[0] != b'm' || !mb[1].is_ascii_digit() || !matches!(mb[2], b's' | b'm' | b'b') {
+        return false;
+    }
+    // The outline is a subject tag or "nomask" (never empty).
+    let Some((outline, edges)) = head.rsplit_once("_e") else { return false };
+    !outline.is_empty() && !edges.is_empty() && edges.bytes().all(|b| b.is_ascii_digit() || b == b'.')
+}
+
+/// Delete every saved More layers layer (rows first and the library saved,
+/// then their encrypted objects, like `clear`); how many went. Other plates
+/// (Layered 3D, Lift-off, Border fill) stay.
+pub fn clear_more_layers(s: &Session) -> Result<u64, String> {
+    let rows: Vec<(i64, String, String)> = {
+        let db = s.db();
+        let mut st = db.prepare("SELECT media_id, model, object_id FROM derived WHERE kind = 'plate'").map_err(e)?;
+        let all: Vec<(i64, String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+            .map_err(e)?
+            .collect::<rusqlite::Result<_>>()
+            .map_err(e)?;
+        all.into_iter().filter(|(_, model, _)| is_more_layers_tag(model)).collect()
+    };
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let gone: Vec<String> = {
+        let db = s.db();
+        let tx = db.unchecked_transaction().map_err(e)?;
+        for (item, model, _) in &rows {
+            tx.execute("DELETE FROM derived WHERE media_id = ?1 AND kind = 'plate' AND model = ?2", params![item, model]).map_err(e)?;
+        }
+        // Only objects nothing else points at any more.
+        let mut gone = Vec::new();
+        for (_, _, oid) in &rows {
+            let used: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM derived WHERE object_id = ?1) OR EXISTS(SELECT 1 FROM media WHERE object_id = ?1)",
+                    [oid],
+                    |r| r.get(0),
+                )
+                .map_err(e)?;
+            if !used {
+                gone.push(oid.clone());
+            }
+        }
+        tx.commit().map_err(e)?;
+        gone
+    };
+    // Saved first, then the files go (a crash can't leave rows pointing at nothing).
+    s.mark_dirty();
+    s.save()?;
+    let v = s.vault();
+    for id in gone.iter().filter_map(|h| ObjectId::from_hex(h).ok()) {
+        let _ = v.delete_object(ObjectKind::Thumbnail, &id);
+    }
+    Ok(rows.len() as u64)
+}
+
+/// Once per library, after unlocking: More layers' saved layers are deleted
+/// (the user asked for that when the look was removed). Marked done in the
+/// library's settings (`MORE_LAYERS_GONE`); Some(count) when it ran now, None
+/// when it was done before.
+pub fn clear_more_layers_once(s: &Session) -> Result<Option<u64>, String> {
+    let done: bool = s
+        .db()
+        .query_row("SELECT EXISTS(SELECT 1 FROM settings WHERE key = ?1)", [MORE_LAYERS_GONE], |r| r.get(0))
+        .map_err(e)?;
+    if done {
+        return Ok(None);
+    }
+    let n = clear_more_layers(s)?;
+    s.db()
+        .execute(
+            "INSERT INTO settings(key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![MORE_LAYERS_GONE, n.to_string()],
+        )
+        .map_err(e)?;
+    s.mark_dirty_bg();
+    Ok(Some(n))
+}
+
 /// What is saved for some items, per kind and model (a model saved at other
 /// settings is another line: its name carries the size and softening).
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -756,5 +877,73 @@ mod tests {
         assert!(check_data("depth", b"MVL1\x01\0\0\0\x01\0\0\0\0\0\0\0").is_err(), "a map is one byte per pixel");
         assert!(check_model("da3-mono-large@518~1_birefnet@1024_e0.70_lama").is_ok());
         assert!(check_kind("plate").is_ok() && check_kind("fore").is_ok());
+    }
+
+    /// More layers' tags (looklayers.ts layersTag + layerTag), all three generations.
+    const MORE_LAYERS: [&str; 6] = [
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.70_m4m_simple_l3abc_1",
+        "da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2x_0",
+        "v2-small@518~0.5_birefnet@1024_e0.35_m4b_lama_l41k2f9r2_3",
+        "da3-mono-large@518~1_nomask_e0.00_m3s_migan_l2xr3_1",
+        "depth-anything-v2-base@770~1.25_birefnet-hr@2048_e1.00_m3m_simple_l3zzr3_2",
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.70_m4m_big-lama-2_l2qr3_0",
+    ];
+    /// Layered 3D / Lift-off plates and subject layers (plate.ts layerTags), Border fill (looklayers.ts borderTag),
+    /// depth maps and outlines: none is More layers.
+    const OTHERS: [&str; 9] = [
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.70_lama",
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.70_simple",
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.00",
+        "v2-small@518~0.5_birefnet@1024_e0.35_migan",
+        "da3-mono-large@518~1_b8_lama",
+        "v2-small@518~0.5_b15_simple",
+        "da3-mono-large@518~1",
+        "birefnet-lite@1024",
+        "da3-mono-large@518~1_birefnet-lite@1024_e0.70_simple_w768_f1_v2",
+    ];
+
+    #[test]
+    fn more_layers_tags_are_told_apart() {
+        for t in MORE_LAYERS {
+            assert!(is_more_layers_tag(t), "{t}");
+            assert!(check_model(t).is_ok(), "{t}");
+        }
+        for t in OTHERS {
+            assert!(!is_more_layers_tag(t), "{t}");
+        }
+        for t in ["", "@518~1_nomask_e0.00_m3s_migan_l2x_0", "x@518~1_nomask_e0.00_m3s_migan_l2x_10", "x@518~1_nomask_e0.00_m5x_migan_l2x_0", "x@518~1_e0.00_m3s_migan_l2x_0"] {
+            assert!(!is_more_layers_tag(t), "{t}");
+        }
+    }
+
+    #[test]
+    fn saved_more_layers_are_deleted_once_and_other_plates_stay() {
+        let t = tempfile::tempdir().unwrap();
+        let s = vault(t.path());
+        let a = item(&s, "image");
+        let b = item(&s, "image");
+        let layer = b"MVL1\x01\0\0\0\x01\0\0\0\0\0\0\0rest";
+        for (i, tag) in MORE_LAYERS.iter().enumerate() {
+            put(&s, if i % 2 == 0 { a } else { b }, "plate", tag, layer).unwrap();
+        }
+        for tag in &OTHERS[..6] {
+            put(&s, a, "plate", tag, layer).unwrap();
+        }
+        put(&s, a, "fore", "da3-mono-large@518~1_birefnet-lite@1024_e0.70", layer).unwrap();
+        put(&s, a, "depth", "da3-mono-large@518~1", &map(2, 2, 1)).unwrap();
+        assert_eq!(thumbs(&s), 6 + 6 + 2);
+        assert_eq!(clear_more_layers_once(&s).unwrap(), Some(6));
+        assert_eq!(thumbs(&s), 6 + 2, "only More layers' objects went");
+        for tag in &OTHERS[..6] {
+            assert!(get(&s, a, "plate", tag).unwrap().is_some(), "{tag} stays");
+        }
+        assert!(get(&s, a, "fore", "da3-mono-large@518~1_birefnet-lite@1024_e0.70").unwrap().is_some());
+        assert!(get(&s, b, "plate", MORE_LAYERS[1]).unwrap().is_none());
+        // Done once: a later save of that shape (an older window) isn't touched again.
+        put(&s, a, "plate", MORE_LAYERS[0], layer).unwrap();
+        assert_eq!(clear_more_layers_once(&s).unwrap(), None);
+        assert!(get(&s, a, "plate", MORE_LAYERS[0]).unwrap().is_some());
+        // Itself it still finds them.
+        assert_eq!(clear_more_layers(&s).unwrap(), 1);
     }
 }

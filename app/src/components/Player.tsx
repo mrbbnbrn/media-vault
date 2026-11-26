@@ -1112,12 +1112,10 @@ export function Player(props: PlayerProps) {
   const depthLayered = !!prefs.depthLayered;
   // 3D looks (still pictures only; docs/picture-3d-looks-plan.md).
   const depthFocus = !!prefs.depthFocus;
-  const depthLight = !!prefs.depthLight;
   const depthBorder = !!prefs.depthBorder;
-  const depthMulti = !!prefs.depthMulti;
   const depthWiggle = !!prefs.depthWiggle;
-  /** A look that uses the outline when it's there (Focus on the subject, Softer on the subject, More layers). */
-  const looksOutline = (depthFocus && (prefs.depthFocusOn ?? 'subject') === 'subject') || (depthLight && prefs.depthLightSoftSubject !== false) || depthMulti;
+  /** A look that uses the outline when it's there (Focus on the subject). */
+  const looksOutline = depthFocus && (prefs.depthFocusOn ?? 'subject') === 'subject';
   /** Something that uses the subject outline is on. */
   const outlineWanted = depthLift || depthEdges3d || depthSubjectOnly || depthLayered || looksOutline;
   const [subjectPackOk, setSubjectPackOk] = useState(false);
@@ -1176,8 +1174,8 @@ export function Player(props: PlayerProps) {
   const stillHere = (item?.kind === 'image' || (item?.kind === 'gif' && !animated)) && !mini && !props.compact;
   /** Wiggle moves the camera on its own (pictures, with the depth pack). */
   const wiggleHere = stillHere && depthWiggle && depthPackOk;
-  /** Focus and Depth light show on a still camera too. */
-  const looksShow = stillHere && depthPackOk && (depthFocus || depthLight);
+  /** Focus shows on a still camera too. */
+  const looksShow = stillHere && depthPackOk && depthFocus;
   /** GIFs and videos move with their own switch (once prepared); pictures with theirs (or with a subject effect or a look on). */
   const depthFor = animated || isVideo3d ? depthMoving && (depthAuto || depthByMouse) && !!trackHere : item?.kind === 'image' || item?.kind === 'gif' ? depthAuto || depthByMouse || subjectOn || wiggleHere || looksShow : false;
   /** Moving on its own, with the mouse or wiggling (a subject effect or a look alone keeps the camera still). */
@@ -1215,23 +1213,13 @@ export function Player(props: PlayerProps) {
         round: !!p.depthFocusRound,
         mini: !!p.depthFocusMini,
       } : null,
-      light: depthLight ? {
-        follow: p.depthLightFollow ?? 'camera',
-        side: p.depthLightSide ?? 'topleft',
-        strength: p.depthLightStrength ?? 0.3,
-        crease: p.depthLightCrease ?? 0.3,
-        warmth: p.depthLightWarmth ?? 0,
-        softSubject: p.depthLightSoftSubject !== false,
-      } : null,
       border: depthBorder ? { size: p.depthBorderSize ?? 0.08, use: p.depthBorderUse === 'moves' ? 'moves' : 'zoom', model: fill } : null,
-      multi: depthMulti ? { max: p.depthMultiMax === 3 ? 3 : 4, cut: p.depthMultiCut === 'small' || p.depthMultiCut === 'big' ? p.depthMultiCut : 'medium', model: fill } : null,
       wiggle: wiggleHere ? wiggleOptions(p) : null,
       outline: subjectPackOk && looksOutline,
     };
-  }, [stillHere, depthFocus, depthLight, depthBorder, depthMulti, wiggleHere, faceAt, fill, subjectPackOk, looksOutline,
+  }, [stillHere, depthFocus, depthBorder, wiggleHere, faceAt, fill, subjectPackOk, looksOutline,
     prefs.depthFocusOn, prefs.depthFocusPull, prefs.depthFocusPullSec, prefs.depthFocusBlur, prefs.depthFocusRange, prefs.depthFocusRound, prefs.depthFocusMini,
-    prefs.depthLightFollow, prefs.depthLightSide, prefs.depthLightStrength, prefs.depthLightCrease, prefs.depthLightWarmth, prefs.depthLightSoftSubject,
-    prefs.depthBorderSize, prefs.depthBorderUse, prefs.depthMultiMax, prefs.depthMultiCut,
+    prefs.depthBorderSize, prefs.depthBorderUse,
     prefs.depthWiggleViews, prefs.depthWiggleSpeed, prefs.depthWiggleOrder, prefs.depthWiggleDir, prefs.depthWiggleSmooth]); // eslint-disable-line react-hooks/exhaustive-deps
   const depthNatural = isVideo3d ? vidSize : imgInfo ? { w: imgInfo.width, h: imgInfo.height } : null;
   // (Pictures with a subject effect on show without the depth pack too: a flat depth map is used.)
@@ -1466,15 +1454,11 @@ export function Player(props: PlayerProps) {
     // Looks.
     { label: 'Focus', hint: stillOnly ?? 'lens blur by depth', checked: depthFocus, disabled: !!stillOnly, sepBefore: true,
       onSelect: () => void toggleDepth({ depthFocus: !depthFocus }, !depthFocus, depthFocus ? 'Focus off' : 'Focus on · what stays sharp and the focus pull in 3D ▾ → 3D photo settings') },
-    { label: 'Depth light', hint: stillOnly ?? 'light and shade from depth', checked: depthLight, disabled: !!stillOnly,
-      onSelect: () => void toggleDepth({ depthLight: !depthLight }, !depthLight, depthLight ? 'Depth light off' : (prefs.depthLightFollow ?? 'camera') === 'camera' ? seeIt('Depth light on · it follows the camera') : 'Depth light on') },
     // Edges and layers.
     { label: 'Sharper depth edges', hint: stillOnly ?? 'follows the outline', checked: depthEdges3d, disabled: !!stillOnly, sepBefore: true,
       onSelect: () => void toggleLayer({ depthEdges3d: !depthEdges3d }, !depthEdges3d, depthEdges3d ? 'Sharper depth edges off' : 'Sharper depth edges on', { depth: true }) },
-    { label: 'Layered 3D', hint: stillOnly ?? (depthMulti && depthLayered ? 'the subject over More layers' : 'fills in behind the subject'), checked: depthLayered, disabled: !!stillOnly,
+    { label: 'Layered 3D', hint: stillOnly ?? 'fills in behind the subject', checked: depthLayered, disabled: !!stillOnly,
       onSelect: () => void toggleLayer({ depthLayered: !depthLayered }, !depthLayered, depthLayered ? 'Layered 3D off' : seeIt('Layered 3D on'), { depth: true, fill: true }) },
-    { label: 'More layers', hint: stillOnly ?? 'cut at every big depth jump', checked: depthMulti, disabled: !!stillOnly,
-      onSelect: () => void toggleLook({ depthMulti: !depthMulti }, !depthMulti, depthMulti ? 'More layers off' : seeIt('More layers on · worked out once per picture'), true) },
     { label: 'Border fill', hint: stillOnly ?? 'paints around the picture', checked: depthBorder, disabled: !!stillOnly,
       onSelect: () => void toggleLook({ depthBorder: !depthBorder }, !depthBorder, depthBorder ? 'Border fill off' : seeIt(prefs.depthBorderUse === 'moves' ? 'Border fill on · bigger moves' : 'Border fill on · less zoom'), true) },
     ...(depthBorder && !stillOnly ? [{
@@ -1496,7 +1480,7 @@ export function Player(props: PlayerProps) {
   ];
   /** Something in the 3D ▾ menu is on (the button shows it). */
   const depthMenuOn = depthMoving || !!prefs.depthBeat || depthLift || depthEdges3d || depthSubjectOnly || depthLayered
-    || depthFocus || depthLight || depthBorder || depthMulti || depthWiggle;
+    || depthFocus || depthBorder || depthWiggle;
   // ---- 3D photos (end) ------------------------------------------------------------------------
 
   // ---- video and GIF tools ------------------------------------------------------------------

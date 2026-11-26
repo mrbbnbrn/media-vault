@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  borderPx, borderRoom, depthAtPoint, depthSpread, depthTexture, FLAT_SPREAD, focusPullAt, focusPullMoving, leanOfShift, lightDir,
+  borderPx, borderRoom, depthAtPoint, depthSpread, FLAT_SPREAD, focusPullAt, focusPullMoving,
   wiggleOptions, wigglePose, wiggleSequence, wiggleViewPose,
 } from './depthlook';
 import { cropScale, framePose, SHIFT } from './depth';
@@ -10,34 +10,6 @@ const map = (w: number, h: number, f: (x: number, y: number) => number) => {
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) data[y * w + x] = Math.round(f(x, y));
   return { w, h, data };
 };
-
-describe('depth light texture', () => {
-  it('keeps the depth in red and faces a flat picture to the camera', () => {
-    const t = depthTexture(map(20, 10, () => 90));
-    expect(t[0]).toBe(90);
-    for (let i = 0; i < 200; i++) {
-      expect(Math.abs(t[i * 4 + 1] - 128)).toBeLessThanOrEqual(1);
-      expect(Math.abs(t[i * 4 + 2] - 128)).toBeLessThanOrEqual(1);
-      expect(t[i * 4 + 3]).toBe(0);
-    }
-  });
-  it('a slope nearer on the right faces left; a cliff counts as no surface', () => {
-    const slope = depthTexture(map(40, 20, (x) => 60 + x * 0.8));
-    const mid = (20 * 10 + 20) * 4;
-    expect(slope[mid + 1]).toBeLessThan(118);
-    expect(Math.abs(slope[mid + 2] - 128)).toBeLessThanOrEqual(1);
-    const cliff = depthTexture(map(40, 20, (x) => (x < 20 ? 40 : 220)));
-    const at = (10 * 40 + 20) * 4;
-    expect(Math.abs(cliff[at + 1] - 128)).toBeLessThanOrEqual(2);
-  });
-  it('a smooth hollow (farther than around it) is a crease; a hard step is not (no halo round near things)', () => {
-    const t = depthTexture(map(400, 400, (x, y) => 130 - 20 * Math.exp(-((x - 200) ** 2 + (y - 200) ** 2) / (2 * 15 * 15))));
-    expect(t[(200 * 400 + 200) * 4 + 3]).toBeGreaterThan(30);
-    expect(t[(20 * 400 + 20) * 4 + 3]).toBe(0);
-    const step = depthTexture(map(200, 200, (x) => (x < 100 ? 40 : 220)));
-    for (const x of [90, 95, 99]) expect(step[(100 * 200 + x) * 4 + 3]).toBe(0);
-  });
-});
 
 describe('flat pictures and the depth under a point', () => {
   it('a flat map has no spread, a real one does', () => {
@@ -66,24 +38,6 @@ describe('focus pull', () => {
     expect(focusPullAt('swing', 1500, 1.5, 0.8, 0.1)).toBeCloseTo(0.8);
     expect(focusPullAt('swing', 4500, 1.5, 0.8, 0.1)).toBeCloseTo(0.1);
     expect(focusPullMoving('swing', 99999, 1.5)).toBe(true);
-  });
-});
-
-describe('depth light direction', () => {
-  it('comes from the camera when it is in the middle', () => {
-    const [x, y, z] = lightDir('camera', { x: 0, y: 0 }, 'left', 0);
-    expect([x, y]).toEqual([0, 0]);
-    expect(z).toBeCloseTo(1);
-  });
-  it('a fixed side, unit length', () => {
-    const [x, y, z] = lightDir('fixed', { x: 0, y: 0 }, 'left', 0);
-    expect(x).toBeLessThan(-0.5);
-    expect(y).toBe(0);
-    expect(Math.hypot(x, y, z)).toBeCloseTo(1);
-  });
-  it('the camera is opposite to the picture shift', () => {
-    expect(leanOfShift({ x: SHIFT, y: 0 }, 1).x).toBeLessThan(0);
-    expect(leanOfShift({ x: 0, y: -SHIFT }, 1).y).toBeGreaterThan(0);
   });
 });
 
