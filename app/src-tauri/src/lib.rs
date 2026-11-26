@@ -58,6 +58,7 @@ mod growth;
 mod import;
 mod integrity;
 mod library;
+mod foldertrash; // deleting folders but keeping their favourites and free copies
 mod meta;
 mod protocol;
 mod rotate;
@@ -633,6 +634,9 @@ pub fn run() {
             cmd_library::move_folders,
             cmd_library::delete_folders,
             cmd_library::restore_folders,
+            foldertrash::folders_protected,
+            foldertrash::delete_folders_keeping,
+            foldertrash::restore_trashed,
             cmd_library::folder_view,
             cmd_library::query_items,
             cmd_library::get_item,

@@ -82,7 +82,11 @@ pub(crate) async fn delete_folders(state: State<'_, Shared>, ids: Vec<i64>) -> R
     edit_db(state.inner(), move |c| {
         let mut n = 0;
         for id in ids {
-            n += library::trash_folder(c, id)?;
+            // (trash_folder gives the stamp, not a count: the items with that stamp are counted.)
+            let stamp = library::trash_folder(c, id)?;
+            n += c
+                .query_row("SELECT COUNT(*) FROM media WHERE deleted_at = ?", [stamp], |r| r.get::<_, i64>(0))
+                .map_err(|x| x.to_string())?;
         }
         Ok(n)
     })

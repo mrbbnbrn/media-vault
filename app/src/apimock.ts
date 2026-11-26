@@ -185,6 +185,13 @@ export const mock = {
         return;
       case 'reset_recovery':
         return WORDS;
+      // Deleting folders but keeping their favourites and free copies (the demo answers with its own items).
+      case 'folders_protected':
+        return { favourites: 0, copies: 0, originals: 0, total: 0 };
+      case 'delete_folders_keeping':
+        return { stamp: Date.now(), items: 0, folders: 0, kept: 0, gone: [] };
+      case 'restore_trashed':
+        return;
       case 'lock_vault':
         s.session = null;
         lockListeners.forEach((l) => l('manual'));

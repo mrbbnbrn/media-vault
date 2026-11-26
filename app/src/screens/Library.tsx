@@ -77,6 +77,9 @@ import { requestLock } from '../keepopen';
 import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
 import { loadShows } from '../slideshowmemory';
 import { cleanSideWidth, SIDE_DEFAULT, SIDE_MAX, SIDE_RAIL, sideDrag, sideStep } from '../sidebarwidth';
+import { keptText } from '../folderkeep';
+import { FolderKeepDialog } from '../components/FolderKeepDialog';
+import type { FoldersProtected } from '../api';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -122,7 +125,7 @@ export type LibView =
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
   | { t: 'moveFolder'; folder: FolderCard }
-  | { t: 'deleteFolder'; folder: FolderCard }
+  | { t: 'deleteFolder'; folder: FolderCard; keep?: FoldersProtected }
   | { t: 'delFaces'; folder: FolderCard }
   | { t: 'delFacesItems'; ids: number[]; what: string }
   | { t: 'delPreviews'; folders: FolderCard[] }
@@ -143,7 +146,7 @@ type Dialog =
   | { t: 'shortcuts' }
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
-  | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
+  | { t: 'deleteMany'; folders: FolderCard[]; items: number[]; keep?: FoldersProtected }
   | { t: 'moveFolders'; folders: FolderCard[] }
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
   | { t: 'renameMany'; entries: RenameEntry[] }
@@ -922,6 +925,29 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     await deleteMany(fs, ids);
   };
   const trashItems = (ids: number[]) => askTrash([], ids);
+  /** Before folders go to the trash: do they hold favourites or free copies? Then the question offers to keep them. */
+  const askFolderTrash = (d: { t: 'deleteFolder'; folder: FolderCard } | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }) => {
+    const ids = d.t === 'deleteFolder' ? [d.folder.id] : d.folders.map((f) => f.id);
+    if (!ids.length) {
+      setDialog(d);
+      return;
+    }
+    void api.foldersProtected(ids).catch(() => null).then((p) => setDialog(p && p.total > 0 ? { ...d, keep: p } : d));
+  };
+  /** "Keep them": the folders' other items (and subfolders with nothing kept) to the trash; Ctrl+Z brings them back. */
+  const trashFoldersKeeping = async (fs: FolderCard[], items: number[] = []) => {
+    const ids = fs.map((f) => f.id);
+    const r = await api.deleteFoldersKeeping(ids);
+    did(keptText(r), () => api.restoreTrashed(ids, r.stamp));
+    setSelFolders(new Set());
+    setSelected(new Set());
+    // (A folder that went to the trash and is open: back to where it was, top-most first.)
+    const gone = new Set(r.gone);
+    if (!leaveDeleted(folders.filter((f) => gone.has(f.id)).sort((a, b) => a.depth - b.depth))) await reload({ quiet: true });
+    nav.refresh().catch(() => {});
+    // Items picked on their own go as usual (asking about their free copies).
+    if (items.length) await askTrash([], items);
+  };
   const trashFolder = async (f: FolderCard) => {
     await api.deleteFolder(f.id);
     did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
@@ -1464,7 +1490,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
       sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])], [], () => setDialog({ t: 'moveFolder', folder: f })) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
-    { label: 'Move to trash…', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
+    { label: 'Move to trash…', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => askFolderTrash({ t: 'deleteFolder', folder: f }) },
   ];
   folderMenuRef.current = folderMenu;
 
@@ -1876,7 +1902,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const askDeleteMany = () => {
     const fs = topMost(selFolders);
     if (!fs.length && !selected.size) return;
-    setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
+    askFolderTrash({ t: 'deleteMany', folders: fs, items: [...selected] });
   };
   const deleteMany = async (fs: FolderCard[], items: number[], links: CopyLinks[] = []) => {
     // Gone from the screen right away (to the trash).
@@ -2208,7 +2234,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         }).catch((e) => say(errText(e), 'problem'))) },
       { id: 'delete', label: itemsOnly ? 'Move to trash' : 'Move to trash…', hint: 'Delete', barLabel: 'Move to trash', icon: <TrashIcon />,
         danger: true, sepBefore: true, bar: 'pinned', title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
-        run: itemsOnly ? () => failed(trashItems(ids)) : () => setDialog({ t: 'deleteMany', folders: fs, items: ids }) },
+        run: itemsOnly ? () => failed(trashItems(ids)) : () => askFolderTrash({ t: 'deleteMany', folders: fs, items: ids }) },
     ];
     return acts.filter((a): a is Act => !!a);
   };
@@ -3137,7 +3163,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <FolderPicker title={`Move “${dialog.folder.name}” into…`} folders={folders} exclude={[dialog.folder.id]} confirm="Move"
           onClose={() => setDialog(null)} onPick={(f) => moveFolder(dialog.folder, f)} />
       )}
-      {dialog?.t === 'deleteFolder' && (
+      {dialog?.t === 'deleteFolder' && dialog.keep && (
+        <FolderKeepDialog title={`Move “${dialog.folder.name}” to the trash?`} folders={1} keep={dialog.keep} onClose={() => setDialog(null)}
+          onKeep={() => trashFoldersKeeping([dialog.folder])} onDeleteAll={() => trashFolder(dialog.folder)} />
+      )}
+      {dialog?.t === 'deleteFolder' && !dialog.keep && (
         <ConfirmDialog title={`Move “${dialog.folder.name}” to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
           onConfirm={() => trashFolder(dialog.folder)}>
           The folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside go to the trash.
@@ -3239,8 +3269,17 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           dialog.folders.length ? `${plural(dialog.folders.length, 'folder')} (with ${plural(nItems, 'item')} inside)` : '',
           dialog.items.length ? plural(dialog.items.length, 'selected item') : '',
         ].filter(Boolean);
+        if (dialog.keep) {
+          return (
+            <FolderKeepDialog title={`Move ${parts.join(' and ')} to the trash?`} folders={dialog.folders.length} keep={dialog.keep}
+              onClose={() => setDialog((d) => (d?.t === 'deleteMany' ? null : d))}
+              lead={`${dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}${dialog.folders.length > 6 ? ' …' : ''}.`}
+              onKeep={() => trashFoldersKeeping(dialog.folders, dialog.items)} onDeleteAll={() => askTrash(dialog.folders, dialog.items)} />
+          );
+        }
         return (
-          <ConfirmDialog title={`Move ${parts.join(' and ')} to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+          <ConfirmDialog title={`Move ${parts.join(' and ')} to the trash?`} confirm="Move to trash" danger
+            onClose={() => setDialog((d) => (d?.t === 'deleteMany' ? null : d))}
             onConfirm={() => askTrash(dialog.folders, dialog.items)}>
             {dialog.folders.length > 0 && <>{dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}{dialog.folders.length > 6 ? ' …' : ''}. </>}
             Everything goes to the trash, where you can restore it for 30 days, or press Ctrl+Z right away.

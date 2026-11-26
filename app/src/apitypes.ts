@@ -700,6 +700,25 @@ export interface TrashFolder {
   cover: number | null;
 }
 
+/** What deleting folders would keep with "Keep them" (an item can be several; `total` counts it once). */
+export interface FoldersProtected {
+  favourites: number;
+  copies: number;
+  /** Originals with a free copy somewhere. */
+  originals: number;
+  total: number;
+}
+
+/** What "Keep them" did: its stamp (for undo), items and subfolders that went to the trash, items kept. */
+export interface KeptTrash {
+  stamp: number;
+  items: number;
+  folders: number;
+  kept: number;
+  /** The folders that went to the trash. */
+  gone: number[];
+}
+
 export interface TrashView {
   folders: TrashFolder[];
   items: Item[];
