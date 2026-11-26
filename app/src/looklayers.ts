@@ -1,31 +1,22 @@
-// More layers and Border fill for 3D photos (still pictures only): made once
-// per picture (the maths in lookworker.ts, the fill models' calls here), kept
-// in memory for a few pictures (dropped on lock), and for pictures in the
-// vault saved there (encrypted, packed like Layered 3D's plate: layerpack.ts,
-// `derived` kind 'plate' with their own tags), so a picture seen once shows
-// them at once next time. docs/picture-3d-looks-plan.md.
+// Border fill for 3D photos (still pictures only): made once per picture (the
+// maths in lookworker.ts, the fill models' calls here), kept in memory for a
+// few pictures (dropped on lock), and for pictures in the vault saved there
+// (encrypted, packed like Layered 3D's plate: layerpack.ts, `derived` kind
+// 'plate' with its own tag), so a picture seen once shows it at once next
+// time. docs/picture-3d-looks-plan.md (More layers was removed 2026-11-27).
 
-import { api, onLocked, type DepthMap, type SubjectMask } from './api';
+import { api, onLocked, type DepthMap } from './api';
 import { savedChanged } from './derived';
 import { inpaintPack } from './inpaint';
 import { borderPx } from './depthlook';
-import { planKey, type CutSize, type LayerPlan } from './layersmath';
 import { pixelsOffThread } from './picturecache';
 
 /** The border plate's picture part at most this long (the fill is soft anyway; inside, the picture itself is drawn). */
 const BORDER_MAX = 1600;
-/** More layers' layers at most this long (up to 3 of them on the graphics card per picture). */
-const LAYER_MAX = 1024;
 
 export type LookJob =
-  | { op: 'plan'; depth: DepthMap; mask: SubjectMask | null; max: number; cut: CutSize }
-  | { op: 'layerHole'; plan: LayerPlan; j: number; side: number }
-  | { op: 'layer'; orig: Uint8ClampedArray; w: number; h: number; depth: DepthMap; plan: LayerPlan; j: number; fill: { data: Uint8ClampedArray; w: number; h: number } | null }
-  | { op: 'coverage'; plan: LayerPlan }
   | { op: 'borderInput'; orig: Uint8ClampedArray; w: number; h: number; b: number; side: number }
   | { op: 'border'; orig: Uint8ClampedArray; w: number; h: number; b: number; depth: DepthMap; fill: { data: Uint8ClampedArray; w: number; h: number } | null }
-  | { op: 'pack'; orig: Uint8ClampedArray; layer: Uint8Array; w: number; h: number }
-  | { op: 'unpack'; orig: Uint8ClampedArray; bytes: Uint8Array }
   | { op: 'borderPack'; orig: Uint8ClampedArray; w: number; h: number; b: number; layer: Uint8Array }
   | { op: 'borderUnpack'; orig: Uint8ClampedArray; w: number; h: number; b: number; bytes: Uint8Array };
 
@@ -80,18 +71,15 @@ function keep<T>(m: Map<string, T>, key: string, v: T, max: number) {
 }
 
 const borders = new Map<string, Promise<Border | null>>();
-const layerSets = new Map<string, Promise<Layers | null>>();
 const pixelsKept = new Map<string, Promise<{ data: Uint8ClampedArray; w: number; h: number } | null>>();
 void onLocked(() => {
   borders.clear();
-  layerSets.clear();
   pixelsKept.clear();
 }).catch(() => {});
 
 /** The saved ones were cleared (prepare again): the copies in memory go too. */
 export function forgetLooks() {
   borders.clear();
-  layerSets.clear();
 }
 
 function picturePixels(src: string, w: number, h: number) {
@@ -213,117 +201,4 @@ async function makeOrLoadBorder(r: BorderRequest): Promise<Border | null> {
     if (save.wait) await saving;
   }
   return made;
-}
-
-// ---- More layers ---------------------------------------------------------------------------------
-
-/** More layers, ready for the graphics card. */
-export interface Layers {
-  /** Layers in all (2–4). */
-  n: number;
-  /** The layers' size. */
-  w: number;
-  h: number;
-  /** Layers 0 … n − 1 stacked top to bottom (RGBA, alpha = the layer's own depth): w × h·n. */
-  atlas: Uint8Array;
-  /** Where layers 1–3 are the surface (R, G, B), at the depth map's size. */
-  cov: { w: number; h: number; data: Uint8Array };
-}
-
-export interface LayersRequest {
-  src: string;
-  natural: { w: number; h: number };
-  depth: DepthMap;
-  mask: SubjectMask | null;
-  max: number;
-  cut: CutSize;
-  model: string;
-  /** `wait`: each layer saved before the next is made (preparing). */
-  save?: { id: number; tag: string; wait?: boolean };
-}
-
-/** The tag layer `j` is saved under (what they were made from + the cut's own key). */
-function layerTag(base: string, plan: LayerPlan, j: number): string {
-  // (A different cut of the same picture never reads old layers. 'r2': made since the soft-edge fix of
-  // 2026-11-23, the cut in each jump's middle and the fill reaching all behind: older ones aren't read.)
-  return `${base}_l${planKey(plan)}r3_${j}`;
-}
-
-/** The base tag (depth, outline, edges, how many and where cut, fill). */
-export function layersTag(depthTag: string, subjectTag: string, edges: number, max: number, cut: CutSize, fill: string): string {
-  return `${depthTag}_${subjectTag || 'nomask'}_e${edges.toFixed(2)}_m${max}${cut[0]}_${fill || 'simple'}`;
-}
-
-export function layersFor(key: string, r: LayersRequest): Promise<Layers | null> {
-  const known = layerSets.get(key);
-  if (known) {
-    keep(layerSets, key, known, 3);
-    return known;
-  }
-  const p = makeLayers(r).catch((e) => {
-    console.warn("Couldn't make the layers:", e);
-    return null;
-  });
-  keep(layerSets, key, p, 3);
-  void p.then((x) => {
-    if (!x && layerSets.get(key) === p) layerSets.delete(key);
-  });
-  return p;
-}
-
-async function makeLayers(r: LayersRequest): Promise<Layers | null> {
-  const plan = await run<LayerPlan | null>({ op: 'plan', depth: r.depth, mask: r.mask, max: r.max, cut: r.cut });
-  if (!plan || plan.n < 2) return null;
-  const { w, h } = fitIn(r.natural.w, r.natural.h, LAYER_MAX);
-  const pic = await picturePixels(r.src, w, h);
-  if (!pic || pic.w !== w || pic.h !== h) return null;
-  const tiles: Uint8Array[] = [];
-  const side = await modelSide(r.model);
-  // (Made with Simple because the chosen fill model isn't there: not saved under its name.)
-  const canSave = await fillThere(r.model);
-  for (let j = 0; j < plan.n; j++) {
-    const tag = r.save ? layerTag(r.save.tag, plan, j) : '';
-    let tile: Uint8Array | null = null;
-    if (r.save) {
-      try {
-        const bytes = await api.derivedGet(r.save.id, 'plate', tag);
-        if (bytes) {
-          const d = await run<Uint8Array>({ op: 'unpack', orig: pic.data, bytes });
-          if (d.length === w * h * 4) tile = d;
-        }
-      } catch {
-        tile = null;
-      }
-    }
-    if (!tile) {
-      const jj = j;
-      // (The nearest layer has nothing behind it to fill.)
-      const fill = j === plan.n - 1 ? null : await modelFill(r.model, async () => {
-        const sq = await pixelsOffThread(r.src, side, side);
-        if (!sq) return null;
-        const hole = await run<Uint8Array>({ op: 'layerHole', plan, j: jj, side });
-        return { rgba: new Uint8Array(sq.data.buffer, sq.data.byteOffset, sq.data.byteLength), hole };
-      });
-      tile = await run<Uint8Array>({ op: 'layer', orig: pic.data, w, h, depth: r.depth, plan, j, fill });
-      if (r.save && canSave) {
-        const save = r.save;
-        const made = tile;
-        const saving = (async () => {
-          try {
-            const bytes = await run<Uint8Array>({ op: 'pack', orig: pic.data, layer: made, w, h });
-            await api.derivedPut(save.id, 'plate', tag, bytes);
-            savedChanged();
-          } catch (e) {
-            console.warn("Couldn't save a layer:", e);
-          }
-        })();
-        if (save.wait) await saving;
-      }
-    }
-    tiles.push(tile);
-  }
-  const atlas = new Uint8Array(w * h * 4 * tiles.length);
-  tiles.forEach((t, i) => atlas.set(t, i * w * h * 4));
-  const cov = await run<Uint8Array>({ op: 'coverage', plan });
-  return { n: plan.n, w, h, atlas, cov: { w: plan.w, h: plan.h, data: cov } };
 }

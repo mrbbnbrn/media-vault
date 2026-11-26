@@ -78,6 +78,10 @@ import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { requestLock } from '../keepopen';
 import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
 import { loadShows } from '../slideshowmemory';
+import { cleanSideWidth, SIDE_DEFAULT, SIDE_MAX, SIDE_RAIL, sideDrag, sideStep } from '../sidebarwidth';
+import { keptText } from '../folderkeep';
+import { FolderKeepDialog } from '../components/FolderKeepDialog';
+import type { FoldersProtected } from '../api';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -123,7 +127,7 @@ export type LibView =
 type Dialog =
   | { t: 'newFolder'; parent: number | null }
   | { t: 'moveFolder'; folder: FolderCard }
-  | { t: 'deleteFolder'; folder: FolderCard }
+  | { t: 'deleteFolder'; folder: FolderCard; keep?: FoldersProtected }
   | { t: 'delFaces'; folder: FolderCard }
   | { t: 'delFacesItems'; ids: number[]; what: string }
   | { t: 'delPreviews'; folders: FolderCard[] }
@@ -145,7 +149,7 @@ type Dialog =
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
   | { t: 'fileInfo'; item: Item }
-  | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
+  | { t: 'deleteMany'; folders: FolderCard[]; items: number[]; keep?: FoldersProtected }
   | { t: 'moveFolders'; folders: FolderCard[] }
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
   | { t: 'renameMany'; entries: RenameEntry[] }
@@ -924,6 +928,29 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     await deleteMany(fs, ids);
   };
   const trashItems = (ids: number[]) => askTrash([], ids);
+  /** Before folders go to the trash: do they hold favourites or free copies? Then the question offers to keep them. */
+  const askFolderTrash = (d: { t: 'deleteFolder'; folder: FolderCard } | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }) => {
+    const ids = d.t === 'deleteFolder' ? [d.folder.id] : d.folders.map((f) => f.id);
+    if (!ids.length) {
+      setDialog(d);
+      return;
+    }
+    void api.foldersProtected(ids).catch(() => null).then((p) => setDialog(p && p.total > 0 ? { ...d, keep: p } : d));
+  };
+  /** "Keep them": the folders' other items (and subfolders with nothing kept) to the trash; Ctrl+Z brings them back. */
+  const trashFoldersKeeping = async (fs: FolderCard[], items: number[] = []) => {
+    const ids = fs.map((f) => f.id);
+    const r = await api.deleteFoldersKeeping(ids);
+    did(keptText(r), () => api.restoreTrashed(ids, r.stamp));
+    setSelFolders(new Set());
+    setSelected(new Set());
+    // (A folder that went to the trash and is open: back to where it was, top-most first.)
+    const gone = new Set(r.gone);
+    if (!leaveDeleted(folders.filter((f) => gone.has(f.id)).sort((a, b) => a.depth - b.depth))) await reload({ quiet: true });
+    nav.refresh().catch(() => {});
+    // Items picked on their own go as usual (asking about their free copies).
+    if (items.length) await askTrash([], items);
+  };
   const trashFolder = async (f: FolderCard) => {
     await api.deleteFolder(f.id);
     did(`Moved “${f.name}” to the trash`, () => api.restoreFolder(f.id));
@@ -1484,7 +1511,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     { label: 'Move to…', onSelect: () => setDialog({ t: 'moveFolder', folder: f }),
       sub: moveSub((to) => { moveFolder(f, to.id).catch((err) => setError(errText(err))); }, [f.id, ...(f.parentId != null ? [f.parentId] : [])], [], () => setDialog({ t: 'moveFolder', folder: f })) },
     { label: 'Extract here', hint: 'contents move up', onSelect: () => extractHere(f) },
-    { label: 'Move to trash…', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => setDialog({ t: 'deleteFolder', folder: f }) },
+    { label: 'Move to trash…', hint: 'Delete', danger: true, sepBefore: true, onSelect: () => askFolderTrash({ t: 'deleteFolder', folder: f }) },
   ];
   folderMenuRef.current = folderMenu;
 
@@ -1896,7 +1923,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   const askDeleteMany = () => {
     const fs = topMost(selFolders);
     if (!fs.length && !selected.size) return;
-    setDialog({ t: 'deleteMany', folders: fs, items: [...selected] });
+    askFolderTrash({ t: 'deleteMany', folders: fs, items: [...selected] });
   };
   const deleteMany = async (fs: FolderCard[], items: number[], links: CopyLinks[] = []) => {
     // Gone from the screen right away (to the trash).
@@ -2231,7 +2258,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         }).catch((e) => say(errText(e), 'problem'))) },
       { id: 'delete', label: itemsOnly ? 'Move to trash' : 'Move to trash…', hint: 'Delete', barLabel: 'Move to trash', icon: <TrashIcon />,
         danger: true, sepBefore: true, bar: 'pinned', title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
-        run: itemsOnly ? () => failed(trashItems(ids)) : () => setDialog({ t: 'deleteMany', folders: fs, items: ids }) },
+        run: itemsOnly ? () => failed(trashItems(ids)) : () => askFolderTrash({ t: 'deleteMany', folders: fs, items: ids }) },
     ];
     return acts.filter((a): a is Act => !!a);
   };
@@ -2450,7 +2477,83 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- render ---------------------------------------------------------------------------
 
   const visibleTree = tree.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
-  const rail = !!cfg.look?.sidebarRail;
+  /** The folder panel while its edge is dragged (saved when let go): compact or not, and its width. */
+  const [sideLive, setSideLive] = useState<{ rail: boolean; width: number } | null>(null);
+  const sideCol = useRef<HTMLDivElement>(null);
+  const rail = sideLive ? sideLive.rail : !!cfg.look?.sidebarRail;
+  const sideW = cleanSideWidth(sideLive?.width ?? cfg.look?.sidebarWidth, window.innerWidth);
+  const saveSide = (r: boolean, w: number) => {
+    void saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: r, sidebarWidth: cleanSideWidth(w) } }).finally(() => setSideLive(null));
+  };
+  /** Dragging the folder panel's right edge: the width follows the mouse; narrower than SIDE_SNAP = compact. */
+  const sideDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch {
+      // (Still works while the mouse stays over the edge.)
+    }
+    const x0 = e.clientX;
+    const w0 = rail ? SIDE_RAIL : sideW;
+    let last = { rail, width: sideW };
+    let x = x0;
+    let raf = 0;
+    let moved = false;
+    const apply = () => {
+      raf = 0;
+      const d = sideDrag(w0 + x - x0, window.innerWidth);
+      const next = d.rail ? { rail: true, width: last.width } : { rail: false, width: d.width };
+      // (Straight onto the page, once a frame: the panel follows the mouse without drawing the library again.)
+      if (!next.rail) sideCol.current?.style.setProperty('--side-w', `${next.width}px`);
+      if (next.rail !== last.rail) setSideLive(next);
+      last = next;
+    };
+    const move = (ev: PointerEvent) => {
+      x = ev.clientX;
+      if (Math.abs(x - x0) > 2) moved = true;
+      if (moved && !raf) raf = requestAnimationFrame(apply);
+    };
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      handle.removeEventListener('lostpointercapture', end);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('side-resizing');
+      if (raf) {
+        cancelAnimationFrame(raf);
+        apply();
+      }
+      if (!moved) {
+        setSideLive(null);
+        return;
+      }
+      setSideLive(last);
+      saveSide(last.rail, last.width);
+    };
+    setSideLive(last);
+    handle.classList.add('dragging');
+    document.body.classList.add('side-resizing');
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+    handle.addEventListener('lostpointercapture', end);
+  };
+  const sideResizeKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Home') {
+      e.preventDefault();
+      saveSide(false, SIDE_DEFAULT);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const d = sideStep(rail, sideW, e.key === 'ArrowLeft' ? -1 : 1, window.innerWidth);
+      const next = d.rail ? { rail: true, width: sideW } : { rail: false, width: d.width };
+      setSideLive(next);
+      saveSide(next.rail, next.width);
+    }
+  };
   const sideSortInfo = FOLDER_SORTS.find((o) => o.id === sideSort) ?? FOLDER_SORTS[0];
   /** The sidebar's sort button: a small menu (works in the narrow sidebar too). */
   const sideSortButton = (cls: string) => (
@@ -2612,7 +2715,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
 
       <div className="lib-body">
-        <div className="side-col" onKeyDown={sideKeys} onPointerDown={() => { sideZone.current = true; }}>
+        <div className="side-col" ref={sideCol} style={{ '--side-w': `${sideW}px` } as React.CSSProperties} onKeyDown={sideKeys} onPointerDown={() => { sideZone.current = true; }}>
         <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
           <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
             aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
@@ -2699,6 +2802,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         {/* Its own strip under the folder list, so it never covers a folder. */}
         <div className={`side-foot${rail ? ' rail' : ''}`}>
         </div>
+        <div className="side-resize" role="separator" aria-orientation="vertical" tabIndex={0}
+          aria-label="Folder panel width" aria-valuemin={SIDE_RAIL} aria-valuemax={SIDE_MAX} aria-valuenow={rail ? SIDE_RAIL : sideW}
+          aria-valuetext={rail ? 'Compact' : `${sideW} pixels`}
+          title="Drag to resize the folder panel (all the way narrow: compact). Double-click: back to the usual width."
+          onPointerDown={sideDragStart} onDoubleClick={() => saveSide(false, SIDE_DEFAULT)} onKeyDown={sideResizeKeys} />
         </div>
 
         <main className={`lib-main${switching ? ' switching' : ''}`} ref={scroller} onPointerDown={(e) => { sideZone.current = false; rubberBand(e); }} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>
@@ -3080,7 +3188,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         <FolderPicker title={`Move “${dialog.folder.name}” into…`} folders={folders} exclude={[dialog.folder.id]} confirm="Move"
           onClose={() => setDialog(null)} onPick={(f) => moveFolder(dialog.folder, f)} />
       )}
-      {dialog?.t === 'deleteFolder' && (
+      {dialog?.t === 'deleteFolder' && dialog.keep && (
+        <FolderKeepDialog title={`Move “${dialog.folder.name}” to the trash?`} folders={1} keep={dialog.keep} onClose={() => setDialog(null)}
+          onKeep={() => trashFoldersKeeping([dialog.folder])} onDeleteAll={() => trashFolder(dialog.folder)} />
+      )}
+      {dialog?.t === 'deleteFolder' && !dialog.keep && (
         <ConfirmDialog title={`Move “${dialog.folder.name}” to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
           onConfirm={() => trashFolder(dialog.folder)}>
           The folder, its {dialog.folder.subfolders} subfolder(s) and all {dialog.folder.items.toLocaleString()} item(s) inside go to the trash.
@@ -3182,8 +3294,17 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           dialog.folders.length ? `${plural(dialog.folders.length, 'folder')} (with ${plural(nItems, 'item')} inside)` : '',
           dialog.items.length ? plural(dialog.items.length, 'selected item') : '',
         ].filter(Boolean);
+        if (dialog.keep) {
+          return (
+            <FolderKeepDialog title={`Move ${parts.join(' and ')} to the trash?`} folders={dialog.folders.length} keep={dialog.keep}
+              onClose={() => setDialog((d) => (d?.t === 'deleteMany' ? null : d))}
+              lead={`${dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}${dialog.folders.length > 6 ? ' …' : ''}.`}
+              onKeep={() => trashFoldersKeeping(dialog.folders, dialog.items)} onDeleteAll={() => askTrash(dialog.folders, dialog.items)} />
+          );
+        }
         return (
-          <ConfirmDialog title={`Move ${parts.join(' and ')} to the trash?`} confirm="Move to trash" danger onClose={() => setDialog(null)}
+          <ConfirmDialog title={`Move ${parts.join(' and ')} to the trash?`} confirm="Move to trash" danger
+            onClose={() => setDialog((d) => (d?.t === 'deleteMany' ? null : d))}
             onConfirm={() => askTrash(dialog.folders, dialog.items)}>
             {dialog.folders.length > 0 && <>{dialog.folders.slice(0, 6).map((f) => `“${f.name}”`).join(', ')}{dialog.folders.length > 6 ? ' …' : ''}. </>}
             Everything goes to the trash, where you can restore it for 30 days, or press Ctrl+Z right away.

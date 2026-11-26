@@ -7,6 +7,7 @@ import { noteCall, noteEvent } from './perf';
 import { open, save } from '@tauri-apps/plugin-dialog';
 export * from './apitypes';
 import type { CoverPos } from './coverframe';
+import type { FoldersProtected, KeptTrash } from './apitypes';
 import type { RiverFace } from './riverplay';
 import { lockListeners, mockListeners, mockUpscaleListeners } from './mockbus';
 // The browser preview's stand-in for the backend: loaded only outside the app.
@@ -115,6 +116,12 @@ export const api = {
   restoreItems: (ids: number[]) => call<number>('restore_items', { ids }),
   restoreFolder: (id: number) => call<void>('restore_folder', { id }),
   restoreFolders: (ids: number[]) => (ids.length ? call<void>('restore_folders', { ids }) : Promise.resolve()),
+  /** How many favourites and free copies these folders hold, subfolders included (asked before deleting them). */
+  foldersProtected: (ids: number[]) => call<FoldersProtected>('folders_protected', { ids }),
+  /** Delete these folders but keep their favourites and free copies (and the folders holding them), one stamp. */
+  deleteFoldersKeeping: (ids: number[]) => call<KeptTrash>('delete_folders_keeping', { ids }),
+  /** Undo of deleteFoldersKeeping: what that stamp took under these folders comes back. */
+  restoreTrashed: (ids: number[], stamp: number) => call<void>('restore_trashed', { ids, stamp }),
   /** Move everything inside a folder up into its parent (the folder stays, empty). */
   extractFolder: (id: number) => call<Extracted>('extract_folder', { id }),
   unextractFolder: (id: number, extracted: Extracted) => call<void>('unextract_folder', { id, extracted }),

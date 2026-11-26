@@ -325,6 +325,24 @@ export function demoCall(cmd: string, a: Record<string, unknown>): unknown {
     case 'set_weight':
       for (const it of items) if ((a.ids as number[]).includes(it.id)) it.weight = a.weight as number;
       return;
+    // Folders to the trash keeping favourites and free copies (the demo's folders themselves stay).
+    case 'folders_protected': {
+      const list = items.filter((i) => i.deletedAt == null && i.folderId != null && (a.ids as number[]).some((f) => below(f).includes(i.folderId!)));
+      const fav = list.filter((i) => i.favourite).length;
+      const copies = list.filter((i) => i.copyOf != null).length;
+      return { favourites: fav, copies, originals: 0, total: list.filter((i) => i.favourite || i.copyOf != null).length };
+    }
+    case 'delete_folders_keeping': {
+      const ids = a.ids as number[];
+      const stamp = Date.now();
+      const inside = items.filter((i) => i.deletedAt == null && i.folderId != null && ids.some((f) => below(f).includes(i.folderId!)));
+      const hit = inside.filter((i) => !i.favourite && i.copyOf == null);
+      for (const it of hit) it.deletedAt = stamp;
+      return { stamp, items: hit.length, folders: 0, kept: inside.length - hit.length, gone: [] };
+    }
+    case 'restore_trashed':
+      for (const it of items) if (it.deletedAt === a.stamp) it.deletedAt = null;
+      return;
     // To the trash and back (Delete and Ctrl+Z).
     case 'delete_items':
     case 'restore_items': {

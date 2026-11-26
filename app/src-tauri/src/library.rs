@@ -1018,7 +1018,7 @@ use crate::util::now_ms;
 
 /// A fresh trash stamp. Everything deleted in one action shares a stamp, so
 /// restoring a folder brings back exactly what was deleted with it.
-fn next_stamp(conn: &Connection) -> R<i64> {
+pub(crate) fn next_stamp(conn: &Connection) -> R<i64> {
     let last: Option<i64> = conn
         .query_row(
             "SELECT MAX(x) FROM (SELECT MAX(deleted_at) AS x FROM media UNION ALL SELECT MAX(deleted_at) FROM folders)",

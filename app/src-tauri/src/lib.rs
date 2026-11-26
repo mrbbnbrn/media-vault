@@ -58,6 +58,7 @@ mod growth;
 mod import;
 mod integrity;
 mod library;
+mod foldertrash; // deleting folders but keeping their favourites and free copies
 mod meta;
 mod protocol;
 mod rotate;
@@ -249,11 +250,22 @@ fn start_background(inner: Shared, s: Arc<Session>) {
             s2.mark_dirty();
             if s2.save().is_ok() {
                 import::remove_objects(&s2, &o);
-                cmd_library::reclaim_soon(inner, s2.clone());
+                cmd_library::reclaim_soon(inner.clone(), s2.clone());
             }
         }
         // Files kept for undoing rotations last time (the undo list is new now).
         let _ = rotate::clean_retired(&s2);
+        // More layers was removed (2026-11-27): its saved layers go, once per library.
+        match derived::clear_more_layers_once(&s2) {
+            Ok(Some(n)) => {
+                diaglog::note(&format!("removed look More layers: {n} saved layers deleted"));
+                if n > 0 {
+                    cmd_library::reclaim_soon(inner.clone(), s2.clone());
+                }
+            }
+            Ok(None) => {}
+            Err(x) => diaglog::note(&format!("removed look More layers: couldn't delete its saved layers: {x}")),
+        }
         // The kept folder counts are checked once per unlock (put right if ever wrong).
         if let Ok(false) = vault_core::db::check_folder_stats(&s2.db()) {
             s2.mark_dirty();
@@ -622,6 +634,9 @@ pub fn run() {
             cmd_library::move_folders,
             cmd_library::delete_folders,
             cmd_library::restore_folders,
+            foldertrash::folders_protected,
+            foldertrash::delete_folders_keeping,
+            foldertrash::restore_trashed,
             cmd_library::folder_view,
             cmd_library::query_items,
             cmd_library::get_item,

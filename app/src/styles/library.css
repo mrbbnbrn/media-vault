@@ -9,7 +9,7 @@
 .search .menu.suggest { left: 0; right: 0; top: calc(100% + 4px); }
 
 .lib-body { flex: 1; display: flex; min-height: 0; }
-.side { width: 260px; flex-shrink: 0; overflow: auto; padding: 12px 10px 40px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 1px; }
+.side { width: var(--side-w, 260px); flex-shrink: 0; overflow: auto; padding: 12px 10px 40px; border-right: 1px solid var(--line); background: var(--panel); display: flex; flex-direction: column; gap: 1px; }
 .side-head { margin: 16px 10px 6px; font-size: var(--fs-xs); font-weight: 500; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
 .side-row { display: flex; align-items: center; gap: 8px; min-height: 34px; padding: 0 10px; border: 1px dashed transparent; border-radius: 8px; background: transparent; color: var(--text-2); font-size: var(--fs-base); text-align: left; cursor: pointer; }
 .side-row:hover { background: #171a1f; }

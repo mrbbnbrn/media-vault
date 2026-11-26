@@ -22,6 +22,7 @@ import { setNotifyWhenDone } from '../jobs';
 import { setFaceBoxes, useFaceBoxes, useAppConfig, saveAppConfig } from '../prefs';
 import { useLayer } from '../keylayers';
 import type { SettingsPage } from '../settingslink';
+import { cleanSideWidth, SIDE_DEFAULT } from '../sidebarwidth';
 import { faceScanPaused, onFaceScanPaused, setFaceScanPaused } from '../ml/facescan';
 
 type Section = SettingsPage;
@@ -194,6 +195,14 @@ export function Settings({ nav, page, at }: { nav: Nav; page?: SettingsPage; at?
                   on={!!look.fanCards} set={(v) => setLook({ fanCards: v })} />
                 <Toggle title="Compact sidebar" desc="Only icons and folder pictures; names show when you point at them. The button at the top of the sidebar switches it too."
                   on={look.sidebarRail} set={(v) => setLook({ sidebarRail: v })} />
+                <div className="setting">
+                  <div className="text">
+                    <span className="title">Folder panel width · {look.sidebarRail ? 'compact' : `${cleanSideWidth(look.sidebarWidth)} px`}</span>
+                    <span className="desc">Drag the folder panel’s right edge in the library to make it wider or narrower; drag it all the way narrow for the compact sidebar. Double-click the edge to reset it.</span>
+                  </div>
+                  <button type="button" className="btn btn-sm" disabled={!look.sidebarRail && cleanSideWidth(look.sidebarWidth) === SIDE_DEFAULT}
+                    onClick={() => setLook({ sidebarRail: false, sidebarWidth: SIDE_DEFAULT })}>Reset width</button>
+                </div>
                 <div className="setting">
                   <div className="text">
                     <span className="title">Top bar buttons</span>

@@ -145,23 +145,11 @@ pub struct ViewerSettings {
     pub depth_focus_range: f64,
     pub depth_focus_round: bool,
     pub depth_focus_mini: bool,
-    /// Depth light: where it comes from ("camera", "mouse", "sweep", "fixed" + side), strength and
-    /// crease shade (0–1), warmth (−1 cool … 1 warm), softer on the subject.
-    pub depth_light: bool,
-    pub depth_light_follow: String,
-    pub depth_light_side: String,
-    pub depth_light_strength: f64,
-    pub depth_light_crease: f64,
-    pub depth_light_warmth: f64,
-    pub depth_light_soft_subject: bool,
     /// Border fill: its size (share of the short side, 0.04–0.15), spent on "zoom" (less) or "moves" (bigger).
     pub depth_border: bool,
     pub depth_border_size: f64,
     pub depth_border_use: String,
-    /// More layers: up to 3 or 4, cut at "small", "medium" or "big" depth jumps.
-    pub depth_multi: bool,
-    pub depth_multi_max: u32,
-    pub depth_multi_cut: String,
+    // (Depth light and More layers were removed 2026-11-27: their old keys in config files are ignored.)
     /// Wiggle: 2–4 views, 3–8 per second, "bounce" or "round", "side" / "updown" / "diagonal",
     /// a short glide, the saved GIF's width (480, 640, 800).
     pub depth_wiggle: bool,
@@ -269,19 +257,9 @@ impl Default for ViewerSettings {
             depth_focus_range: 0.3,
             depth_focus_round: false,
             depth_focus_mini: false,
-            depth_light: false,
-            depth_light_follow: "camera".into(),
-            depth_light_side: "topleft".into(),
-            depth_light_strength: 0.3,
-            depth_light_crease: 0.3,
-            depth_light_warmth: 0.0,
-            depth_light_soft_subject: true,
             depth_border: false,
             depth_border_size: 0.08,
             depth_border_use: "zoom".into(),
-            depth_multi: false,
-            depth_multi_max: 4,
-            depth_multi_cut: "medium".into(),
             depth_wiggle: false,
             depth_wiggle_views: 3,
             depth_wiggle_speed: 5.0,
@@ -401,6 +379,8 @@ pub const DEFAULT_ACCENT: &str = "#2ec4b6";
 pub struct LookSettings {
     /// The sidebar shows only icons and folder pictures.
     pub sidebar_rail: bool,
+    /// The folder panel's width when not compact (px, 180–560; dragged on its right edge).
+    pub sidebar_width: u32,
     /// Name, size and length show on the hovered tile.
     pub hover_info: bool,
     /// Square tiles are cropped around faces.
@@ -424,6 +404,7 @@ impl Default for LookSettings {
     fn default() -> Self {
         Self {
             sidebar_rail: false,
+            sidebar_width: 260,
             hover_info: true,
             face_crop: false,
             ui_scale: 1.0,
@@ -483,6 +464,7 @@ impl AppConfig {
             l.style = "default".into();
         }
         l.tile_gap = l.tile_gap.min(40);
+        l.sidebar_width = if l.sidebar_width == 0 { 260 } else { l.sidebar_width.clamp(180, 560) };
         l.tile_radius = l.tile_radius.min(24);
         l.top_bar.truncate(40);
         let v = &mut self.viewer;
@@ -526,17 +508,8 @@ impl AppConfig {
         v.depth_focus_pull_sec = clamp(v.depth_focus_pull_sec, 0.5, 3.0, 1.5);
         v.depth_focus_blur = clamp(v.depth_focus_blur, 0.0, 1.0, 0.4);
         v.depth_focus_range = clamp(v.depth_focus_range, 0.0, 1.0, 0.3);
-        pick(&mut v.depth_light_follow, &["camera", "mouse", "sweep", "fixed"], "camera");
-        pick(&mut v.depth_light_side, &["left", "right", "top", "topleft", "topright"], "topleft");
-        v.depth_light_strength = clamp(v.depth_light_strength, 0.0, 1.0, 0.3);
-        v.depth_light_crease = clamp(v.depth_light_crease, 0.0, 1.0, 0.3);
-        v.depth_light_warmth = clamp(v.depth_light_warmth, -1.0, 1.0, 0.0);
         v.depth_border_size = clamp(v.depth_border_size, 0.04, 0.15, 0.08);
         pick(&mut v.depth_border_use, &["zoom", "moves"], "zoom");
-        if v.depth_multi_max != 3 {
-            v.depth_multi_max = 4;
-        }
-        pick(&mut v.depth_multi_cut, &["small", "medium", "big"], "medium");
         v.depth_wiggle_views = v.depth_wiggle_views.clamp(2, 4);
         v.depth_wiggle_speed = clamp(v.depth_wiggle_speed, 3.0, 8.0, 5.0);
         pick(&mut v.depth_wiggle_order, &["bounce", "round"], "bounce");
@@ -676,6 +649,21 @@ mod tests {
         assert_eq!(c.viewer.river_dir, "left");
         let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverDir":"top"}}"#).unwrap().sanitized();
         assert_eq!(c.viewer.river_dir, "top");
+    }
+
+    #[test]
+    fn folder_panel_width_reads_old_files_and_is_kept_in_range() {
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"look":{"sidebarRail":true}}"#).unwrap().sanitized();
+        assert_eq!((c.look.sidebar_width, c.look.sidebar_rail), (260, true));
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"look":{"sidebarWidth":333}}"#).unwrap().sanitized();
+        assert_eq!(c.look.sidebar_width, 333);
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.look.sidebar_width, 333);
+        for (w, want) in [(0, 260), (12, 180), (9000, 560)] {
+            let mut c = AppConfig::default();
+            c.look.sidebar_width = w;
+            assert_eq!(c.sanitized().look.sidebar_width, want, "{w}");
+        }
     }
 
     #[test]
@@ -843,9 +831,9 @@ mod tests {
     #[test]
     fn picture_3d_looks_default_round_trip_and_are_sanitised() {
         let v: ViewerSettings = serde_json::from_str(r#"{"depthAmount":2}"#).unwrap();
-        assert!(!v.depth_focus && !v.depth_light && !v.depth_border && !v.depth_multi && !v.depth_wiggle, "all off for older config files");
-        assert_eq!((v.depth_focus_on.as_str(), v.depth_light_follow.as_str(), v.depth_border_use.as_str()), ("subject", "camera", "zoom"));
-        assert_eq!((v.depth_multi_max, v.depth_wiggle_views, v.depth_wiggle_gif_width), (4, 3, 640));
+        assert!(!v.depth_focus && !v.depth_border && !v.depth_wiggle, "all off for older config files");
+        assert_eq!((v.depth_focus_on.as_str(), v.depth_border_use.as_str()), ("subject", "zoom"));
+        assert_eq!((v.depth_wiggle_views, v.depth_wiggle_gif_width), (3, 640));
         let v: ViewerSettings = serde_json::from_str(
             r#"{"depthFocus":true,"depthFocusOn":"mouse","depthFocusPull":"swing","depthLight":true,"depthLightFollow":"fixed","depthLightSide":"right","depthBorder":true,"depthBorderUse":"moves","depthMulti":true,"depthMultiMax":3,"depthWiggle":true,"depthWiggleViews":4,"depthWiggleOrder":"round"}"#,
         )
@@ -853,19 +841,18 @@ mod tests {
         let back: ViewerSettings = serde_json::from_str(&serde_json::to_string(&v).unwrap()).unwrap();
         assert_eq!(back, v);
         let s = AppConfig { viewer: v, ..AppConfig::default() }.sanitized().viewer;
-        assert_eq!((s.depth_focus_on.as_str(), s.depth_focus_pull.as_str(), s.depth_light_side.as_str()), ("mouse", "swing", "right"));
-        assert_eq!((s.depth_border_use.as_str(), s.depth_multi_max, s.depth_wiggle_views, s.depth_wiggle_order.as_str()), ("moves", 3, 4, "round"));
+        assert_eq!((s.depth_focus_on.as_str(), s.depth_focus_pull.as_str()), ("mouse", "swing"));
+        assert_eq!((s.depth_border_use.as_str(), s.depth_wiggle_views, s.depth_wiggle_order.as_str()), ("moves", 4, "round"));
         let mut c = AppConfig::default();
         c.viewer.depth_focus_on = "nose".into();
         c.viewer.depth_focus_blur = 9.0;
         c.viewer.depth_border_size = f64::NAN;
-        c.viewer.depth_multi_max = 9;
         c.viewer.depth_wiggle_views = 0;
         c.viewer.depth_wiggle_speed = 50.0;
         c.viewer.depth_wiggle_gif_width = 333;
         let s = c.sanitized().viewer;
         assert_eq!((s.depth_focus_on.as_str(), s.depth_focus_blur, s.depth_border_size), ("subject", 1.0, 0.08));
-        assert_eq!((s.depth_multi_max, s.depth_wiggle_views, s.depth_wiggle_speed, s.depth_wiggle_gif_width), (4, 2, 8.0, 640));
+        assert_eq!((s.depth_wiggle_views, s.depth_wiggle_speed, s.depth_wiggle_gif_width), (2, 8.0, 640));
     }
 
     #[test]

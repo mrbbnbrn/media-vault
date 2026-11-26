@@ -317,3 +317,19 @@ halfway to the near thing (measured on a soft test edge: far layer 62 → ~95 at
   nearer things is pulled from flat ground only. Now far 62 and near 170 all the way across.
 - Saved layers' tag part `r2` → `r3` (made again).
 Checked: 1 new test (fails on the old code), 635 window tests, tsc. Not tried in the real app yet.
+
+### 2026-11-27: More layers and Depth light removed at the user's request
+
+The user didn't like them. Removed completely: their switches in 3D ▾, their settings in 3D photo settings, the
+config fields (`depthLight*`, `depthMulti*`; old config files still load, the keys are ignored), the shader code
+(the layers' march, the light block, texture units 7–8; the depth texture is plain luminance again), the depth
+texture's facing/crease channels (`depthlook.ts` `depthTexture`, `lightDir`, `leanOfShift`, `lightTint`), More
+layers' maths and worker jobs (`layersmath.ts` `planLayers` … `planKey`, `looklayers.ts` `layersFor`, `lookworker.ts`
+`plan/layerHole/layer/coverage/pack/unpack`) and its preparing in Prepare 3D data, plus their tests. Focus, Border
+fill, Wiggle (+ Save wiggle as GIF), Layered 3D and Lift-off stay as they were.
+**Saved More layers deleted:** once per library, after unlock, in the background (`derived.rs`
+`clear_more_layers_once`, marked done by the library setting `cleanup:morelayers-2026-11`, logged in
+diagnostics.log). It matches only More layers' tag shape
+`<depth>@<side>~<soft>_<outline|nomask>_e<edges>_m<3|4><s|m|b>_<fill>_l<n><key>[r2|r3]_<j>` (all three generations);
+Layered 3D / Lift-off and Border fill plates are kept (unit tests with real-looking tags of each). Delete 3D data no
+longer lists More layers groups (`derived.ts` `isMoreLayersTag`).

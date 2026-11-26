@@ -25,7 +25,7 @@ import { depthChoice, depthOf, depthPack, depthSetup, depthTag, edgesSetting, fo
 import { flatDepth, forgetSubjects, knownSubject, subjectOf, subjectPack, subjectSetup, subjectSetupOf, subjectTag, type SubjectSetup } from './subject';
 import { giveWay } from './bgpace';
 import { foreFor, forgetLayers, layerTags, plateFor, refinedDepth } from './plate';
-import { borderFor, borderTag, forgetLooks, layersFor, layersTag } from './looklayers';
+import { borderFor, borderTag, forgetLooks } from './looklayers';
 import { edgesStrength } from './layers';
 import { inpaintChoice, inpaintPack } from './inpaint';
 import { bitmapOffThread } from './picturecache';
@@ -306,39 +306,27 @@ async function prepareLayers(x: { src: string; itemId: number }, plan: LayerPlan
   }
 }
 
-/** Border fill and More layers as the viewer would draw them now (null: both off, or no depth model). */
+/** Border fill as the viewer would draw it now (null: off, or no depth model). */
 interface LooksPlan {
   depth: DepthSetup;
-  subject: SubjectSetup | null;
-  edges: number;
   fill: string;
-  border: { size: number; tag: string } | null;
-  multi: { max: number; cut: 'small' | 'medium' | 'big' } | null;
+  size: number;
+  tag: string;
 }
 
 async function looksPlan(): Promise<LooksPlan | null> {
   const p = viewerPrefs();
-  if (!p.depthBorder && !p.depthMulti) return null;
+  if (!p.depthBorder) return null;
   if (!depthSetup()) await depthPack().catch(() => null);
   const depth = depthSetup();
   if (!depth) return null;
-  if (p.depthMulti && !subjectSetup()) await subjectPack().catch(() => null);
-  const subject = p.depthMulti ? subjectSetup() : null;
-  const chosen = inpaintChoice(p);
-  const fill = chosen;
+  const fill = inpaintChoice(p);
   const size = p.depthBorderSize ?? 0.08;
-  return {
-    depth,
-    subject,
-    edges: subject && p.depthEdges3d ? edgesStrength(p.depthEdgesStrength) : 0,
-    fill,
-    border: p.depthBorder ? { size, tag: borderTag(depthTag(depth), size, fill) } : null,
-    multi: p.depthMulti ? { max: p.depthMultiMax === 3 ? 3 : 4, cut: p.depthMultiCut === 'small' || p.depthMultiCut === 'big' ? p.depthMultiCut : 'medium' } : null,
-  };
+  return { depth, fill, size, tag: borderTag(depthTag(depth), size, fill) };
 }
 
-/** One picture's border and layers, made (or found saved) and saved, made as the viewer makes them. */
-async function prepareLooks(x: { src: string; itemId: number }, plan: LooksPlan, border: boolean): Promise<void> {
+/** One picture's border, made (or found saved) and saved, made as the viewer makes it. */
+async function prepareLooks(x: { src: string; itemId: number }, plan: LooksPlan): Promise<void> {
   const depth = await depthOf(x.src, false, plan.depth);
   if (!depth) return;
   const bmp = await bitmapOffThread(x.src, 0, 0);
@@ -346,16 +334,7 @@ async function prepareLooks(x: { src: string; itemId: number }, plan: LooksPlan,
   const natural = { w: bmp.width, h: bmp.height };
   bmp.close();
   const key = `prep|${x.src}|${depthTag(plan.depth)}`;
-  if (border && plan.border) {
-    await borderFor(`${key}|b${plan.border.size}|${plan.fill}`, { src: x.src, natural, size: plan.border.size, depth, model: plan.fill, save: { id: x.itemId, tag: plan.border.tag, wait: true } });
-  }
-  if (plan.multi) {
-    const mask = plan.subject ? await subjectOf(x.src, false, plan.subject) : null;
-    const d = mask && plan.edges > 0 ? refinedDepth(`${key}|${subjectTag(plan.subject!)}`, depth, mask, plan.edges) : depth;
-    const edges = mask ? plan.edges : 0;
-    const tag = layersTag(depthTag(plan.depth), mask ? subjectTag(plan.subject!) : '', edges, plan.multi.max, plan.multi.cut, plan.fill);
-    await layersFor(`${key}|m|${tag}`, { src: x.src, natural, depth: d, mask, max: plan.multi.max, cut: plan.multi.cut, model: plan.fill, save: { id: x.itemId, tag, wait: true } });
-  }
+  await borderFor(`${key}|b${plan.size}|${plan.fill}`, { src: x.src, natural, size: plan.size, depth, model: plan.fill, save: { id: x.itemId, tag: plan.tag, wait: true } });
 }
 
 /** The request being worked on. */
@@ -435,20 +414,19 @@ async function runOne(r: PrepareRequest): Promise<void> {
         updateJob(JOB, { done });
       }
     }
-    // Border fill and More layers, when on (with the depth model; More layers with the outline when there is one).
+    // Border fill, when on (with the depth model).
     const looks = await looksPlan();
     if (looks && !stopAsked) {
-      const bHave = looks.border ? new Set(await api.derivedHave('plate', looks.border.tag).catch(() => [] as number[])) : null;
-      // (More layers' tags depend on where each picture is cut, so each is looked at: saved ones are only read.)
-      const todo = pics.filter((x) => looks.multi || (bHave && !bHave.has(x.itemId)));
+      const have = new Set(await api.derivedHave('plate', looks.tag).catch(() => [] as number[]));
+      const todo = pics.filter((x) => !have.has(x.itemId));
       if (todo.length) {
-        updateJob(JOB, { detail: `${r.what} · Border fill and More layers`, total: total + todo.length });
+        updateJob(JOB, { detail: `${r.what} · Border fill`, total: total + todo.length });
         set({ total: total + todo.length });
       }
       for (const x of todo) {
         await giveWay(() => stopAsked);
         if (stopAsked) break;
-        await prepareLooks(x, looks, !!bHave && !bHave.has(x.itemId)).catch(() => {});
+        await prepareLooks(x, looks).catch(() => {});
         done += 1;
         set({ done });
         updateJob(JOB, { done });

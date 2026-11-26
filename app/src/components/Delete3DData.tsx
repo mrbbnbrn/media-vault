@@ -10,7 +10,7 @@
 import { errText } from '../text';
 import { useEffect, useMemo, useState } from 'react';
 import { api, type DerivedGroup, type DerivedKind, type FaceSplit, type ItemFilter } from '../api';
-import { mapLabel, savedChanged } from '../derived';
+import { isMoreLayersTag, mapLabel, savedChanged } from '../derived';
 import { forgetDepth } from '../depth';
 import { folderFilters, pictureIds } from '../prepare';
 import { forgetSubjects } from '../subject';
@@ -37,7 +37,7 @@ type Which = 'all' | 'noFaces' | 'noGood';
 const KIND_TITLE: Record<DerivedKind, string> = {
   depth: 'Depth maps (3D photos)',
   outline: 'Subject outlines (Lift-off and the subject effects)',
-  plate: 'Background fills (Layered 3D, Lift-off, Border fill, More layers)',
+  plate: 'Background fills (Layered 3D, Lift-off, Border fill)',
   fore: 'Subject layers (Lift-off, Layered 3D)',
   track: 'Prepared 3D of videos and GIFs',
 };
@@ -119,8 +119,10 @@ export function Delete3DData(props: Delete3DTarget & { onClose: () => void; onDo
     setGroups(null);
     const look = [...ids, ...moving];
     void (look.length ? api.derivedSummary(look) : Promise.resolve([] as DerivedGroup[])).then(
-      (g) => {
+      (all) => {
         if (!live) return;
+        // (More layers was removed: its saved layers are deleted once after unlock, never listed.)
+        const g = all.filter((x) => !isMoreLayersTag(x.kind, x.model));
         setGroups(g);
         setChecked(new Set(g.map(keyOf)));
       },

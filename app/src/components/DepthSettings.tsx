@@ -2,8 +2,8 @@
 // pictures move gently in depth on their own (in slideshows and while just
 // open), along which shape, how far and how fast, plus the depth strength
 // and the mouse reaction that the 3D button uses too, the subject effects,
-// the picture layers, the 3D looks (Focus, Depth light, More layers, Border
-// fill, Wiggle), and which depth model (and how much detail) works out the depth.
+// the picture layers, the 3D looks (Focus, Border fill, Wiggle), and which
+// depth model (and how much detail) works out the depth.
 
 import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
@@ -97,10 +97,9 @@ const Heading = ({ title, note }: { title: string; note: string }) => (
   </>
 );
 
-/** The 3D looks for still pictures (docs/picture-3d-looks-plan.md): Focus, Depth light, More layers, Border fill, Wiggle. */
+/** The 3D looks for still pictures (docs/picture-3d-looks-plan.md): Focus, Border fill, Wiggle. */
 function LooksSettings({ prefs }: { prefs: ViewerSettings }) {
   const set = saveViewerPrefs;
-  const fixed = (prefs.depthLightFollow ?? 'camera') === 'fixed';
   return (
     <>
       <Heading title="Looks" note="For still pictures (not GIFs or videos). Each is also in the viewer’s 3D ▾ menu. Flat pictures (documents, screenshots) are left as they are." />
@@ -123,34 +122,7 @@ function LooksSettings({ prefs }: { prefs: ViewerSettings }) {
       <Check checked={!!prefs.depthFocusMini} label="Miniature" onChange={(v) => set({ depthFocusMini: v })}
         note="A sharp band across the middle, top and bottom blurred: things look like toys (the depth isn't used for this one)." />
 
-      <Check checked={!!prefs.depthLight} label="Depth light" onChange={(v) => set({ depthLight: v })}
-        note="A soft light shaped by the depth: surfaces facing it brighten a little, creases get a little shade. The picture's overall brightness stays the same." />
-      <Seg label="Light follows" value={prefs.depthLightFollow ?? 'camera'} onChange={(v) => set({ depthLightFollow: v })}
-        options={[['camera', 'The camera'], ['mouse', 'The mouse'], ['sweep', 'Slow sweep'], ['fixed', 'One side']]}
-        note="Where the light comes from. The camera: it moves with the 3D motion and looks just like the picture while the camera is in the middle." />
-      {fixed && (
-        <Seg label="Side" value={prefs.depthLightSide ?? 'topleft'} onChange={(v) => set({ depthLightSide: v })}
-          options={[['left', 'Left'], ['topleft', 'Top left'], ['top', 'Top'], ['topright', 'Top right'], ['right', 'Right']]}
-          note="Which side the light comes from." />
-      )}
-      <Slider id="dp-lstr" label="Light strength" title="How strong the highlights and shade are" min={0} max={1} step={0.05}
-        value={prefs.depthLightStrength ?? 0.3} onChange={(v) => set({ depthLightStrength: v })} />
-      <Slider id="dp-lcr" label="Crease shade" title="How much corners and gaps darken" min={0} max={1} step={0.05}
-        value={prefs.depthLightCrease ?? 0.3} onChange={(v) => set({ depthLightCrease: v })} />
-      <Slider id="dp-lwarm" label="Light colour" title="Cool (bluish) to warm (golden) highlights" min={-1} max={1} step={0.1}
-        value={prefs.depthLightWarmth ?? 0} onChange={(v) => set({ depthLightWarmth: v })}
-        fmt={(v) => (Math.abs(v) < 0.05 ? 'Neutral' : v < 0 ? `Cool ${Math.round(-v * 100)}%` : `Warm ${Math.round(v * 100)}%`)} />
-      <Check checked={prefs.depthLightSoftSubject !== false} label="Softer on the subject" onChange={(v) => set({ depthLightSoftSubject: v })}
-        note="Less light and shade on the subject, so faces don't get shiny or hollow-eyed (needs the outline model)." />
-
-      <Heading title="Edges and layers" note="For still pictures. Both are worked out once per picture (in the background) and saved in the vault, encrypted." />
-      <Check checked={!!prefs.depthMulti} label="More layers" onChange={(v) => set({ depthMulti: v })}
-        note="The picture is cut at every big depth jump (not just around the subject), and what's behind each near thing is filled in. Moving the camera then shows clean background behind every near thing. Slopes such as a floor are never cut." />
-      <Seg label="Layers" value={prefs.depthMultiMax === 3 ? 3 : 4} onChange={(v) => set({ depthMultiMax: v })}
-        options={[[3, 'Up to 3'], [4, 'Up to 4']]} note="The most layers a picture is cut into (fewer when it has fewer big jumps)." />
-      <Seg label="Cut at" value={prefs.depthMultiCut ?? 'medium'} onChange={(v) => set({ depthMultiCut: v })}
-        options={[['small', 'Small jumps'], ['medium', 'Medium'], ['big', 'Big jumps only']]}
-        note="Smaller: more cuts (more things get their own layer), a little slower to prepare." />
+      <Heading title="Edges" note="For still pictures. Worked out once per picture (in the background) and saved in the vault, encrypted." />
       <Check checked={!!prefs.depthBorder} label="Border fill" onChange={(v) => set({ depthBorder: v })}
         note="A thin border is painted around the picture, so the 3D needs less zoom (or can move further). Plain edges such as black bars are simply carried on." />
       <Slider id="dp-bsize" label="Border size" title="How much is painted around the picture (share of its short side)" min={0.04} max={0.15} step={0.01}
@@ -332,7 +304,7 @@ export function DepthSettingsDialog({ prefs, onClose }: { prefs: ViewerSettings;
         <span style={{ alignSelf: 'start', paddingTop: 12 }}>Background fill</span>
         <div>
           <InpaintModelChoice />
-          <span className="faint" style={{ fontSize: 12 }}>Used by Layered 3D, More layers and Border fill.</span>
+          <span className="faint" style={{ fontSize: 12 }}>Used by Layered 3D and Border fill.</span>
         </div>
 
         <LooksSettings prefs={prefs} />

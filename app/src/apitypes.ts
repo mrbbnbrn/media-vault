@@ -110,22 +110,10 @@ export interface ViewerSettings {
   depthFocusRange?: number;
   depthFocusRound?: boolean;
   depthFocusMini?: boolean;
-  /** Depth light: light and shade from the depth. Where it comes from (+ side when fixed), strength, crease shade (0–1), warmth (−1 cool … 1 warm), softer on the subject. */
-  depthLight?: boolean;
-  depthLightFollow?: 'camera' | 'mouse' | 'sweep' | 'fixed';
-  depthLightSide?: 'left' | 'right' | 'top' | 'topleft' | 'topright';
-  depthLightStrength?: number;
-  depthLightCrease?: number;
-  depthLightWarmth?: number;
-  depthLightSoftSubject?: boolean;
   /** Border fill: a painted border (share of the short side, 0.04–0.15) spent on less zoom or bigger moves. */
   depthBorder?: boolean;
   depthBorderSize?: number;
   depthBorderUse?: 'zoom' | 'moves';
-  /** More layers: the picture cut at its big depth jumps (up to 3 or 4 layers), at small / medium / big jumps. */
-  depthMulti?: boolean;
-  depthMultiMax?: number;
-  depthMultiCut?: 'small' | 'medium' | 'big';
   /** Wiggle: the camera jumps between 2–4 viewpoints, 3–8 times a second, back and forth or round, sideways / up and down / diagonal, with a short glide; the saved GIF's width. */
   depthWiggle?: boolean;
   depthWiggleViews?: number;
@@ -171,9 +159,7 @@ export const DEFAULT_VIEWER: ViewerSettings = {
   depthEdges3d: false, depthEdgesStrength: 0.7, depthSubjectOnly: false,
   depthLayered: false, inpaintModel: '', depthIdlePrepare: true,
   depthFocus: false, depthFocusOn: 'subject', depthFocusPull: 'off', depthFocusPullSec: 1.5, depthFocusBlur: 0.4, depthFocusRange: 0.3, depthFocusRound: false, depthFocusMini: false,
-  depthLight: false, depthLightFollow: 'camera', depthLightSide: 'topleft', depthLightStrength: 0.3, depthLightCrease: 0.3, depthLightWarmth: 0, depthLightSoftSubject: true,
   depthBorder: false, depthBorderSize: 0.08, depthBorderUse: 'zoom',
-  depthMulti: false, depthMultiMax: 4, depthMultiCut: 'medium',
   depthWiggle: false, depthWiggleViews: 3, depthWiggleSpeed: 5, depthWiggleOrder: 'bounce', depthWiggleDir: 'side', depthWiggleSmooth: false, depthWiggleGifWidth: 640,
   riverFlow: 1, riverDensity: 1, riverLayers: 5, riverDir: 'left',
   poorFaces: false,
@@ -241,10 +227,13 @@ export interface PoorFace extends Suggestion {
 
 export const DEFAULT_LOOK: LookSettings = {
   sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [], minimap: true,
+  sidebarWidth: 260,
 };
 
 export interface LookSettings {
   sidebarRail: boolean;
+  /** The folder panel's width when not compact (px, 180–560; dragged on its right edge, sidebarwidth.ts). */
+  sidebarWidth?: number;
   hoverInfo: boolean;
   faceCrop: boolean;
   /** 0.5–2, 1 = normal. */
@@ -710,6 +699,25 @@ export interface TrashFolder {
   items: number;
   bytes: number;
   cover: number | null;
+}
+
+/** What deleting folders would keep with "Keep them" (an item can be several; `total` counts it once). */
+export interface FoldersProtected {
+  favourites: number;
+  copies: number;
+  /** Originals with a free copy somewhere. */
+  originals: number;
+  total: number;
+}
+
+/** What "Keep them" did: its stamp (for undo), items and subfolders that went to the trash, items kept. */
+export interface KeptTrash {
+  stamp: number;
+  items: number;
+  folders: number;
+  kept: number;
+  /** The folders that went to the trash. */
+  gone: number[];
 }
 
 export interface TrashView {
