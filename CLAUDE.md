@@ -333,7 +333,8 @@ How to record changes:
 
 ### Recent changes
 - 2026-11-27 (Claude Code on the user's PC, asked by the user): **any file in the vault + music player; More layers
-  and Depth light removed; resizable folder panel; folder delete keeps favourites/free copies.**
+  and Depth light removed; resizable folder panel; folder delete keeps favourites/free copies.** Released as **build-114** (commit `b67b42c`, CI Linux + Windows passed; the first
+  run failed one old test: the phone-receive path now keeps refusing non-media, `playable::add_original`).
   - **Schema 22:** `media.kind` also takes `audio` and `file` (generic table rebuild like v9, guarded by
     `media_takes_files()`; test `v22_takes_music_and_any_file_and_keeps_everything`). Older builds can't open a
     library after v22 has. Import takes every file (`stored_kind()`; junk like Thumbs.db/desktop.ini/`~$*`/`._*`
