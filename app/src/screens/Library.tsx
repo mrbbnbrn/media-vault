@@ -3,6 +3,8 @@
 // actions with undo, and importing by drag and drop.
 
 import { isPhoneOriginal } from '../phoneoriginal';
+import { IMPORT_FILTERS, onlyShown, opensAsInfo, PHONE_HINT, phoneSkippedText, storedOnly, viewerList } from '../kinds';
+import { FileInfoDialog } from '../components/StoredItems';
 import { SORTS, minimapLabel, KINDS, PREVIEWS, viewTitle, NO_SEARCH, foldName, searchTitle, groupBy, saveColsLater, findAnchor } from './library/helpers';
 import { FolderCover } from './library/FolderCover';
 import { TagItemsDialog, ArchivePasswordDialog, ImportSummary, CoverPicker } from './library/LibraryDialogs';
@@ -142,6 +144,7 @@ type Dialog =
   | { t: 'shortcuts' }
   | { t: 'sheet' }
   | { t: 'export'; request: Omit<ExportRequest, 'dest'>; what: string }
+  | { t: 'fileInfo'; item: Item }
   | { t: 'deleteMany'; folders: FolderCard[]; items: number[] }
   | { t: 'moveFolders'; folders: FolderCard[] }
   | { t: 'moveMixed'; folders: FolderCard[]; ids: number[] }
@@ -1066,7 +1069,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         return;
       }
       if (!summary.files && !summary.archives.length) {
-        setError('Nothing to import there. Supported: pictures (jpg, png, webp), GIFs, videos (mp4, m4v, webm), text files, PDFs and .7z archives.');
+        setError(summary.unsupported
+          ? 'Nothing to import there: only files Windows makes by itself (like Thumbs.db or desktop.ini), or files that are gone.'
+          : 'Nothing to import there.');
         return;
       }
       await api.startImport(paths, target, null);
@@ -1106,12 +1111,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     };
   }, [reload]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pickAndImport = async (directory: boolean) => {
+  /** `packed`: .7z archives are stored as they are (one file each), not unpacked. */
+  const pickAndImport = async (directory: boolean, packed = false) => {
     if (!inTauri) return;
-    const r = await open({ directory, multiple: true, title: directory ? 'Import folders' : 'Import files or .7z archives',
-      filters: directory ? undefined : [{ name: 'Media, documents and archives', extensions: ['mp4', 'm4v', 'webm', 'gif', 'webp', 'png', 'jpg', 'jpeg', 'pdf', 'txt', 'md', 'log', 'csv', 'json', 'srt', '7z', '001'] }] });
+    const r = await open({ directory, multiple: true, title: directory ? 'Import folders' : packed ? 'Import files, keeping archives packed' : 'Import files or .7z archives',
+      filters: directory ? undefined : IMPORT_FILTERS });
     const paths = Array.isArray(r) ? r : r ? [r] : [];
-    if (paths.length) beginImport(paths, currentTarget());
+    if (!paths.length) return;
+    if (packed) api.startImport(paths, currentTarget(), null, true, true).catch((e) => setError(errText(e)));
+    else beginImport(paths, currentTarget());
   };
 
   // ---- derived -------------------------------------------------------------------------
@@ -1211,8 +1219,15 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     opened.current = id != null && !auto ? { id, el: sourceElement(id) } : null;
     return id != null && !auto ? openRect(id) : undefined;
   };
-  const playList = (list: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
-    if (!list.length) return;
+  const playList = (all: Item[], auto: boolean, startId?: number, title = viewTitle(view, folder)) => {
+    // Other files open to their info panel; music plays among the list's music; slideshows leave both out (kinds.ts).
+    const start = startId != null ? all.find((i) => i.id === startId) : undefined;
+    if (!auto && start && opensAsInfo(start.kind)) return setDialog({ t: 'fileInfo', item: start });
+    const list = viewerList(all, start?.kind, auto);
+    if (!list.length) {
+      if (all.length) setNote({ text: 'Nothing to show here: music and other files don’t play in slideshows.', at: 0 });
+      return;
+    }
     const fromRect = markOpen(startId, auto);
     nav.go({
       name: 'viewer',
@@ -1283,8 +1298,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
    */
   const openInFolder = async (it: Item, stay = false) => {
     try {
+      if (opensAsInfo(it.kind)) return setDialog({ t: 'fileInfo', item: it });
       const fromRect = stay ? markOpen(it.id, false) : undefined;
-      const list = await api.queryItems({ folder: it.folderId });
+      const list = viewerList(await api.queryItems({ folder: it.folderId }), it.kind, false);
       const name = it.folderId == null ? 'Top level' : folders.find((f) => f.id === it.folderId)?.name ?? 'Folder';
       nav.go({ name: 'viewer', items: list.map(fromItem), startKey: `v${it.id}`, title: name, auto: false, back: stay ? view : { kind: 'folder', id: it.folderId }, fromRect });
     } catch (e) {
@@ -1392,7 +1408,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     ...(tabs ? [{ label: 'Open in new tab', hint: 'middle-click', onSelect: () => tabs.open({ kind: 'folder', id: f.id }) }] : []),
     group('Play', [
       { label: 'Slideshow', hint: 'Shift + middle-click', onSelect: async () => {
-        const list = await api.queryItems({ folder: f.id, recursive: true });
+        const list = onlyShown(await api.queryItems({ folder: f.id, recursive: true }));
         if (list.length) nav.go({ name: 'viewer', items: list.map(fromItem), title: f.name, auto: true, back: view, person: f.person ? f.id : null, place: { key: `f${f.id}`, name: f.name } });
       } },
       { label: 'Walk through as a museum', hint: '3D', onSelect: () => openFolderMuseum(f, (text) => setNote({ text, at: 0 })) },
@@ -1455,8 +1471,13 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     group('Share and export', [
       { label: 'Share as encrypted .7z…', onSelect: () => setDialog({ t: 'share', ids: [], folders: [f.id], what: `“${f.name}”` }) },
       { label: 'Export decrypted…', onSelect: () => setDialog({ t: 'export', request: { folder: f.id }, what: `“${f.name}”` }) },
-      !!phone.status?.peers.length && { label: 'Send to phone', hint: phone.status.connected ?? 'Open Aktarım on your phone', disabled: !phone.status.connected,
-        onSelect: () => { api.transferSend([], [f.id]).then((r) => { if (!r.items) say('There is nothing in there to send.', 'note'); }).catch((e) => say(errText(e), 'problem')); } },
+      !!phone.status?.peers.length && { label: 'Send to phone', hint: phone.status.connected ?? PHONE_HINT, disabled: !phone.status.connected,
+        onSelect: () => {
+          api.transferSend([], [f.id]).then((r) => {
+            if (!r.items) say('There is nothing in there to send.', 'note');
+            else if (r.skipped) say(phoneSkippedText(r.skipped), 'note');
+          }).catch((e) => say(errText(e), 'problem'));
+        } },
     ]),
     { label: 'New folder inside…', sepBefore: true, onSelect: () => setDialog({ t: 'newFolder', parent: f.id }) },
     { label: 'Rename…', hint: 'F2', onSelect: () => renameFolderAsk(f) },
@@ -2097,6 +2118,8 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       ];
     }
     const allFav = itemsOnly && ids.every((id) => itemById(id)?.favourite);
+    // Only music and other files picked: nothing to show, scan or turn into pictures (kinds.ts).
+    const keptOnly = itemsOnly && nI > 0 && ids.every((id) => storedOnly(itemById(id)?.kind));
     const pics = itemsOnly ? ids.filter((id) => itemById(id)?.kind === 'image') : [];
     const movs = itemsOnly ? ids.filter((id) => itemById(id)?.kind === 'video' || itemById(id)?.kind === 'gif') : [];
     const picList = pictures(shownSel);
@@ -2107,7 +2130,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
     const acts: (Act | false | null)[] = [
       oneFolder && here !== oneFolder.id && { id: 'open', label: 'Open', hint: 'Enter', icon: <FolderIcon size={14} />, bar: true, title: 'Enter', run: () => openFolder(oneFolder.id) },
       one && { id: 'open', label: 'Open', hint: 'Enter', run: () => playItems(false, one.id) },
-      { id: 'play', label: nI > 1 && itemsOnly ? 'Play these as a slideshow' : one ? 'Slideshow from here' : 'Slideshow', barLabel: 'Play', icon: <PlayIcon size={13} />, bar: true,
+      !keptOnly && { id: 'play', label: nI > 1 && itemsOnly ? 'Play these as a slideshow' : one ? 'Slideshow from here' : 'Slideshow', barLabel: 'Play', icon: <PlayIcon size={13} />, bar: true,
         title: 'Slideshow of everything selected (folders: everything inside)',
         run: itemsOnly && one ? () => playItems(true, one.id) : onAll((list) => playList(list, true, itemsOnly ? ids[0] : undefined, oneFolder ? oneFolder.name : 'Selection')) },
       one && !(view.kind === 'folder' && view.id === one.folderId) && { id: 'showFolder', label: 'Show in its folder', run: () => showInFolder(one) },
@@ -2144,26 +2167,26 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       (one || oneFolder) && { id: 'note', label: 'Note…', hint: (one ?? oneFolder)?.note ? 'has a note' : undefined, bar: true,
         run: () => (one ? setDialog({ t: 'note', folder: false, id: one.id, name: one.name, note: one.note }) : setDialog({ t: 'note', folder: true, id: oneFolder!.id, name: oneFolder!.name, note: oneFolder!.note })) },
       oneFolder && { id: 'look', label: 'Colour and emoji…', bar: true, run: () => setDialog({ t: 'look', folder: oneFolder }) },
-      home && { id: 'cover', label: `Use as cover of “${home.name}”`, barLabel: 'Set as folder cover', bar: true, run: () => coverSet(home.id, one!.id) },
+      home && !keptOnly && { id: 'cover', label: `Use as cover of “${home.name}”`, barLabel: 'Set as folder cover', bar: true, run: () => coverSet(home.id, one!.id) },
       !nI && nF >= 2 && { id: 'merge', label: 'Merge into one…', hint: 'asks first', barLabel: 'Merge…', bar: true, run: () => setDialog({ t: 'merge', folders: fs }) },
       oneFolder && { id: 'qsort', label: 'Quick sort', hint: 'send items to folders fast', bar: true, run: () => setDialog({ t: 'quickSort', folder: oneFolder }) },
-      { id: 'faces', group: 'Faces', label: 'Scan for faces', sepBefore: true, bar: true, run: itemsOnly ? () => failed(scanFaces({ ids }, what)) : onAll((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) },
-      (itemsOnly || oneFolder) && { id: 'sortPeople', group: 'Faces', label: 'Sort into person folders…', hint: 'recognised people',
+      !keptOnly && { id: 'faces', group: 'Faces', label: 'Scan for faces', sepBefore: true, bar: true, run: itemsOnly ? () => failed(scanFaces({ ids }, what)) : onAll((list) => scanFaces({ ids: list.map((i) => i.id) }, what)) },
+      !keptOnly && (itemsOnly || oneFolder) && { id: 'sortPeople', group: 'Faces', label: 'Sort into person folders…', hint: 'recognised people',
         run: () => openSortAll(true, itemsOnly ? { ids, label: what } : { folder: oneFolder!.id, label: what }) },
       // Faces and look-alikes for a selection too (folders: everything inside).
-      !oneFolder && { id: 'delFaces', group: 'Faces', label: 'Delete face data…', hint: 'faces found in these', run: onAll((list) => setDialog({ t: 'delFacesItems', ids: list.map((i) => i.id), what })) },
-      !oneFolder && { id: 'separate', group: 'Faces', label: 'Separate pictures without faces…', hint: 'move them to a folder',
+      !oneFolder && !keptOnly && { id: 'delFaces', group: 'Faces', label: 'Delete face data…', hint: 'faces found in these', run: onAll((list) => setDialog({ t: 'delFacesItems', ids: list.map((i) => i.id), what })) },
+      !oneFolder && !keptOnly && { id: 'separate', group: 'Faces', label: 'Separate pictures without faces…', hint: 'move them to a folder',
         run: onAll((list) => {
           const at = view.kind === 'folder' && view.id != null ? folders.find((f) => f.id === view.id) : folders.find((f) => f.id === list[0].folderId);
           if (!at) return setNote({ text: 'Open a folder first: the pictures are separated into a folder inside it.', at: 0 });
           setDialog({ t: 'separate', folder: { id: at.id, name: at.name }, items: list, what });
         }) },
-      !oneFolder && (many || nF > 0) && { id: 'looks', group: 'Faces', label: 'Find look-alikes among these',
+      !oneFolder && !keptOnly && (many || nF > 0) && { id: 'looks', group: 'Faces', label: 'Find look-alikes among these',
         run: onAll((list) => setView({ kind: 'lookalikes', folder: null, only: list.map((i) => i.id), onlyLabel: what })) },
       one && one.thumb === 'failed' && one.kind === 'video' && { id: 'playable', label: 'Make a playable copy', hint: 'converts to MP4', run: () => setDialog({ t: 'convert', items: [one], target: 'mp4' }) },
       // A picture from the phone the window can't show (HEIC…): its JPEG copy (made on arrival when the video tool is there).
       one && one.kind === 'image' && isPhoneOriginal(one) && { id: 'playable', label: 'Make a playable copy', hint: 'converts to JPG', run: () => setDialog({ t: 'convert', items: [one], target: 'jpg' }) },
-      { id: 'convert', label: `Convert to…${inside}`, barLabel: 'Convert…', bar: true, run: itemsOnly && shownSel.length === nI ? () => setDialog({ t: 'convert', items: shownSel }) : onAll((list) => setDialog({ t: 'convert', items: list })) },
+      !keptOnly && { id: 'convert', label: `Convert to…${inside}`, barLabel: 'Convert…', bar: true, run: itemsOnly && shownSel.length === nI ? () => setDialog({ t: 'convert', items: shownSel }) : onAll((list) => setDialog({ t: 'convert', items: list })) },
       // "Models in use": only the depth and outline models chosen in the 3D settings.
       ...([[false, true], [false, false], [true, true], [true, false]] as const).map(([faces, inUse], k) => {
         const label = `${faces ? 'Pictures with faces only' : 'Prepare 3D data'}, ${inUse ? 'models in use' : 'every installed model'}`;
@@ -2179,19 +2202,19 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       nF > 1 && !nI && { id: 'previewsOff', label: "Don't make preview clips here", hint: 'subfolders too', sepBefore: true, run: () => setPreviewClips(fs, true) },
       nF > 1 && !nI && fs.some((f) => previewsOff.has(f.id)) && { id: 'previewsOn', label: 'Make preview clips here again', hint: 'subfolders too', run: () => setPreviewClips(fs, false) },
       nF > 1 && !nI && { id: 'previewsDel', label: 'Delete preview clips here…', hint: 'subfolders too', run: () => setDialog({ t: 'delPreviews', folders: fs }) },
-      { id: 'gif', label: 'Create GIF or video…', barLabel: 'Create GIF…', bar: true, noMenu: itemsOnly && picList.length < 2,
+      !keptOnly && { id: 'gif', label: 'Create GIF or video…', barLabel: 'Create GIF…', bar: true, noMenu: itemsOnly && picList.length < 2,
         run: itemsOnly && shownSel.length === nI ? () => (picList.length < 2 ? setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 }) : setDialog({ t: 'animation', items: picList }))
           : onAll((list) => {
             const p = pictures(list);
             if (p.length < 2) setNote({ text: 'Select at least two pictures to make a GIF or video.', at: 0 });
             else setDialog({ t: 'animation', items: p });
           }) },
-      { id: 'speed', group: 'More ways to play', label: 'Speed round', hint: 'favourite fast', bar: true, title: 'Pictures flash by; press F to favourite',
+      !keptOnly && { id: 'speed', group: 'More ways to play', label: 'Speed round', hint: 'favourite fast', bar: true, title: 'Pictures flash by; press F to favourite',
         run: onAll((list) => startSpeedRound(oneFolder, list)) },
-      (many || nF > 0) && { id: 'duel', group: 'More ways to play', label: itemsOnly ? 'Duel these' : 'Duel', hint: 'pick favourites, set weights', barLabel: 'Duel', bar: true, title: 'Pick the better of two; sets the weights',
+      !keptOnly && (many || nF > 0) && { id: 'duel', group: 'More ways to play', label: itemsOnly ? 'Duel these' : 'Duel', hint: 'pick favourites, set weights', barLabel: 'Duel', bar: true, title: 'Pick the better of two; sets the weights',
         run: onAll((list) => startDuel(null, list)) },
       oneFolder && { id: 'slots', group: 'More ways to play', label: 'Slot machine', hint: 'feeling lucky?', bar: true, title: 'Spin three reels of pictures from this folder', run: () => setDialog({ t: 'slots', folder: oneFolder }) },
-      { id: 'museum', group: 'More ways to play', label: 'Walk through as a museum', hint: '3D', bar: true, title: 'A 3D gallery of these pictures',
+      !keptOnly && { id: 'museum', group: 'More ways to play', label: 'Walk through as a museum', hint: '3D', bar: true, title: 'A 3D gallery of these pictures',
         run: onAll((list) => openMuseum(oneFolder ? oneFolder.name : one ? one.name : 'Selection', list, (text) => setNote({ text, at: 0 }))) },
       { id: 'share', group: 'Share and export', label: 'Share as encrypted .7z…', barLabel: 'Share as .7z…', title: 'A password-protected archive', sepBefore: true, bar: true,
         run: () => setDialog({ t: 'share', ids, folders: fs.map((f) => f.id), what }) },
@@ -2200,10 +2223,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
           : itemsOnly ? () => setDialog({ t: 'export', request: { ids }, what }) : onAll((list) => setDialog({ t: 'export', request: { ids: list.map((i) => i.id) }, what })) },
       // Wi-Fi transfer: only once a phone is paired; greyed out until it is connected.
       !!phone.status?.peers.length && { id: 'phone', group: 'Share and export', label: 'Send to phone', bar: true, barLabel: 'Send to phone',
-        icon: <PhoneIcon size={14} />, disabled: !phone.status.connected, hint: phone.status.connected ? phone.status.connected : 'Open Aktarım on your phone',
-        title: phone.status.connected ? `Send to ${phone.status.connected} over Wi-Fi` : undefined,
+        icon: <PhoneIcon size={14} />, disabled: !phone.status.connected, hint: phone.status.connected ? phone.status.connected : PHONE_HINT,
+        title: phone.status.connected ? `Send to ${phone.status.connected} over Wi-Fi (pictures, GIFs and videos)` : PHONE_HINT,
         run: () => failed(api.transferSend(ids, fs.map((f) => f.id)).then((r) => {
           if (!r.items) say('There is nothing in there to send.', 'note');
+          else if (r.skipped) say(phoneSkippedText(r.skipped), 'note');
         }).catch((e) => say(errText(e), 'problem'))) },
       { id: 'delete', label: itemsOnly ? 'Move to trash' : 'Move to trash…', hint: 'Delete', barLabel: 'Move to trash', icon: <TrashIcon />,
         danger: true, sepBefore: true, bar: 'pinned', title: 'Moves to the trash (Delete key · Ctrl+Z to undo)',
@@ -2359,8 +2383,9 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       title="Play everything shown here as a slideshow"><PlayIcon size={14} /> Slideshow</button> },
     multi: { label: 'Multi-screen', node: <button type="button" className="btn btn-sm" onClick={() => nav.go({ name: 'multi', back: view })}><GridIcon /> Multi-screen</button> },
     import: { label: 'Import', node: <Dropdown className="btn btn-sm btn-primary" label={<><ImportIcon /> Import</>} items={[
-      { label: 'Files or .7z archives…', onSelect: () => pickAndImport(false) },
+      { label: 'Files (any kind) or .7z archives…', onSelect: () => pickAndImport(false) },
       { label: 'Folders…', onSelect: () => pickAndImport(true) },
+      { label: 'Files, keeping .7z archives packed…', hint: 'stored as they are', onSelect: () => pickAndImport(false, true) },
     ]} /> },
     tags: { label: 'Tags', node: <button type="button" className="btn btn-icon btn-sm" aria-label="Tags" title="Tags: rename, merge, colour, delete" onClick={() => setDialog({ t: 'tags' })}><TagIcon /></button> },
     stats: { label: 'Statistics', node: <button type="button" className={`btn btn-icon btn-sm${view.kind === 'stats' ? ' accent-soft' : ''}`} aria-label="Statistics" title="Statistics"
@@ -2954,7 +2979,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
                   : view.kind === 'folder' ? 'This folder is empty'
                   : view.kind === 'search' ? 'Nothing matches this search'
                   : 'Nothing here yet'}</b>
-                {!inTrash && <span className="muted">Drag files, folders or .7z archives from Windows onto any folder to import them.</span>}
+                {!inTrash && <span className="muted">Drag any files, folders or .7z archives from Windows onto any folder to import them.</span>}
               </div>
             )
           )}
@@ -2962,7 +2987,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
             <div className="dropzone">
               <ImportIcon size={28} />
               <b>Your vault is empty</b>
-              <span className="muted">Drag files, folders or .7z archives here, or use Import. Folders and archives keep their structure.</span>
+              <span className="muted">Drag any files, folders or .7z archives here, or use Import. Folders and archives keep their structure; music plays here, other files are kept and exported.</span>
               <button type="button" className="btn" onClick={() => setDialog({ t: 'newFolder', parent: null })}><PlusIcon /> New folder</button>
             </div>
           )}
@@ -3262,6 +3287,14 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         </ConfirmDialog>
       )}
       {dialog?.t === 'export' && <ExportDialog request={dialog.request} what={dialog.what} onClose={() => setDialog(null)} />}
+      {dialog?.t === 'fileInfo' && (
+        <FileInfoDialog item={dialog.item} onClose={() => setDialog(null)}
+          folder={dialog.item.folderId == null ? 'Top level' : (() => {
+            const f = folders.find((x) => x.id === dialog.item.folderId);
+            return f ? [...f.path.map((c) => c.name), f.name].join(' › ') : 'Its folder';
+          })()}
+          onExport={() => setDialog({ t: 'export', request: { ids: [dialog.item.id] }, what: `“${dialog.item.name}”` })} />
+      )}
       {dialog?.t === 'sheet' && (
         <ContactSheet title={heading} items={shown} onClose={() => setDialog(null)} onOpen={(it) => { setDialog(null); playItems(false, it.id); }} />
       )}

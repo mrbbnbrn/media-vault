@@ -3,6 +3,7 @@
 // you haven't opened in a while. Played with slow pan-and-zoom and a title card.
 
 import { useEffect, useState } from 'react';
+import { onlyShown } from '../kinds';
 import { api, thumbUrl, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
 import { PlayIcon } from './Icons';
@@ -73,7 +74,8 @@ export function MemoriesView(props: { folders: FolderCard[]; onPlay: (m: Memory)
   useEffect(() => {
     let live = true;
     (async () => {
-      const all = await api.queryItems({});
+      // Memories play as slideshows: music and other files stay out (kinds.ts).
+      const all = onlyShown(await api.queryItems({}));
       const persons = props.folders.filter((f) => f.person).slice(0, 8);
       // Who is in what: ids only, in one call (the items themselves are in `all`).
       const byId = new Map(all.map((i) => [i.id, i]));

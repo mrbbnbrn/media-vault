@@ -7,6 +7,7 @@ import type { Entry } from './playlist';
 import { decodeText, fetchBytes, pdfThumbCanvas, textThumbCanvas } from './docs';
 import { canvasPicture, THUMB_JPEG_QUALITY, THUMB_WEBP_QUALITY } from './canvaspic';
 import { giveWay } from './bgpace';
+import { storedOnly } from './kinds';
 
 /** Something a player can show: from the vault or from a dropped folder. */
 export interface PlayItem extends Entry {
@@ -259,9 +260,33 @@ async function pdfThumb(id: number) {
   return { bytes: await canvasToBytes(canvas), w: canvas.width as number | null, h: canvas.height as number | null, ms: null as number | null };
 }
 
+/** Music has no picture: only its length is looked up (the stream's header, read by the web engine). */
+export async function audioLength(id: number): Promise<number | null> {
+  const a = document.createElement('audio');
+  a.preload = 'metadata';
+  try {
+    a.src = mediaUrl(id);
+    await withTimeout(
+      new Promise<void>((res, rej) => {
+        a.onloadedmetadata = () => res();
+        a.onerror = () => rej(new Error('unsupported'));
+      }),
+      20_000,
+    );
+    return Number.isFinite(a.duration) && a.duration > 0 ? Math.round(a.duration * 1000) : null;
+  } finally {
+    a.removeAttribute('src');
+    a.load();
+  }
+}
+
 /** Make a thumbnail for a vault item, in memory. Used by the background loop and the self-test. */
 export function makeThumb(id: number, kind: Kind) {
   switch (kind) {
+    case 'audio':
+    case 'file':
+      // Never a picture (their tiles draw their type): see the thumbnail loop.
+      return Promise.reject(new Error('no picture'));
     case 'video':
       return videoThumb(id);
     case 'text':
@@ -444,6 +469,13 @@ export function startThumbnailer(): () => void {
       };
     });
   const work = async (t: { id: number; kind: Kind }) => {
+    if (storedOnly(t.kind)) {
+      // Music and other files: no thumbnail, ever (asked once, then never again); music's length is kept.
+      const ms = t.kind === 'audio' ? await audioLength(t.id).catch(() => null) : null;
+      if (!stopped) await api.thumbFailed(t.id, ms).catch(() => {});
+      listeners.forEach((l) => l(t.id));
+      return;
+    }
     try {
       const r = await makeThumb(t.id, t.kind);
       if (stopped) return;

@@ -145,7 +145,7 @@ export function ImportSummary({ r, onClose }: { r: ImportReport; onClose: () => 
       <div style={{ fontSize: 13, lineHeight: 1.6 }}>
         {r.imported.toLocaleString()} imported ({formatBytes(r.bytes)} in {Math.max(1, Math.round(r.seconds))} s)
         {r.duplicates > 0 && <> · {r.duplicates} already in that folder</>}
-        {r.skippedCount > 0 && <> · {r.skippedCount} not media, skipped</>}
+        {r.skippedCount > 0 && <> · {r.skippedCount} system files (like Thumbs.db) skipped</>}
       </div>
       {r.failed.length > 0 && (
         <div className="error" style={{ flexDirection: 'column', gap: 4 }}>

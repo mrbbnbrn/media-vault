@@ -13,6 +13,7 @@ import { cachedPicture, holdPicture, loadPicture, preloadPictures, viewerOpened,
 import { peekUndo } from '../undo';
 import { ArrowIcon, CloseIcon, FolderIcon, HeartIcon, PlayIcon } from './Icons';
 import { globalKey, useLayer } from '../keylayers';
+import { FileView, MusicIcon } from './StoredItems';
 
 /** How many neighbours on each side are made ready ahead. */
 const AHEAD = 2;
@@ -118,6 +119,14 @@ export function QuickLook(props: {
             <span className="phone-orig-type">{typeBadge(it)}</span>
             <span>Original from your phone, kept as it came. Open its playable copy ({copyName(it)}) to view it.</span>
           </div>
+        ) : it.kind === 'audio' ? (
+          <div className="media-failed stored-view">
+            <MusicIcon size={56} />
+            <span>{it.name}</span>
+            <audio key={it.id} src={mediaUrl(it.id)} autoPlay controls />
+          </div>
+        ) : it.kind === 'file' ? (
+          <FileView name={it.name} ext={it.ext} size={it.size} />
         ) : it.kind === 'video' ? (
           <video key={it.id} ref={video} src={mediaUrl(it.id)} autoPlay loop controls playsInline />
         ) : it.kind === 'image' ? (

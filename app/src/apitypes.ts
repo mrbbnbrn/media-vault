@@ -585,7 +585,8 @@ export interface AppState {
   minPasswordChars: number;
 }
 
-export type Kind = 'image' | 'gif' | 'video' | 'text' | 'pdf';
+/** `audio`: music, played in the app. `file`: any other file, only stored and exported. */
+export type Kind = 'image' | 'gif' | 'video' | 'text' | 'pdf' | 'audio' | 'file';
 
 export interface Item {
   id: number;

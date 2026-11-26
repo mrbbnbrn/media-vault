@@ -136,11 +136,11 @@ export async function transferAnswer(cmd: string, a: Record<string, unknown>): P
       return;
     }
     case 'transfer_send': {
-      if (!st.connected) throw new Error('Open Aktarım on your phone first.');
+      if (!st.connected) throw new Error("Your phone isn't connected. Unlock the hidden vault in Baro Alarm on your phone (older Baro Alarm: open Aktarım), both on the same Wi-Fi.");
       if (run) throw new Error('Something is being sent or received already. Wait until it finishes, or stop it.');
       const items = ((a.media as number[]) ?? []).length + ((a.folders as number[]) ?? []).length * 6;
       if (items) batch('send', items, NAMES);
-      return { items };
+      return { items, skipped: 0 };
     }
     case 'transfer_cancel':
       run?.stop();

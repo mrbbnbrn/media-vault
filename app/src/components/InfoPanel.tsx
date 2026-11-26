@@ -8,7 +8,7 @@ import { formatTime, type PlayItem } from '../media';
 import { formatBytes } from '../theme';
 import { CloseIcon, HeartIcon } from './Icons';
 
-const KIND: Record<string, string> = { image: 'Picture', gif: 'GIF', video: 'Video', text: 'Text', pdf: 'PDF' };
+const KIND: Record<string, string> = { image: 'Picture', gif: 'GIF', video: 'Video', text: 'Text', pdf: 'PDF', audio: 'Music', file: 'File' };
 
 const when = (seconds: number | null | undefined) =>
   seconds ? new Date(seconds * 1000).toLocaleString(undefined, { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -71,7 +71,7 @@ export function InfoPanel(props: {
     ['Type', [KIND[item.kind] ?? item.kind, full?.ext ? full.ext.toUpperCase() : ''].filter(Boolean).join(' · ')],
     ['Size', formatBytes(full?.size ?? item.size ?? null)],
     ['Dimensions', w && h ? `${w} × ${h}` : ''],
-    ['Length', (item.kind === 'video' || item.kind === 'gif') && ms ? formatTime(ms) : ''],
+    ['Length', (item.kind === 'video' || item.kind === 'gif' || item.kind === 'audio') && ms ? formatTime(ms) : ''],
     ['Taken', when(taken)],
     ['Added', inVault ? when(added) : ''],
     ['Folder', inVault ? props.folder ?? null : null],

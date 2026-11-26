@@ -10,6 +10,7 @@ import { errText } from '../text';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { open } from '@tauri-apps/plugin-dialog';
+import { onlyShown } from '../kinds';
 import { api, inTauri, type FolderCard, type Named, type TagCount } from '../api';
 import type { Nav } from '../App';
 import { Dropdown, FolderPicker, Modal, PromptDialog } from '../components/Dialogs';
@@ -93,10 +94,11 @@ function sourceLabel(s: Source | null): string {
 
 async function resolve(s: Source): Promise<{ items: PlayItem[]; startKey?: string; title?: string }> {
   switch (s.t) {
-    case 'folder': return { items: (await api.queryItems({ folder: s.id, recursive: s.recursive })).map(fromItem) };
-    case 'tags': return { items: (await api.queryItems({ tags: s.tags })).map(fromItem) };
-    case 'favourites': return { items: (await api.queryItems({ favouritesOnly: true })).map(fromItem) };
-    case 'all': return { items: (await api.queryItems({})).map(fromItem) };
+    // Music and other files never play in the windows (kinds.ts).
+    case 'folder': return { items: onlyShown(await api.queryItems({ folder: s.id, recursive: s.recursive })).map(fromItem) };
+    case 'tags': return { items: onlyShown(await api.queryItems({ tags: s.tags })).map(fromItem) };
+    case 'favourites': return { items: onlyShown(await api.queryItems({ favouritesOnly: true })).map(fromItem) };
+    case 'all': return { items: onlyShown(await api.queryItems({})).map(fromItem) };
     case 'local': {
       const set = await api.scanLocal(s.paths);
       const items = set.items.map(fromLocal);

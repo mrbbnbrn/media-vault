@@ -99,8 +99,9 @@ export function PhoneTransferSection() {
             </div>
           ))}
           <p className="faint" style={{ margin: 0, fontSize: 12 }}>
-            To send, choose “Send to phone” in an item’s or folder’s menu while Aktarım is open on the phone. What the phone
-            sends goes into the folder “Received from phone”.
+            To send, choose “Send to phone” in an item’s or folder’s menu while the phone is connected: unlock the hidden vault
+            in Baro Alarm on your phone (older Baro Alarm: open Aktarım). Only pictures, GIFs and videos go (the phone’s vault
+            takes nothing else); music and other files stay here. What the phone sends goes into the folder “Received from phone”.
           </p>
         </div>
       )}

@@ -74,6 +74,11 @@ const rivervideos = typeof location !== 'undefined' && /[?&]rivervideos\b/.test(
     one(902, 'IMG_0101.jpg', 'image', 'jpg', 'ok', { size: 1_900_000 }),
     one(903, 'VID_0102.MOV', 'video', 'mov', 'failed', { size: 31_000_000, width: null, height: null, durationMs: null }),
     one(904, 'IMG_0103.jpg', 'image', 'jpg', 'ok'),
+    // Music (plays in its own player) and other files (kept; opening shows their info and Export).
+    one(905, 'Evening walk.mp3', 'audio', 'mp3', 'failed', { size: 4_800_000, width: null, height: null, durationMs: 214_000 }),
+    one(906, 'Sea sounds.flac', 'audio', 'flac', 'failed', { size: 26_000_000, width: null, height: null }),
+    one(907, 'Tax report 2026.docx', 'file', 'docx', 'failed', { size: 84_000, width: null, height: null }),
+    one(908, 'Old phone backup.zip', 'file', 'zip', 'failed', { size: 312_000_000, width: null, height: null }),
   );
 }
 const ui = new Map<string, string>();

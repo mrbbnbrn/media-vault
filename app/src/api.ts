@@ -198,15 +198,17 @@ export const api = {
   /** Older JPEG thumbnails to make again as WebP; `next` = looked at everything up to this id. */
   thumbsToWebp: (after: number, upto: number, limit: number) => call<{ tasks: { id: number; kind: Kind }[]; next: number }>('thumbs_to_webp', { after, upto, limit }),
   countToSharpen: (after: number, upto: number) => call<number>('count_to_sharpen', { after, upto }),
-  thumbFailed: (id: number) => call<void>('thumb_failed', { id }),
+  /** No thumbnail (couldn't be made, or music: `durationMs` = its length when found). */
+  thumbFailed: (id: number, durationMs: number | null = null) => call<void>('thumb_failed', { id, durationMs }),
   /** The playable copy (JPEG / MP4) of an original received from the phone; null: none (any more). */
   playableCopy: (id: number) => call<number | null>('playable_copy', { id }),
 
   // import
   inspectDrop: (paths: string[]) => call<DropSummary>('inspect_drop', { paths }),
   checkArchivePassword: (path: string, password: string) => call<void>('check_archive_password', { path, password }),
-  startImport: (paths: string[], target: number | null, password: string | null, archiveFolder = true) =>
-    call<number>('start_import', { paths, target, password, archiveFolder }),
+  /** `keepArchives`: .7z archives are stored as they are (one file each) instead of unpacked. */
+  startImport: (paths: string[], target: number | null, password: string | null, archiveFolder = true, keepArchives = false) =>
+    call<number>('start_import', { paths, target, password, archiveFolder, keepArchives }),
   cancelImport: (job: number) => call<void>('cancel_import', { job }),
 
   // storage housekeeping
@@ -255,7 +257,8 @@ export const api = {
   /** Forget a paired phone. */
   transferForget: (id: string) => call<void>('transfer_forget', { id }),
   /** Send items and folders (everything inside) to the connected phone; fails with a message when none is connected. */
-  transferSend: (media: number[], folders: number[]) => call<{ items: number }>('transfer_send', { media, folders }),
+  /** `skipped`: left out, the phone's vault takes only pictures, GIFs and videos. */
+  transferSend: (media: number[], folders: number[]) => call<{ items: number; skipped?: number }>('transfer_send', { media, folders }),
   /** Stop what is being sent or received (the connection stays). */
   transferCancel: () => call<void>('transfer_cancel'),
   exportStart: (request: ExportRequest) => call<void>('export_start', { request }),

@@ -6,7 +6,7 @@ import { api, thumbUrl, type Item, type Stats } from '../api';
 import { formatBytes } from '../theme';
 import { GrowthChart } from './VaultGrowth';
 
-const KIND_NAMES: Record<string, string> = { image: 'Pictures', gif: 'GIFs', video: 'Videos', text: 'Text files', pdf: 'PDFs' };
+const KIND_NAMES: Record<string, string> = { image: 'Pictures', gif: 'GIFs', video: 'Videos', text: 'Text files', pdf: 'PDFs', audio: 'Music', file: 'Other files' };
 
 /** Where a tile or row leads. */
 export type StatsGo = 'items' | 'largest' | 'folders' | 'tags' | 'favourites' | 'trash' | 'recent' | { kind: string };

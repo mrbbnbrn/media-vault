@@ -16,6 +16,8 @@ import { errText } from '../text';
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode, type Ref } from 'react';
 import { setPlaying as reportPlaying } from '../activity';
 import { copyName, isPhoneOriginal, typeBadge } from '../phoneoriginal';
+import { extOfName, storedOnly } from '../kinds';
+import { AudioView, FileView } from './StoredItems';
 import { api, previewUrl, type Bookmark, type FaceBox, type ViewerSettings } from '../api';
 import { beatStatusText, useBeatSync } from '../beats';
 import { clipBox, cssFit, type Box } from '../flip';
@@ -256,6 +258,8 @@ export function Player(props: PlayerProps) {
   const isVideo = item?.kind === 'video';
   const isGif = item?.kind === 'gif';
   const isPicture = item?.kind === 'image' || isGif;
+  // Music plays in its own little player (StoredItems.tsx); other files only show what they are.
+  const isAudio = item?.kind === 'audio';
   const inVault = item?.itemId != null;
   // An original from the phone the window can't show (HEIC, MOV…): never tried, it counts as
   // "can't be shown" (the slideshow moves on); its playable copy can be opened instead.
@@ -418,7 +422,7 @@ export function Player(props: PlayerProps) {
     if (keepOne && !failed) return;
     let ms = 0;
     if (failed) ms = 1500;
-    else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf') ms = s.imageSeconds * 1000;
+    else if (item.kind === 'image' || item.kind === 'text' || item.kind === 'pdf' || item.kind === 'file') ms = s.imageSeconds * 1000;
     else if (item.kind === 'gif') {
       if (!imgInfo) return;
       ms = gifShowMs(s, imgInfo.loopMs);
@@ -906,8 +910,8 @@ export function Player(props: PlayerProps) {
   };
   useEffect(() => {
     if (!cur?.key) return;
-    // Text and PDFs draw themselves: not timed.
-    if (cur.kind === 'text' || cur.kind === 'pdf') return shownStep();
+    // Text, PDFs, music and other files draw themselves: not timed.
+    if (cur.kind === 'text' || cur.kind === 'pdf' || storedOnly(cur.kind)) return shownStep();
     if (!stepRunning('Open picture')) beginStep('Next item', cur.kind);
   }, [cur?.key]); // eslint-disable-line react-hooks/exhaustive-deps
   const vh = useRef({ meta: onVideoMeta, time: onVideoTime, end: onVideoEnd, shown: onVideoShown });
@@ -961,7 +965,7 @@ export function Player(props: PlayerProps) {
     }
     return any ? c : null;
   };
-  const tx = useItemTransition({ layer: txRef, snapshot, itemKey: item?.key, ready: !item || failed || isDoc || shownKey === item.key });
+  const tx = useItemTransition({ layer: txRef, snapshot, itemKey: item?.key, ready: !item || failed || isDoc || storedOnly(item.kind) || shownKey === item.key });
   const lastEffect = useRef<Effect | null>(null);
   txStart.current = (dir, how) => {
     if (mini) return;
@@ -1796,7 +1800,7 @@ export function Player(props: PlayerProps) {
         e.preventDefault();
         if (e.ctrlKey) go('next');
         else if (e.shiftKey) go('prev');
-        else if (timed && !slideshow) setPaused((p) => !p);
+        else if ((timed || isAudio) && !slideshow) setPaused((p) => !p);
         else toggleSlideshow();
       } else if (e.altKey && (k === 'arrowleft' || k === 'arrowright')) {
         // Alt+← is "back" everywhere: it leaves the viewer (Alt+→ does nothing here).
@@ -1872,6 +1876,9 @@ export function Player(props: PlayerProps) {
       setCur(n);
     } else setFlash(`Its playable copy, ${item ? copyName(item) : 'a copy'}, is in the same folder.`);
   };
+  // The music player's buttons reach this render's state (it is memoised below).
+  const audioActs = useRef({ go: (_d: 'next' | 'prev', _auto?: boolean) => {}, pause: (_p: boolean) => {} });
+  audioActs.current = { go: (d, auto) => go(d, auto), pause: (p) => setPaused(p) };
   const media = useMemo(() => {
     if (!item) return null;
     if (phoneOrig)
@@ -1905,10 +1912,17 @@ export function Player(props: PlayerProps) {
           playsInline preload="auto" onLoadedMetadata={() => vh.current.meta()} onTimeUpdate={() => vh.current.time()} onEnded={() => vh.current.end()}
           onLoadedData={() => vh.current.shown()} onError={() => setFailed(true)} />
       );
+    if (item.kind === 'audio')
+      return (
+        <AudioView key={item.key} src={item.src} name={item.name} ext={extOfName(item.name)} paused={halted}
+          onPausedChange={(p) => audioActs.current.pause(p)} onPrev={() => audioActs.current.go('prev')} onNext={() => audioActs.current.go('next')}
+          onEnded={() => audioActs.current.go('next', true)} onError={() => setFailed(true)} />
+      );
+    if (item.kind === 'file') return <FileView key={item.key} name={item.name} ext={extOfName(item.name)} size={item.size ?? null} />;
     if (item.kind === 'text') return <TextView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     if (item.kind === 'pdf') return <PdfView key={item.key} src={item.src} zoom={docZoom} onError={() => setFailed(true)} />;
     return null;
-  }, [item?.key, item?.src, failed, phoneCopy, s.fit, s.transition, tick, docZoom, pixelVideo, keepOne, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [item?.key, item?.src, failed, phoneCopy, s.fit, s.transition, tick, docZoom, pixelVideo, keepOne, rot, rot ? stageWH.w : 0, rot ? stageWH.h : 0, isAudio && halted]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const fav = item?.favourite ?? false;
   const toggleFavourite = () => {

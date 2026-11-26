@@ -5,6 +5,7 @@
 
 import { fold } from '../text';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onlyShown } from '../kinds';
 import { api, mediaUrl, thumbUrl, type FolderCard, type Item } from '../api';
 import { plural } from '../undo';
 import { FaceIcon, FolderIcon, TagIcon, TrashIcon } from './Icons';
@@ -53,7 +54,8 @@ export function QuickSort(props: {
   useEffect(() => {
     let live = true;
     (async () => {
-      const list = await api.queryItems({ folder: sourceId, recursive: withSub });
+      // Sorting goes by what you see: music and other files are left where they are (kinds.ts).
+      const list = onlyShown(await api.queryItems({ folder: sourceId, recursive: withSub }));
       list.sort((a, b) => a.takenAt - b.takenAt || a.id - b.id);
       if (!live) return;
       setQueue(list);

@@ -7,6 +7,7 @@
 import { ErrorBoundary } from '../ErrorBoundary';
 import { lazy, Suspense, useSyncExternalStore } from 'react';
 import { api, onLocked, type Item } from '../../api';
+import { onlyShown } from '../../kinds';
 import { fromItem } from '../../media';
 import type { Nav } from '../../App';
 import { Viewer } from '../../screens/Viewer';
@@ -56,7 +57,7 @@ async function openPhoto(id: number) {
   const o = open;
   let items: Item[] = [];
   try {
-    items = await api.queryItems({ people: [o.person] });
+    items = onlyShown(await api.queryItems({ people: [o.person] }));
   } catch {
     items = [];
   }

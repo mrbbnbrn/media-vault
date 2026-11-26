@@ -19,6 +19,8 @@ import { layoutGrid, visibleRange, type Group, HEADER_H, GAP } from '../gridlayo
 import { startMoveDrag } from '../dragmove';
 import { formatTime } from '../media';
 import { BrokenIcon, HeartIcon } from './Icons';
+import { storedOnly } from '../kinds';
+import { StoredTileFace } from './StoredItems';
 import { AltEnlarge } from './AltEnlarge';
 import { Minimap, MINIMAP_RESERVE } from './Minimap';
 import { wantsMinimap, watchedShare } from '../tilemaths';
@@ -618,7 +620,9 @@ const Tile = memo(function Tile(p: {
     <button type="button" role="gridcell" aria-selected={sel} title={it.note ? `${it.name}\n${it.note}` : it.name} data-item={it.id}
       className={`tile${sel ? ' sel' : ''}${it.kind === 'pdf' || it.kind === 'text' ? ' doc' : ''}${p.dimmed ? ' cut' : ''}${p.hoverInfo ? ' hinfo' : ''}`}
       style={{ left: p.x, top: p.y, width: w, height: h, ...sketchStyle(it, place && p.faceCrop ? place : null) }}>
-      {phone ? (
+      {storedOnly(it.kind) ? (
+        <StoredTileFace it={it} w={w} />
+      ) : phone ? (
         <span className="tile-msg phone-orig">
           <span className="phone-orig-type">{typeBadge(it)}</span>
           {w >= 110 && <span className="phone-orig-text">Original from phone · open the copy to view</span>}
@@ -664,6 +668,7 @@ const Tile = memo(function Tile(p: {
       {it.kind === 'gif' && <span className="badge">GIF</span>}
       {it.kind === 'pdf' && <span className="badge">PDF</span>}
       {it.kind === 'text' && <span className="badge">{it.ext.toUpperCase()}</span>}
+      {it.kind === 'audio' && <span className="badge">{formatTime(it.durationMs) || it.ext.toUpperCase() || 'MUSIC'}</span>}
     </button>
   );
 });

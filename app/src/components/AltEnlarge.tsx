@@ -12,6 +12,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { mediaUrl, thumbUrl, type Item } from '../api';
 import { enlargeBox, type Rect } from '../tilemaths';
+import { storedOnly } from '../kinds';
 
 interface Shown {
   item: Item;
@@ -124,6 +125,8 @@ export function AltEnlarge(props: { root: React.RefObject<HTMLDivElement | null>
 
   if (!shown) return null;
   const { item } = shown;
+  // Music and other files have no picture to enlarge.
+  if (storedOnly(item.kind)) return null;
   const r = shown.open ? shown.box : shown.tile;
   const isReady = ready === item.id;
   const doc = item.kind === 'pdf' || item.kind === 'text';

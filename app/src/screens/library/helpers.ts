@@ -37,6 +37,8 @@ export const KINDS: { id: Kind | 'any'; label: string }[] = [
   { id: 'video', label: 'Videos' },
   { id: 'text', label: 'Text files' },
   { id: 'pdf', label: 'PDFs' },
+  { id: 'audio', label: 'Music' },
+  { id: 'file', label: 'Other files' },
 ];
 
 export const PREVIEWS: { id: 'all' | 'hover' | 'off'; label: string; hint: string }[] = [
