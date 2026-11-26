@@ -147,7 +147,7 @@ The commitment means the phone is locked into its key before it sees the PC's, s
 
 ## 6. Finding the paired PC (UDP)
 
-Phone, when the Aktarım page opens (vault unlocked):
+Phone, when it wants a connection (§7 "Connection lifetime": from Baro Alarm 0.54, whenever the hidden vault is unlocked):
 - Broadcast, as in §5.1, up to 3 times 1 s apart:
   `DISCOVER = "MVTP" ‖ 01 ‖ 10 ‖ u64 ts_ms ‖ nonce(16) ‖ mac(32)`
   `mac = HMAC(disc_key, all bytes before mac)`, `ts_ms` = the phone's clock (ms since 1970, UTC).
@@ -178,7 +178,7 @@ Mixing `pair_key` into the session keys means even a broken signature check stil
 
 **Timeouts:** whole handshake 10 s. After that, if nothing has been sent for 15 s, send PING; the other answers PONG. Nothing received for 45 s → close. While a transfer runs, DATA frames count as traffic.
 
-**Connection lifetime:** the phone opens it when the Aktarım page opens (or Gönder is pressed) and closes it (BYE 2) when the page closes. One connection at a time per paired phone; a new one from the same phone replaces the old.
+**Connection lifetime:** up to Baro Alarm 0.53 the phone opens it when the Aktarım page opens (or Gönder is pressed) and closes it (BYE 2) when the page closes. **From Baro Alarm 0.54 (2026-11-27, no wire change):** the phone opens it as soon as the hidden vault is unlocked (Aktarım need not be open) and keeps it while the vault stays unlocked; it sends LOCKED and closes when the vault locks. While unlocked and not connected, the phone quietly tries again (discovery as in §6) every 15 s, and at once when Wi-Fi comes back; "PC bulunamadı" is shown only on the Aktarım page. A PC send therefore works whenever the phone's vault is unlocked. One connection at a time per paired phone; a new one from the same phone replaces the old.
 
 ## 8. INFO (0x30)
 
