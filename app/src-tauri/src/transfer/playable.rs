@@ -91,6 +91,11 @@ pub fn mark_unshowable(conn: &Connection, id: i64) -> rusqlite::Result<()> {
 pub fn add_original(s: &Session, folder: Option<i64>, name: &str, bytes: &[u8]) -> Result<i64, String> {
     let ext = import::ext_of(name);
     let Some(target) = needs_copy(&ext, "") else {
+        // The phone only sends pictures, GIFs and videos (MVTP §9.1, `items::KINDS`); since schema 22 the
+        // vault itself keeps any file, so keep the phone path to media here.
+        if !matches!(import::kind_by_ext(name), Some("image" | "gif" | "video")) {
+            return Err(format!("Not a picture, GIF or video: {name}"));
+        }
         return import::add_bytes(s, folder, name, bytes);
     };
     let kind = if target == Target::Jpg { "image" } else { "video" };
