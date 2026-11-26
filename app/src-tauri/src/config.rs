@@ -379,6 +379,8 @@ pub const DEFAULT_ACCENT: &str = "#2ec4b6";
 pub struct LookSettings {
     /// The sidebar shows only icons and folder pictures.
     pub sidebar_rail: bool,
+    /// The folder panel's width when not compact (px, 180–560; dragged on its right edge).
+    pub sidebar_width: u32,
     /// Name, size and length show on the hovered tile.
     pub hover_info: bool,
     /// Square tiles are cropped around faces.
@@ -402,6 +404,7 @@ impl Default for LookSettings {
     fn default() -> Self {
         Self {
             sidebar_rail: false,
+            sidebar_width: 260,
             hover_info: true,
             face_crop: false,
             ui_scale: 1.0,
@@ -461,6 +464,7 @@ impl AppConfig {
             l.style = "default".into();
         }
         l.tile_gap = l.tile_gap.min(40);
+        l.sidebar_width = if l.sidebar_width == 0 { 260 } else { l.sidebar_width.clamp(180, 560) };
         l.tile_radius = l.tile_radius.min(24);
         l.top_bar.truncate(40);
         let v = &mut self.viewer;
@@ -645,6 +649,21 @@ mod tests {
         assert_eq!(c.viewer.river_dir, "left");
         let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"viewer":{"riverDir":"top"}}"#).unwrap().sanitized();
         assert_eq!(c.viewer.river_dir, "top");
+    }
+
+    #[test]
+    fn folder_panel_width_reads_old_files_and_is_kept_in_range() {
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"look":{"sidebarRail":true}}"#).unwrap().sanitized();
+        assert_eq!((c.look.sidebar_width, c.look.sidebar_rail), (260, true));
+        let c: AppConfig = serde_json::from_str::<AppConfig>(r#"{"look":{"sidebarWidth":333}}"#).unwrap().sanitized();
+        assert_eq!(c.look.sidebar_width, 333);
+        let back: AppConfig = serde_json::from_str(&serde_json::to_string(&c).unwrap()).unwrap();
+        assert_eq!(back.look.sidebar_width, 333);
+        for (w, want) in [(0, 260), (12, 180), (9000, 560)] {
+            let mut c = AppConfig::default();
+            c.look.sidebar_width = w;
+            assert_eq!(c.sanitized().look.sidebar_width, want, "{w}");
+        }
     }
 
     #[test]

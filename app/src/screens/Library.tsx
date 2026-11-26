@@ -76,6 +76,7 @@ import { PROBLEM_MS, RESULT_MS, useAutoDismiss } from '../autodismiss';
 import { requestLock } from '../keepopen';
 import { setItemMenuProvider, setItemTrasher } from '../itemmenu';
 import { loadShows } from '../slideshowmemory';
+import { cleanSideWidth, SIDE_DEFAULT, SIDE_MAX, SIDE_RAIL, sideDrag, sideStep } from '../sidebarwidth';
 
 // Views and dialogs that load when first opened (lazypart.tsx).
 const ContactSheet = lazyPart(() => import('../components/ContactSheet').then((m) => m.ContactSheet));
@@ -2425,7 +2426,83 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
   // ---- render ---------------------------------------------------------------------------
 
   const visibleTree = tree.filter((f) => !f.path.some((c) => collapsed.has(c.id)));
-  const rail = !!cfg.look?.sidebarRail;
+  /** The folder panel while its edge is dragged (saved when let go): compact or not, and its width. */
+  const [sideLive, setSideLive] = useState<{ rail: boolean; width: number } | null>(null);
+  const sideCol = useRef<HTMLDivElement>(null);
+  const rail = sideLive ? sideLive.rail : !!cfg.look?.sidebarRail;
+  const sideW = cleanSideWidth(sideLive?.width ?? cfg.look?.sidebarWidth, window.innerWidth);
+  const saveSide = (r: boolean, w: number) => {
+    void saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: r, sidebarWidth: cleanSideWidth(w) } }).finally(() => setSideLive(null));
+  };
+  /** Dragging the folder panel's right edge: the width follows the mouse; narrower than SIDE_SNAP = compact. */
+  const sideDragStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget;
+    try {
+      handle.setPointerCapture(e.pointerId);
+    } catch {
+      // (Still works while the mouse stays over the edge.)
+    }
+    const x0 = e.clientX;
+    const w0 = rail ? SIDE_RAIL : sideW;
+    let last = { rail, width: sideW };
+    let x = x0;
+    let raf = 0;
+    let moved = false;
+    const apply = () => {
+      raf = 0;
+      const d = sideDrag(w0 + x - x0, window.innerWidth);
+      const next = d.rail ? { rail: true, width: last.width } : { rail: false, width: d.width };
+      // (Straight onto the page, once a frame: the panel follows the mouse without drawing the library again.)
+      if (!next.rail) sideCol.current?.style.setProperty('--side-w', `${next.width}px`);
+      if (next.rail !== last.rail) setSideLive(next);
+      last = next;
+    };
+    const move = (ev: PointerEvent) => {
+      x = ev.clientX;
+      if (Math.abs(x - x0) > 2) moved = true;
+      if (moved && !raf) raf = requestAnimationFrame(apply);
+    };
+    const end = () => {
+      handle.removeEventListener('pointermove', move);
+      handle.removeEventListener('pointerup', end);
+      handle.removeEventListener('pointercancel', end);
+      handle.removeEventListener('lostpointercapture', end);
+      handle.classList.remove('dragging');
+      document.body.classList.remove('side-resizing');
+      if (raf) {
+        cancelAnimationFrame(raf);
+        apply();
+      }
+      if (!moved) {
+        setSideLive(null);
+        return;
+      }
+      setSideLive(last);
+      saveSide(last.rail, last.width);
+    };
+    setSideLive(last);
+    handle.classList.add('dragging');
+    document.body.classList.add('side-resizing');
+    handle.addEventListener('pointermove', move);
+    handle.addEventListener('pointerup', end);
+    handle.addEventListener('pointercancel', end);
+    handle.addEventListener('lostpointercapture', end);
+  };
+  const sideResizeKeys = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' || e.key === 'Home') {
+      e.preventDefault();
+      saveSide(false, SIDE_DEFAULT);
+    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      const d = sideStep(rail, sideW, e.key === 'ArrowLeft' ? -1 : 1, window.innerWidth);
+      const next = d.rail ? { rail: true, width: sideW } : { rail: false, width: d.width };
+      setSideLive(next);
+      saveSide(next.rail, next.width);
+    }
+  };
   const sideSortInfo = FOLDER_SORTS.find((o) => o.id === sideSort) ?? FOLDER_SORTS[0];
   /** The sidebar's sort button: a small menu (works in the narrow sidebar too). */
   const sideSortButton = (cls: string) => (
@@ -2587,7 +2664,7 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
       )}
 
       <div className="lib-body">
-        <div className="side-col" onKeyDown={sideKeys} onPointerDown={() => { sideZone.current = true; }}>
+        <div className="side-col" ref={sideCol} style={{ '--side-w': `${sideW}px` } as React.CSSProperties} onKeyDown={sideKeys} onPointerDown={() => { sideZone.current = true; }}>
         <aside className={`side${rail ? ' rail' : ''}`} aria-label="Library" ref={side}>
           <button type="button" className="side-row faint rail-toggle" title={rail ? 'Show names (wider sidebar)' : 'Compact sidebar: icons and folder pictures only'}
             aria-label={rail ? 'Wider sidebar' : 'Compact sidebar'} onClick={() => saveCfg({ look: { ...DEFAULT_LOOK, ...cfg.look, sidebarRail: !rail } })}>
@@ -2674,6 +2751,11 @@ export function Library({ nav, view, setView, history, reveal, tabs, frozen = fa
         {/* Its own strip under the folder list, so it never covers a folder. */}
         <div className={`side-foot${rail ? ' rail' : ''}`}>
         </div>
+        <div className="side-resize" role="separator" aria-orientation="vertical" tabIndex={0}
+          aria-label="Folder panel width" aria-valuemin={SIDE_RAIL} aria-valuemax={SIDE_MAX} aria-valuenow={rail ? SIDE_RAIL : sideW}
+          aria-valuetext={rail ? 'Compact' : `${sideW} pixels`}
+          title="Drag to resize the folder panel (all the way narrow: compact). Double-click: back to the usual width."
+          onPointerDown={sideDragStart} onDoubleClick={() => saveSide(false, SIDE_DEFAULT)} onKeyDown={sideResizeKeys} />
         </div>
 
         <main className={`lib-main${switching ? ' switching' : ''}`} ref={scroller} onPointerDown={(e) => { sideZone.current = false; rubberBand(e); }} data-drop={view.kind === 'folder' ? `folder:${view.id ?? 'top'}` : inTrash ? undefined : 'folder:top'}>

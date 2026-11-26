@@ -227,10 +227,13 @@ export interface PoorFace extends Suggestion {
 
 export const DEFAULT_LOOK: LookSettings = {
   sidebarRail: false, hoverInfo: true, faceCrop: false, uiScale: 1, style: 'default', tileGap: 10, tileRadius: 8, topBar: [], minimap: true,
+  sidebarWidth: 260,
 };
 
 export interface LookSettings {
   sidebarRail: boolean;
+  /** The folder panel's width when not compact (px, 180–560; dragged on its right edge, sidebarwidth.ts). */
+  sidebarWidth?: number;
   hoverInfo: boolean;
   faceCrop: boolean;
   /** 0.5–2, 1 = normal. */
