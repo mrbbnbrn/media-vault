@@ -332,6 +332,30 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-27 (Claude Code on the user's PC, asked by the user): **any file in the vault + music player; More layers
+  and Depth light removed; resizable folder panel; folder delete keeps favourites/free copies.**
+  - **Schema 22:** `media.kind` also takes `audio` and `file` (generic table rebuild like v9, guarded by
+    `media_takes_files()`; test `v22_takes_music_and_any_file_and_keeps_everything`). Older builds can't open a
+    library after v22 has. Import takes every file (`stored_kind()`; junk like Thumbs.db/desktop.ini/`~$*`/`._*`
+    skipped); `kind_by_ext` unchanged (local:// and multi-screen stay media-only). Dropped `.7z` still unpacks (now
+    keeping every file inside); Import menu "Files, keeping .7z archives packed…" stores the archive itself
+    (`Job.keep_archives`); other archives are stored as files. Music (mp3, m4a, aac, flac, wav, ogg, oga, opus, weba)
+    plays in the viewer (song-only list, Space, volume in localStorage `mv-audio-volume`); other files open an info
+    dialog with Export only (nothing decrypted to temp). Files: `kinds.ts`, `StoredItems.tsx`, `stored.css`.
+  - **Phone send** sends only image/gif/video (text/PDF/music/files skipped, the window says how many). Hints now say
+    "unlock the hidden vault in Baro Alarm" (Baro Alarm 0.54 connects whenever its vault is unlocked;
+    `docs/transfer-protocol.md` §6/§7 "Connection lifetime", no wire change).
+  - **More layers + Depth light removed** (shader, worker, settings, tests). Saved More layers data deleted once per
+    library after unlock (`derived.rs` `is_more_layers_tag` / `clear_more_layers_once`, settings key
+    `cleanup:morelayers-2026-11`). Focus, Border fill, Wiggle, Layered 3D, Lift-off kept.
+  - **Folder panel width:** drag its right edge (`sidebarwidth.ts`, 180–560 px, below 150 px → compact rail,
+    double-click/Enter resets), `look.sidebarWidth`; Settings → Appearance row + Reset.
+  - **Folder delete:** `foldertrash.rs` (`folders_protected`, `delete_folders_keeping`, `restore_trashed`) +
+    `FolderKeepDialog.tsx`: when a folder holds favourites, free copies, or originals with a free copy elsewhere →
+    Keep them / Delete all / Cancel; Keep = the rest to trash under one stamp, folders holding kept items stay; Ctrl+Z
+    restores. `delete_folders` now returns the item count.
+  - Checked here: tsc, 632 vitest, the browser demo (tiles, file dialog, music player, panel drag, keep-delete + undo).
+    Rust not compiled on this PC (CI is the first compile).
 - 2026-11-25 (Claude Code on the user's PC): **phone transfer: "already have" only counts the target folder**
   (asked by the user: sending folder "Trees" skipped files that were in "Autumn"). MVTP §9.2 r2 note 2026-11-25: the
   receiver answers `have` only when the same file is already in the folder the item would land in (or was wanted
