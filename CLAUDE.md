@@ -332,6 +332,16 @@ How to record changes:
   build only after "go" (small bug fixes right away); ask questions directly; push once per finished batch.
 
 ### Recent changes
+- 2026-11-27 (Claude Code on the user's PC, later): **reclaiming space reworked** (the user had 15 GB and 53 GB of
+  "Space from deleted items"; the automatic reclaim only ran after deleting for good, so space left by replaced
+  thumbnails/previews/3D data and by interrupted rewrites was never freed, and one deleted byte rewrote a whole 1 GB
+  pack). Now: `vault-core` `compact_batch` (at most `room` bytes copied, most-wasteful packs first, unused packs
+  deleted without copying), `delete_retired` retries and returns packs it couldn't delete; `storage::reclaim_over`
+  works in rounds of <= 2 GB (never more than free space - 1 GB), saving and deleting after each round; automatic
+  reclaim after deleting **and after each unlock**, packs >= 25% unused (`AUTO_MIN_WASTE`; new setting
+  `reclaimAll` "Remove deleted files' bytes right away" = every pack); the Reclaim button takes everything; each run
+  is one line in diagnostics.log. Commit `0deebad`, **build-115** (CI passed). Tests: vault-core
+  `reclaiming_in_rounds_…`, storage `automatic_reclaim_leaves_little_waste_…`.
 - 2026-11-27 (Claude Code on the user's PC, asked by the user): **any file in the vault + music player; More layers
   and Depth light removed; resizable folder panel; folder delete keeps favourites/free copies.** Released as **build-114** (commit `b67b42c`, CI Linux + Windows passed; the first
   run failed one old test: the phone-receive path now keeps refusing non-media, `playable::add_original`).
