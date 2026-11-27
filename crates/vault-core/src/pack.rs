@@ -596,6 +596,16 @@ impl PackStore {
     /// (between objects): only packs copied completely are in the plan, the
     /// rest keep their objects (copies already made are simply used instead).
     pub fn compact_until(&self, min_waste: f64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
+        self.compact_batch(min_waste, u64::MAX, stop)
+    }
+
+    /// Like [`PackStore::compact_until`], copying at most `room` bytes: the
+    /// packs that free the most per byte copied go first (packs nothing uses
+    /// any more need no copying at all), and a pack whose live objects don't
+    /// fit in what is left of `room` is skipped (counted in `skipped`). The
+    /// caller saves, deletes the retired packs, and calls again for the rest,
+    /// so the extra disk space needed at any time stays about `room`.
+    pub fn compact_batch(&self, min_waste: f64, room: u64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
         let mut plan = CompactPlan::default();
         // Packs copied completely, with the space each one wastes.
         let mut retired: Vec<(PathBuf, u64)> = Vec::new();
@@ -629,14 +639,31 @@ impl PackStore {
                 .unwrap()
                 .as_ref()
                 .map(|w| w.n);
-            for u in self.usage()?.into_iter().filter(|u| u.kind == kind) {
-                let waste = u.size.saturating_sub(u.live_bytes);
-                let ratio = if u.size > 0 {
-                    waste as f64 / u.size as f64
+            let ratio_of = |u: &PackUsage| {
+                if u.size > 0 {
+                    u.size.saturating_sub(u.live_bytes) as f64 / u.size as f64
                 } else {
                     0.0
-                };
-                if Some(u.pack) == current || waste == 0 || ratio < min_waste {
+                }
+            };
+            let mut todo: Vec<PackUsage> = self
+                .usage()?
+                .into_iter()
+                .filter(|u| {
+                    u.kind == kind
+                        && Some(u.pack) != current
+                        && u.size.saturating_sub(u.live_bytes) > 0
+                        && ratio_of(u) >= min_waste
+                })
+                .collect();
+            // Most waste first: a pack nothing uses is just deleted.
+            todo.sort_by(|a, b| ratio_of(b).total_cmp(&ratio_of(a)).then(a.pack.cmp(&b.pack)));
+            let mut stopped = false;
+            for u in todo {
+                let waste = u.size.saturating_sub(u.live_bytes);
+                let copy = if u.objects == 0 { 0 } else { u.live_bytes };
+                if copy > room.saturating_sub(plan.moved_bytes) {
+                    plan.skipped += 1;
                     continue;
                 }
                 let entries: Vec<(ObjectId, Location)> = {
@@ -663,9 +690,13 @@ impl PackStore {
                     plan.moved_bytes += loc.len;
                 }
                 if !whole {
+                    stopped = true;
                     break;
                 }
                 retired.push((self.path(kind, u.pack), waste));
+            }
+            if stopped {
+                break;
             }
         }
         // A pack that ended up being the target of the copies must not be
@@ -680,8 +711,11 @@ impl PackStore {
     }
 
     /// Delete packs that no index entry uses any more. Only call after the
-    /// database with the current index has been saved.
-    pub fn delete_retired(&self, plan: &CompactPlan) -> Result<()> {
+    /// database with the current index has been saved. A pack that can't be
+    /// deleted (another program, e.g. a sync app, holding it open) is tried a
+    /// few times, then left: it is returned, and since nothing uses it any
+    /// more the next reclaim deletes it without copying anything.
+    pub fn delete_retired(&self, plan: &CompactPlan) -> Result<Vec<PathBuf>> {
         let used: HashSet<PathBuf> = self
             .index
             .lock()
@@ -689,13 +723,29 @@ impl PackStore {
             .values()
             .map(|l| self.path(l.kind, l.pack))
             .collect();
+        let mut left = Vec::new();
         for p in &plan.retired {
-            if !used.contains(p) {
-                fs::remove_file(p)?;
+            if used.contains(p) {
+                continue;
+            }
+            let mut tries = 0;
+            loop {
+                match fs::remove_file(p) {
+                    Ok(()) => break,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => break,
+                    Err(_) if tries < 4 => {
+                        tries += 1;
+                        std::thread::sleep(std::time::Duration::from_millis(250 * tries));
+                    }
+                    Err(_) => {
+                        left.push(p.clone());
+                        break;
+                    }
+                }
             }
         }
         *self.scanned.lock().unwrap() = None;
-        Ok(())
+        Ok(left)
     }
 }
 
@@ -714,6 +764,8 @@ pub struct CompactPlan {
     pub moved_bytes: u64,
     pub reclaimed_bytes: u64,
     pub retired: Vec<PathBuf>,
+    /// Packs worth rewriting that were left because they didn't fit in `room`.
+    pub skipped: usize,
 }
 
 #[cfg(test)]

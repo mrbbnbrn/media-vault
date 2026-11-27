@@ -381,60 +381,138 @@ fn check_all_present(s: &Session) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ReclaimReport {
     pub moved: usize,
     pub reclaimed_bytes: u64,
     pub packs_removed: usize,
+    /// Packs nothing uses any more that couldn't be deleted (a sync app holding
+    /// them open): deleted next time, without copying.
+    pub packs_left: usize,
+    /// Packs worth rewriting that were left because the drive is too full.
+    pub skipped_for_space: usize,
 }
+
+/// Packs at least this much unused space are rewritten by the automatic
+/// reclaim (after deleting, and after unlocking). Below that, a pack is left:
+/// its deleted parts are unreadable anyway (their keys are gone), and
+/// rewriting a 1 GB pack for a few MB costs disk writes and, in a synced
+/// folder, uploading the whole pack again.
+pub const AUTO_MIN_WASTE: f64 = 0.25;
+
+/// At most this much is copied before the database is saved and the old packs
+/// are deleted, so a reclaim never needs much more free space than this.
+const BATCH_BYTES: u64 = 2 << 30;
+
+/// Free space always left on the vault's drive while reclaiming.
+const SPARE_BYTES: u64 = 1 << 30;
 
 /// Rewrite packs that are at least 20% unused space.
 pub fn reclaim(s: &Session) -> Result<ReclaimReport, String> {
-    reclaim_over(s, 0.2, &AtomicBool::new(false))
+    reclaim_over(s, 0.2, &AtomicBool::new(false), "reclaim")
 }
 
-/// Like `reclaim`, stopping early when cancelled or the vault locks (what
-/// was copied so far counts; packs not copied completely stay as they are).
+/// The Reclaim button: every pack holding anything deleted, stopping early
+/// when cancelled or the vault locks (what was finished so far counts).
 pub fn reclaim_until(s: &Session, cancel: &AtomicBool) -> Result<ReclaimReport, String> {
-    reclaim_over(s, 0.2, cancel)
+    reclaim_over(s, 1e-9, cancel, "reclaim (button)")
+}
+
+/// The automatic reclaim: packs at least `AUTO_MIN_WASTE` unused (every pack
+/// holding anything deleted when `all`, the setting "Remove deleted files'
+/// bytes right away"). Cheap when there is nothing to do.
+pub fn reclaim_auto(s: &Session, all: bool) -> Result<ReclaimReport, String> {
+    reclaim_over(s, if all { 1e-9 } else { AUTO_MIN_WASTE }, &AtomicBool::new(false), "reclaim (automatic)")
 }
 
 /// After deleting for good: every pack holding anything deleted is rewritten,
 /// so no deleted file's bytes stay in the vault folder.
 pub fn reclaim_all_deleted(s: &Session) -> Result<ReclaimReport, String> {
-    reclaim_over(s, 1e-9, &AtomicBool::new(false))
+    reclaim_over(s, 1e-9, &AtomicBool::new(false), "reclaim (all deleted)")
 }
 
 /// Only packs that are (almost) all unused: cheap, nearly nothing to copy (while a vault is being converted).
 pub fn reclaim_emptied(s: &Session) -> Result<ReclaimReport, String> {
-    // Only when there is such a pack (the full check before rewriting is slow on a big vault).
-    let any = s
-        .vault()
-        .pack_usage()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|u| u.size > (1 << 20) && u.size.saturating_sub(u.live_bytes) as f64 >= 0.98 * u.size as f64);
-    if !any {
-        return Ok(ReclaimReport { moved: 0, reclaimed_bytes: 0, packs_removed: 0 });
-    }
-    reclaim_over(s, 0.98, &AtomicBool::new(false))
+    reclaim_over(s, 0.98, &AtomicBool::new(false), "reclaim (emptied packs)")
 }
 
-fn reclaim_over(s: &Session, min_waste: f64, cancel: &AtomicBool) -> Result<ReclaimReport, String> {
+/// Whether any pack is at least `min_waste` unused space (cheap: no reading).
+fn worth_it(s: &Session, min_waste: f64) -> Result<bool, String> {
+    Ok(s.vault().pack_usage().map_err(|e| e.to_string())?.iter().any(|u| {
+        let waste = u.size.saturating_sub(u.live_bytes);
+        u.size > 0 && waste > 0 && waste as f64 >= min_waste * u.size as f64
+    }))
+}
+
+fn gb(b: u64) -> String {
+    format!("{:.2} GB", b as f64 / (1u64 << 30) as f64)
+}
+
+/// Copy what is still used out of wasteful packs, in rounds of at most
+/// `BATCH_BYTES` (never more than the free space minus `SPARE_BYTES`): each
+/// round saves the database, then deletes the packs it emptied, so the space
+/// comes back as it goes and an interrupted reclaim leaves at most one round's
+/// copies, which the next reclaim deletes (nothing uses them).
+fn reclaim_over(s: &Session, min_waste: f64, cancel: &AtomicBool, what: &str) -> Result<ReclaimReport, String> {
+    let mut rep = ReclaimReport::default();
+    if !worth_it(s, min_waste)? {
+        return Ok(rep);
+    }
+    let result = reclaim_rounds(s, min_waste, cancel, &mut rep);
+    let mut line = format!(
+        "{what}: {} packs removed, {} freed, {} objects copied",
+        rep.packs_removed,
+        gb(rep.reclaimed_bytes),
+        rep.moved
+    );
+    if rep.packs_left > 0 {
+        line.push_str(&format!("; {} unused packs couldn't be deleted yet (held open by another program?), next time", rep.packs_left));
+    }
+    if rep.skipped_for_space > 0 {
+        line.push_str(&format!("; {} packs left: not enough free space on the drive", rep.skipped_for_space));
+    }
+    if let Err(e) = &result {
+        line.push_str(&format!("; stopped: {e}"));
+    }
+    crate::diaglog::note(&line);
+    result.map(|()| rep)
+}
+
+fn reclaim_rounds(s: &Session, min_waste: f64, cancel: &AtomicBool, rep: &mut ReclaimReport) -> Result<(), String> {
     s.save()?;
     check_all_present(s)?;
     let stop = || cancel.load(Ordering::SeqCst) || s.is_closed();
-    let plan = s.vault().compact_until(min_waste, &stop).map_err(|e| e.to_string())?;
-    s.mark_dirty();
-    // The new locations must be saved before the old packs are deleted.
-    s.save()?;
-    s.vault().finish_compact(&plan).map_err(|e| e.to_string())?;
-    Ok(ReclaimReport {
-        moved: plan.moved,
-        reclaimed_bytes: plan.reclaimed_bytes,
-        packs_removed: plan.retired.len(),
-    })
+    loop {
+        if stop() {
+            break;
+        }
+        let root = s.vault().root().to_path_buf();
+        let room = match crate::diskspace::free_bytes(&root) {
+            Some(free) => free.saturating_sub(SPARE_BYTES).min(BATCH_BYTES),
+            None => BATCH_BYTES,
+        };
+        let plan = s.vault().compact_batch(min_waste, room, &stop).map_err(|e| e.to_string())?;
+        rep.skipped_for_space = plan.skipped;
+        if plan.moved == 0 && plan.retired.is_empty() {
+            break;
+        }
+        s.mark_dirty();
+        // The new locations must be saved before the old packs are deleted.
+        s.save()?;
+        let left = s.vault().finish_compact(&plan).map_err(|e| e.to_string())?;
+        rep.moved += plan.moved;
+        rep.reclaimed_bytes += plan.reclaimed_bytes;
+        let removed = plan.retired.len().saturating_sub(left.len());
+        rep.packs_removed += removed;
+        rep.packs_left = left.len();
+        // No pack deleted this round (stopped part way, or the old packs are
+        // held open by another program): stop, the next reclaim goes on.
+        if removed == 0 {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -614,6 +692,48 @@ mod tests {
         let s = session::unlock(&path, "long enough pw").unwrap();
         assert_eq!(library::query_items(&s.db(), &library::ItemFilter::default()).unwrap().len(), 19);
         assert_eq!(reclaim_all_deleted(&s).unwrap().reclaimed_bytes, 0, "nothing to do the second time");
+    }
+
+    #[test]
+    fn automatic_reclaim_leaves_little_waste_and_waits_for_free_space() {
+        let _turn = crate::diskspace::TEST_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let t = tempfile::tempdir().unwrap();
+        let (s, _) = session::create(t.path().to_str().unwrap(), "V", "long enough pw", vault_core::KdfParams::TEST_ONLY).unwrap();
+        let src = t.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        for i in 0..20 {
+            std::fs::write(src.join(format!("{i:02}.jpg")), vec![i as u8 + 1; 100_000 + i]).unwrap();
+        }
+        let job = import::Job { id: 1, paths: vec![src.display().to_string()], target: None, password: None, archive_folder: true, keep_archives: false };
+        assert_eq!(import::run(&s, &job, &AtomicBool::new(false), &mut |_| {}).imported, 20);
+        let items = library::query_items(&s.db(), &library::ItemFilter::default()).unwrap();
+        let delete = |names: &[&str]| {
+            let ids: Vec<i64> = items.iter().filter(|i| names.contains(&i.name.as_str())).map(|i| i.id).collect();
+            library::trash_items(&s.db(), &ids).unwrap();
+            let o = library::delete_forever(&s.db(), &ids).unwrap();
+            s.save().unwrap();
+            import::remove_objects(&s, &o);
+        };
+        // One of 20 (5%): the automatic reclaim leaves it.
+        delete(&["00.jpg"]);
+        assert_eq!(reclaim_auto(&s, false).unwrap(), ReclaimReport::default());
+        assert!(info(&s).unwrap().reclaimable_bytes >= 100_000);
+        // Most of it deleted, but the drive is full: nothing copied, nothing lost, said so.
+        delete(&["01.jpg", "02.jpg", "03.jpg", "04.jpg", "05.jpg", "06.jpg", "07.jpg", "08.jpg", "09.jpg", "10.jpg"]);
+        let root = s.vault().root().to_path_buf();
+        crate::diskspace::set_test_free(&root, Some(SPARE_BYTES + 100_000));
+        let full = reclaim_auto(&s, false);
+        crate::diskspace::set_test_free(&root, None);
+        let full = full.unwrap();
+        assert_eq!((full.moved, full.packs_removed), (0, 0), "{full:?}");
+        assert!(full.skipped_for_space > 0, "{full:?}");
+        check_all_present(&s).unwrap();
+        // With space: done, and nothing deleted is left.
+        let rep = reclaim_auto(&s, false).unwrap();
+        assert!(rep.reclaimed_bytes > 1_000_000 && rep.skipped_for_space == 0, "{rep:?}");
+        assert_eq!(info(&s).unwrap().reclaimable_bytes, 0);
+        assert_eq!(library::query_items(&s.db(), &library::ItemFilter::default()).unwrap().len(), 9);
+        check_all_present(&s).unwrap();
     }
 
     #[test]

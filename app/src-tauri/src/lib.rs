@@ -266,6 +266,10 @@ fn start_background(inner: Shared, s: Arc<Session>) {
             Ok(None) => {}
             Err(x) => diaglog::note(&format!("removed look More layers: couldn't delete its saved layers: {x}")),
         }
+        // Space left in the packs by anything (deleted items, replaced thumbnails,
+        // previews and 3D data, an interrupted reclaim): reclaimed after each
+        // unlock when worth it (cheap when not; logged in diagnostics.log).
+        cmd_library::reclaim_soon(inner.clone(), s2.clone());
         // The kept folder counts are checked once per unlock (put right if ever wrong).
         if let Ok(false) = vault_core::db::check_folder_stats(&s2.db()) {
             s2.mark_dirty();

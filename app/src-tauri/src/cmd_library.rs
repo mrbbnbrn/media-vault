@@ -179,10 +179,15 @@ async fn delete_and_clean(
 static RECLAIM_PENDING: AtomicBool = AtomicBool::new(false);
 
 /// With "Reclaim space automatically" on: a few seconds after deleting for
-/// good, the packs holding deleted files are rewritten in the background
-/// (never during an import), so nothing of them stays in the vault folder.
+/// good (and after unlocking), packs that are mostly unused space are
+/// rewritten in the background (never during an import); every pack holding
+/// anything deleted with "Remove deleted files' bytes right away" on.
 pub(crate) fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
-    if !inner.config.lock().unwrap_or_else(|e| e.into_inner()).auto_reclaim || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
+    let (auto, all) = {
+        let c = inner.config.lock().unwrap_or_else(|e| e.into_inner());
+        (c.auto_reclaim, c.reclaim_all)
+    };
+    if !auto || RECLAIM_PENDING.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
@@ -190,9 +195,10 @@ pub(crate) fn reclaim_soon(inner: Shared, s: Arc<session::Session>) {
         let _turn = inner.import_gate.lock().unwrap_or_else(|e| e.into_inner());
         RECLAIM_PENDING.store(false, Ordering::SeqCst);
         if !s.is_closed()
-            && let Err(err) = storage::reclaim_all_deleted(&s)
+            && let Err(err) = storage::reclaim_auto(&s, all)
         {
-            eprintln!("Reclaiming space after deleting didn't finish: {err}");
+            // Also written to diagnostics.log by reclaim_auto.
+            eprintln!("Reclaiming space didn't finish: {err}");
         }
     });
 }

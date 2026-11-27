@@ -667,7 +667,7 @@ function StorageSection({ cfg }: { cfg: AppConfig }) {
       <div className="setting">
         <div className="text">
           <span className="title">Reclaim space</span>
-          <span className="desc">Deleted items leave unused space inside packs. This copies what's still used into fresh packs and removes the old ones. Nothing is removed until the new copies are saved.</span>
+          <span className="desc">Deleted items leave unused space inside packs. This copies what's still used into fresh packs, a few GB at a time, and removes the old ones. Nothing is removed until the new copies are saved. Needs a little free space on the drive (it stops and says so when the drive is too full).</span>
         </div>
         <button type="button" className="btn" disabled={!!job || !info?.reclaimableBytes} onClick={() => run('reclaim')}>Reclaim</button>
       </div>
@@ -940,7 +940,9 @@ function BackgroundSection({ cfg, update }: { cfg: AppConfig; update: (c: AppCon
         <Toggle title="Make preview clips" on={cfg.makePreviews !== false} set={(v) => update({ ...cfg, makePreviews: v })}
           desc="A few seconds of small, silent video and a strip of little frames for each video, made once in the background. Grid tiles play them straight away and switch to the real video when your PC keeps up." />
         <Toggle title="Reclaim space automatically" on={cfg.autoReclaim !== false} set={(v) => update({ ...cfg, autoReclaim: v })}
-          desc="A few seconds after something is deleted for good (from the trash, emptying it, or after 30 days), the pack files holding it are rewritten in the background, so nothing of the deleted files is left in the vault folder. Takes a moment with large packs." />
+          desc="After deleting for good (from the trash, emptying it, or after 30 days) and after each unlock, pack files that are at least a quarter unused space are rewritten in the background, a few GB at a time, and the old ones deleted. Space left by replaced thumbnails, previews and 3D data is freed too. Details in diagnostics.log." />
+        <Toggle title="Remove deleted files' bytes right away" on={cfg.reclaimAll === true} set={(v) => update({ ...cfg, reclaimAll: v })}
+          desc="Off: packs with only a little unused space are left as they are (what's deleted in them can't be read: its keys are gone). On: every pack holding anything deleted is rewritten, so nothing of it stays in the vault folder. Much more disk writing, and in a synced folder (OneDrive) whole packs are uploaded again." />
         <Toggle title="Notify me when long jobs finish"
           desc="A Windows notification when an import, export or scan that took a while finishes while you're in another app. It only gives counts, never names."
           on={cfg.notifyDone !== false} set={(v) => { setNotifyWhenDone(v); update({ ...cfg, notifyDone: v }); }} />

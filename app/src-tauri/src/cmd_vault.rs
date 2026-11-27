@@ -395,12 +395,19 @@ pub(crate) fn storage_task(app: AppHandle, state: State<'_, Shared>, task: Strin
             .map(|n| format!("{n} items moved into pack files."))
         } else {
             storage::reclaim_until(&s, &cancel).map(|r| {
-                format!(
+                let mut m = format!(
                     "Freed {:.1} MB ({} items moved, {} pack files removed).",
                     r.reclaimed_bytes as f64 / 1e6,
                     r.moved,
                     r.packs_removed
-                )
+                );
+                if r.skipped_for_space > 0 {
+                    m.push_str(&format!(" {} pack files were left: the drive is too full to copy them. Free some space and press Reclaim again.", r.skipped_for_space));
+                }
+                if r.packs_left > 0 {
+                    m.push_str(&format!(" {} unused pack files couldn't be deleted yet (another program has them open, e.g. OneDrive syncing); they go next time.", r.packs_left));
+                }
+                m
             })
         };
         inner.tasks.lock().unwrap_or_else(|e| e.into_inner()).remove("storage");

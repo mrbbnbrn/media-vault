@@ -1381,9 +1381,17 @@ impl Vault {
         self.packs.compact_until(min_waste, stop)
     }
 
-    pub fn finish_compact(&self, plan: &CompactPlan) -> Result<()> {
+    /// Returns the retired packs that couldn't be deleted (left for next time).
+    pub fn finish_compact(&self, plan: &CompactPlan) -> Result<Vec<std::path::PathBuf>> {
         self.require_write()?;
         self.packs.delete_retired(plan)
+    }
+
+    /// Like [`Vault::compact_until`], copying at most `room` bytes (see
+    /// `PackStore::compact_batch`).
+    pub fn compact_batch(&self, min_waste: f64, room: u64, stop: &dyn Fn() -> bool) -> Result<CompactPlan> {
+        self.require_write()?;
+        self.packs.compact_batch(min_waste, room, stop)
     }
 
     /// Find every object by reading the packs (when the index can't be trusted).

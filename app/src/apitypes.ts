@@ -198,6 +198,8 @@ export interface AppConfig {
   poorFaces?: PoorFaceSettings;
   /** After deleting for good, the space deleted files leave in the packs is reclaimed in the background. */
   autoReclaim?: boolean;
+  /** The automatic reclaim rewrites every pack holding anything deleted (off: only packs at least a quarter unused). */
+  reclaimAll?: boolean;
   /** Today's pick after unlocking (off: it never pops up). */
   todaysPick?: boolean;
   /** The face scan is paused (remembered across restarts). */

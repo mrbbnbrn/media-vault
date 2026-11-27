@@ -335,6 +335,10 @@ pub struct AppConfig {
     /// deleted files leave inside the pack files is reclaimed in the
     /// background, so nothing of them is left in the vault folder.
     pub auto_reclaim: bool,
+    /// Settings → "Remove deleted files' bytes right away": the automatic
+    /// reclaim rewrites every pack holding anything deleted (off: only packs at
+    /// least a quarter unused, `storage::AUTO_MIN_WASTE`).
+    pub reclaim_all: bool,
     /// Today's pick: one picture shown after unlocking, once a day.
     pub todays_pick: bool,
     /// The face scan is paused (remembered across restarts).
@@ -439,6 +443,7 @@ impl Default for AppConfig {
             last_vault: None,
             poor_faces: PoorFaceSettings::default(),
             auto_reclaim: true,
+            reclaim_all: false,
             todays_pick: true,
             faces_paused: false,
         }

@@ -336,3 +336,54 @@ fn an_older_database_backup_still_finds_moved_objects() {
         &data(1, 50_000)[..]
     );
 }
+
+#[test]
+fn reclaiming_in_rounds_deletes_unused_packs_without_copying_and_skips_what_does_not_fit() {
+    let t = tempfile::tempdir().unwrap();
+    let root = t.path().join("v");
+    let (mut v, _) = Vault::create(&root, PW, KdfParams::TEST_ONLY).unwrap();
+    v.set_pack_limit(300_000);
+    let conn = db::create_empty().unwrap();
+    let mut ids = Vec::new();
+    for i in 0..20 {
+        ids.push((v.add_object(ObjectKind::Media, &data(i, 60_000)[..]).unwrap().0, i));
+    }
+    save(&v, &conn);
+    // The first half goes (whole packs nothing uses any more), plus one later object.
+    let gone = |i: usize| i < 10 || i == 15;
+    for (id, i) in &ids {
+        if gone(*i) {
+            v.delete_object(ObjectKind::Media, id).unwrap();
+        }
+    }
+    save(&v, &conn);
+
+    // No room to copy anything: only the unused packs go.
+    let plan = v.compact_batch(0.1, 0, &|| false).unwrap();
+    assert_eq!(plan.moved, 0, "nothing copied without room");
+    assert!(!plan.retired.is_empty(), "unused packs are retired anyway");
+    assert!(plan.skipped > 0, "the pack with object 15 needs copying: skipped");
+    save(&v, &conn);
+    let left = v.finish_compact(&plan).unwrap();
+    assert!(left.is_empty());
+    for p in &plan.retired {
+        assert!(!p.exists(), "{p:?} deleted");
+    }
+
+    // With room: the rest is rewritten.
+    let plan = v.compact_batch(0.1, u64::MAX, &|| false).unwrap();
+    assert!(plan.moved > 0 && plan.skipped == 0);
+    save(&v, &conn);
+    v.finish_compact(&plan).unwrap();
+    assert_eq!(v.compact_batch(0.1, u64::MAX, &|| false).unwrap().retired.len(), 0, "nothing left to do");
+    drop(v);
+
+    let (v, _) = reopen(&root, true);
+    for (id, i) in &ids {
+        if gone(*i) {
+            assert!(v.read_object(ObjectKind::Media, id).is_err());
+        } else {
+            assert_eq!(&v.read_object(ObjectKind::Media, id).unwrap()[..], &data(*i, 60_000)[..]);
+        }
+    }
+}
